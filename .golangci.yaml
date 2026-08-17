@@ -1,0 +1,106 @@
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - gocritic
+    - revive
+    - gocyclo
+    - depguard
+    - gofmt
+    - goimports
+    - misspell
+    - unconvert
+    - unparam
+    - bodyclose
+    - errorlint
+
+linters-settings:
+  gocyclo:
+    min-complexity: 15
+  goimports:
+    local-prefixes: khrazhevnik
+  revive:
+    severity: warning
+    rules:
+      - name: blank-imports
+      - name: context-as-argument
+      - name: context-keys-type
+      - name: dot-imports
+      - name: error-naming
+      - name: error-strings
+      - name: error-return
+      - name: errorf
+      - name: exported
+        disabled: true
+      - name: increment-decrement
+      - name: indent-error-flow
+      - name: range
+      - name: receiver-naming
+      - name: time-naming
+      - name: var-declaration
+      - name: var-naming
+  errcheck:
+    check-type-assertions: true
+    check-blank: false
+  errorlint:
+    errorf: true
+    asserts: true
+    comparison: true
+  depguard:
+    rules:
+      no-os-in-core-domain:
+        list-mode: lax
+        files:
+          - "**/internal/core/domain/**"
+          - "**/internal/core/engine/**"
+        deny:
+          - pkg: os
+            desc: "domain/engine не должен трогать ОС напрямую; используйте порт"
+          - pkg: syscall
+            desc: "domain/engine не должен трогать syscall; используйте порт"
+          - pkg: golang.org/x/sys
+            desc: "domain/engine не должен трогать x/sys; используйте порт"
+          - pkg: net
+            desc: "domain/engine не должен открывать соединения; используйте порт"
+          - pkg: net/http
+            desc: "доставка HTTP — только в core/web или mod"
+      no-mod-in-core:
+        list-mode: lax
+        files:
+          - "**/internal/core/**"
+        deny:
+          - pkg: khrazhevnik/internal/mod
+            desc: "ядро не знает модулей; склейка — только в wire (cmd/khrazhevnik)"
+      no-cross-mod:
+        list-mode: lax
+        files:
+          - "**/internal/mod/**"
+        deny:
+          - pkg: khrazhevnik/internal/mod
+            desc: "запрет mod→mod: модули общаются только через core"
+
+issues:
+  exclude-dirs:
+    - web
+    - test/smoke
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - gosec
+        - unparam
+    - path: cmd/khrazhevnik/main\.go
+      linters:
+        - revive
+  max-issues-per-linter: 0
+  max-same-issues: 0

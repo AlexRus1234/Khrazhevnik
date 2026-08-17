@@ -1,0 +1,23 @@
+# Планировочные документы агента — вне репозитория
+/логи/
+
+# Go
+/bin/
+/coverage/
+*.exe
+*.exe~
+*.test
+*.out
+*.prof
+
+# Данные времени выполнения
+/data/
+
+# Web
+web/node_modules/
+web/dist/
+
+# Секреты и локальное окружение
+.env
+.env.*
+*.local.toml
