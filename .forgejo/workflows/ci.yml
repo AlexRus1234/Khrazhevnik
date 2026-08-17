@@ -21,9 +21,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -67,9 +64,13 @@ jobs:
       - name: Install remaining system dependencies
         # gcc нужен только для `go test -race` (CGO); сам бинарник
         # собирается с CGO_ENABLED=0 (static, modernc-sqlite pure Go).
+        # nodejs нужен НЕ проекту, а раннеру: act/act_runner исполняет
+        # JS-экшены (actions/checkout@v4) через node ВНУТРИ job-контейнера;
+        # fedora:44 его не содержит → crun "node not found", exit 127.
         run: |
           dnf install -y --setopt=install_weak_deps=False \
             bash tar \
+            nodejs \
             gcc
 
       - name: Install Go toolchain
