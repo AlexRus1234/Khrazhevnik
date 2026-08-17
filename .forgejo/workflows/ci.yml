@@ -1,5 +1,22 @@
 # Хражевник — кеш-прокси и зеркало linux-репозиториев
+# Copyright (C) 2026 AlexRus1234
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 # CI: vet → lint → test (+race) → сборка с версией из тега.
+# Инфраструктура раннера — по образцу lentovodec/Intermasq:
+# fedora-контейнер, Nora-прокси, step-ca, Go из tarball.
 
 name: CI
 
@@ -7,21 +24,93 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    runs-on: docker
+    container:
+      image: fedora:44
+    env:
+      # All external dependencies via Nora where possible
+      GOPROXY: "https://nora.panelka.yadr01.internal/go,direct"
+      GOSUMDB: "off"
+      GOPRIVATE: "git.yadr00.internal/*"
+      # NOTE: do NOT set SSL_CERT_FILE / NODE_EXTRA_CA_CERTS to step-ca.crt
+      # directly — that overrides the system bundle and breaks public-CA
+      # trust (curl to go.dev / npm / etc fails with "unexpected end of file").
+      # The 'update-ca-trust' step below adds step-ca to the system bundle,
+      # after which all tools trust both public CAs AND step-ca transparently.
+
     steps:
+      - name: Install git first (minimal fedora image lacks it)
+        run: dnf install -y --setopt=install_weak_deps=False git curl
+
+      - name: Trust Local CA
+        run: |
+          curl -k https://172.20.0.1:9000/roots.pem -o /etc/pki/ca-trust/source/anchors/step-ca.crt
+          update-ca-trust
+          git config --global http.sslCAInfo /etc/pki/ca-trust/source/anchors/step-ca.crt
+
+      - name: Configure Nora RPM repo (custom packages if needed)
+        run: |
+          cat > /etc/yum.repos.d/nora.repo << 'EOF'
+          [nora-runner]
+          name=Nora Runner Dependencies
+          baseurl=https://nora.panelka.yadr01.internal/rpm/runner/
+          gpgcheck=0
+          enabled=1
+          priority=1
+          sslverify=1
+          EOF
+
+      - name: Install remaining system dependencies
+        # gcc нужен только для `go test -race` (CGO); сам бинарник
+        # собирается с CGO_ENABLED=0 (static, modernc-sqlite pure Go).
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            bash tar \
+            gcc
+
+      - name: Install Go toolchain
+        run: |
+          # Fedora 44 ships an older Go; khrazhevnik needs 1.26 (go.mod).
+          # Tarball from go.dev. -f: fail on HTTP errors (don't pipe HTML
+          # error page into tar). Download first, then extract, so we get a
+          # clear error if URL is wrong.
+          curl -fsSL https://go.dev/dl/go1.26.3.linux-amd64.tar.gz -o /tmp/go.tar.gz
+          ls -lh /tmp/go.tar.gz
+          tar -C /usr/local -xzf /tmp/go.tar.gz
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
+          /usr/local/go/bin/go version
+
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          # Теги нужны для определения версии сборки ниже.
+          fetch-depth: 0
+
+      - name: Determine build version
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          TAG_VERSION="$(git describe --exact-match --tags --match='v*' HEAD 2>/dev/null || true)"
+          if [ -n "$TAG_VERSION" ]; then
+            VERSION="$TAG_VERSION"
+            echo "Using exact Git tag: $VERSION"
+          else
+            VERSION="sha-${SHA:0:8}"
+            echo "HEAD has no exact v* tag; using: $VERSION"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "APP_VERSION=${VERSION#v}" >> "$GITHUB_ENV"
 
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+        # Пин той же версии, что в локальной разработке; собирается
+        # через Nora-прокси текущим тулчейном.
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
       - name: go vet
         run: go vet ./...
@@ -30,15 +119,33 @@ jobs:
         run: golangci-lint run ./...
 
       - name: go test
-        run: go test ./...
+        run: go test ./... -count=1
 
       - name: go test -race
-        run: go test -race ./...
+        # -race requires CGO (and gcc). The binary itself is built with
+        # CGO_ENABLED=0 for static linking; tests opt back in here.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./... -count=1
 
-      - name: Build
+      - name: Build binary
         # Для package main линкер Go 1.26 принимает только путь main.Version
-        # (полный importpath-путь в -X не срабатывает).
-        run: >
-          CGO_ENABLED=0 go build -trimpath
-          -ldflags "-s -w -X main.Version=${GITHUB_REF##*/}"
-          -o bin/khrazhevnik ./cmd/khrazhevnik
+        # (полный importpath в -X молча не применяется; проверено локально
+        # на go1.26.3). Intermasq использует полный путь, потому что там
+        # Version живёт в НЕ-main пакете internal/version.
+        run: |
+          CGO_ENABLED=0 \
+          go build -trimpath \
+            -ldflags="-s -w -X main.Version=${APP_VERSION}" \
+            -o khrazhevnik-ci ./cmd/khrazhevnik
+          # Sanity: бинарник стартует и печатает прошитую версию.
+          ./khrazhevnik-ci
+
+      - name: Show binary info
+        run: |
+          ls -lh khrazhevnik-ci
+          sha256sum khrazhevnik-ci | tee khrazhevnik-ci.sha256
+
+      - name: Cleanup
+        if: always()
+        run: rm -f khrazhevnik-ci khrazhevnik-ci.sha256
