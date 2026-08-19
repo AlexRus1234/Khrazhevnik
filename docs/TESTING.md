@@ -34,7 +34,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
    руками (без testify).
 2. **Integration** — `test/integration`: реальный sqlite `:memory:`,
    fs-хранилище, minio/pg/mariadb через CI-сервисы; build-tag
-   `integration`.
+   `integration`, запуск `make test-integration` (с `-race`).
 3. **Smoke** — `test/smoke`: живой контейнер, проверка curl'ом.
 4. **Fuzz** — короткие прогоны в CI; crash-корпус коммитится в
    testdata.

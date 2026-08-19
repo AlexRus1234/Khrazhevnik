@@ -31,6 +31,10 @@ test:
 test-race:
 	"$(GO)" test -race $(PKG)
 
+.PHONY: test-integration
+test-integration:
+	"$(GO)" test -race -tags integration ./test/integration/...
+
 .PHONY: cover
 cover:
 	"$(GO)" test -coverprofile="$(COVER_OUT)" $(PKG)
