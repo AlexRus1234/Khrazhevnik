@@ -1,0 +1,178 @@
+// Хражевник — кеш-прокси и зеркало linux-репозиториев
+// Copyright (C) 2026 AlexRus1234
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+package registry
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+	"sync"
+
+	"khrazhevnik/internal/core/config"
+	"khrazhevnik/internal/core/port"
+)
+
+// CatalogSet — полный набор catalog-store'ов, который обязан отдать
+// драйвер БД: один адаптер реализует все интерфейсы порта каталога,
+// потребители (engine) берут из набора нужные срезы.
+type CatalogSet struct {
+	Users    port.UserStore
+	Tokens   port.TokenStore
+	Repos    port.RepoStore
+	Remotes  port.RemoteStore
+	Jobs     port.JobStore
+	Audit    port.AuditLog
+	ObjIndex port.ObjectIndex
+}
+
+// Фабрики модулей: вызываются в cmd/khrazhevnik/wire.go с секцией
+// конфигурации соответствующего драйвера.
+
+// StorageFactory создаёт хранилище объектов (mod/storage/*).
+type StorageFactory = func(cfg config.Storage) (port.Storage, error)
+
+// DBFactory открывает каталог БД и возвращает набор store'ов
+// (mod/db/*).
+type DBFactory = func(cfg config.Database) (CatalogSet, error)
+
+// EcosystemFactory создаёт адаптер экосистемы (mod/ecosystem/*).
+type EcosystemFactory = func(cfg config.Ecosystem) (port.Ecosystem, error)
+
+// state — закрытое глобальное состояние реестра. Единственное
+// разрешённое package-level состояние вне cmd: compile-time реестр
+// (init()-регистрация из mod/*) без него не собрать — см. AGENTS.md.
+type state struct {
+	mu        sync.RWMutex
+	storage   map[string]StorageFactory
+	db        map[string]DBFactory
+	ecosystem map[string]EcosystemFactory
+}
+
+var s = &state{
+	storage:   map[string]StorageFactory{},
+	db:        map[string]DBFactory{},
+	ecosystem: map[string]EcosystemFactory{},
+}
+
+// RegisterStorage регистрирует фабрику хранилища. Вызывается из
+// init() модулей; пустое имя, nil-фабрика или повторная регистрация
+// — panic на инициализации (ошибка программиста, а не рантайма).
+func RegisterStorage(name string, factory StorageFactory) {
+	if factory == nil {
+		panic("registry: регистрация хранилища с nil-фабрикой: " + name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	registerLocked("хранилище", name, s.storage, factory)
+}
+
+// RegisterDB регистрирует фабрику каталога БД.
+func RegisterDB(name string, factory DBFactory) {
+	if factory == nil {
+		panic("registry: регистрация БД с nil-фабрикой: " + name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	registerLocked("БД", name, s.db, factory)
+}
+
+// RegisterEcosystem регистрирует фабрику адаптера экосистемы.
+func RegisterEcosystem(name string, factory EcosystemFactory) {
+	if factory == nil {
+		panic("registry: регистрация экосистемы с nil-фабрикой: " + name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	registerLocked("экосистема", name, s.ecosystem, factory)
+}
+
+// registerLocked — общее ядро регистрации; mu уже захвачена.
+func registerLocked[T any](kind, name string, m map[string]T, fn T) {
+	if name == "" {
+		panic("registry: регистрация " + kind + " с пустым именем")
+	}
+	if _, dup := m[name]; dup {
+		panic(fmt.Sprintf("registry: повторная регистрация %s %q", kind, name))
+	}
+	m[name] = fn
+}
+
+// Storage возвращает фабрику хранилища по имени; неизвестное имя —
+// ошибка с перечнем доступных драйверов.
+func Storage(name string) (StorageFactory, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if fn, ok := s.storage[name]; ok {
+		return fn, nil
+	}
+	return nil, unknownDriver("хранилище", name, sortedNames(s.storage))
+}
+
+// DB возвращает фабрику каталога по имени драйвера.
+func DB(name string) (DBFactory, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if fn, ok := s.db[name]; ok {
+		return fn, nil
+	}
+	return nil, unknownDriver("БД", name, sortedNames(s.db))
+}
+
+// Ecosystem возвращает фабрику адаптера экосистемы по имени.
+func Ecosystem(name string) (EcosystemFactory, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if fn, ok := s.ecosystem[name]; ok {
+		return fn, nil
+	}
+	return nil, unknownDriver("экосистема", name, sortedNames(s.ecosystem))
+}
+
+// Ecosystems — отсортированные имена зарегистрированных экосистем
+// (для сборки адаптеров в wire и логов старта).
+func Ecosystems() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return sortedNames(s.ecosystem)
+}
+
+// Empty сообщает, что не слинкован ни один модуль: сборка без
+// blank-import'ов. main в этом случае стартует в деградированном
+// режиме (только /healthz) с громкой ошибкой в логе.
+func Empty() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.storage) == 0 && len(s.db) == 0 && len(s.ecosystem) == 0
+}
+
+// unknownDriver — дружелюбная ошибка lookup'а.
+func unknownDriver(kind, name string, available []string) error {
+	if len(available) == 0 {
+		return fmt.Errorf("реестр: неизвестный драйвер %s %q: модули не слинкованы (сборка без blank-import'ов)", kind, name)
+	}
+	return fmt.Errorf("реестр: неизвестный драйвер %s %q (доступны: %s)", kind, name, strings.Join(available, ", "))
+}
+
+// sortedNames — имена фабрик по алфавиту (стабильные сообщения).
+func sortedNames[T any](m map[string]T) []string {
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}

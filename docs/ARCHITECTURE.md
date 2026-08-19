@@ -66,6 +66,7 @@ cmd/khrazhevnik/           main.go (~40 строк), wire.go — единств�
 internal/core/
   port/       контракты: Storage, Ecosystem, Catalog*, Signer, Clock, Rand, HTTP
   domain/     модели + типизированные ошибки; только stdlib, без os/net
+  config/     struct-конфиг: defaults → TOML → env KHRZ_* (+file://-секреты)
   engine/     usecase-логика: cache, mirror, publish, auth; без net/http
   registry/   compile-time реестр модулей
   web/        chi-роутеры, middleware, TaskRegistry, embed SPA; тонкая доставка
@@ -91,9 +92,12 @@ Enforced линтером (depguard):
   stdlib/либы).
 
 Прочие правила (в AGENTS.md): время — только через `port.Clock`;
-случайность — только через `port.Rand`; ошибки возвращаем, не логируем в
-месте создания; panic только в main.go; package-level var только
-`cmd/khrazhevnik.Version`; комментарии «почему», не «что».
+случайность — только через `port.Rand`; ошибки возвращаем, не логируем
+в месте создания; panic только в main.go и в `registry.Register*`
+(двойная регистрация — ошибка программиста); package-level var только
+`cmd/khrazhevnik.Version` и закрытое состояние
+`internal/core/registry` (compile-time реестр без него не собрать);
+комментарии «почему», не «что».
 
 ## 4. Ключевые контракты (эскизы, уточняются при реализации)
 
