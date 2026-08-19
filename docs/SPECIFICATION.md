@@ -47,8 +47,71 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 | 29202 | Публика: раздача пакетов (без auth) + `GET /healthz`. Переопределяется конфигом. |
 | 30202 | Админка: `/api/v1` (auth), `/metrics` (Prometheus, за auth), SPA `/ui`. Переопределяется конфигом. |
 
-Env-слой поддерживает `KHRZ_ИМЯ=file:///run/secrets/x` — значение
-читается из файла (quadlet Secret).
+## Конфигурация
+
+TOML-файл (флаг `-config`, по умолчанию `khrazhevnik.toml`; пустое
+значение — только defaults+env) + env-слой. Слои: **defaults → TOML →
+env**. Пакет `internal/core/config`.
+
+```toml
+[server]
+public_listen = ":29202"
+admin_listen = ":30202"
+
+[storage]
+driver = "fs"                    # fs | s3
+[storage.fs]
+path = "/var/lib/khrazhevnik/store"
+[storage.s3]
+endpoint = "" ; region = "" ; bucket = "" ; path_style = true
+access_key_id = "" ; secret_access_key = ""
+
+[database]
+driver = "sqlite"                # sqlite | postgres | mariadb
+dsn = "/var/lib/khrazhevnik/khrazhevnik.db"
+
+[auth]
+jwt_secret = ""                  # НЕ в файле проде: env/file
+session_ttl = "8h"
+setup_token = ""
+
+[cache]
+mutable_ttl = "5m" ; stale_if_error = true
+max_object_size = "20GiB"
+negative_ttl_404 = "5m" ; negative_ttl_5xx = "30s"
+
+[mirror]
+workers = 4 ; interval_jitter = "10m"
+
+[signing]
+keys_dir = "/var/lib/khrazhevnik/keys"
+
+[metrics]
+enabled = true
+
+[ecosystem.apt]                  # enabled = true + специфичные поля; аналогично
+[ecosystem.rpm-md]               # rpm-md (или rpm_md), pacman, apk, nix
+```
+
+- Env: префикс `KHRZ_`, сегменты пути через `__` (двойное
+  подчёркивание), верхний регистр, дефисы — подчёркиваниями:
+  `KHRZ_SERVER__PUBLIC_LISTEN`, `KHRZ_STORAGE__S3__SECRET_ACCESS_KEY`,
+  `KHRZ_AUTH__JWT_SECRET`, `KHRZ_CACHE__NEGATIVE_TTL_404`. Пустое
+  значение env трактуется как «не задано».
+- Записи `[ecosystem.<имя>]`: env может включать известные экосистемы
+  (`apt`, `rpm-md`, `pacman`, `apk`, `nix`) и без упоминания в TOML:
+  `KHRZ_ECOSYSTEM__RPM_MD__ENABLED=true`. В TOML ключи `rpm_md` и
+  `"rpm-md"` эквивалентны (нормализация `_` → `-`).
+- Значения вида `file:///run/secrets/x` (env или TOML) — читается
+  содержимое файла, пробелы/переводы строк обрезаются (quadlet Secret).
+- Duration-поля — строки `time.ParseDuration` (`"8h"`), размеры —
+  `"20GiB"`/`"512MiB"`/`"1024"` (байты).
+- Валидация fail-fast, список **всех** проблем сразу: `jwt_secret`
+  непуст (env обязателен), драйверы из допустимых, duration/порты
+  валидны, для выбранного драйвера обязательны его поля (у s3 —
+  endpoint/region/bucket/ключи).
+- Уровень логов — env `KHRZ_LOG_LEVEL` (`debug|info|warn|error`,
+  default `info`), читается при старте.
 
 ## REST API (placeholder)
 
