@@ -67,6 +67,7 @@ internal/core/
   port/       контракты: Storage, Ecosystem, Catalog*, Signer, Clock, Rand, HTTP
   domain/     модели + типизированные ошибки; только stdlib, без os/net
   config/     struct-конфиг: defaults → TOML → env KHRZ_* (+file://-секреты)
+  dbtalk/     мини-шим SQL-диалектов каталога: Placeholder/Upsert/эпоха
   engine/     usecase-логика: cache, mirror, publish, auth; без net/http
   registry/   compile-time реестр модулей
   web/        chi-роутеры, middleware, TaskRegistry, embed SPA; тонкая доставка
@@ -77,6 +78,7 @@ internal/mod/             МОДУЛИ (каждый регистрируетс�
   db/         sqlite/, postgres/, mariadb/
   sign/       openpgp/, ed25519/
 internal/testutil/        FixedClock, SeqClock, FixedRand, FakeStorage, fakes Catalog*
+migrations/<driver>/      embedded goose-миграции каталога (по каталогу на БД)
 web/                      Vue 3 + Vite + TS SPA
 deploy/                   Containerfile, quadlet/
 docs/                     ARCHITECTURE, SPECIFICATION, ROADMAP, TESTING; func/ru/

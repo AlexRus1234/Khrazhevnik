@@ -32,6 +32,11 @@ import (
 	"khrazhevnik/internal/core/config"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/registry"
+
+	// Модули: регистрация в compile-time реестре. Каждая новая
+	// экосистема/драйвер добавляется сюда одной строкой.
+	_ "khrazhevnik/internal/mod/db/sqlite"
+	_ "khrazhevnik/internal/mod/storage/fs"
 )
 
 // App — собранные зависимости сервера; поля набирают движки
