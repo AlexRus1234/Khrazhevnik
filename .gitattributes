@@ -1,0 +1,12 @@
+# Почему eol=lf: gofmt и goimports считают CRLF ошибкой формата, а
+# core.autocrlf=true на Windows-машинах молча конвертирует файлы при
+# checkout/merge. Единый LF в репо и на диске убирает целый класс
+# «фантомных» diff'ов и падений линтера.
+* text=auto eol=lf
+
+# Бинарные файлы — никогда не трогать.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
