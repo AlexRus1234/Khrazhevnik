@@ -20,9 +20,25 @@
 
 package port
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+)
 
 // Doer — исполнитель HTTP-запросов (подмножество *http.Client).
 type Doer interface {
 	Do(*http.Request) (*http.Response, error)
+}
+
+// NewGETRequest keeps HTTP construction at the delivery port boundary so
+// usecase packages do not depend on net/http directly.
+func NewGETRequest(ctx context.Context, url string, headers map[string]string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	return req, nil
 }

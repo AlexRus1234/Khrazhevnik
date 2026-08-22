@@ -23,6 +23,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"khrazhevnik/internal/core/engine/auth"
+	"khrazhevnik/internal/core/engine/cache"
+	"khrazhevnik/internal/core/port"
 	authmw "khrazhevnik/internal/core/web/middleware"
 )
 
@@ -33,6 +35,8 @@ type Deps struct {
 	Version    string
 	Auth       *auth.Service
 	SetupToken string
+	Cache      *cache.Engine
+	Ecosystems map[string]port.Ecosystem
 }
 
 // BuildPublicRouter — публичный слушатель (:29202): /healthz и, с
@@ -42,6 +46,9 @@ func BuildPublicRouter(d Deps) http.Handler {
 	r.Use(RequestID)
 	r.Use(LogRequests(d.logger()))
 	r.Get("/healthz", handleHealthz)
+	if d.Cache != nil {
+		r.Get("/{eco}/{path...}", handleProxy(d))
+	}
 	return r
 }
 

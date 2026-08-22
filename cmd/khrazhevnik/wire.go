@@ -31,6 +31,8 @@ import (
 
 	"khrazhevnik/internal/core/config"
 	"khrazhevnik/internal/core/engine/auth"
+	cacheengine "khrazhevnik/internal/core/engine/cache"
+	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/registry"
 
@@ -50,6 +52,7 @@ type App struct {
 	Auth       *auth.Service
 	HTTP       port.Doer
 	Ecosystems map[string]port.Ecosystem
+	Cache      *cacheengine.Engine
 }
 
 // outboundHTTPTimeout — таймаут запросов upstream; движок кеша
@@ -106,6 +109,7 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		Auth:       authService,
 		HTTP:       outboundHTTPClient(),
 		Ecosystems: ecosystems,
+		Cache:      cacheengine.New(storage, catalog.ObjIndex, outboundHTTPClient(), systemClock{}, cacheengine.Config{MutableTTL: cfg.Cache.MutableTTL.Duration, StaleIfError: cfg.Cache.StaleIfError, MaxObjectSize: cfg.Cache.MaxObjectSize.Bytes, NegativeTTL404: cfg.Cache.NegativeTTL404.Duration, NegativeTTL5xx: cfg.Cache.NegativeTTL5xx.Duration}, metrics.NewCache()),
 	}, nil
 }
 

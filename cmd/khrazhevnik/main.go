@@ -82,7 +82,7 @@ func run(ctx context.Context, configPath string) error {
 
 	srv := &web.Server{
 		PublicAddr:    cfg.Server.PublicListen,
-		PublicHandler: web.BuildPublicRouter(web.Deps{Log: log, Version: Version}),
+		PublicHandler: web.BuildPublicRouter(web.Deps{Log: log, Version: Version, Cache: app.Cache, Ecosystems: app.Ecosystems}),
 		AdminAddr:     cfg.Server.AdminListen,
 		AdminHandler:  web.BuildAdminRouter(web.Deps{Log: log, Version: Version, Auth: app.Auth, SetupToken: cfg.Auth.SetupToken}),
 		Log:           log,
