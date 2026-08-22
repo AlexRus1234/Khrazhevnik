@@ -15,8 +15,8 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // Двойники port.Clock: FixedClock замирает на одном моменте, SeqClock
-// идёт вперёд с шагом — строго возрастающие метки без гонок с
-// реальным временем.
+// идёт вперёд с шагом, ManualClock двигается только явным Advance —
+// для тестов TTL/истечений.
 
 package testutil
 
@@ -61,4 +61,31 @@ func (c *seqClock) Now() time.Time {
 	t := c.next
 	c.next = c.next.Add(c.step)
 	return t
+}
+
+// ManualClock — ручные часы: время стоит на месте, пока тест не
+// сдвинет его Advance'ом. Потокобезопасна.
+type ManualClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+// NewManualClock создаёт часы, замороженные на t.
+func NewManualClock(t time.Time) *ManualClock {
+	return &ManualClock{t: t}
+}
+
+// Now возвращает текущий момент.
+func (c *ManualClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+// Advance сдвигает момент на d и возвращает новый.
+func (c *ManualClock) Advance(d time.Duration) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+	return c.t
 }

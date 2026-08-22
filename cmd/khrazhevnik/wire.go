@@ -26,6 +26,7 @@ import (
 	crand "crypto/rand"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -55,9 +56,11 @@ type App struct {
 	Cache      *cacheengine.Engine
 }
 
-// outboundHTTPTimeout — таймаут запросов upstream; движок кеша
-// уточнит под стриминг больших объектов в сессии 06.
-const outboundHTTPTimeout = 60 * time.Second
+// Таймауты upstream-соединения: обрыв установки соединения и ожидания
+// заголовков (10s каждое); тела стримятся без общего потолка — обрыв
+// отслеживает контекст запроса клиента, а не часы (большой пакет на
+// медленном зеркале — не ошибка).
+const upstreamConnectTimeout = 10 * time.Second
 
 // wireApp собирает App: фабрики драйверов — из реестра, экосистемы —
 // по включённым секциям [ecosystem.*]. Сборка без единого модуля
@@ -101,15 +104,16 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	httpClient := outboundHTTPClient()
 	return &App{
 		Clock:      systemClock{},
 		Rand:       uuidRand{},
 		Storage:    storage,
 		Catalog:    catalog,
 		Auth:       authService,
-		HTTP:       outboundHTTPClient(),
+		HTTP:       httpClient,
 		Ecosystems: ecosystems,
-		Cache:      cacheengine.New(storage, catalog.ObjIndex, outboundHTTPClient(), systemClock{}, cacheengine.Config{MutableTTL: cfg.Cache.MutableTTL.Duration, StaleIfError: cfg.Cache.StaleIfError, MaxObjectSize: cfg.Cache.MaxObjectSize.Bytes, NegativeTTL404: cfg.Cache.NegativeTTL404.Duration, NegativeTTL5xx: cfg.Cache.NegativeTTL5xx.Duration}, metrics.NewCache()),
+		Cache:      cacheengine.New(storage, catalog.ObjIndex, httpClient, systemClock{}, cacheengine.Config{StaleIfError: cfg.Cache.StaleIfError, MaxObjectSize: cfg.Cache.MaxObjectSize.Bytes, NegativeTTL404: cfg.Cache.NegativeTTL404.Duration, NegativeTTL5xx: cfg.Cache.NegativeTTL5xx.Duration}, metrics.NewCache()),
 	}, nil
 }
 
@@ -139,9 +143,17 @@ func wireEcosystems(cfg config.Config) (map[string]port.Ecosystem, error) {
 // пока возвращаемся сразу.
 func (a *App) WaitTasks(context.Context) error { return nil }
 
-// outboundHTTPClient — Doer для запросов upstream.
+// outboundHTTPClient — Doer для запросов upstream: таймауты только на
+// соединение и заголовки; тело живёт столько, сколько живёт контекст.
 func outboundHTTPClient() *http.Client {
-	return &http.Client{Timeout: outboundHTTPTimeout}
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: upstreamConnectTimeout, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   upstreamConnectTimeout,
+			ResponseHeaderTimeout: upstreamConnectTimeout,
+		},
+	}
 }
 
 // systemClock — port.Clock поверх time.Now (системные реализации

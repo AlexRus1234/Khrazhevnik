@@ -93,6 +93,14 @@ issues:
     - web
     - test/smoke
   exclude-rules:
+    # Тесты движка кеша обязаны гонять настоящий httptest-upstream
+    # (сессия 06): http в _test.go engine-пакетов — часть контракта
+    # тестирования, а не доставки. Запреты os/syscall и mod→core
+    # действуют и в тестах.
+    - path: internal/core/engine/.*_test\.go
+      linters:
+        - depguard
+      text: "net/http"
     - path: _test\.go
       linters:
         - gocyclo

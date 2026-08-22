@@ -76,3 +76,17 @@ func TestSeqClockConcurrent(t *testing.T) {
 		uniq[ts] = true
 	}
 }
+
+func TestManualClock(t *testing.T) {
+	start := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	c := NewManualClock(start)
+	if !c.Now().Equal(start) {
+		t.Fatalf("Now() = %v, хочу %v", c.Now(), start)
+	}
+	if got := c.Advance(90 * time.Second); !got.Equal(start.Add(90 * time.Second)) {
+		t.Fatalf("Advance = %v, хочу %v", got, start.Add(90*time.Second))
+	}
+	if !c.Now().Equal(start.Add(90 * time.Second)) {
+		t.Fatalf("Now() после Advance = %v", c.Now())
+	}
+}
