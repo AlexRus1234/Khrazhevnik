@@ -38,5 +38,35 @@ func (c *Cache) ForEcosystem(name string) *Cache {
 	return m
 }
 
+// EachEcosystem итерирует по счётчикам экосистем в лексическом порядке
+// имён (стабильный порядок для экспорта Prometheus). Итерация идёт под
+// мьютексом, поэтому callback не должен обращаться к ForEcosystem
+// (вложенная блокировка) — только читать переданные счётчики.
+func (c *Cache) EachEcosystem(yield func(name string, m *Cache)) {
+	c.mu.Lock()
+	names := make([]string, 0, len(c.Ecosystems))
+	snapshots := make(map[string]*Cache, len(c.Ecosystems))
+	for name, m := range c.Ecosystems {
+		names = append(names, name)
+		snapshots[name] = m
+	}
+	c.mu.Unlock()
+	// Сортировка после разблокировки: имена — короткие строки.
+	sortStrings(names)
+	for _, name := range names {
+		yield(name, snapshots[name])
+	}
+}
+
+// sortStrings — простой insertion sort: имён экосистем единицы, тянуть
+// sort из stdlib ради этого не хочется (модуль держится минимализмом).
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1] > s[j]; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
+}
+
 // AddBytesToClients records bytes copied by the HTTP delivery layer.
 func (c *Cache) AddBytesToClients(n int64) { c.BytesToClients.Add(n) }
