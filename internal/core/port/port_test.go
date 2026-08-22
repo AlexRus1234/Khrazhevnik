@@ -38,5 +38,9 @@ func TestConformance(t *testing.T) {
 	var _ port.Rand = testutil.FailingRand(io.EOF)
 	var _ port.UserStore = testutil.NewFakeUserStore()
 	var _ port.ObjectIndex = testutil.NewFakeObjectIndex()
+	var _ port.RemoteStore = testutil.NewFakeRemoteStore()
+	var _ port.RepoStore = testutil.NewFakeRepoStore()
+	var _ port.JobStore = testutil.NewFakeJobStore()
+	var _ port.AuditLog = testutil.NewFakeAuditLog()
 	var _ port.Doer = (*http.Client)(nil)
 }

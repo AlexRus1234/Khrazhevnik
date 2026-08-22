@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 
 	"khrazhevnik/internal/core/domain"
 )
@@ -166,6 +167,250 @@ func (s *FakeObjectIndex) DeleteObjectMeta(_ context.Context, key string) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.byKey, key)
+	return nil
+}
+
+// FakeAuditLog — slice-реализация port.AuditLog: записи по возрастанию
+// ID (как у боевого адаптера БД), keyset-пагинация AuditEntries.
+// Нужен тестам админ-API и audit-middleware (сессия 09).
+type FakeAuditLog struct {
+	mu      sync.Mutex
+	nextID  int64
+	entries []domain.AuditEntry
+}
+
+// NewFakeAuditLog создаёт пустой аудит-лог.
+func NewFakeAuditLog() *FakeAuditLog { return &FakeAuditLog{} }
+
+// Record добавляет запись; ID назначается по возрастанию.
+func (s *FakeAuditLog) Record(_ context.Context, e domain.AuditEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	e.ID = s.nextID
+	if e.At.IsZero() {
+		e.At = time.Unix(0, 0).UTC()
+	}
+	s.entries = append(s.entries, e)
+	return nil
+}
+
+// AuditEntries — страница записей с ID строго больше afterID по
+// возрастанию ID; limit <= 0 — разумный дефолт (как у боевого адаптера).
+func (s *FakeAuditLog) AuditEntries(_ context.Context, afterID int64, limit int) ([]domain.AuditEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []domain.AuditEntry
+	for _, e := range s.entries {
+		if e.ID <= afterID {
+			continue
+		}
+		out = append(out, e)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+// Len возвращает число записей (для проверок в тестах).
+func (s *FakeAuditLog) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.entries)
+}
+
+// FakeRepoStore — map-реализация port.RepoStore: детерминированные ID
+// по возрастанию, ошибки домена как у боевого адаптера БД. Нужен тестам
+// publish-движка (сессия 14); здесь — для полноты срезов каталога.
+type FakeRepoStore struct {
+	mu     sync.Mutex
+	nextID int64
+	byID   map[int64]domain.Repo
+	byName map[string]int64
+	perms  map[int64][]domain.Perm
+}
+
+// NewFakeRepoStore создаёт пустое хранилище репозиториев.
+func NewFakeRepoStore() *FakeRepoStore {
+	return &FakeRepoStore{byID: map[int64]domain.Repo{}, byName: map[string]int64{}, perms: map[int64][]domain.Perm{}}
+}
+
+// CreateRepo записывает репозиторий; нулевой ID назначается.
+func (s *FakeRepoStore) CreateRepo(_ context.Context, r domain.Repo) (domain.Repo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byName[r.Name]; ok {
+		return domain.Repo{}, &domain.ConflictError{What: "репозиторий", Key: r.Name}
+	}
+	if r.ID == 0 {
+		s.nextID++
+		r.ID = s.nextID
+	}
+	s.byID[r.ID] = r
+	s.byName[r.Name] = r.ID
+	return r, nil
+}
+
+// Repo возвращает репозиторий по ID.
+func (s *FakeRepoStore) Repo(_ context.Context, id int64) (domain.Repo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.byID[id]
+	if !ok {
+		return domain.Repo{}, &domain.NotFoundError{What: "репозиторий", Key: strconv.FormatInt(id, 10)}
+	}
+	return r, nil
+}
+
+// Repos отдаёт все репозитории по возрастанию ID.
+func (s *FakeRepoStore) Repos(_ context.Context) ([]domain.Repo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]domain.Repo, 0, len(s.byID))
+	for _, r := range s.byID {
+		out = append(out, r)
+	}
+	slices.SortFunc(out, func(a, b domain.Repo) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
+// UpdateRepo заменяет репозиторий целиком.
+func (s *FakeRepoStore) UpdateRepo(_ context.Context, r domain.Repo) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, ok := s.byID[r.ID]
+	if !ok {
+		return &domain.NotFoundError{What: "репозиторий", Key: strconv.FormatInt(r.ID, 10)}
+	}
+	if other, ok := s.byName[r.Name]; ok && other != r.ID {
+		return &domain.ConflictError{What: "репозиторий", Key: r.Name}
+	}
+	delete(s.byName, old.Name)
+	s.byID[r.ID] = r
+	s.byName[r.Name] = r.ID
+	return nil
+}
+
+// DeleteRepo удаляет репозиторий.
+func (s *FakeRepoStore) DeleteRepo(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.byID[id]
+	if !ok {
+		return &domain.NotFoundError{What: "репозиторий", Key: strconv.FormatInt(id, 10)}
+	}
+	delete(s.byID, id)
+	delete(s.byName, r.Name)
+	delete(s.perms, id)
+	return nil
+}
+
+// Grant выдаёт право записи.
+func (s *FakeRepoStore) Grant(_ context.Context, p domain.Perm) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ex := range s.perms[p.RepoID] {
+		if ex.UserID == p.UserID {
+			return nil
+		}
+	}
+	s.perms[p.RepoID] = append(s.perms[p.RepoID], p)
+	return nil
+}
+
+// Revoke отбирает право записи.
+func (s *FakeRepoStore) Revoke(_ context.Context, repoID, userID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ps := s.perms[repoID]
+	for i, ex := range ps {
+		if ex.UserID == userID {
+			s.perms[repoID] = append(ps[:i], ps[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
+
+// Perms отдаёт права репозитория по возрастанию userID.
+func (s *FakeRepoStore) Perms(_ context.Context, repoID int64) ([]domain.Perm, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := append([]domain.Perm(nil), s.perms[repoID]...)
+	slices.SortFunc(out, func(a, b domain.Perm) int { return cmp.Compare(a.UserID, b.UserID) })
+	return out, nil
+}
+
+// FakeJobStore — map-реализация port.JobStore: детерминированные ID
+// по возрастанию, ошибки домена как у боевого адаптера БД. Нужен
+// тестам зеркала (сессия 11); здесь — для полноты срезов каталога.
+type FakeJobStore struct {
+	mu     sync.Mutex
+	nextID int64
+	byID   map[int64]domain.SyncJob
+}
+
+// NewFakeJobStore создаёт пустое хранилище задач.
+func NewFakeJobStore() *FakeJobStore { return &FakeJobStore{byID: map[int64]domain.SyncJob{}} }
+
+// CreateJob записывает задачу; нулевой ID назначается.
+func (s *FakeJobStore) CreateJob(_ context.Context, j domain.SyncJob) (domain.SyncJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if j.ID == 0 {
+		s.nextID++
+		j.ID = s.nextID
+	}
+	s.byID[j.ID] = j
+	return j, nil
+}
+
+// Job возвращает задачу по ID.
+func (s *FakeJobStore) Job(_ context.Context, id int64) (domain.SyncJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	j, ok := s.byID[id]
+	if !ok {
+		return domain.SyncJob{}, &domain.NotFoundError{What: "sync-задача", Key: strconv.FormatInt(id, 10)}
+	}
+	return j, nil
+}
+
+// Jobs отдаёт все задачи по возрастанию ID.
+func (s *FakeJobStore) Jobs(_ context.Context) ([]domain.SyncJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]domain.SyncJob, 0, len(s.byID))
+	for _, j := range s.byID {
+		out = append(out, j)
+	}
+	slices.SortFunc(out, func(a, b domain.SyncJob) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
+// UpdateJob заменяет задачу целиком.
+func (s *FakeJobStore) UpdateJob(_ context.Context, j domain.SyncJob) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID[j.ID]; !ok {
+		return &domain.NotFoundError{What: "sync-задача", Key: strconv.FormatInt(j.ID, 10)}
+	}
+	s.byID[j.ID] = j
+	return nil
+}
+
+// DeleteJob удаляет задачу.
+func (s *FakeJobStore) DeleteJob(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID[id]; !ok {
+		return &domain.NotFoundError{What: "sync-задача", Key: strconv.FormatInt(id, 10)}
+	}
+	delete(s.byID, id)
 	return nil
 }
 
