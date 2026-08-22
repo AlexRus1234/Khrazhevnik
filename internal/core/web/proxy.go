@@ -11,6 +11,9 @@ import (
 )
 
 func handleProxy(d Deps) http.HandlerFunc {
+	// Статусы X-Cache дублируют константы engine/cache: web не тянет
+	// внутренности движка ради имён.
+	const statusStale = "STALE"
 	return func(w http.ResponseWriter, r *http.Request) {
 		ecoName := chi.URLParam(r, "eco")
 		eco, ok := d.Ecosystems[ecoName]
@@ -18,15 +21,19 @@ func handleProxy(d Deps) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		path := "/" + ecoName + "/" + chi.URLParam(r, "path")
+		path := "/" + ecoName + "/" + chi.URLParam(r, "*")
 		obj, status, err := d.Cache.FetchStatus(r.Context(), eco, path)
-		w.Header().Set("X-Cache", status)
-		var stale *domain.StaleError
-		if errors.As(err, &stale) {
-			w.Header().Set("Warning", `111 khrazhevnik "revalidation failed"`)
-		} else if err != nil {
-			writeProxyError(w, err)
-			return
+		if err != nil {
+			var stale *domain.StaleError
+			if errors.As(err, &stale) {
+				w.Header().Set("X-Cache", statusStale)
+				w.Header().Set("Warning", `111 khrazhevnik "revalidation failed"`)
+			} else {
+				writeProxyError(w, err)
+				return
+			}
+		} else {
+			w.Header().Set("X-Cache", status)
 		}
 		defer obj.Body.Close()
 		if obj.Meta.ETag != "" {

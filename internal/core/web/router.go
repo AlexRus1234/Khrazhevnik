@@ -47,7 +47,9 @@ func BuildPublicRouter(d Deps) http.Handler {
 	r.Use(LogRequests(d.logger()))
 	r.Get("/healthz", handleHealthz)
 	if d.Cache != nil {
-		r.Get("/{eco}/{path...}", handleProxy(d))
+		// wildcard в синтаксисе chi — «/*»; имя из {path...} (gin/echo)
+		// chi не понимает. Путь достаётся URLParam(r, "*").
+		r.Get("/{eco}/*", handleProxy(d))
 	}
 	return r
 }
