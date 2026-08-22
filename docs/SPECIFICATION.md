@@ -140,7 +140,7 @@ enabled = true
 | `remotes`      | upstream'ы (зеркала/прокси)                       |
 | `sync_jobs`    | sync-задачи зеркал (состояние, resume-данные)     |
 | `audit_log`    | аудит мутаций (actor/action/object/result/detail) |
-| `object_index` | etag/expires mutable-объектов кеша                |
+| `object_index` | etag/expires mutable-объектов кеша; `storage_key` — ключ версионных байт (миграция 0003; пустой — байты под самим `key`, записи до версионирования) |
 
 Драйверы — плагин через TOML:
 

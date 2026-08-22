@@ -474,7 +474,8 @@ func TestObjectIndexSuite(t *testing.T) {
 	st := openTest(t)
 
 	m := domain.ObjectMeta{
-		Key: "cache/apt/1/dists/stable/Release", Size: 1234, ETag: `"v1"`,
+		Key: "cache/apt/1/dists/stable/Release", StorageKey: "cache/apt/1/dists/stable/Release-v1a-1",
+		Size: 1234, ETag: `"v1"`,
 		ContentType: "text/plain", LastModified: fixed, ExpiresAt: fixed.Add(5 * time.Minute),
 	}
 	if err := st.PutObjectMeta(ctx, m); err != nil {
@@ -482,6 +483,7 @@ func TestObjectIndexSuite(t *testing.T) {
 	}
 	got, err := st.ObjectMeta(ctx, m.Key)
 	if err != nil || got.ETag != `"v1"` || got.Size != 1234 || got.ContentType != "text/plain" ||
+		got.StorageKey != m.StorageKey ||
 		!got.LastModified.Equal(fixed) || !got.ExpiresAt.Equal(fixed.Add(5*time.Minute)) {
 		t.Fatalf("ObjectMeta = %+v, %v", got, err)
 	}
@@ -489,12 +491,13 @@ func TestObjectIndexSuite(t *testing.T) {
 	// upsert: перезапись по тому же ключу
 	m.ETag = `"v2"`
 	m.Size = 99
+	m.StorageKey = "cache/apt/1/dists/stable/Release-v2b-2"
 	m.ExpiresAt = time.Time{} // бессрочный → NULL → нулевое время
 	if err := st.PutObjectMeta(ctx, m); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = st.ObjectMeta(ctx, m.Key)
-	if got.ETag != `"v2"` || got.Size != 99 || got.ExpiresAt != (time.Time{}) {
+	if got.ETag != `"v2"` || got.Size != 99 || got.StorageKey != m.StorageKey || got.ExpiresAt != (time.Time{}) {
 		t.Fatalf("upsert = %+v", got)
 	}
 

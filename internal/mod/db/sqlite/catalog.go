@@ -102,7 +102,7 @@ const (
 	sqlAuditInsert = `INSERT INTO audit_log (ts, actor, action, object, result, detail)
 		VALUES (?, ?, ?, ?, ?, ?) RETURNING id`
 	sqlAuditPage     = `SELECT id, ts, actor, action, object, result, detail FROM audit_log WHERE id > ? ORDER BY id LIMIT ?`
-	sqlObjMetaGet    = `SELECT key, etag, size, content_type, last_modified, expires_at FROM object_index WHERE key = ?`
+	sqlObjMetaGet    = `SELECT key, storage_key, etag, size, content_type, last_modified, expires_at FROM object_index WHERE key = ?`
 	sqlObjMetaDelete = `DELETE FROM object_index WHERE key = ?`
 )
 
@@ -110,7 +110,7 @@ const (
 // один раз при открытии Store.
 func objectMetaUpsertSQL() string {
 	return dbtalk.Upsert(dbtalk.SQLite{}, "object_index", "key",
-		[]string{"key", "etag", "size", "content_type", "last_modified", "expires_at"})
+		[]string{"key", "storage_key", "etag", "size", "content_type", "last_modified", "expires_at"})
 }
 
 // CreateUser записывает пользователя; ID назначает БД.
@@ -655,7 +655,7 @@ func (s *Store) ObjectMeta(ctx context.Context, key string) (domain.ObjectMeta, 
 func (s *Store) PutObjectMeta(ctx context.Context, m domain.ObjectMeta) error {
 	_, err := call(ctx, s, func() (sql.Result, error) {
 		return s.db.ExecContext(ctx, s.upsertObjectMeta,
-			m.Key, m.ETag, m.Size, m.ContentType, nullTime(m.LastModified), nullTime(m.ExpiresAt))
+			m.Key, m.StorageKey, m.ETag, m.Size, m.ContentType, nullTime(m.LastModified), nullTime(m.ExpiresAt))
 	})
 	if err != nil {
 		return mapWrite(err, "метаданные объекта", m.Key)
@@ -675,7 +675,7 @@ func (s *Store) DeleteObjectMeta(ctx context.Context, key string) error {
 func scanObjectMeta(row interface{ Scan(dest ...any) error }) (domain.ObjectMeta, error) {
 	var m domain.ObjectMeta
 	var lastModified, expires sql.NullInt64
-	if err := row.Scan(&m.Key, &m.ETag, &m.Size, &m.ContentType, &lastModified, &expires); err != nil {
+	if err := row.Scan(&m.Key, &m.StorageKey, &m.ETag, &m.Size, &m.ContentType, &lastModified, &expires); err != nil {
 		return domain.ObjectMeta{}, err
 	}
 	m.LastModified = timeFromNull(lastModified)

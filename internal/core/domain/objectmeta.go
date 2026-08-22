@@ -22,7 +22,14 @@ import "time"
 // etag/expires для conditional revalidate. Хранится в БД отдельно от
 // байтов объекта; ETag/LastModified — побайтово от upstream.
 type ObjectMeta struct {
-	Key          string
+	// Key — логический ключ (port.Target.StorageKey): под ним запись
+	// ищется и по нему считается TTL.
+	Key string
+	// StorageKey — где лежат байты: версии mutable-объектов пишутся
+	// под уникальными ключами, чтобы замена не ломала читателей
+	// старой версии. Пустая строка — байты под самим Key (записи до
+	// версионирования).
+	StorageKey   string
 	Size         int64
 	ETag         string
 	ContentType  string
