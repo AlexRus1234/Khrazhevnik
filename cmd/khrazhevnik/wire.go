@@ -40,6 +40,7 @@ import (
 	// Модули: регистрация в compile-time реестре. Каждая новая
 	// экосистема/драйвер добавляется сюда одной строкой.
 	_ "khrazhevnik/internal/mod/db/sqlite"
+	_ "khrazhevnik/internal/mod/ecosystem/apt"
 	_ "khrazhevnik/internal/mod/storage/fs"
 )
 
@@ -95,7 +96,7 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("каталог %q: %w", cfg.Database.Driver, err)
 	}
-	ecosystems, err := wireEcosystems(cfg)
+	ecosystems, err := wireEcosystems(cfg, catalog.Remotes)
 	if err != nil {
 		return nil, err
 	}
@@ -119,8 +120,12 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 
 // wireEcosystems создаёт адаптеры для включённых секций конфига;
 // секция с неизвестным реестру именем — понятная ошибка старта.
-func wireEcosystems(cfg config.Config) (map[string]port.Ecosystem, error) {
+// EcosystemDeps передаёт срезы каталога (Remotes) и Clock — первый
+// адаптер, которому они нужны (apt), появился в сессии 07; прочие
+// экосистемы берут из Deps своё, оставляя неиспользуемое нулевым.
+func wireEcosystems(cfg config.Config, remotes port.RemoteStore) (map[string]port.Ecosystem, error) {
 	ecosystems := make(map[string]port.Ecosystem)
+	deps := registry.EcosystemDeps{Remotes: remotes, Clock: systemClock{}}
 	for name, ecoCfg := range cfg.Ecosystem {
 		if !ecoCfg.Enabled {
 			continue
@@ -129,7 +134,7 @@ func wireEcosystems(cfg config.Config) (map[string]port.Ecosystem, error) {
 		if err != nil {
 			return nil, err
 		}
-		adapter, err := factory(ecoCfg)
+		adapter, err := factory(ecoCfg, deps)
 		if err != nil {
 			return nil, fmt.Errorf("экосистема %q: %w", name, err)
 		}

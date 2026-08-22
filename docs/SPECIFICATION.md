@@ -124,6 +124,30 @@ enabled = true
   sync-задачами/токенами/пользователями, аудит, `GET /metrics`,
   SPA `/ui`.
 
+## Экосистемы
+
+Первая реализованная экосистема — **apt** (сессия 07): кеш-прокси
+репозиториев Debian/Ubuntu. Путь `/apt/<remote-name>/<остальной-путь>`
+маппится на upstream из таблицы `remotes`; `StorageKey` =
+`cache/apt/<remote-id>/<upstream-path>`. Классификация: пакеты под
+`pool/` и `by-hash/` — immutable; индексы `dists/` (Release, Packages*,
+Sources*, Contents-*, i18n/, dep11/, cnf/) — mutable{TTL 5m}; прочее —
+conservative mutable{TTL 1m}. Stanza-парсер RFC822 (deb822) для
+Packages/Release — `mod/ecosystem/apt/parse.go`, переиспользуется
+зеркалом (сессия 11).
+
+До админ-API (сессия 09) первый remote записывается одноразовым
+CLI-флагом:
+
+```
+khrazhevnik -config khrazhevnik.toml -add-remote apt/debian=https://deb.debian.org/debian
+```
+
+Флаг парсит `<eco>/<name>=<base-url>`, проверяет, что экосистема
+слинкована (blank-import в wire), и пишет remote в БД; сервер не
+поднимает. jwt_secret при этом не требуется (CLI подставляет заглушку
+для прохождения валидации конфига).
+
 ## БД
 
 Таблицы (миграция 0001, goose): `users`, `api_tokens`, `repos`,

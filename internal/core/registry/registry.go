@@ -49,8 +49,21 @@ type StorageFactory = func(cfg config.Storage) (port.Storage, error)
 // (mod/db/*).
 type DBFactory = func(cfg config.Database) (CatalogSet, error)
 
+// EcosystemDeps — зависимости адаптера экосистемы из каталога и
+// инфраструктуры: то, что нужно для разрешения remotes по пути и
+// инвалидации кеша remotes по TTL. Зависимости, появляющиеся с
+// новыми движками (sync-воркеры зеркал — сессия 11), дописываются
+// сюда; порции остаются опционально-нулевыми, если экосистема их
+// не использует (проверка — в фабрике).
+type EcosystemDeps struct {
+	Remotes port.RemoteStore
+	Clock   port.Clock
+}
+
 // EcosystemFactory создаёт адаптер экосистемы (mod/ecosystem/*).
-type EcosystemFactory = func(cfg config.Ecosystem) (port.Ecosystem, error)
+// cfg — секция [ecosystem.<имя>] (пока только Enabled); deps —
+// срезы каталога и инфраструктуры, нужные адаптеру для работы.
+type EcosystemFactory = func(cfg config.Ecosystem, deps EcosystemDeps) (port.Ecosystem, error)
 
 // state — закрытое глобальное состояние реестра. Единственное
 // разрешённое package-level состояние вне cmd: compile-time реестр

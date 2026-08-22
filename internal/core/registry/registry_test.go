@@ -72,7 +72,7 @@ func TestLookupUnknownListsAvailable(t *testing.T) {
 
 func TestEcosystemsListing(t *testing.T) {
 	resetForTesting(t)
-	eco := func(config.Ecosystem) (port.Ecosystem, error) { return nil, nil }
+	eco := func(config.Ecosystem, EcosystemDeps) (port.Ecosystem, error) { return nil, nil }
 	RegisterEcosystem("rpm-md", eco)
 	RegisterEcosystem("apt", eco)
 	RegisterEcosystem("pacman", eco)
@@ -94,7 +94,7 @@ func TestEmpty(t *testing.T) {
 	if !Empty() {
 		t.Fatal("пустой реестр не распознан")
 	}
-	RegisterEcosystem("apt", func(config.Ecosystem) (port.Ecosystem, error) { return nil, nil })
+	RegisterEcosystem("apt", func(config.Ecosystem, EcosystemDeps) (port.Ecosystem, error) { return nil, nil })
 	if Empty() {
 		t.Fatal("реестр с экосистемой считается пустым")
 	}
@@ -104,7 +104,7 @@ func TestRegisterDuplicatesPanic(t *testing.T) {
 	resetForTesting(t)
 	storage := func(config.Storage) (port.Storage, error) { return nil, nil }
 	db := func(config.Database) (CatalogSet, error) { return CatalogSet{}, nil }
-	eco := func(config.Ecosystem) (port.Ecosystem, error) { return nil, nil }
+	eco := func(config.Ecosystem, EcosystemDeps) (port.Ecosystem, error) { return nil, nil }
 
 	cases := []struct {
 		name string

@@ -168,3 +168,87 @@ func (s *FakeObjectIndex) DeleteObjectMeta(_ context.Context, key string) error 
 	delete(s.byKey, key)
 	return nil
 }
+
+// FakeRemoteStore — map-реализация port.RemoteStore: детерминированные
+// ID по возрастанию, ошибки домена как у боевого адаптера БД. Нужен
+// адаптерам экосистем (apt — сессия 07) и тестам зеркала (сессия 11).
+type FakeRemoteStore struct {
+	mu     sync.Mutex
+	nextID int64
+	byID   map[int64]domain.Remote
+	byName map[string]int64
+}
+
+// NewFakeRemoteStore создаёт пустое хранилище remotes.
+func NewFakeRemoteStore() *FakeRemoteStore {
+	return &FakeRemoteStore{byID: map[int64]domain.Remote{}, byName: map[string]int64{}}
+}
+
+// CreateRemote записывает upstream; нулевой ID назначается.
+func (s *FakeRemoteStore) CreateRemote(_ context.Context, r domain.Remote) (domain.Remote, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byName[r.Name]; ok {
+		return domain.Remote{}, &domain.ConflictError{What: "remote", Key: r.Name}
+	}
+	if r.ID == 0 {
+		s.nextID++
+		r.ID = s.nextID
+	}
+	s.byID[r.ID] = r
+	s.byName[r.Name] = r.ID
+	return r, nil
+}
+
+// Remote возвращает upstream по ID.
+func (s *FakeRemoteStore) Remote(_ context.Context, id int64) (domain.Remote, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.byID[id]
+	if !ok {
+		return domain.Remote{}, &domain.NotFoundError{What: "remote", Key: strconv.FormatInt(id, 10)}
+	}
+	return r, nil
+}
+
+// Remotes отдаёт все upstream'ы по возрастанию ID.
+func (s *FakeRemoteStore) Remotes(_ context.Context) ([]domain.Remote, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]domain.Remote, 0, len(s.byID))
+	for _, r := range s.byID {
+		out = append(out, r)
+	}
+	slices.SortFunc(out, func(a, b domain.Remote) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
+// UpdateRemote заменяет upstream целиком.
+func (s *FakeRemoteStore) UpdateRemote(_ context.Context, r domain.Remote) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, ok := s.byID[r.ID]
+	if !ok {
+		return &domain.NotFoundError{What: "remote", Key: strconv.FormatInt(r.ID, 10)}
+	}
+	if other, ok := s.byName[r.Name]; ok && other != r.ID {
+		return &domain.ConflictError{What: "remote", Key: r.Name}
+	}
+	delete(s.byName, old.Name)
+	s.byID[r.ID] = r
+	s.byName[r.Name] = r.ID
+	return nil
+}
+
+// DeleteRemote удаляет upstream.
+func (s *FakeRemoteStore) DeleteRemote(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.byID[id]
+	if !ok {
+		return &domain.NotFoundError{What: "remote", Key: strconv.FormatInt(id, 10)}
+	}
+	delete(s.byID, id)
+	delete(s.byName, r.Name)
+	return nil
+}

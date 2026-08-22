@@ -1,0 +1,19 @@
+Origin: Debian
+Label: Debian
+Suite: stable
+Version: 12.0
+Codename: bookworm
+Date: Sat, 22 Aug 2026 12:00:00 UTC
+Architectures: amd64 arm64
+Components: main contrib non-free
+Description: Debian Stable
+ This is the release description
+ spanning multiple lines
+ of the Release file.
+MD5sum:
+ deadbeefdeadbeefdeadbeefdeadbeef  123456 Release
+ deadbeefdeadbeefdeadbeefdeadbeef  654321 main/binary-amd64/Packages
+SHA1:
+ deadbeefdeadbeefdeadbeefdeadbeefdeadbeef  123456 Release
+SHA256:
+ deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  123456 Release
