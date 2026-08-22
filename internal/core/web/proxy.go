@@ -8,20 +8,29 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"khrazhevnik/internal/core/domain"
+	"khrazhevnik/internal/core/port"
 )
 
 func handleProxy(d Deps) http.HandlerFunc {
 	// Статусы X-Cache дублируют константы engine/cache: web не тянет
 	// внутренности движка ради имён.
 	const statusStale = "STALE"
+	// byPrefix — индекс экосистем по URL-префиксу (первый сегмент пути).
+	// Deps.Ecosystems хранятся по имени (apt, rpm-md); URL-префикс может
+	// отличаться (rpm-md → «rpm»). Индекс строится один раз при сборке
+	// роутера, lookup за O(1) на запрос.
+	byPrefix := make(map[string]port.Ecosystem, len(d.Ecosystems))
+	for _, eco := range d.Ecosystems {
+		byPrefix[eco.URLPrefix()] = eco
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		ecoName := chi.URLParam(r, "eco")
-		eco, ok := d.Ecosystems[ecoName]
+		prefix := chi.URLParam(r, "eco")
+		eco, ok := byPrefix[prefix]
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
-		path := "/" + ecoName + "/" + chi.URLParam(r, "*")
+		path := "/" + prefix + "/" + chi.URLParam(r, "*")
 		obj, status, err := d.Cache.FetchStatus(r.Context(), eco, path)
 		if err != nil {
 			var stale *domain.StaleError

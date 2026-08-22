@@ -116,12 +116,16 @@ type Storage interface {
 // port/ecosystem.go
 type Ecosystem interface {
     Name() string
+    URLPrefix() string // первый сегмент пути :29202 («apt», «rpm»); чаще == Name
     // Путь публичного порта → upstream + путь upstream'а
     Resolve(path string) (Target, bool)
     Classify(upstreamPath string) (Class, error) // Immutable | Mutable{TTL}
 }
 // Target: {UpstreamURL, UpstreamPath, StorageKey} — StorageKey вида
 // cache/<eco>/<remote-id>/<upstream-path>, уникален и стабилен.
+// URLPrefix отличают от Name: rpm-md держит один адаптер под dnf+zypper,
+// а URL держит короткий «rpm» (как в .repo baseurl). Роутер MATCHит
+// /{URLPrefix}/* и ищет экосистему по префиксу, а не по имени.
 
 // port/catalog.go — Interface Segregation: маленькие интерфейсы
 // UserStore, TokenStore, RepoStore, RemoteStore, JobStore, AuditLog,

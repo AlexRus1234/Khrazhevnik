@@ -41,6 +41,7 @@ import (
 	// экосистема/драйвер добавляется сюда одной строкой.
 	_ "khrazhevnik/internal/mod/db/sqlite"
 	_ "khrazhevnik/internal/mod/ecosystem/apt"
+	_ "khrazhevnik/internal/mod/ecosystem/rpmmmd"
 	_ "khrazhevnik/internal/mod/storage/fs"
 )
 

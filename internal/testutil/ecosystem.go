@@ -41,6 +41,10 @@ type FakeEcosystem struct {
 // Name возвращает имя экосистемы.
 func (e FakeEcosystem) Name() string { return e.NameOf }
 
+// URLPrefix возвращает префикс путей публичного порта. У фейка префикс
+// совпадает с именем (как у apt).
+func (e FakeEcosystem) URLPrefix() string { return e.NameOf }
+
 // Resolve переводит /<name>/<rest> в Target. Ключ хранения всегда
 // нижний регистр: реальный upstream-путь может содержать заглавные
 // (Packages.gz), а доменные ключи — только [a-z0-9/._-].

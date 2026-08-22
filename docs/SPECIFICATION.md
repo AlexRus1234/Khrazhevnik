@@ -126,15 +126,32 @@ enabled = true
 
 ## Экосистемы
 
-Первая реализованная экосистема — **apt** (сессия 07): кеш-прокси
-репозиториев Debian/Ubuntu. Путь `/apt/<remote-name>/<остальной-путь>`
-маппится на upstream из таблицы `remotes`; `StorageKey` =
-`cache/apt/<remote-id>/<upstream-path>`. Классификация: пакеты под
-`pool/` и `by-hash/` — immutable; индексы `dists/` (Release, Packages*,
-Sources*, Contents-*, i18n/, dep11/, cnf/) — mutable{TTL 5m}; прочее —
-conservative mutable{TTL 1m}. Stanza-парсер RFC822 (deb822) для
-Packages/Release — `mod/ecosystem/apt/parse.go`, переиспользуется
-зеркалом (сессия 11).
+Реализованные экосистемы:
+
+- **apt** (сессия 07) — кеш-прокси Debian/Ubuntu. Путь
+  `/apt/<remote-name>/<остальной-путь>` маппится на upstream из таблицы
+  `remotes`; `StorageKey` = `cache/apt/<remote-id>/<upstream-path>`.
+  Классификация: пакеты под `pool/` и `by-hash/` — immutable; индексы
+  `dists/` (Release, Packages*, Sources*, Contents-*, i18n/, dep11/,
+  cnf/) — mutable{TTL 5m}; прочее — conservative mutable{TTL 1m}.
+  Stanza-парсер RFC822 (deb822) для Packages/Release —
+  `mod/ecosystem/apt/parse.go`, переиспользуется зеркалом (сессия 11).
+- **rpm-md** (сессия 08) — кеш-прокси Fedora/RHEL/openSUSE (один адаптер
+  для dnf и Zypper — формат общий repomd). Путь
+  `/rpm/<remote-name>/<остальной-путь>` (префикс «rpm», короче имени
+  «rpm-md» — как пишут в .repo baseurl); `StorageKey` =
+  `cache/rpm-md/<remote-id>/<upstream-path>`. Классификация: `*.rpm`,
+  `*.drpm`, `*.src.rpm` — immutable; `repodata/repomd.xml` и его подписи
+  (`repomd.xml.asc`, `repomd.xml.key`) — mutable{TTL 5m}; repodata-файлы
+  с хешом-чексуммой в имени (`<sha>-primary.xml.gz` и т.п.) — immutable
+  (content-addressed); прочие repodata без хеша (primary/filelists/other/
+  *-UPDATE_INFO.xml/*.sqlite.bz2/*zck) — mutable{TTL 5m}; остальное
+  (`media.1/products` и т.п.) — conservative mutable{TTL 1m}. Streaming
+  XML-парсер repomd.xml — `mod/ecosystem/rpmmmd/parse.go`.
+
+URL-префикс (`port.Ecosystem.URLPrefix()`) чаще совпадает с именем, но
+не всегда (rpm-md → «rpm»); роутер :29202 MATCHит `/{URLPrefix}/*` и
+ищет экосистему по префиксу.
 
 До админ-API (сессия 09) первый remote записывается одноразовым
 CLI-флагом:

@@ -97,6 +97,10 @@ func New(remotes port.RemoteStore, clock port.Clock) (*Adapter, error) {
 // Name возвращает имя экосистемы.
 func (a *Adapter) Name() string { return Name }
 
+// URLPrefix возвращает префикс путей публичного порта. У apt префикс
+// совпадает с именем.
+func (a *Adapter) URLPrefix() string { return Name }
+
 // Resolve переводит /apt/<remote-name>/<остальной-путь> в Target.
 // false — путь не принадлежит apt или remote неизвестен/выключен.
 // Кеш remotes обновляется по TTL 30с: перезапуск не нужен для вновь

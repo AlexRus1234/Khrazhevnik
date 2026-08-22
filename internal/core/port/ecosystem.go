@@ -36,8 +36,16 @@ type Target struct {
 // порта → upstream» + классификация объектов по изменчивости.
 type Ecosystem interface {
 	// Name — короткое имя экосистемы («apt», «rpm-md»), совпадает
-	// с префиксом публичных путей и ecosystem в Remote.
+	// с ecosystem в Remote и StorageKey. Каноническая форма — с
+	// дефисом (конфиг нормализует rpm_md → rpm-md).
 	Name() string
+
+	// URLPrefix — первый сегмент путей публичного порта без слэшей
+	// («apt», «rpm»). Чаще совпадает с Name, но не всегда: rpm-md
+	// держит один адаптер под dnf+zypper, а URL держит короткий
+	// «rpm» (как пишут в .repo baseurl). Роутер_MATCHит /{prefix}/*
+	// и ищет экосистему по префиксу, а не по имени.
+	URLPrefix() string
 
 	// Resolve переводит путь публичного порта (например,
 	// «/apt/debian/pool/main/a/app/app.deb») в Target; false — путь
