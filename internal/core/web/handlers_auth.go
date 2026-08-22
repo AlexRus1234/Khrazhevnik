@@ -146,7 +146,7 @@ func handleCreateToken(d Deps) http.HandlerFunc {
 		if !decode(w, r, &in) {
 			return
 		}
-		t, raw, err := d.Auth.IssueAPIToken(r.Context(), u, in.Scopes, in.TTL)
+		t, raw, err := d.Auth.IssueAPIToken(r.Context(), u, in.Name, in.Scopes, in.TTL)
 		if err != nil {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return

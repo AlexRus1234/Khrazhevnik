@@ -225,7 +225,7 @@ func (s *Service) InvalidateUserSessions(ctx context.Context, id int64) error {
 }
 
 // IssueAPIToken returns the raw secret separately; it is never persisted.
-func (s *Service) IssueAPIToken(ctx context.Context, u domain.User, scopes []domain.Scope, ttl time.Duration) (domain.APIToken, string, error) {
+func (s *Service) IssueAPIToken(ctx context.Context, u domain.User, name string, scopes []domain.Scope, ttl time.Duration) (domain.APIToken, string, error) {
 	canonical := make([]domain.Scope, len(scopes))
 	for i, scope := range scopes {
 		var err error
@@ -241,7 +241,7 @@ func (s *Service) IssueAPIToken(ctx context.Context, u domain.User, scopes []dom
 	prefix := strings.ReplaceAll(seed[:8], "-", "")
 	secret := strings.ReplaceAll(seed, "-", "")
 	raw := "khz_" + prefix + "_" + secret
-	t := domain.APIToken{UserID: u.ID, Prefix: prefix, SHA256: domain.HashToken(prefix + secret), Scopes: canonical, CreatedAt: s.cfg.Clock.Now()}
+	t := domain.APIToken{UserID: u.ID, Name: name, Prefix: prefix, SHA256: domain.HashToken(prefix + secret), Scopes: canonical, CreatedAt: s.cfg.Clock.Now()}
 	if ttl > 0 {
 		t.ExpiresAt = t.CreatedAt.Add(ttl)
 	}
