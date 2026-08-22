@@ -44,6 +44,9 @@ const logLevelEnv = "KHRZ_LOG_LEVEL"
 func main() {
 	configPath := flag.String("config", "", "путь к TOML-конфигурации (пусто — defaults+env)")
 	showVersion := flag.Bool("version", false, "напечатать версию и выйти")
+	// -add-remote — одноразовая bootstrap-команда: пишет upstream в
+	// БД и выходит, не поднимая сервер. Админ-API (сессия 09) её заменит.
+	addRemote := flag.String("add-remote", "", "записать remote в БД и выйти (формат: <eco>/<name>=<base-url>)")
 	flag.Parse()
 
 	if *showVersion {
@@ -53,7 +56,7 @@ func main() {
 
 	// os.Exit без висящих defer: контекст сигналов живёт в execute
 	// (gocritic exitAfterDefer)
-	if err := execute(*configPath); err != nil {
+	if err := execute(*configPath, *addRemote); err != nil {
 		fmt.Fprintln(os.Stderr, "khrazhevnik:", err)
 		os.Exit(1)
 	}
@@ -61,7 +64,12 @@ func main() {
 
 // execute — run с контекстом сигналов; SIGINT/SIGTERM → отмена →
 // каскад HTTP 5с → задачи 30с (docs/ARCHITECTURE.md §2, PID 1).
-func execute(configPath string) error {
+// addRemoteSpec пуст — обычный запуск сервера; иначе — одноразовая
+// bootstrap-команда (см. addremote.go), контекст сигналов ей не нужен.
+func execute(configPath, addRemoteSpec string) error {
+	if addRemoteSpec != "" {
+		return runAddRemote(configPath, addRemoteSpec)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return run(ctx, configPath)
