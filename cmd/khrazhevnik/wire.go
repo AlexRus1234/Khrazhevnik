@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"khrazhevnik/internal/core/config"
+	"khrazhevnik/internal/core/engine/auth"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/registry"
 
@@ -46,6 +47,7 @@ type App struct {
 	Rand       port.Rand
 	Storage    port.Storage
 	Catalog    registry.CatalogSet
+	Auth       *auth.Service
 	HTTP       port.Doer
 	Ecosystems map[string]port.Ecosystem
 }
@@ -92,11 +94,16 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		return nil, err
 	}
 
+	authService, err := auth.New(auth.Config{Users: catalog.Users, Tokens: catalog.Tokens, Audit: catalog.Audit, Clock: systemClock{}, Rand: uuidRand{}, JWTSecret: cfg.Auth.JWTSecret, SessionTTL: cfg.Auth.SessionTTL.Duration})
+	if err != nil {
+		return nil, err
+	}
 	return &App{
 		Clock:      systemClock{},
 		Rand:       uuidRand{},
 		Storage:    storage,
 		Catalog:    catalog,
+		Auth:       authService,
 		HTTP:       outboundHTTPClient(),
 		Ecosystems: ecosystems,
 	}, nil

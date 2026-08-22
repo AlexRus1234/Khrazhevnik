@@ -22,13 +22,17 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"khrazhevnik/internal/core/engine/auth"
+	authmw "khrazhevnik/internal/core/web/middleware"
 )
 
 // Deps — зависимости HTTP-доставки; растёт вместе с движками
 // (аутентификация — сессия 05, кеш — 06, задачи — 09).
 type Deps struct {
-	Log     *slog.Logger
-	Version string
+	Log        *slog.Logger
+	Version    string
+	Auth       *auth.Service
+	SetupToken string
 }
 
 // BuildPublicRouter — публичный слушатель (:29202): /healthz и, с
@@ -49,7 +53,21 @@ func BuildAdminRouter(d Deps) http.Handler {
 	r.Use(LogRequests(d.logger()))
 	r.Get("/healthz", handleHealthz)
 	r.Route("/api/v1", func(api chi.Router) {
-		api.Get("/", handleAPIRoot(d)) // заглушка до сессии 05
+		api.Get("/", handleAPIRoot(d))
+		if d.Auth != nil {
+			limiter := authmw.NewLoginRateLimit()
+			api.Post("/setup", handleSetup(d))
+			api.With(limiter.Middleware).Post("/auth/login", handleLogin(d, limiter))
+			api.With(authmw.RequireSession(d.Auth)).Post("/auth/logout", handleLogout(d))
+			api.With(authmw.RequireSession(d.Auth), authmw.RequireAdmin).Route("/users", func(users chi.Router) {
+				users.Get("/", handleUsers(d))
+				users.Post("/", handleCreateUser(d))
+				users.Delete("/{id}", handleDeleteUser(d))
+				users.Post("/{id}/api-tokens", handleCreateToken(d))
+				users.Get("/{id}/api-tokens", handleListTokens(d))
+				users.Delete("/{id}/api-tokens/{tokenID}", handleRevokeToken(d))
+			})
+		}
 	})
 	return r
 }

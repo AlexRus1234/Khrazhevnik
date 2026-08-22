@@ -50,6 +50,7 @@ type TokenStore interface {
 	TokenBySHA256(ctx context.Context, sha256 string) (domain.APIToken, error)
 	TokensByUser(ctx context.Context, userID int64) ([]domain.APIToken, error)
 	DeleteToken(ctx context.Context, id int64) error
+	RevokeToken(ctx context.Context, id int64, revokedAt time.Time) error
 	// TouchToken фиксирует время последнего использования токена.
 	TouchToken(ctx context.Context, id int64, usedAt time.Time) error
 }

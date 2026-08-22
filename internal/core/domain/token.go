@@ -43,6 +43,7 @@ type APIToken struct {
 	CreatedAt time.Time
 	// ExpiresAt нулевой — бессрочный токен.
 	ExpiresAt time.Time
+	RevokedAt time.Time
 }
 
 // HashToken — единая точка хеширования токенов: sha256 в hex.

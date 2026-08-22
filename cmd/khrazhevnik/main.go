@@ -84,7 +84,7 @@ func run(ctx context.Context, configPath string) error {
 		PublicAddr:    cfg.Server.PublicListen,
 		PublicHandler: web.BuildPublicRouter(web.Deps{Log: log, Version: Version}),
 		AdminAddr:     cfg.Server.AdminListen,
-		AdminHandler:  web.BuildAdminRouter(web.Deps{Log: log, Version: Version}),
+		AdminHandler:  web.BuildAdminRouter(web.Deps{Log: log, Version: Version, Auth: app.Auth, SetupToken: cfg.Auth.SetupToken}),
 		Log:           log,
 		WaitTasks:     app.WaitTasks,
 	}

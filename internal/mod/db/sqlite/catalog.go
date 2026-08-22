@@ -56,11 +56,12 @@ const (
 const (
 	sqlTokenInsert = `INSERT INTO api_tokens (user_id, name, prefix, token_hash, scopes, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`
-	sqlTokenSelect = `SELECT id, user_id, name, prefix, token_hash, scopes, created_at, expires_at FROM api_tokens`
+	sqlTokenSelect = `SELECT id, user_id, name, prefix, token_hash, scopes, created_at, expires_at, revoked_at FROM api_tokens`
 	sqlTokenByHash = sqlTokenSelect + ` WHERE token_hash = ?`
 	sqlTokenByUser = sqlTokenSelect + ` WHERE user_id = ? ORDER BY id`
 	sqlTokenDelete = `DELETE FROM api_tokens WHERE id = ?`
 	sqlTokenTouch  = `UPDATE api_tokens SET last_used_at = ? WHERE id = ?`
+	sqlTokenRevoke = `UPDATE api_tokens SET revoked_at = ? WHERE id = ?`
 )
 
 // Личные репозитории и права (чтение публичное — права только на запись).
@@ -270,6 +271,17 @@ func (s *Store) DeleteToken(ctx context.Context, id int64) error {
 	return s.exec(ctx, sqlTokenDelete, "токен", strconv.FormatInt(id, 10), id)
 }
 
+// RevokeToken делает токен непригодным, сохраняя его для аудита/списка.
+func (s *Store) RevokeToken(ctx context.Context, id int64, revokedAt time.Time) error {
+	res, err := call(ctx, s, func() (sql.Result, error) {
+		return s.db.ExecContext(ctx, sqlTokenRevoke, dbtalk.Now(revokedAt), id)
+	})
+	if err != nil {
+		return mapWrite(err, "токен", strconv.FormatInt(id, 10))
+	}
+	return requireAffected(res, "токен", strconv.FormatInt(id, 10))
+}
+
 // TouchToken фиксирует время последнего использования токена.
 func (s *Store) TouchToken(ctx context.Context, id int64, usedAt time.Time) error {
 	_, err := call(ctx, s, func() (sql.Result, error) {
@@ -286,14 +298,15 @@ func scanToken(row interface{ Scan(dest ...any) error }) (domain.APIToken, error
 	var t domain.APIToken
 	var scopes string
 	var createdAt int64
-	var expires sql.NullInt64
+	var expires, revoked sql.NullInt64
 	if err := row.Scan(&t.ID, &t.UserID, &t.Name, &t.Prefix, &t.SHA256,
-		&scopes, &createdAt, &expires); err != nil {
+		&scopes, &createdAt, &expires, &revoked); err != nil {
 		return domain.APIToken{}, err
 	}
 	t.Scopes = splitScopes(scopes)
 	t.CreatedAt = time.Unix(createdAt, 0).UTC()
 	t.ExpiresAt = timeFromNull(expires)
+	t.RevokedAt = timeFromNull(revoked)
 	return t, nil
 }
 
