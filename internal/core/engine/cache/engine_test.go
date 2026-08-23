@@ -710,3 +710,100 @@ func storageCountPrefix(t *testing.T, s *testutil.FakeStorage, prefix string) in
 	}
 	return count
 }
+
+func TestPrefetchImmutableHitThenMiss(t *testing.T) {
+	env := newTestEnv(t, defaultConfig(), fixedHandler("hello", "application/deb"))
+	// первый Prefetch — MISS, скачивает
+	res, err := env.engine.Prefetch(context.Background(), env.eco, "/t/pkg/a.deb")
+	if err != nil || res.Status != "MISS" || res.Bytes != 5 || res.Downloaded != 5 {
+		t.Fatalf("Prefetch MISS = %+v, %v", res, err)
+	}
+	// второй — HIT, не качает
+	res, err = env.engine.Prefetch(context.Background(), env.eco, "/t/pkg/a.deb")
+	if err != nil || res.Status != "HIT" || res.Downloaded != 0 {
+		t.Fatalf("Prefetch HIT = %+v, %v", res, err)
+	}
+	if got := env.up.count("/pkg/a.deb"); got != 1 {
+		t.Fatalf("upstream получил %d запросов, хочу 1", got)
+	}
+}
+
+func TestPrefetchAndFetchShareSingleflight(t *testing.T) {
+	// параллельные Prefetch и Fetch на один ключ — один запрос upstream
+	release := make(chan struct{})
+	env := newTestEnv(t, defaultConfig(), func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		_, _ = io.WriteString(w, "shared")
+	})
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if i := mutRand(2); i == 0 {
+				_, _ = env.engine.Prefetch(context.Background(), env.eco, "/t/pkg/a.deb")
+			} else {
+				_, _, _ = env.engine.FetchStatus(context.Background(), env.eco, "/t/pkg/a.deb")
+			}
+		}()
+	}
+	close(start)
+	time.Sleep(120 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	if got := env.up.count("/pkg/a.deb"); got != 1 {
+		t.Fatalf("upstream получил %d запросов, хочу 1 (shared singleflight)", got)
+	}
+}
+
+// mutRand — детерминированный «случайный» 0..n-1 из времени, чтобы
+// тест не зависел от math/rand (который здесь не импортирован).
+func mutRand(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return int(time.Now().UnixNano()) % n
+}
+
+func TestPrefetchMutableRevalidates(t *testing.T) {
+	env := newTestEnv(t, defaultConfig(), mutableHandler("one", `"v1"`))
+	// первый prefetch — MISS, скачивает
+	res, err := env.engine.Prefetch(context.Background(), env.eco, "/t/idx/Packages")
+	if err != nil || res.Status != "MISS" || res.Downloaded != 3 {
+		t.Fatalf("Prefetch mutable MISS = %+v, %v", res, err)
+	}
+	// в пределах TTL — HIT без upstream
+	res, err = env.engine.Prefetch(context.Background(), env.eco, "/t/idx/Packages")
+	if err != nil || res.Status != "HIT" || res.Downloaded != 0 {
+		t.Fatalf("Prefetch mutable HIT = %+v, %v", res, err)
+	}
+	if got := env.up.count("/idx/Packages"); got != 1 {
+		t.Fatalf("upstream получил %d запросов, хочу 1", got)
+	}
+	// TTL истёк → 304 → HIT, Downloaded=0
+	env.clock.Advance(41 * time.Second)
+	res, err = env.engine.Prefetch(context.Background(), env.eco, "/t/idx/Packages")
+	if err != nil || res.Status != "HIT" || res.Downloaded != 0 {
+		t.Fatalf("Prefetch mutable 304 = %+v, %v", res, err)
+	}
+}
+
+func TestPrefetchErrors(t *testing.T) {
+	env := newTestEnv(t, defaultConfig(), fixedHandler("x", "text/plain"))
+	t.Run("путь вне экосистемы", func(t *testing.T) {
+		_, err := env.engine.Prefetch(context.Background(), env.eco, "/other/pkg/a.deb")
+		var nf *domain.NotFoundError
+		if !errors.As(err, &nf) {
+			t.Fatalf("ошибка = %v, хочу NotFoundError", err)
+		}
+	})
+	t.Run("классификация не распознала путь", func(t *testing.T) {
+		_, err := env.engine.Prefetch(context.Background(), env.eco, "/t/junk/x")
+		var ve *domain.ValidationError
+		if !errors.As(err, &ve) {
+			t.Fatalf("ошибка = %v, хочу ValidationError", err)
+		}
+	})
+}

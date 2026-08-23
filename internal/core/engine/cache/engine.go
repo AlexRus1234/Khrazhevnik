@@ -125,6 +125,145 @@ func (e *Engine) FetchStatus(ctx context.Context, eco port.Ecosystem, ecosystemP
 	return e.fetch(ctx, eco, ecosystemPath)
 }
 
+// PrefetchResult — итог prefetch: статус кеша и размер объекта для
+// прогресса зеркала. Downloaded — байты, реальнотянутые из upstream
+// (0 у HIT и 304-ревалидации); Bytes — полный размер объекта в кеше.
+type PrefetchResult struct {
+	Status     string
+	Bytes      int64
+	Downloaded int64
+}
+
+// Prefetch скачивает объект в кеш, не открывая тело вызывающему —
+// зеркало греет кеш пакетами, клиентам байты отдаёт прокси-роутер.
+// HIT — объект уже в кеше, ничего не качает; MISS — скачивает;
+// STALE — отдал протухшую копию вместо ошибки upstream (как Fetch).
+// Метрики учитываются тем же путём, что и Fetch.
+func (e *Engine) Prefetch(ctx context.Context, eco port.Ecosystem, ecosystemPath string) (PrefetchResult, error) {
+	target, ok := eco.Resolve(ecosystemPath)
+	if !ok {
+		return PrefetchResult{}, &domain.NotFoundError{What: "путь", Key: ecosystemPath}
+	}
+	class, err := eco.Classify(target.UpstreamPath)
+	if err != nil {
+		return PrefetchResult{}, err
+	}
+	if err := class.Validate(); err != nil {
+		return PrefetchResult{}, err
+	}
+	if class.Kind == domain.KindImmutable {
+		return e.prefetchImmutable(ctx, target, class, e.metrics.ForEcosystem(eco.Name()))
+	}
+	return e.prefetchMutable(ctx, target, class, e.metrics.ForEcosystem(eco.Name()))
+}
+
+// prefetchImmutable — Stat-only HIT-путь (тело не открывается); MISS
+// идёт через тот же singleflight, что и Fetch — параллельные Fetch и
+// Prefetch на один ключ не дёрнут upstream дважды.
+func (e *Engine) prefetchImmutable(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache) (PrefetchResult, error) {
+	if err := e.negativeError(target.StorageKey); err != nil {
+		return PrefetchResult{}, err
+	}
+	if meta, err := e.storage.Stat(ctx, target.StorageKey); err == nil {
+		m.Hits.Add(1)
+		return PrefetchResult{Status: statusHit, Bytes: meta.Size}, nil
+	}
+	m.Misses.Add(1)
+	_, err, _ := e.flights.Do(target.StorageKey, func() (any, error) {
+		if _, statErr := e.storage.Stat(ctx, target.StorageKey); statErr == nil {
+			return nil, nil
+		}
+		om, _, ferr := e.fetchOnce(ctx, target, class, nil)
+		if ferr != nil {
+			return nil, ferr
+		}
+		// prefetch не отдаёт тело наружу; метаданные immutable'а
+		// уже спрятаны в in-memory таблице fetchOnce'ом.
+		_ = om
+		return nil, nil
+	})
+	if err != nil {
+		return PrefetchResult{}, err
+	}
+	meta, err := e.storage.Stat(ctx, target.StorageKey)
+	if err != nil {
+		return PrefetchResult{}, err
+	}
+	return PrefetchResult{Status: statusMiss, Bytes: meta.Size, Downloaded: meta.Size}, nil
+}
+
+// prefetchMutable — ревалидация без отдачи тела; индекс обновляется
+// тем же путём, что и Fetch. HIT — индекс свеж и байты на месте.
+//
+//nolint:gocyclo // mutable-prefetch: ветки HIT/negative/revalidate/stale — одна атомарная операция
+func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache) (PrefetchResult, error) {
+	indexed, indexErr := e.index.ObjectMeta(ctx, target.StorageKey)
+	if indexErr == nil && !indexed.Expired(e.clock.Now()) {
+		if meta, err := e.storage.Stat(ctx, storageKeyOf(indexed)); err == nil {
+			m.Hits.Add(1)
+			return PrefetchResult{Status: statusHit, Bytes: meta.Size}, nil
+		}
+	}
+	if negErr := e.negativeError(target.StorageKey); negErr != nil {
+		if indexErr == nil {
+			if _, _, ok := e.staleServe(ctx, negErr, &indexed, m); ok {
+				return PrefetchResult{Status: statusStale, Bytes: indexed.Size}, &domain.StaleError{Have: indexed.ETag}
+			}
+		}
+		return PrefetchResult{}, negErr
+	}
+	m.Misses.Add(1)
+	var old *domain.ObjectMeta
+	if indexErr == nil {
+		old = &indexed
+	}
+	res, err, _ := e.flights.Do(target.StorageKey, func() (any, error) {
+		return e.revalidate(ctx, target, class, &old)
+	})
+	if err != nil {
+		if _, _, ok := e.staleServe(ctx, err, old, m); ok {
+			return PrefetchResult{Status: statusStale, Bytes: old.Size}, &domain.StaleError{Have: old.ETag}
+		}
+		return PrefetchResult{}, err
+	}
+	if res == nil {
+		// индекс освежен параллельным полётом — перечитываем
+		cur, curErr := e.index.ObjectMeta(ctx, target.StorageKey)
+		if curErr != nil {
+			return PrefetchResult{}, curErr
+		}
+		meta, err := e.storage.Stat(ctx, storageKeyOf(cur))
+		if err != nil {
+			return PrefetchResult{}, err
+		}
+		m.Hits.Add(1)
+		return PrefetchResult{Status: statusHit, Bytes: meta.Size}, nil
+	}
+	r, ok := res.(*mutableResult)
+	if !ok {
+		return PrefetchResult{}, fmt.Errorf("кеш: prefetch: неожиданный тип результата полёта %T", res)
+	}
+	meta, err := e.storage.Stat(ctx, storageKeyOf(r.meta))
+	if err != nil {
+		return PrefetchResult{}, err
+	}
+	if r.revalidated {
+		// 304 — байты не тянули, индекс продлён
+		m.Hits.Add(1)
+		return PrefetchResult{Status: statusHit, Bytes: meta.Size}, nil
+	}
+	return PrefetchResult{Status: statusMiss, Bytes: meta.Size, Downloaded: meta.Size}, nil
+}
+
+// storageKeyOf достаёт ключ байтов из индексной записи: StorageKey
+// (версионные mutable) или сам Key (записи до версионирования).
+func storageKeyOf(m domain.ObjectMeta) string {
+	if m.StorageKey == "" {
+		return m.Key
+	}
+	return m.StorageKey
+}
+
 // AddBytesToClients records bytes copied by the HTTP delivery layer.
 func (e *Engine) AddBytesToClients(n int64) { e.metrics.AddBytesToClients(n) }
 
