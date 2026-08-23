@@ -311,3 +311,23 @@ func (cryptoRand) UUID4() (string, error) {
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
 }
+
+// Int64 возвращает неотрицательное псевдослучайное число в [0, max):
+// 8 байт crypto/rand как uint64. fs-хранилище использует rand только
+// для tmp-имён (UUID4); Int64 добавлен ради реализации port.Rand,
+// расширенного в сессии 11 (джиттер планировщика зеркал).
+func (cryptoRand) Int64(max int64) int64 {
+	if max <= 0 {
+		return 0
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0
+	}
+	n := int64(b[0])<<56 | int64(b[1])<<48 | int64(b[2])<<40 | int64(b[3])<<32 |
+		int64(b[4])<<24 | int64(b[5])<<16 | int64(b[6])<<8 | int64(b[7])
+	if n < 0 {
+		n = -n
+	}
+	return n % max
+}

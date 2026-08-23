@@ -217,3 +217,24 @@ func (e *StaleError) Is(target error) bool {
 	_, ok := target.(*StaleError)
 	return ok
 }
+
+// UnsupportedError — операция не поддерживается для данного объекта
+// (канон: port.Ecosystem.Enumerate для nix — синк всего cache.nixos.org
+// не реализуем, только pull-through «по использованию»). Web-слой
+// маппит на 501/400 в зависимости от контекста; сравнение через
+// errors.As/Is, как у остальных типизированных ошибок.
+type UnsupportedError struct {
+	What string // «enumerate», «sync», ...
+	Why  string // человекочитаемая причина
+}
+
+// Error реализует интерфейс error.
+func (e *UnsupportedError) Error() string {
+	return fmt.Sprintf("не поддерживается: %s: %s", e.What, e.Why)
+}
+
+// Is поддерживает errors.Is(err, &UnsupportedError{}).
+func (e *UnsupportedError) Is(target error) bool {
+	_, ok := target.(*UnsupportedError)
+	return ok
+}

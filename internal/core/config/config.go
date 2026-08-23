@@ -93,6 +93,9 @@ type Cache struct {
 type Mirror struct {
 	Workers        int      `toml:"workers"`
 	IntervalJitter Duration `toml:"interval_jitter"`
+	// MaxBandwidth — лимит суммарной скорости скачивания зеркала;
+	// 0 — безлимит. Размер в байтах/сек, TOML-строки вида "10MiB".
+	MaxBandwidth ByteSize `toml:"max_bandwidth"`
 }
 
 // Signing — каталог ключей подписи (сессия 15).
@@ -137,6 +140,7 @@ const (
 	defaultNegTTL5xx    = 30 * time.Second
 	defaultWorkers      = 4
 	defaultJitter       = 10 * time.Minute
+	defaultMaxBandwidth = int64(0) // безлимит
 	defaultKeysDir      = "/var/lib/khrazhevnik/keys"
 )
 
@@ -157,7 +161,7 @@ func defaultConfig() Config {
 			NegativeTTL404: Duration{defaultNegTTL404},
 			NegativeTTL5xx: Duration{defaultNegTTL5xx},
 		},
-		Mirror:  Mirror{Workers: defaultWorkers, IntervalJitter: Duration{defaultJitter}},
+		Mirror:  Mirror{Workers: defaultWorkers, IntervalJitter: Duration{defaultJitter}, MaxBandwidth: ByteSize{defaultMaxBandwidth}},
 		Signing: Signing{KeysDir: defaultKeysDir},
 		Metrics: Metrics{Enabled: true},
 	}

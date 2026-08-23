@@ -23,7 +23,6 @@
 package web
 
 import (
-	"context"
 	"net/http"
 	"time"
 
@@ -157,8 +156,10 @@ func handleDeleteRemote(d Deps) http.HandlerFunc {
 }
 
 // handleSyncRemote — POST /api/v1/remotes/{id}/sync → 202 + task-id.
-// Реальный sync — сессия 11; пока — «заглушка-регистрация»: задача
-// бегёт, но ничего не делает, чтобы фронт мог поллить /tasks/{id}.
+// Запускает mirror.Sync через TaskRegistry: реальный sync-воркер
+// (enumerate → diff → worker pool prefetch) с прогрессом в sync_jobs.
+// Дублирующий sync того же remote — 409 (TaskRegistry активный ключ
+// «sync|<name>»); превышение пула воркеров — 429.
 func handleSyncRemote(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Tasks == nil {
@@ -169,20 +170,11 @@ func handleSyncRemote(d Deps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		rem, err := d.Remotes.Remote(r.Context(), id)
-		if err != nil {
-			writeErr(w, err)
+		if d.Mirror == nil {
+			writeErrCode(w, http.StatusServiceUnavailable, "mirror_unavailable")
 			return
 		}
-		label := rem.Name
-		taskID, err := d.Tasks.Start("sync", label, func(ctx context.Context, p Progress) error {
-			// Заглушка: реальный sync-воркер — сессия 11. Пока просто
-			// отмечаем фазы и завершаемся, чтобы API-контракт работал.
-			p.Log("sync запланирован (заглушка сессии 09; реальный воркер — сессия 11)")
-			p.Update("pending", "waiting-for-session-11", 0, 1)
-			<-ctx.Done()
-			return ctx.Err()
-		})
+		taskID, err := d.Mirror.Sync(r.Context(), id)
 		if err != nil {
 			writeErr(w, err)
 			return

@@ -42,6 +42,7 @@ func TestErrorsIsAs(t *testing.T) {
 		{&InvalidKeyError{Key: "..", Reasons: []error{errors.New("родитель")}}, &InvalidKeyError{}},
 		{&ValidationError{What: "scope", Value: "x", Reason: "не знаю такой"}, &ValidationError{}},
 		{&StaleError{Have: `"a"`, Want: `"b"`}, &StaleError{}},
+		{&UnsupportedError{What: "enumerate", Why: "nix: только pull-through"}, &UnsupportedError{}},
 		{&UpstreamError{URL: "https://up", Status: 404}, &UpstreamError{}},
 		{&UpstreamError{URL: "https://up", Status: 0, Err: errors.New("timeout")}, &UpstreamError{}},
 	}

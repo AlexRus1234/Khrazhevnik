@@ -120,6 +120,15 @@ type Ecosystem interface {
     // Путь публичного порта → upstream + путь upstream'а
     Resolve(path string) (Target, bool)
     Classify(upstreamPath string) (Class, error) // Immutable | Mutable{TTL}
+    // Список upstream-путей пакетов remote для sync зеркала (сессия 11):
+    // адаптер знает, какие метаданные fetch'ить и как их разобрать;
+    // meta — cache-движок (singleflight/TTL/метрики переиспользуются).
+    // UnsupportedError — sync всего upstream не реализуем (nix: только
+    // pull-through «по использованию»).
+    Enumerate(ctx, remote, meta MetaFetcher) ([]string, error)
+}
+type MetaFetcher interface {
+    Fetch(ctx, ecosystemPath string) (io.ReadCloser, error) // через cache
 }
 // Target: {UpstreamURL, UpstreamPath, StorageKey} — StorageKey вида
 // cache/<eco>/<remote-id>/<upstream-path>, уникален и стабилен.
@@ -150,6 +159,21 @@ type Ecosystem interface {
 - атомарный commit: полный объём + Content-Length сверены, иначе Abort;
 - отрицательное кеширование 404/5xx — только в памяти, с TTL;
 - ни байта переписывания метаданных upstream.
+
+Инварианты движка зеркала (сессия 11):
+
+- reuse cache-движка: sync качает через `cache.Prefetch` (singleflight,
+  TTL, метрики общие с прокси), не лезет в сеть сам;
+- Enumerate через `MetaFetcher` (cache.Fetch под капотом) — адаптер
+  знает формат метаданных, зеркало не дублирует парсеры;
+- resume по diff, не по курсору: каждый запуск пересчитывает
+  (Storage.Stat отфильтровывает имеющееся), идемпотентно и дешевле
+  очереди в БД; sync_jobs.cursor хранит прогресс `files=N;bytes=M`;
+- worker pool (mirror.workers горутин) с retry до 3 и bandwidth-лимитом
+  (`golang.org/x/time/rate` token-bucket по скачанным байтам);
+- отмена ctx гасит воркеры; доля ошибок >5% → sync failed;
+- планировщик: per-remote тикер (SyncInterval ± jitter через port.Rand),
+  один на процесс; mode=proxy — только ручной sync через API.
 
 ## 5. Namespace хранения
 

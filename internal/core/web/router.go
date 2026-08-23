@@ -17,6 +17,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -30,7 +31,8 @@ import (
 )
 
 // Deps — зависимости HTTP-доставки; растёт вместе с движками
-// (аутентификация — сессия 05, кеш — 06, задачи — 09, метрики — 09).
+// (аутентификация — сессия 05, кеш — 06, задачи — 09, метрики — 09,
+// зеркало — 11).
 type Deps struct {
 	Log        *slog.Logger
 	Version    string
@@ -43,12 +45,23 @@ type Deps struct {
 	Audit   port.AuditLog
 	// TaskRegistry — общая инфраструктура фоновых задач (sync, publish).
 	Tasks *TaskRegistry
+	// Mirror — движок синхронизации зеркал (сессия 11); nil в
+	// деградированном режиме — handleSyncRemote отдаёт 503.
+	Mirror MirrorSync
 	// MetricsHandler — /metrics (Prometheus); nil, если метрики
 	// отключены конфигом.
 	MetricsHandler http.Handler
 	// Clock — для автоматического аудита и хендлеров, где нужно
 	// «сейчас» (создание remote, запуск sync). Тесты подменяют.
 	Clock port.Clock
+}
+
+// MirrorSync — тонкий срез mirror.Engine, нужный API-хендлеру sync:
+// запуск синхронизации remote как фоновой задачи TaskRegistry.
+// Движок зеркала живёт в core/engine/mirror; web не импортирует
+// engine-пакеты напрямую (depguard), только порт-совместимый срез.
+type MirrorSync interface {
+	Sync(ctx context.Context, remoteID int64) (taskID string, err error)
 }
 
 // BuildPublicRouter — публичный слушатель (:29202): /healthz и, с

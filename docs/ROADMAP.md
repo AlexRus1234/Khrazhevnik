@@ -57,7 +57,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 ## M2 — зеркало и все экосистемы
 
-- Sync-воркеры зеркал с resume, планировщик.
+- Sync-воркеры зеркал с resume, планировщик (сессия 11 — выполнена).
 - Адаптеры pacman (.tar.zst) и apk (APKINDEX).
 - Адаптер nix (narinfo/nar.xz прокси).
 - S3-storage, драйверы postgres/mariadb, контейнерные тесты в CI.

@@ -73,6 +73,7 @@ func TestLoadDefaults(t *testing.T) {
 		{"cache.negative_ttl_5xx", cfg.Cache.NegativeTTL5xx.Duration, 30 * time.Second},
 		{"mirror.workers", cfg.Mirror.Workers, 4},
 		{"mirror.interval_jitter", cfg.Mirror.IntervalJitter.Duration, 10 * time.Minute},
+		{"mirror.max_bandwidth", cfg.Mirror.MaxBandwidth.Bytes, int64(0)},
 		{"signing.keys_dir", cfg.Signing.KeysDir, "/var/lib/khrazhevnik/keys"},
 		{"metrics.enabled", cfg.Metrics.Enabled, true},
 		{"ecosystems", len(cfg.Ecosystem), 0},
@@ -113,6 +114,7 @@ negative_ttl_5xx = "2s"
 [mirror]
 workers = 8
 interval_jitter = "3m"
+max_bandwidth = "5MiB"
 
 [metrics]
 enabled = false
@@ -153,7 +155,7 @@ enabled = false
 	if cfg.Cache.NegativeTTL404.Duration != time.Minute || cfg.Cache.NegativeTTL5xx.Duration != 2*time.Second {
 		t.Errorf("negative ttl = %v / %v", cfg.Cache.NegativeTTL404, cfg.Cache.NegativeTTL5xx)
 	}
-	if cfg.Mirror.Workers != 8 || cfg.Mirror.IntervalJitter.Duration != 3*time.Minute {
+	if cfg.Mirror.Workers != 8 || cfg.Mirror.IntervalJitter.Duration != 3*time.Minute || cfg.Mirror.MaxBandwidth.Bytes != 5<<20 {
 		t.Errorf("mirror = %+v", cfg.Mirror)
 	}
 	if cfg.Metrics.Enabled {

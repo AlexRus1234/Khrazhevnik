@@ -35,6 +35,7 @@ import (
 	"khrazhevnik/internal/core/config"
 	"khrazhevnik/internal/core/engine/auth"
 	cacheengine "khrazhevnik/internal/core/engine/cache"
+	mirrorengine "khrazhevnik/internal/core/engine/mirror"
 	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/registry"
@@ -49,7 +50,8 @@ import (
 )
 
 // App — собранные зависимости сервера; поля набирают движки
-// (аутентификация — сессия 05, кеш — 06, метрики и задачи — 09).
+// (аутентификация — сессия 05, кеш — 06, метрики и задачи — 09,
+// зеркало — 11).
 type App struct {
 	Clock          port.Clock
 	Rand           port.Rand
@@ -61,6 +63,14 @@ type App struct {
 	Cache          *cacheengine.Engine
 	Tasks          *web.TaskRegistry
 	MetricsHandler http.Handler
+	// Mirror — API-адаптер движка зеркал для /remotes/{id}/sync (сессия 11).
+	// nil в деградированном режиме (без модулей); API-триггер sync
+	// отдаёт 503 mirror_unavailable.
+	Mirror web.MirrorSync
+	// Scheduler — фоновый планировщик зеркал; nil, если авто-sync
+	// отключён (нет mirror-remotes с SyncInterval>0). Stop вызывается
+	// из graceful shutdown каскада.
+	Scheduler *mirrorengine.Scheduler
 }
 
 // Таймауты upstream-соединения: обрыв установки соединения и ожидания
@@ -114,6 +124,22 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	httpClient := outboundHTTPClient()
 	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, httpClient, systemClock{}, cacheengine.Config{StaleIfError: cfg.Cache.StaleIfError, MaxObjectSize: cfg.Cache.MaxObjectSize.Bytes, NegativeTTL404: cfg.Cache.NegativeTTL404.Duration, NegativeTTL5xx: cfg.Cache.NegativeTTL5xx.Duration}, metrics.NewCache())
 	tasks := web.NewTaskRegistry(cfg.Mirror.Workers, systemClock{})
+	mirrorEngine := mirrorengine.New(mirrorengine.Config{
+		Workers:        cfg.Mirror.Workers,
+		MaxBandwidth:   cfg.Mirror.MaxBandwidth.Bytes,
+		RetryMax:       mirrorengine.DefaultRetryMax,
+		ErrorThreshold: mirrorengine.DefaultErrorThreshold,
+	}, cacheEngine, storage, catalog.Remotes, catalog.Jobs, systemClock{}, ecosystems)
+	// mirrorAPI — обёртка mirror.Engine → web.MirrorSync: запускает
+	// Sync как задачу TaskRegistry (kind=sync, label=remote.Name).
+	// Замыкание живёт в wire (cmd — место склейки), чтобы engine/mirror
+	// не зависел от web (depguard: engine → web запрещён архитектурно).
+	mirrorAPI := mirrorSyncer{engine: mirrorEngine, remotes: catalog.Remotes, tasks: tasks}
+	scheduler := mirrorengine.NewScheduler(mirrorEngine, catalog.Remotes, uuidRand{}, systemClock{}, cfg.Mirror.IntervalJitter.Duration)
+	if err := scheduler.Start(context.Background()); err != nil {
+		log.Error("mirror scheduler: старт не удался, авто-sync отключён", "err", err)
+		scheduler = nil
+	}
 	var metricsHandler http.Handler
 	if cfg.Metrics.Enabled {
 		metricsHandler = metrics.NewHandler(cacheEngine.Metrics(), prometheus.NewRegistry()).MetricsHandler()
@@ -129,8 +155,47 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		Cache:          cacheEngine,
 		Tasks:          tasks,
 		MetricsHandler: metricsHandler,
+		Mirror:         mirrorAPI,
+		Scheduler:      scheduler,
 	}, nil
 }
+
+// mirrorSyncer — обёртка mirror.Engine под web.MirrorSync: запуск
+// синхронизации remote как фоновой задачи TaskRegistry. Живёт в
+// wire (cmd) — единственное место, где core/engine и core/web
+// склеиваются; engine/mirror не импортирует web (depguard).
+type mirrorSyncer struct {
+	engine  *mirrorengine.Engine
+	remotes port.RemoteStore
+	tasks   *web.TaskRegistry
+}
+
+// Sync запускает mirror.Engine.Sync через TaskRegistry.Start.
+func (m mirrorSyncer) Sync(ctx context.Context, remoteID int64) (string, error) {
+	remote, err := m.remotes.Remote(ctx, remoteID)
+	if err != nil {
+		return "", err
+	}
+	return m.tasks.Start("sync", remote.Name, func(ctx context.Context, p web.Progress) error {
+		// перечитаем remote — настройки могли поменяться между запросом
+		// и запуском воркера; берём свежие в начале sync.
+		fresh, err := m.remotes.Remote(ctx, remoteID)
+		if err != nil {
+			return fmt.Errorf("sync: remote: %w", err)
+		}
+		return m.engine.Sync(ctx, fresh, mirrorProgress{p: p})
+	})
+}
+
+// mirrorProgress — адаптер web.Progress → mirror.Progress: оба
+// интерфейса идентичны по сигнатуре (Update/Log), но это разные
+// типы; замыкание переводит вызовы без аллокаций.
+type mirrorProgress struct{ p web.Progress }
+
+func (mp mirrorProgress) Update(phase, current string, processed, total int64) {
+	mp.p.Update(phase, current, processed, total)
+}
+func (mp mirrorProgress) Log(line string) { mp.p.Log(line) }
 
 // wireEcosystems создаёт адаптеры для включённых секций конфига;
 // секция с неизвестным реестру именем — понятная ошибка старта.
@@ -159,9 +224,14 @@ func wireEcosystems(cfg config.Config, remotes port.RemoteStore) (map[string]por
 
 // WaitTasks — хук graceful shutdown: отменяет ctx-дерево фоновых
 // задач и ждёт их завершения в рамках таймаута каскада (server.go).
-// До M2 (зеркало) реальных воркеров нет, но реестр уже живёт и его
-// заглушка-sync при остановке должна закрыться корректно.
+// Зеркало: сначала стопаем scheduler (per-remote тикеры), затем
+// TaskRegistry (ручные sync и потенциальные publish — сессия 14).
 func (a *App) WaitTasks(ctx context.Context) error {
+	if a.Scheduler != nil {
+		if err := a.Scheduler.Stop(ctx); err != nil {
+			return err
+		}
+	}
 	if a.Tasks == nil {
 		return nil
 	}
@@ -201,4 +271,23 @@ func (uuidRand) UUID4() (string, error) {
 	b[6] = b[6]&0x0f | 0x40 // версия 4
 	b[8] = b[8]&0x3f | 0x80 // вариант RFC-4122
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
+}
+
+// Int64 возвращает неотрицательное псевдослучайное число в [0, max):
+// 8 байт crypto/rand как uint64, приведённое к диапазону. Используется
+// планировщиком зеркал для джиттера интервалов sync.
+func (uuidRand) Int64(max int64) int64 {
+	if max <= 0 {
+		return 0
+	}
+	var b [8]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return 0
+	}
+	n := int64(b[0])<<56 | int64(b[1])<<48 | int64(b[2])<<40 | int64(b[3])<<32 |
+		int64(b[4])<<24 | int64(b[5])<<16 | int64(b[6])<<8 | int64(b[7])
+	if n < 0 {
+		n = -n
+	}
+	return n % max
 }

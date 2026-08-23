@@ -340,7 +340,8 @@ func TestRemoteSuite(t *testing.T) {
 
 	rm, err := st.CreateRemote(ctx, domain.Remote{
 		Name: "deb-main", Ecosystem: "apt", BaseURL: "https://deb.example.org/debian",
-		Mode: domain.ModeProxy, Enabled: true, CreatedAt: fixed,
+		Mode: domain.ModeProxy, Enabled: true, SyncInterval: 6 * time.Hour,
+		Include: []string{"stable", "stable/main"}, CreatedAt: fixed,
 	})
 	if err != nil || rm.ID == 0 {
 		t.Fatalf("CreateRemote = %+v, %v", rm, err)
@@ -353,17 +354,31 @@ func TestRemoteSuite(t *testing.T) {
 	if err != nil || got.BaseURL != "https://deb.example.org/debian" || got.Mode != domain.ModeProxy || !got.Enabled {
 		t.Fatalf("Remote = %+v, %v", got, err)
 	}
+	if got.SyncInterval != 6*time.Hour {
+		t.Errorf("SyncInterval = %v, хочу 6h", got.SyncInterval)
+	}
+	if len(got.Include) != 2 || got.Include[0] != "stable" || got.Include[1] != "stable/main" {
+		t.Errorf("Include = %+v, хочу [stable stable/main]", got.Include)
+	}
 	_, err = st.Remote(ctx, 999)
 	wantNotFound(t, err)
 
 	got.Enabled = false
 	got.Mode = domain.ModeMirror
+	got.SyncInterval = 0
+	got.Include = nil
 	if err := st.UpdateRemote(ctx, got); err != nil {
 		t.Fatal(err)
 	}
 	got2, _ := st.Remote(ctx, rm.ID)
 	if got2.Enabled || got2.Mode != domain.ModeMirror {
 		t.Fatalf("UpdateRemote не применился: %+v", got2)
+	}
+	if got2.SyncInterval != 0 {
+		t.Errorf("SyncInterval после сброса = %v, хочу 0", got2.SyncInterval)
+	}
+	if got2.Include != nil {
+		t.Errorf("Include после сброса = %+v, хочу nil", got2.Include)
 	}
 	err = st.UpdateRemote(ctx, domain.Remote{ID: 999, Name: "ghost"})
 	wantNotFound(t, err)

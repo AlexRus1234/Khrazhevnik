@@ -37,5 +37,14 @@ type Remote struct {
 	BaseURL   string
 	Mode      RemoteMode
 	Enabled   bool
+	// SyncInterval — период авто-sync для mode=mirror; 0 — только
+	// ручной запуск через POST /remotes/{id}/sync. Для mode=proxy
+	// игнорируется (планировщик зеркал таких remote не трогает).
+	SyncInterval time.Duration
+	// Include — фильтр объектов sync: для apt — список дистрибутивов
+	// с опциональной компонентой («stable», «stable/main»); для
+	// rpm-md — не используется (репо — единое целое по repomd). Пустой
+	// срез — sync всего, что Enumerate найдёт по умолчанию.
+	Include   []string
 	CreatedAt time.Time
 }

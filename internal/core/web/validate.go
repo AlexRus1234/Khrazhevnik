@@ -130,20 +130,6 @@ func parseInt64Query(r *http.Request, name string, fallback int64) int64 {
 	return v
 }
 
-// parseDurationQuery достаёт duration-параметр из query; пустое или
-// не_parsимое → fallback.
-func parseDurationQuery(r *http.Request, name string, fallback time.Duration) time.Duration {
-	raw := r.URL.Query().Get(name)
-	if raw == "" {
-		return fallback
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil {
-		return fallback
-	}
-	return d
-}
-
 // urlParam — обёртка над chi.URLParam, чтобы validate.go не тянул chi
 // в импорты (для тестов middleware достаточно).
 func urlParam(r *http.Request, name string) string {

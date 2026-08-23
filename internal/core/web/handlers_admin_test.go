@@ -17,6 +17,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ import (
 
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/engine/auth"
+	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/testutil"
 )
 
@@ -80,15 +82,41 @@ func newAdminEnv(t *testing.T) *adminEnv {
 	remotes := testutil.NewFakeRemoteStore()
 	auditLog := testutil.NewFakeAuditLog()
 	tasks := NewTaskRegistry(2, clock)
+	// mirrorStub — web.MirrorSync для тестов: запускает задачу sync,
+	// которая сразу завершается (не настоящий движок зеркала — он
+	// тестируется в internal/core/engine/mirror). Хватает проверить
+	// API-контракт: 202 + task_id, дубль → 409, задача видна в /tasks.
+	mirror := mirrorStub{remotes: remotes, tasks: tasks}
 	h := BuildAdminRouter(Deps{
 		Log: nil, Version: "test", Auth: a, SetupToken: "setup",
-		Remotes: remotes, Audit: auditLog, Tasks: tasks, Clock: clock,
+		Remotes: remotes, Audit: auditLog, Tasks: tasks, Mirror: mirror, Clock: clock,
 	})
 	return &adminEnv{
 		handler: h, auth: a, remotes: remotes, audit: auditLog,
 		tasks: tasks, clock: clock,
 		jwtAdmin: jwtAdmin, jwtUser: jwtUser, apiAdmin: apiAdmin,
 	}
+}
+
+// mirrorStub — web.MirrorSync для админ-тестов: запускает sync
+// как задачу TaskRegistry с тривиальным воркером (ctx.Done → отмена).
+// Не настоящий движок зеркала — только API-контракт.
+type mirrorStub struct {
+	remotes port.RemoteStore
+	tasks   *TaskRegistry
+}
+
+func (m mirrorStub) Sync(ctx context.Context, remoteID int64) (string, error) {
+	remote, err := m.remotes.Remote(ctx, remoteID)
+	if err != nil {
+		return "", err
+	}
+	return m.tasks.Start("sync", remote.Name, func(ctx context.Context, p Progress) error {
+		p.Log("sync (тест-заглушка)")
+		p.Update("pending", "stub", 0, 1)
+		<-ctx.Done()
+		return ctx.Err()
+	})
 }
 
 // callAdmin — HTTP-вызов с опциональным bearer.

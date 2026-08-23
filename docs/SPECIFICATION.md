@@ -144,7 +144,9 @@ enabled = true
 
 Поля remote: `name` (slug, [a-z0-9._-]), `ecosystem` (`apt`, `rpm-md`,
 …), `base_url` (http(s)://), `mode` (`proxy`|`mirror`), `enabled`
-(bool), `sync_interval` (duration, 0 — только вручную).
+(bool), `sync_interval` (duration, 0 — только вручную), `include`
+(массив строк: для apt — dists с опциональной компонентой, «stable»
+или «stable/main»; для rpm-md/nix — не используется).
 
 ### Фоновые задачи
 
@@ -157,7 +159,9 @@ enabled = true
 total, percent, speed_bps, logs, error, started_at, finished_at}`.
 `logs` — последние 50 строк кольцевого буфера. TaskRegistry —
 in-memory, не персистится; персистентное состояние sync-задач
-(`sync_jobs`) пишут сами воркеры (сессия 11).
+(`sync_jobs`: state, last_run_at, cursor с прогрессом `files=N;bytes=M`)
+пишут сами воркеры зеркал (сессия 11): одна sync_job на remote,
+`cursor` кодирует прогресс, `state` ∈ pending|running|succeeded|failed.
 
 ### Учётные записи и токены
 
@@ -202,7 +206,11 @@ stale_served,negative_hits,upstream_errors}_total`,
   `dists/` (Release, Packages*, Sources*, Contents-*, i18n/, dep11/,
   cnf/) — mutable{TTL 5m}; прочее — conservative mutable{TTL 1m}.
   Stanza-парсер RFC822 (deb822) для Packages/Release —
-  `mod/ecosystem/apt/parse.go`, переиспользуется зеркалом (сессия 11).
+  `mod/ecosystem/apt/parse.go`, переиспользуется зеркалом (сессия 11)
+  для Enumerate: Release → Components/Architectures → Packages-файлы
+  → поле Filename. `Remote.Include` фильтрует dists и компоненты
+  («stable», «stable/main»); пустой Include — ошибка (apt не имеет
+  корневого индекса dists).
 - **rpm-md** (сессия 08) — кеш-прокси Fedora/RHEL/openSUSE (один адаптер
   для dnf и Zypper — формат общий repomd). Путь
   `/rpm/<remote-name>/<остальной-путь>` (префикс «rpm», короче имени
@@ -214,7 +222,11 @@ stale_served,negative_hits,upstream_errors}_total`,
   (content-addressed); прочие repodata без хеша (primary/filelists/other/
   *-UPDATE_INFO.xml/*.sqlite.bz2/*zck) — mutable{TTL 5m}; остальное
   (`media.1/products` и т.п.) — conservative mutable{TTL 1m}. Streaming
-  XML-парсер repomd.xml — `mod/ecosystem/rpmmmd/parse.go`.
+  XML-парсер repomd.xml — `mod/ecosystem/rpmmmd/parse.go`, streaming
+  XML-парсер primary.xml — `mod/ecosystem/rpmmmd/primary.go`; оба
+  переиспользуются зеркалом (сессия 11) для Enumerate: repomd →
+  `<data type="primary">` location-href → primary.xml[.gz] → hrefs пакетов.
+  `Remote.Include` для rpm-md не используется (репо — единое целое по repomd).
 
 URL-префикс (`port.Ecosystem.URLPrefix()`) чаще совпадает с именем, но
 не всегда (rpm-md → «rpm»); роутер :29202 MATCHит `/{URLPrefix}/*` и
@@ -246,7 +258,7 @@ khrazhevnik -config khrazhevnik.toml -add-remote apt/debian=https://deb.debian.o
 | `repos`        | личные репозитории                                |
 | `repo_perms`   | права на личные репо                              |
 | `remotes`      | upstream'ы (зеркала/прокси)                       |
-| `sync_jobs`    | sync-задачи зеркал (состояние, resume-данные)     |
+| `sync_jobs`    | sync-задачи зеркал (состояние, resume-данные; курсор кодирует прогресс `files=N;bytes=M`)     |
 | `audit_log`    | аудит мутаций (actor/action/object/result/detail) |
 | `object_index` | etag/expires mutable-объектов кеша; `storage_key` — ключ версионных байт (миграция 0003; пустой — байты под самим `key`, записи до версионирования) |
 

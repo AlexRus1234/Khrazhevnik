@@ -102,6 +102,7 @@ func run(ctx context.Context, configPath string) error {
 			Remotes:        app.Catalog.Remotes,
 			Audit:          app.Catalog.Audit,
 			Tasks:          app.Tasks,
+			Mirror:         app.Mirror,
 			MetricsHandler: app.MetricsHandler,
 			Clock:          app.Clock,
 		}),
