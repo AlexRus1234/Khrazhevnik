@@ -18,17 +18,42 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 # Дорожная карта
 
-## M1 — рабочий кеш-прокси apt + dnf в контейнере (→ v0.1.0)
+## M1 — рабочий кеш-прокси apt + dnf в контейнере ✅ v0.1.0
+
+**Статус: завершён (2026-08-23, тег v0.1.0).**
 
 - Контракты `port/*` и модели `domain`, тестовые примитивы.
-- TOML-конфиг, compile-time реестр модулей, wire, graceful shutdown,
-  `/healthz`.
+- TOML-конфиг, compile-time реестр модулей, wire, graceful shutdown, `/healthz`.
 - Хранилище fs + каталог sqlite, goose-миграции.
 - Аутентификация: пользователи, scoped-токены, middleware.
 - Движок кеша: pull-through, singleflight, immutable/mutable.
 - Адаптеры apt и rpm-md (dnf + zypper), фаззинг парсеров.
 - Админ-API, реестр задач, метрики, аудит.
 - Containerfile, quadlet, smoke-тесты в CI.
+
+### Релиз v0.1.0
+
+Первый рабочий релиз: прозрачный pull-through кеш-прокси apt и rpm-md
+(dnf + zypper) в OCI-контейнере из scratch.
+
+Что умеет:
+- Кеш-прокси apt и rpm-md: метаданные upstream отдаются побайтово
+  (подписи/чексуммы валидны), immutable-пакеты кешируются, mutable-
+  индексы ревалидируются по ETag/Last-Modified, stale-if-error,
+  отрицательное кеширование 404/5xx, singleflight против stampede.
+- Админ-API (REST, порт :30202): bootstrap `/setup`, JWT-сессии,
+  scoped API-токены, CRUD remotes, снимки фоновых задач, статистика
+  кеша, аудит с keyset-пагинацией; роль/token_version сверяются с БД
+  на каждом запросе, bcrypt с guard, constant-time, rate-limit /login.
+- Метрики Prometheus (`/metrics` за auth).
+- Конфиг: defaults → TOML → env (`KHRZ_*`, `file://`-секреты для
+  quadlet); sqlite (modernc, CGO-free) + fs-хранилище по умолчанию.
+- Контейнер: scratch, non-root UID 65534, read-only rootfs, PID 1 =
+  бинарник, graceful shutdown каскадом (HTTP 5с + задачи 30с).
+  Rootless podman quadlet + AutoUpdate=registry.
+- CI: vet → lint → test (+race) → integration → сборка; отдельная
+  job собирает OCI-образ и гоняет дымовой E2E (healthz, bootstrap,
+  byte-exact прокси, 404, SIGTERM-shutdown); push в registry на тег.
 
 ## M2 — зеркало и все экосистемы
 
