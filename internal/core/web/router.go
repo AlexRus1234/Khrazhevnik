@@ -22,6 +22,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
 	"khrazhevnik/internal/core/engine/auth"
 	"khrazhevnik/internal/core/engine/cache"
 	"khrazhevnik/internal/core/port"
@@ -29,7 +30,7 @@ import (
 )
 
 // Deps — зависимости HTTP-доставки; растёт вместе с движками
-// (аутентификация — сессия 05, кеш — 06, задачи — 09).
+// (аутентификация — сессия 05, кеш — 06, задачи — 09, метрики — 09).
 type Deps struct {
 	Log        *slog.Logger
 	Version    string
@@ -37,6 +38,17 @@ type Deps struct {
 	SetupToken string
 	Cache      *cache.Engine
 	Ecosystems map[string]port.Ecosystem
+	// Срезы каталога для админ-API (сессия 09): remotes CRUD, аудит.
+	Remotes port.RemoteStore
+	Audit   port.AuditLog
+	// TaskRegistry — общая инфраструктура фоновых задач (sync, publish).
+	Tasks *TaskRegistry
+	// MetricsHandler — /metrics (Prometheus); nil, если метрики
+	// отключены конфигом.
+	MetricsHandler http.Handler
+	// Clock — для автоматического аудита и хендлеров, где нужно
+	// «сейчас» (создание remote, запуск sync). Тесты подменяют.
+	Clock port.Clock
 }
 
 // BuildPublicRouter — публичный слушатель (:29202): /healthz и, с
@@ -55,12 +67,26 @@ func BuildPublicRouter(d Deps) http.Handler {
 }
 
 // BuildAdminRouter — админский слушатель (:30202): /healthz, /api/v1,
-// позже /metrics и SPA /ui.
+// /metrics (Prometheus, за auth) и позже SPA /ui.
 func BuildAdminRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(RequestID)
 	r.Use(LogRequests(d.logger()))
 	r.Get("/healthz", handleHealthz)
+	if d.MetricsHandler != nil {
+		// /metrics — за RequireSession|RequireAPIToken с admin scope:
+		// экспонешиал счётчиков кеша и латенси — внутренняя кухня,
+		// публичный анонимный доступ недопустим.
+		authChain := func() func(http.Handler) http.Handler {
+			if d.Auth == nil {
+				// Без auth-сервиса (деградированный режим) — отдаём как
+				// есть: в этом режиме и считать нечего, но путь живёт.
+				return func(h http.Handler) http.Handler { return h }
+			}
+			return authmw.RequireAdminOrAPIToken(d.Auth)
+		}()
+		r.With(authChain).Handle("/metrics", d.MetricsHandler)
+	}
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Get("/", handleAPIRoot(d))
 		if d.Auth != nil {
@@ -68,7 +94,19 @@ func BuildAdminRouter(d Deps) http.Handler {
 			api.Post("/setup", handleSetup(d))
 			api.With(limiter.Middleware).Post("/auth/login", handleLogin(d, limiter))
 			api.With(authmw.RequireSession(d.Auth)).Post("/auth/logout", handleLogout(d))
-			api.With(authmw.RequireSession(d.Auth), authmw.RequireAdmin).Route("/users", func(users chi.Router) {
+
+			// adminAuth — auth-цепочка для admin-only роутов: сессия
+			// админа или admin-scoped API-токен. /metrics выше использует
+			// ту же цепочку.
+			adminAuth := authmw.RequireAdminOrAPIToken(d.Auth)
+			// auditInner — аудит-мiddleware, ставится ПОСЛЕ auth (внутри
+			// цепочки), чтобы видеть actor из auth-контекста. Порядок
+			// chi: With(A, B) → A → B → handler; A — внешний.
+			auditInner := AuditMiddleware(d.Audit, d.clock())
+
+			// /users и /api-tokens — admin-only (вынесены из handlers_auth
+			// для порядка: auth-хендлеры теперь только про аутентификацию).
+			api.With(adminAuth, auditInner).Route("/users", func(users chi.Router) {
 				users.Get("/", handleUsers(d))
 				users.Post("/", handleCreateUser(d))
 				users.Delete("/{id}", handleDeleteUser(d))
@@ -76,6 +114,28 @@ func BuildAdminRouter(d Deps) http.Handler {
 				users.Get("/{id}/api-tokens", handleListTokens(d))
 				users.Delete("/{id}/api-tokens/{tokenID}", handleRevokeToken(d))
 			})
+
+			// /remotes — admin-only CRUD upstream'ов + sync-триггер.
+			api.With(adminAuth, auditInner).Route("/remotes", func(remotes chi.Router) {
+				remotes.Get("/", handleListRemotes(d))
+				remotes.Post("/", handleCreateRemote(d))
+				remotes.Patch("/{id}", handleUpdateRemote(d))
+				remotes.Delete("/{id}", handleDeleteRemote(d))
+				remotes.Post("/{id}/sync", handleSyncRemote(d))
+			})
+
+			// /tasks — снимки TaskRegistry; admin-only (операторская
+			// панель). GET без audit-middleware (чтение).
+			api.With(adminAuth).Route("/tasks", func(tasks chi.Router) {
+				tasks.Get("/", handleListTasks(d))
+				tasks.Get("/{id}", handleGetTask(d))
+			})
+
+			// /cache/stats — статистика кеша; admin-only.
+			api.With(adminAuth).Get("/cache/stats", handleCacheStats(d))
+
+			// /audit — keyset-пагинация; admin-only.
+			api.With(adminAuth).Get("/audit", handleAuditPage(d))
 		}
 	})
 	return r
@@ -113,4 +173,13 @@ func (d Deps) logger() *slog.Logger {
 		return d.Log
 	}
 	return slog.Default()
+}
+
+// clock — порт часов депсов или системная реализация (nil-безопасность
+// для тестов без временной логики).
+func (d Deps) clock() port.Clock {
+	if d.Clock != nil {
+		return d.Clock
+	}
+	return systemWebClock{}
 }

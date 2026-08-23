@@ -1,14 +1,30 @@
+// Хражевник — кеш-прокси и зеркало linux-репозиториев
+// Copyright (C) 2026 AlexRus1234
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// Auth-only хендлеры: setup первого админа, login, logout. Управление
+// users/tokens вынесено в handlers_admin.go (сессия 09): «навести
+// порядок — auth-хендлеры только про аутентификацию». Все ошибки идут
+// через централизованный writeErr/statusFor (validate.go).
+
 package web
 
 import (
 	"crypto/subtle"
-	"encoding/json"
 	"net/http"
-	"strconv"
-	"time"
 
-	"github.com/go-chi/chi/v5"
-	"khrazhevnik/internal/core/domain"
 	authmw "khrazhevnik/internal/core/web/middleware"
 )
 
@@ -17,161 +33,67 @@ type credentials struct {
 	Password string `json:"password"`
 }
 
-func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	if json.NewDecoder(r.Body).Decode(v) != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
-		return false
-	}
-	return true
-}
-
+// handleSetup — POST /api/v1/setup: первый админ, только при пустой
+// таблице users (+опциональный X-Setup-Token).
 func handleSetup(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Auth == nil {
-			http.NotFound(w, r)
+			writeErrCode(w, http.StatusNotFound, "not_found")
 			return
 		}
 		has, err := d.Auth.HasUsers(r.Context())
 		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": "database"})
+			writeErr(w, err)
 			return
 		}
 		if has {
-			writeJSON(w, 403, map[string]string{"error": "setup_already_done"})
+			writeErrCode(w, http.StatusForbidden, "setup_already_done")
 			return
 		}
 		if d.SetupToken != "" {
 			token := r.Header.Get("X-Setup-Token")
 			if subtle.ConstantTimeCompare([]byte(token), []byte(d.SetupToken)) != 1 {
-				writeJSON(w, 403, map[string]string{"error": "invalid_setup_token"})
+				writeErrCode(w, http.StatusForbidden, "invalid_setup_token")
 				return
 			}
 		}
 		var in credentials
-		if !decode(w, r, &in) {
+		if !decodeJSON(w, r, &in) {
 			return
 		}
-		u, err := d.Auth.CreateUser(r.Context(), in.Username, in.Password, domain.RoleAdmin)
+		u, err := d.Auth.CreateUser(r.Context(), in.Username, in.Password, "admin")
 		if err != nil {
-			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			writeErr(w, err)
 			return
 		}
-		u.PasswordHash = ""
-		writeJSON(w, 201, u)
+		*r = *r.WithContext(WithAuditAction(r.Context(), "setup"))
+		writeJSON(w, http.StatusCreated, userOut(u))
 	}
 }
 
+// handleLogin — POST /api/v1/auth/login: проверка учётных данных и
+// выдача JWT. Аудит успешных/неуспешных попыток пишется в самом движке
+// auth (actor ещё неизвестен до входа).
 func handleLogin(d Deps, limiter *authmw.LoginRateLimit) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in credentials
-		if !decode(w, r, &in) {
+		if !decodeJSON(w, r, &in) {
 			return
 		}
 		token, err := d.Auth.Login(r.Context(), in.Username, in.Password)
 		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_credentials"})
+			writeErrCode(w, http.StatusUnauthorized, "invalid_credentials")
 			return
 		}
 		limiter.Reset(r.RemoteAddr)
 		writeJSON(w, http.StatusOK, map[string]string{"token": token})
 	}
 }
+
+// handleLogout — POST /api/v1/auth/logout: отзыв JWT в процессе.
 func handleLogout(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		d.Auth.RevokeSession(authmw.JTIFromContext(r.Context()))
-		writeJSON(w, http.StatusNoContent, nil)
-	}
-}
-func handleUsers(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		us, err := d.Auth.Users(r.Context())
-		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": "database"})
-			return
-		}
-		for i := range us {
-			us[i].PasswordHash = ""
-		}
-		writeJSON(w, 200, us)
-	}
-}
-func handleCreateUser(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var in struct {
-			credentials
-			Role domain.Role `json:"role"`
-		}
-		if !decode(w, r, &in) {
-			return
-		}
-		if in.Role == "" {
-			in.Role = domain.RoleUser
-		}
-		u, err := d.Auth.CreateUser(r.Context(), in.Username, in.Password, in.Role)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		u.PasswordHash = ""
-		writeJSON(w, http.StatusCreated, u)
-	}
-}
-func handleDeleteUser(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-		if err != nil {
-			http.Error(w, "bad id", 400)
-			return
-		}
-		if err = d.Auth.DeleteUser(r.Context(), id); err != nil {
-			writeJSON(w, 404, map[string]string{"error": err.Error()})
-			return
-		}
 		w.WriteHeader(http.StatusNoContent)
-	}
-}
-func handleCreateToken(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-		u, err := d.Auth.User(r.Context(), id)
-		if err != nil {
-			http.Error(w, "not found", 404)
-			return
-		}
-		var in struct {
-			Name   string         `json:"name"`
-			Scopes []domain.Scope `json:"scopes"`
-			TTL    time.Duration  `json:"ttl"`
-		}
-		if !decode(w, r, &in) {
-			return
-		}
-		t, raw, err := d.Auth.IssueAPIToken(r.Context(), u, in.Name, in.Scopes, in.TTL)
-		if err != nil {
-			writeJSON(w, 400, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, 201, map[string]any{"token": raw, "id": t.ID, "name": t.Name, "scopes": t.Scopes, "expires_at": t.ExpiresAt})
-	}
-}
-func handleListTokens(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-		ts, err := d.Auth.Tokens(r.Context(), id)
-		if err != nil {
-			http.Error(w, "database", 500)
-			return
-		}
-		writeJSON(w, 200, ts)
-	}
-}
-func handleRevokeToken(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id, _ := strconv.ParseInt(chi.URLParam(r, "tokenID"), 10, 64)
-		if err := d.Auth.RevokeToken(r.Context(), id); err != nil {
-			http.Error(w, err.Error(), 404)
-			return
-		}
-		w.WriteHeader(204)
 	}
 }

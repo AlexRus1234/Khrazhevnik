@@ -113,16 +113,83 @@ enabled = true
 - Уровень логов — env `KHRZ_LOG_LEVEL` (`debug|info|warn|error`,
   default `info`), читается при старте.
 
-## REST API (placeholder)
+## REST API
 
-Детальные роуты и схемы ответов фиксируются по мере реализации.
+Админ-API (порт :30202) под корнем `/api/v1`. Аутентификация — JWT-
+сессии (`Authorization: Bearer <jwt>`) или scoped API-токены
+(`Bearer khz_...`); role/`token_version` сверяются с БД на каждом
+запросе. Все ошибки — `{"error":"snake_case_code"}`; фронт маппит
+в i18n (сессия 18). Мутации (не-GET) автоматом пишутся в аудит-лог
+через `AuditMiddleware`: actor из auth-контекста, action из
+`WithAuditAction` (или выводится из метода+пути), result по коду
+ответа, detail из `WithAuditDetail`.
 
-- Публичный :29202 — пути экосистем (`/apt/...`, `/dnf/...`, ...),
-  `GET /healthz`.
-- Админ :30202 — `POST /api/v1/setup` (первый админ, только при пустой
-  таблице users), `POST /api/v1/login`, управление remotes/repos/
-  sync-задачами/токенами/пользователями, аудит, `GET /metrics`,
-  SPA `/ui`.
+### Авторизация и bootstrap
+
+| Метод | Путь                       | Auth        | Код | Назначение                          |
+|-------|----------------------------|-------------|-----|-------------------------------------|
+| POST  | `/api/v1/setup`            | — (пустая БД), `X-Setup-Token` | 201/403 | Первый админ |
+| POST  | `/api/v1/auth/login`       | —           | 200/401 | Выдача JWT; rate-limit 10/min      |
+| POST  | `/api/v1/auth/logout`      | session     | 204 | Отзыв JWT в процессе                |
+
+### Управление upstream'ами
+
+| Метод | Путь                       | Auth        | Код | Назначение                          |
+|-------|----------------------------|-------------|-----|-------------------------------------|
+| GET   | `/api/v1/remotes`          | admin       | 200 | Список remotes                      |
+| POST  | `/api/v1/remotes`          | admin       | 201/400 | Создание remote                 |
+| PATCH | `/api/v1/remotes/{id}`     | admin       | 200/404 | Обновление remote               |
+| DELETE| `/api/v1/remotes/{id}`     | admin       | 204/404 | Удаление remote                 |
+| POST  | `/api/v1/remotes/{id}/sync`| admin       | 202/409/429 | Запуск sync-задачи; 409 — дубль (kind,label), 429 — лимит воркеров |
+
+Поля remote: `name` (slug, [a-z0-9._-]), `ecosystem` (`apt`, `rpm-md`,
+…), `base_url` (http(s)://), `mode` (`proxy`|`mirror`), `enabled`
+(bool), `sync_interval` (duration, 0 — только вручную).
+
+### Фоновые задачи
+
+| Метод | Путь                       | Auth        | Код | Назначение                          |
+|-------|----------------------------|-------------|-----|-------------------------------------|
+| GET   | `/api/v1/tasks`            | admin       | 200 | Снимки всех задач (активные первыми)|
+| GET   | `/api/v1/tasks/{id}`       | admin       | 200/404 | Снимок одной задачи            |
+
+Снимок задачи: `{id, kind, label, state, phase, current, processed,
+total, percent, speed_bps, logs, error, started_at, finished_at}`.
+`logs` — последние 50 строк кольцевого буфера. TaskRegistry —
+in-memory, не персистится; персистентное состояние sync-задач
+(`sync_jobs`) пишут сами воркеры (сессия 11).
+
+### Учётные записи и токены
+
+| Метод | Путь                                      | Auth   | Код | Назначение              |
+|-------|-------------------------------------------|--------|-----|-------------------------|
+| GET   | `/api/v1/users`                           | admin  | 200 | Список пользователей    |
+| POST  | `/api/v1/users`                           | admin  | 201 | Создание пользователя   |
+| DELETE| `/api/v1/users/{id}`                      | admin  | 204 | Удаление пользователя   |
+| POST  | `/api/v1/users/{id}/api-tokens`           | admin  | 201 | Выпуск scoped-токена    |
+| GET   | `/api/v1/users/{id}/api-tokens`           | admin  | 200 | Список токенов          |
+| DELETE| `/api/v1/users/{id}/api-tokens/{tokenID}` | admin  | 204 | Отзыв токена            |
+
+### Метрики и статистика
+
+| Метод | Путь                       | Auth        | Код | Назначение                          |
+|-------|----------------------------|-------------|-----|-------------------------------------|
+| GET   | `/api/v1/cache/stats`      | admin       | 200 | hits/misses/hit_ratio/bytes         |
+| GET   | `/api/v1/audit`            | admin       | 200 | keyset-пагинация: `after_id`, `limit`|
+| GET   | `/metrics`                 | admin (session или `admin`-scoped токен) | 200 | Prometheus exposition |
+
+Метрики Prometheus (`/metrics`): `khrazhevnik_cache_{hits,misses,
+stale_served,negative_hits,upstream_errors}_total`,
+`khrazhevnik_cache_bytes_{from_upstream,to_clients}_total` — глобально
+и по экосистемам (`ecosystem` лейбл, суффикс `_ecosystem_`); две
+гистограммы — `khrazhevnik_request_duration_seconds` (method, status)
+и `khrazhevnik_object_bytes` (ecosystem).
+
+### Коды ошибок
+
+`not_found`, `conflict`, `forbidden`, `validation_error`, `too_large`,
+`stale`, `task_duplicate`, `task_limit`, `invalid_json`, `setup_already_done`,
+`invalid_setup_token`, `invalid_credentials`, `tasks_unavailable`, `internal`.
 
 ## Экосистемы
 

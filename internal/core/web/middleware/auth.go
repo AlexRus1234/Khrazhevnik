@@ -19,6 +19,19 @@ func UserFromContext(ctx context.Context) (domain.User, bool) {
 	return u, ok
 }
 
+// WithUserContext кладёт domain.User в контекст. Экспортировано для
+// тестов audit-middleware в package web: тесты имитируют результат
+// RequireSession, не поднимая auth.Service. В боевом коде не звать —
+// аутентификация только через RequireSession/RequireAPIToken.
+func WithUserContext(ctx context.Context, u domain.User) context.Context {
+	return context.WithValue(ctx, userKey{}, u)
+}
+
+// WithTokenContext — то же для API-токена (тесты audit).
+func WithTokenContext(ctx context.Context, t domain.APIToken) context.Context {
+	return context.WithValue(ctx, tokenKey{}, t)
+}
+
 // TokenFromContext returns the API token authenticated by a middleware.
 func TokenFromContext(ctx context.Context) (domain.APIToken, bool) {
 	t, ok := ctx.Value(tokenKey{}).(domain.APIToken)
@@ -111,6 +124,36 @@ func RequireScope(scope domain.Scope) func(http.Handler) http.Handler {
 				}
 			}
 			http.Error(w, "forbidden", http.StatusForbidden)
+		})
+	}
+}
+
+// RequireAdminOrAPIToken принимает либо JWT-сессию админа, либо
+// admin-scoped API-токен. Используется для /metrics: оба вида учёточки
+// смотрят в БД при каждом запросе (паранойя), чужие — отлупляются 401.
+func RequireAdminOrAPIToken(a *auth.Service) func(http.Handler) http.Handler {
+	sessionMw := RequireSession(a)
+	tokenMw := RequireAPIToken(a)
+	return func(next http.Handler) http.Handler {
+		session := sessionMw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r)
+			})).ServeHTTP(w, r)
+		}))
+		token := tokenMw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			RequireScope(domain.ScopeAdmin)(next).ServeHTTP(w, r)
+		}))
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, ok := bearer(r)
+			if !ok {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if strings.HasPrefix(raw, "khz_") {
+				token.ServeHTTP(w, r)
+				return
+			}
+			session.ServeHTTP(w, r)
 		})
 	}
 }

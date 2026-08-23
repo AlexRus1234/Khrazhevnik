@@ -128,6 +128,11 @@ func (e *Engine) FetchStatus(ctx context.Context, eco port.Ecosystem, ecosystemP
 // AddBytesToClients records bytes copied by the HTTP delivery layer.
 func (e *Engine) AddBytesToClients(n int64) { e.metrics.AddBytesToClients(n) }
 
+// Metrics возвращает ссылку на счётчики кеша — для админ-API
+// (GET /api/v1/cache/stats) и Prometheus-экспозиции (web-слой строит
+// metrics.NewHandler на этом же *Cache).
+func (e *Engine) Metrics() *metrics.Cache { return e.metrics }
+
 func (e *Engine) fetch(ctx context.Context, eco port.Ecosystem, ecosystemPath string) (port.Object, string, error) {
 	target, ok := eco.Resolve(ecosystemPath)
 	if !ok {

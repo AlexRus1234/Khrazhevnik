@@ -30,12 +30,15 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"khrazhevnik/internal/core/config"
 	"khrazhevnik/internal/core/engine/auth"
 	cacheengine "khrazhevnik/internal/core/engine/cache"
 	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/registry"
+	"khrazhevnik/internal/core/web"
 
 	// Модули: регистрация в compile-time реестре. Каждая новая
 	// экосистема/драйвер добавляется сюда одной строкой.
@@ -46,16 +49,18 @@ import (
 )
 
 // App — собранные зависимости сервера; поля набирают движки
-// (аутентификация — сессия 05, кеш — 06, метрики — 09).
+// (аутентификация — сессия 05, кеш — 06, метрики и задачи — 09).
 type App struct {
-	Clock      port.Clock
-	Rand       port.Rand
-	Storage    port.Storage
-	Catalog    registry.CatalogSet
-	Auth       *auth.Service
-	HTTP       port.Doer
-	Ecosystems map[string]port.Ecosystem
-	Cache      *cacheengine.Engine
+	Clock          port.Clock
+	Rand           port.Rand
+	Storage        port.Storage
+	Catalog        registry.CatalogSet
+	Auth           *auth.Service
+	HTTP           port.Doer
+	Ecosystems     map[string]port.Ecosystem
+	Cache          *cacheengine.Engine
+	Tasks          *web.TaskRegistry
+	MetricsHandler http.Handler
 }
 
 // Таймауты upstream-соединения: обрыв установки соединения и ожидания
@@ -107,15 +112,23 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		return nil, err
 	}
 	httpClient := outboundHTTPClient()
+	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, httpClient, systemClock{}, cacheengine.Config{StaleIfError: cfg.Cache.StaleIfError, MaxObjectSize: cfg.Cache.MaxObjectSize.Bytes, NegativeTTL404: cfg.Cache.NegativeTTL404.Duration, NegativeTTL5xx: cfg.Cache.NegativeTTL5xx.Duration}, metrics.NewCache())
+	tasks := web.NewTaskRegistry(cfg.Mirror.Workers, systemClock{})
+	var metricsHandler http.Handler
+	if cfg.Metrics.Enabled {
+		metricsHandler = metrics.NewHandler(cacheEngine.Metrics(), prometheus.NewRegistry()).MetricsHandler()
+	}
 	return &App{
-		Clock:      systemClock{},
-		Rand:       uuidRand{},
-		Storage:    storage,
-		Catalog:    catalog,
-		Auth:       authService,
-		HTTP:       httpClient,
-		Ecosystems: ecosystems,
-		Cache:      cacheengine.New(storage, catalog.ObjIndex, httpClient, systemClock{}, cacheengine.Config{StaleIfError: cfg.Cache.StaleIfError, MaxObjectSize: cfg.Cache.MaxObjectSize.Bytes, NegativeTTL404: cfg.Cache.NegativeTTL404.Duration, NegativeTTL5xx: cfg.Cache.NegativeTTL5xx.Duration}, metrics.NewCache()),
+		Clock:          systemClock{},
+		Rand:           uuidRand{},
+		Storage:        storage,
+		Catalog:        catalog,
+		Auth:           authService,
+		HTTP:           httpClient,
+		Ecosystems:     ecosystems,
+		Cache:          cacheEngine,
+		Tasks:          tasks,
+		MetricsHandler: metricsHandler,
 	}, nil
 }
 
@@ -144,10 +157,16 @@ func wireEcosystems(cfg config.Config, remotes port.RemoteStore) (map[string]por
 	return ecosystems, nil
 }
 
-// WaitTasks — хук graceful shutdown: ждёт фоновые задачи после
-// остановки HTTP. Потребители (sync-воркеры зеркал) появятся в M2;
-// пока возвращаемся сразу.
-func (a *App) WaitTasks(context.Context) error { return nil }
+// WaitTasks — хук graceful shutdown: отменяет ctx-дерево фоновых
+// задач и ждёт их завершения в рамках таймаута каскада (server.go).
+// До M2 (зеркало) реальных воркеров нет, но реестр уже живёт и его
+// заглушка-sync при остановке должна закрыться корректно.
+func (a *App) WaitTasks(ctx context.Context) error {
+	if a.Tasks == nil {
+		return nil
+	}
+	return a.Tasks.WaitAll(ctx)
+}
 
 // outboundHTTPClient — Doer для запросов upstream: таймауты только на
 // соединение и заголовки; тело живёт столько, сколько живёт контекст.
