@@ -1,0 +1,31 @@
+# Планировочные документы агента (вне репозитория, но на всякий случай)
+/логи/
+
+# Артефакты сборки Go
+/bin/
+/coverage/
+*.exe
+*.exe~
+*.test
+*.out
+*.prof
+
+# Web: node-зависимости и сборка SPA (сессия 18). Embed-заглушка
+# internal/core/web/assets/index.html НЕ исключается — go:embed
+# требует её на этапе сборки; готовый UI подменяет её позже.
+web/node_modules/
+web/dist/
+
+# Данные времени выполнения (контейнер пишет в /var/lib/khrazhevnik)
+/data/
+
+# Секреты и локальное окружение
+.env
+.env.*
+*.local.toml
+
+# Редактор/IDE/OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

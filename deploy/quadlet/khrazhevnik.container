@@ -1,0 +1,41 @@
+# Хражевник — rootless podman quadlet.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Установка (rootless, пользовательский systemd):
+#   cp deploy/quadlet/khrazhevnik.container ~/.config/containers/systemd/
+#   podman secret create jwt-secret "$(openssl rand -hex 32)"
+#   sudo mkdir -p /var/lib/khrazhevnik && sudo chown 65534:65534 /var/lib/khrazhevnik
+#   systemctl --user daemon-reload
+#   systemctl --user start khrazhevnik.service
+# Подробности — docs/func/ru/deploy.md.
+#
+# Образ из scratch, non-root UID 65534, read-only rootfs; writable
+# только bind-mount /var/lib/khrazhevnik (sqlite, fs-store, ключи).
+# JWT-секрет прокидывается как env через Podman Secret, не в файле.
+
+[Container]
+Image=ghcr.io/alexrus1234/khrazhevnik:v0.1.0
+ContainerName=khrazhevnik
+PublishPort=29202:29202
+PublishPort=127.0.0.1:30202:30202
+ReadOnly=true
+Volume=/var/lib/khrazhevnik:/var/lib/khrazhevnik
+# Адаптеры экосистем включаются env (defaults без них отдают 404 на
+# /apt/* и /rpm/*). Новые экосистемы — по образцу (сессии 12–13).
+Environment=KHRZ_ECOSYSTEM__APT__ENABLED=true
+Environment=KHRZ_ECOSYSTEM__RPM_MD__ENABLED=true
+# JWT-секрет — единственный обязательный секрет; Podman Secret
+# подставляет его в env (значение НЕ светится в `systemctl show`).
+Secret=jwt-secret,type=env,target=KHRZ_AUTH__JWT_SECRET
+# Graceful shutdown каскад: HTTP 5с + фоновые задачи 30с (архитектура §2).
+# Хватает и на случай долгого sync-воркера (сессия 11).
+StopTimeout=40
+AutoUpdate=registry
+
+[Service]
+Restart=on-failure
+# systemd по умолчанию ставит Type=notify для .container: podman/conmon
+# шлёт READY=1, когда контейнер стартовал; sd_notify из бинарника не нужен.
+
+[Install]
+WantedBy=default.target

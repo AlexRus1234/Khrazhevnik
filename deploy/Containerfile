@@ -1,0 +1,40 @@
+# Хражевник — OCI-образ из scratch.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Multi-stage: golang:1.26-alpine собирает статический бинарник
+# (CGO_ENABLED=0, -trimpath), scratch наследует только бинарник и
+# бандл доверенных CA (для HTTPS к upstream-репозиториям). PID 1 —
+# сам бинарник, non-root 65534, ReadOnlyRootfs возлагается на quadlet
+# (deploy/quadlet/khrazhevnik.container). Сборка — make image.
+#
+# VERSION: передаётся через --build-arg в CI (тег/SHA); при локальной
+# сборке без аргумента — фолбэк на git describe, иначе "dev".
+
+FROM golang:1.26-alpine AS build
+# ca-certificates: scratch-образу нужен бандл доверенных CA, иначе
+# HTTPS-запросы к upstream-зеркалам упадут с x509. git — фолбэк версии
+# через git describe при локальной сборке без --build-arg VERSION.
+RUN apk add --no-cache ca-certificates git
+ARG VERSION=
+WORKDIR /src
+COPY . .
+# -X main.Version: линкер Go 1.26 для package main принимает только
+# "main.Version", не полный importpath (полный путь молча не apply'ится;
+# проверено локально, см. .forgejo/workflows/ci.yml).
+RUN set -e; \
+    v="${VERSION}"; \
+    if [ -z "$v" ]; then v="$(git describe --tags --always 2>/dev/null || echo dev)"; fi; \
+    CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.Version=$v" \
+        -o /out/khrazhevnik ./cmd/khrazhevnik
+
+FROM scratch
+LABEL org.opencontainers.image.title="khrazhevnik" \
+      org.opencontainers.image.description="Кеш-прокси и зеркало linux-репозиториев" \
+      org.opencontainers.image.licenses="AGPL-3.0-or-later" \
+      org.opencontainers.image.terminal="false"
+COPY --from=build /out/khrazhevnik /khrazhevnik
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+USER 65534:65534
+EXPOSE 29202 30202
+VOLUME ["/var/lib/khrazhevnik"]
+ENTRYPOINT ["/khrazhevnik"]

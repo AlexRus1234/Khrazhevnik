@@ -8,6 +8,14 @@ BIN := bin/khrazhevnik
 COVER_OUT := coverage/coverage.out
 WEB_ASSETS := internal/core/web/assets
 
+# Образ: реестр/репо и тег по умолчанию. CI передаёт TAG=версия.
+# Нативная платформа по умолчанию (быстро, без QEMU); для релиза:
+#   make image PLATFORMS=linux/amd64,linux/arm64
+# (кросс-сборка arm64 на x86 требует qemu-user-static + binfmt_misc).
+IMAGE     ?= ghcr.io/alexrus1234/khrazhevnik
+TAG       ?= dev
+PLATFORMS ?= linux/amd64
+
 .PHONY: all
 all: lint test build
 
@@ -43,6 +51,15 @@ cover:
 .PHONY: build
 build:
 	"$(GO)" build -o "$(BIN)" ./cmd/khrazhevnik
+
+# image — сборка OCI-образа из deploy/Containerfile в scratch.
+# --manifest создаёт manifest list (даже для одной платформы), что
+# позволяет `podman run` выбирать нативную запись и `podman push`
+# пушить multi-арх. --build-arg VERSION инжектит тег в main.Version.
+.PHONY: image
+image:
+	podman build --platform='$(PLATFORMS)' --manifest '$(IMAGE):$(TAG)' \
+	    --build-arg VERSION='$(TAG)' -f deploy/Containerfile .
 
 .PHONY: clean
 clean:

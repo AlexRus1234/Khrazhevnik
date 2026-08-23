@@ -32,8 +32,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 (scratch, non-root) под rootless podman quadlet; СУБД и хранилище
 подключаются через TOML (sqlite/postgres/mariadb, fs/S3).
 
-**Статус: в разработке** (первый релиз ещё не вышел; см.
-[docs/ROADMAP.md](docs/ROADMAP.md))
+**Статус: v0.1.0** — рабочий кеш-прокси apt + dnf/zypper в контейнере
+(см. [docs/ROADMAP.md](docs/ROADMAP.md)).
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg?style=flat-square)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8.svg?style=flat-square)](https://go.dev/)
@@ -41,6 +41,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 [![Platform](https://img.shields.io/badge/Linux-any-1793D1.svg?style=flat-square)](#)
 
 </div>
+
+## Развёртывание
+
+OCI-образ из scratch (non-root, read-only rootfs) под rootless podman
+quadlet. Публика — `:29202` (раздача пакетов без auth), админка —
+`:30202` на `127.0.0.1` (REST `/api/v1`, `/metrics`).
+
+```sh
+make image                          # сборка образа
+cp deploy/quadlet/khrazhevnik.container ~/.config/containers/systemd/
+podman secret create jwt-secret "$(openssl rand -hex 32)"
+systemctl --user daemon-reload && systemctl --user start khrazhevnik
+```
+
+Подробности (bootstrap, настройка клиентов apt/dnf на прокси, свой
+конфиг) — в [docs/func/ru/deploy.md](docs/func/ru/deploy.md).
 
 ## Лицензия
 
