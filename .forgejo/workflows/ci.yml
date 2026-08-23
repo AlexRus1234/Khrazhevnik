@@ -158,3 +158,92 @@ jobs:
       - name: Cleanup
         if: always()
         run: rm -f khrazhevnik-ci khrazhevnik-ci.sha256
+
+  # Сборка OCI-образа из scratch → дымовые тесты → push в registry.
+  # Отдельная job: podman-in-container требует --privileged (создание
+  # user-namespace'ов внутри раннера). Теги пробрасывают образ в
+  # ghcr.io; прочие пушей — локальная метка localhost/testing (по
+  # образцу Intermasq: «не тег — не релиз»).
+  oci:
+    runs-on: docker
+    container:
+      image: fedora:44
+      # podman внутри контейнера раннера открывает own namespaces —
+      # без --privileged (в частности CAP_SYS_ADMIN + binfmt_misc)
+      # сборка и `podman run` падают на "can't create namespace".
+      options: --privileged
+    env:
+      GOPROXY: "https://nora.panelka.yadr01.internal/go,direct"
+      GOSUMDB: "off"
+      GOPRIVATE: "git.yadr00.internal/*"
+
+    steps:
+      - name: Install system dependencies
+        # git/curl — для checkout и CA; podman — сборка/ран образа;
+        # python3+jq — fixture-upstream и парсинг JSON в smoke.sh.
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            git curl podman python3 jq
+
+      - name: Trust Local CA
+        run: |
+          curl -k https://172.20.0.1:9000/roots.pem -o /etc/pki/ca-trust/source/anchors/step-ca.crt
+          update-ca-trust
+          git config --global http.sslCAInfo /etc/pki/ca-trust/source/anchors/step-ca.crt
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine build version
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          TAG_VERSION="$(git describe --exact-match --tags --match='v*' HEAD 2>/dev/null || true)"
+          if [ -n "$TAG_VERSION" ]; then
+            VERSION="$TAG_VERSION"
+          else
+            VERSION="sha-${SHA:0:8}"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "IS_TAG=${TAG_VERSION:+yes}" >> "$GITHUB_ENV"
+
+      - name: Build image
+        # Только amd64 в CI — кросс-сборка arm64 через QEMU медленная и
+        # требует qemu-user-static+binfmt_misc (опционально, см. Makefile).
+        # Мульти-арх релиз собирается отдельно при наличии QEMU.
+        run: |
+          make image PLATFORMS=linux/amd64 \
+            IMAGE=ghcr.io/alexrus1234/khrazhevnik TAG="${VERSION}"
+
+      - name: Smoke test
+        env:
+          IMAGE: ghcr.io/alexrus1234/khrazhevnik
+          TAG: ${{ env.VERSION }}
+        run: test/smoke/smoke.sh
+
+      - name: Tag localhost/testing (non-release)
+        if: env.IS_TAG != 'yes'
+        run: |
+          podman tag ghcr.io/alexrus1234/khrazhevnik:${VERSION} localhost/testing:latest
+          echo "Образ отмечен как localhost/testing:latest (не релизный билд)"
+
+      - name: Push to registry (release tag)
+        if: env.IS_TAG == 'yes'
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$REGISTRY_TOKEN" ]; then
+            echo "::warning::secrets.REGISTRY_TOKEN не задан — push пропущен"
+            exit 0
+          fi
+          podman login ghcr.io -u "$REGISTRY_USER" -p "$REGISTRY_TOKEN"
+          podman push ghcr.io/alexrus1234/khrazhevnik:${VERSION}
+          podman tag  ghcr.io/alexrus1234/khrazhevnik:${VERSION} ghcr.io/alexrus1234/khrazhevnik:latest
+          podman push ghcr.io/alexrus1234/khrazhevnik:latest
+
+      - name: Cleanup image
+        if: always()
+        run: podman rmi -f ghcr.io/alexrus1234/khrazhevnik:${VERSION} localhost/testing:latest >/dev/null 2>&1 || true

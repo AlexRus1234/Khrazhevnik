@@ -68,3 +68,9 @@ clean:
 	rm -rf $(WEB_ASSETS)
 	mkdir -p $(WEB_ASSETS)
 	printf '<!doctype html>\n<html lang="ru"><head><meta charset="utf-8"><title>khrazhevnik</title></head><body><p>Web UI не собран.</p></body></html>\n' > $(WEB_ASSETS)/index.html
+
+# smoke — дымовой тест живого контейнера (нужен podman + python3).
+# Образ должен быть собран: `make image && make smoke`.
+.PHONY: smoke
+smoke:
+	test/smoke/smoke.sh
