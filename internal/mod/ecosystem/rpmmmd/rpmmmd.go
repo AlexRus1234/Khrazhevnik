@@ -28,8 +28,10 @@
 package rpmmmd
 
 import (
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
@@ -158,6 +160,80 @@ func (a *Adapter) Classify(upstreamPath string) (domain.Class, error) {
 		}
 	}
 	return domain.Mutable(mutableUnknownTTL), nil
+}
+
+// Enumerate обходит repomd.xml → primary.xml[.gz] и собирает upstream-пути
+// пакетов (location-href каждого <package>). Remote.Include для rpm-md не
+// используется: репо — единое целое по repomd. Метаданные качаются через
+// meta (движок кеша — singleflight/TTL/метрики). primary.xml может быть
+// сжат (gzip) — расширение .gz автоматически распаковывается.
+func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port.MetaFetcher) ([]string, error) {
+	if meta == nil {
+		return nil, fmt.Errorf("rpm-md: Enumerate: MetaFetcher обязателен")
+	}
+	primaryHref, err := a.primaryHref(ctx, meta, remote.Name)
+	if err != nil {
+		return nil, err
+	}
+	body, err := meta.Fetch(ctx, "/"+URLPrefix+"/"+remote.Name+"/"+primaryHref)
+	if err != nil {
+		return nil, fmt.Errorf("rpm-md: primary %s: %w", primaryHref, err)
+	}
+	defer body.Close()
+	r, err := unwrapGzIfNeeded(body, primaryHref)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if c, ok := r.(io.Closer); ok {
+			_ = c.Close()
+		}
+	}()
+	var paths []string
+	for href, perr := range ParsePrimary(r) {
+		if perr != nil {
+			return nil, fmt.Errorf("rpm-md: parse primary: %w", perr)
+		}
+		if href == "" {
+			continue
+		}
+		paths = append(paths, "/"+href)
+	}
+	return paths, nil
+}
+
+// primaryHref fetch'ит repomd.xml и возвращает location-href элемента
+// <data type="primary">. primary — обязательный элемент rpm-md; его
+// отсутствие — ошибка перечисления.
+func (a *Adapter) primaryHref(ctx context.Context, meta port.MetaFetcher, remoteName string) (string, error) {
+	body, err := meta.Fetch(ctx, "/"+URLPrefix+"/"+remoteName+"/repodata/repomd.xml")
+	if err != nil {
+		return "", fmt.Errorf("rpm-md: repomd.xml: %w", err)
+	}
+	defer body.Close()
+	for el, ferr := range ParseRepomd(body) {
+		if ferr != nil {
+			return "", fmt.Errorf("rpm-md: parse repomd: %w", ferr)
+		}
+		if el.Type == "primary" && el.LocationHref != "" {
+			return el.LocationHref, nil
+		}
+	}
+	return "", fmt.Errorf("rpm-md: repomd без <data type=\"primary\">")
+}
+
+// unwrapGzIfNeeded оборачивает body в gzip.Reader, если имя файла
+// заканчивается на .gz; иначе отдаёт как есть. Имя берётся из href,
+// потому что Content-Type у репозиторев часто absent или «text/plain».
+func unwrapGzIfNeeded(body io.Reader, href string) (io.Reader, error) {
+	if !strings.HasSuffix(href, ".gz") {
+		return body, nil
+	}
+	gz, err := gzip.NewReader(body)
+	if err != nil {
+		return nil, fmt.Errorf("rpm-md: unpack primary.xml.gz: %w", err)
+	}
+	return gz, nil
 }
 
 // lookupRemote возвращает Remote по имени из кеша; при истечении TTL

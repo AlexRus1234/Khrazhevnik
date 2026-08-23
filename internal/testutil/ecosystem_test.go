@@ -17,6 +17,8 @@
 package testutil
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -57,5 +59,36 @@ func TestFakeEcosystemClassify(t *testing.T) {
 	}
 	if _, err := eco.Classify("/junk"); err == nil {
 		t.Error("нераспознанный путь не дал ошибку классификации")
+	}
+}
+
+func TestFakeEcosystemEnumerate(t *testing.T) {
+	eco := FakeEcosystem{NameOf: "t", Base: "http://up.example", MutableTTL: time.Minute}
+	// по умолчанию — UnsupportedError (как nix)
+	_, err := eco.Enumerate(context.Background(), domain.Remote{}, nil)
+	var uns *domain.UnsupportedError
+	if !errors.As(err, &uns) {
+		t.Fatalf("Enumerate без путей = %v, хочу *UnsupportedError", err)
+	}
+	// с путями — отдаёт копию среза
+	eco.EnumeratePaths = []string{"/pkg/a.deb", "/pkg/b.deb"}
+	got, err := eco.Enumerate(context.Background(), domain.Remote{}, nil)
+	if err != nil {
+		t.Fatalf("Enumerate с путями: %v", err)
+	}
+	if len(got) != 2 || got[0] != "/pkg/a.deb" || got[1] != "/pkg/b.deb" {
+		t.Errorf("Enumerate = %+v", got)
+	}
+	// копия: изменение результата не ломает фейк
+	got[0] = "/pkg/changed.deb"
+	again, _ := eco.Enumerate(context.Background(), domain.Remote{}, nil)
+	if again[0] != "/pkg/a.deb" {
+		t.Errorf("Enumerate не скопировал срез: again[0]=%q", again[0])
+	}
+	// EnumerateErr приоритетнее путей
+	boom := errors.New("boom")
+	eco.EnumerateErr = boom
+	if _, err := eco.Enumerate(context.Background(), domain.Remote{}, nil); !errors.Is(err, boom) {
+		t.Errorf("EnumerateErr не пробросился: %v", err)
 	}
 }

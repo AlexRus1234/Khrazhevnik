@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata xmlns="http://linux.duke.edu/metadata/common" packages="3">
+  <package type="rpm">
+    <name>foo</name>
+    <arch>x86_64</arch>
+    <version epoch="0" ver="1.0" rel="1"/>
+    <location href="Packages/f/foo-1.0-1.x86_64.rpm"/>
+    <format>
+      <rpm:license>MIT</rpm:license>
+    </format>
+  </package>
+  <package type="rpm">
+    <name>bar</name>
+    <arch>aarch64</arch>
+    <version epoch="0" ver="2.3" rel="4"/>
+    <location href="Packages/b/bar-2.3-4.aarch64.rpm"/>
+  </package>
+  <package type="rpm">
+    <name>baz-devel</name>
+    <arch>noarch</arch>
+    <location href="Packages/b/baz-devel-0.1-1.noarch.rpm"/>
+    <format/>
+  </package>
+</metadata>

@@ -17,8 +17,14 @@
 package apt
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -385,3 +391,203 @@ func TestGlobToRegex(t *testing.T) {
 		}
 	}
 }
+
+// fakeMeta — MetaFetcher, отдающий предзагруженные байты по пути.
+// Тесты Enumerate не лезут в сеть: метаданные уже в map.
+type fakeMeta struct {
+	files map[string][]byte
+}
+
+func (m fakeMeta) Fetch(_ context.Context, ecosystemPath string) (io.ReadCloser, error) {
+	b, ok := m.files[ecosystemPath]
+	if !ok {
+		return nil, &domain.NotFoundError{What: "upstream метаданные", Key: ecosystemPath}
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
+}
+
+func mustReadTestdata(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("чтение testdata/%s: %v", name, err)
+	}
+	return b
+}
+
+func newEnumerateAdapter(t *testing.T) *Adapter {
+	t.Helper()
+	a, err := New(testutil.NewFakeRemoteStore(), testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestEnumerateAptDistsAndComponents(t *testing.T) {
+	a := newEnumerateAdapter(t)
+	pkg := mustReadTestdata(t, "Packages.golden")
+	meta := fakeMeta{files: map[string][]byte{
+		"/apt/debian/dists/stable/Release":                    mustReadTestdata(t, "Release.golden"),
+		"/apt/debian/dists/stable/main/binary-amd64/Packages": pkg,
+		"/apt/debian/dists/stable/main/binary-arm64/Packages": pkg,
+	}}
+	// Include = ["stable"] → все компоненты из Release (main/contrib/non-free),
+	// но Packages-файл есть только для main; contrib/non-free вернут NotFound —
+	// Enumerate падает на первом отсутствующем. Поэтому проверяем включение
+	// одной компоненты.
+	t.Run("include stable/main отдаёт Filenames", func(t *testing.T) {
+		got, err := a.Enumerate(context.Background(), domain.Remote{
+			ID: 1, Name: "debian", Ecosystem: Name, BaseURL: "https://deb.debian.org/debian",
+			Mode: domain.ModeMirror, Enabled: true, Include: []string{"stable/main"},
+		}, meta)
+		if err != nil {
+			t.Fatalf("Enumerate: %v", err)
+		}
+		want := []string{
+			"/pool/main/a/apt-example/apt-example_1.0-1_amd64.deb",
+			"/pool/main/s/second/second_2.0_all.deb",
+		}
+		// оба arch-файла несут одни и те же Filenames; дедуп оставляет 2.
+		if len(got) != len(want) {
+			t.Fatalf("Enumerate = %+v (len %d), хочу %d уникальных", got, len(got), len(want))
+		}
+		gotSet := map[string]bool{}
+		for _, p := range got {
+			gotSet[p] = true
+		}
+		for _, w := range want {
+			if !gotSet[w] {
+				t.Errorf("отсутствует %q в %+v", w, got)
+			}
+		}
+	})
+	t.Run("include stable отсеивает чужие компоненты", func(t *testing.T) {
+		// все компоненты Release, но Packages есть только для main
+		// → Enumerate падает на contrib (нет Packages). Покажем, что
+		// фильтр по компоненте ограничивает обход.
+		_, err := a.Enumerate(context.Background(), domain.Remote{
+			ID: 1, Name: "debian", Ecosystem: Name, Include: []string{"stable"},
+		}, meta)
+		if err == nil {
+			t.Fatal("Enumerate по всем компонентам должен упасть на отсутствующих Packages")
+		}
+	})
+}
+
+func TestEnumerateAptGzFallback(t *testing.T) {
+	// Packages отсутствует, но Packages.gz есть — Enumerate распаковывает.
+	pkgGz := newGz(t, mustReadTestdata(t, "Packages.golden"))
+	a := newEnumerateAdapter(t)
+	meta := fakeMeta{files: map[string][]byte{
+		"/apt/debian/dists/stable/Release":                       mustReadTestdata(t, "Release.golden"),
+		"/apt/debian/dists/stable/main/binary-amd64/Packages.gz": pkgGz,
+		"/apt/debian/dists/stable/main/binary-arm64/Packages.gz": pkgGz,
+	}}
+	got, err := a.Enumerate(context.Background(), domain.Remote{
+		ID: 1, Name: "debian", Ecosystem: Name, Include: []string{"stable/main"},
+	}, meta)
+	if err != nil {
+		t.Fatalf("Enumerate .gz fallback: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Enumerate .gz = %+v, хочу 2 пути", got)
+	}
+}
+
+func TestEnumerateAptErrors(t *testing.T) {
+	a := newEnumerateAdapter(t)
+	t.Run("пустой Include — ValidationError", func(t *testing.T) {
+		_, err := a.Enumerate(context.Background(), domain.Remote{
+			Name: "debian", Ecosystem: Name, Include: nil,
+		}, fakeMeta{})
+		var ve *domain.ValidationError
+		if !errors.As(err, &ve) {
+			t.Fatalf("ошибка = %v, хочу *ValidationError", err)
+		}
+	})
+	t.Run("Release отсутствует — NotFound", func(t *testing.T) {
+		_, err := a.Enumerate(context.Background(), domain.Remote{
+			Name: "debian", Ecosystem: Name, Include: []string{"stable/main"},
+		}, fakeMeta{})
+		var nf *domain.NotFoundError
+		if !errors.As(err, &nf) {
+			t.Fatalf("ошибка = %v, хочу *NotFoundError", err)
+		}
+	})
+	t.Run("nil MetaFetcher — ошибка", func(t *testing.T) {
+		_, err := a.Enumerate(context.Background(), domain.Remote{
+			Name: "debian", Ecosystem: Name, Include: []string{"stable/main"},
+		}, nil)
+		if err == nil {
+			t.Fatal("nil MetaFetcher должен ошибаться")
+		}
+	})
+}
+
+func TestParseAptInclude(t *testing.T) {
+	cases := []struct {
+		name    string
+		include []string
+		wantD   []string
+		wantC   map[string]map[string]bool
+		wantErr bool
+	}{
+		{"только dist", []string{"stable"}, []string{"stable"}, map[string]map[string]bool{"stable": {}}, false},
+		{"dist/comp", []string{"stable/main"}, []string{"stable"}, map[string]map[string]bool{"stable": {"main": true}}, false},
+		{"несколько", []string{"stable/main", "stable/contrib", "bookworm"}, []string{"stable", "bookworm"}, map[string]map[string]bool{"stable": {"main": true, "contrib": true}, "bookworm": {}}, false},
+		{"пусто", nil, nil, nil, true},
+		{"пустой элемент", []string{""}, nil, nil, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d, c, err := parseAptInclude(tc.include)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("хочу ошибку, получил nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("не ждал ошибку: %v", err)
+			}
+			if len(d) != len(tc.wantD) {
+				t.Fatalf("dists = %+v, хочу %+v", d, tc.wantD)
+			}
+			for i := range d {
+				if d[i] != tc.wantD[i] {
+					t.Errorf("dists[%d] = %q, хочу %q", i, d[i], tc.wantD[i])
+				}
+			}
+			for dist, set := range tc.wantC {
+				got := c[dist]
+				if len(got) != len(set) {
+					t.Errorf("компоненты %s = %+v, хочу %+v", dist, got, set)
+					continue
+				}
+				for k := range set {
+					if !got[k] {
+						t.Errorf("компонента %s/%s не разрешена", dist, k)
+					}
+				}
+			}
+		})
+	}
+}
+
+// newGz gzip-упаковывает b для теста (.gz fallback Enumerate).
+func newGz(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := gzip.NewWriter(&buf)
+	if _, err := w.Write(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// errReader — заглушка, чтобы silence unused bytes import если нужно.
+var _ = strings.TrimSpace

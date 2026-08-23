@@ -20,7 +20,12 @@
 
 package port
 
-import "khrazhevnik/internal/core/domain"
+import (
+	"context"
+	"io"
+
+	"khrazhevnik/internal/core/domain"
+)
 
 // Target — куда бьёмся и где кешируем: полный URL upstream-объекта,
 // его путь и ключ хранения. StorageKey вида
@@ -30,6 +35,15 @@ type Target struct {
 	UpstreamURL  string
 	UpstreamPath string
 	StorageKey   string
+}
+
+// MetaFetcher отдаёт байты метаданных upstream через движок кеша:
+// зеркало не лезет в сеть само — оно переиспользует singleflight/TTL/
+// метрики кеша. ecosystemPath — путь публичного порта (как у Resolve);
+// cache engine сам резолвит его в Target и стримит тело. Закрыть тело
+// обязан вызывающий.
+type MetaFetcher interface {
+	Fetch(ctx context.Context, ecosystemPath string) (io.ReadCloser, error)
 }
 
 // Ecosystem — адаптер экосистемы: суть маппинг «путь публичного
@@ -56,4 +70,14 @@ type Ecosystem interface {
 	// immutable-пакеты против mutable-индексов с TTL. Ошибка —
 	// путь нераспознан (не матчится ни под одну схему экосистемы).
 	Classify(upstreamPath string) (domain.Class, error)
+
+	// Enumerate возвращает upstream-пути пакетов remote для sync
+	// зеркала (с ведущим «/»: «/pool/main/a/app/app_1.0_amd64.deb»).
+	// meta — fetcher метаданных (Release, Packages, repomd.xml,
+	// primary.xml): адаптер знает, какие файлы нужны и как их
+	// разобрать; зеркало переиспользует движок кеша для скачивания.
+	// Remote.Include ограничивает охват (для apt — dists/components).
+	// Для экосистем, где sync всего upstream не поддерживается (nix —
+	// «по использованию»), возвращает *domain.UnsupportedError.
+	Enumerate(ctx context.Context, remote domain.Remote, meta MetaFetcher) ([]string, error)
 }

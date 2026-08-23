@@ -307,3 +307,109 @@ func (r *errReader) Read(p []byte) (int, error) {
 	r.pos += n
 	return n, nil
 }
+
+func TestParsePrimaryGolden(t *testing.T) {
+	hrefs, err := collectPrimary(ParsePrimary(mustOpenRepomd(t, "primary.golden")))
+	if err != nil {
+		t.Fatalf("ParsePrimary: %v", err)
+	}
+	want := []string{
+		"Packages/f/foo-1.0-1.x86_64.rpm",
+		"Packages/b/bar-2.3-4.aarch64.rpm",
+		"Packages/b/baz-devel-0.1-1.noarch.rpm",
+	}
+	if len(hrefs) != len(want) {
+		t.Fatalf("hrefs = %+v, хочу %+v", hrefs, want)
+	}
+	for i, h := range want {
+		if hrefs[i] != h {
+			t.Errorf("hrefs[%d] = %q, хочу %q", i, hrefs[i], h)
+		}
+	}
+}
+
+// collectPrimary вытягивает итератор ParsePrimary в срез.
+func collectPrimary(it func(yield func(string, error) bool)) ([]string, error) {
+	var out []string
+	var lastErr error
+	for href, err := range it {
+		if err != nil {
+			lastErr = err
+			break
+		}
+		out = append(out, href)
+	}
+	return out, lastErr
+}
+
+func TestParsePrimaryEmpty(t *testing.T) {
+	// metadata без package — пустой результат, не ошибка.
+	input := []byte(`<metadata xmlns="http://linux.duke.edu/metadata/common" packages="0"></metadata>`)
+	hrefs, err := collectPrimary(ParsePrimary(bytes.NewReader(input)))
+	if err != nil {
+		t.Fatalf("ParsePrimary пустой: %v", err)
+	}
+	if len(hrefs) != 0 {
+		t.Errorf("пустой metadata дал %d hrefs, хочу 0", len(hrefs))
+	}
+}
+
+func TestParsePrimaryPackageWithoutLocation(t *testing.T) {
+	// <package> без <location> — пустой href (Enumerate отфильтрует).
+	input := []byte(`<metadata><package type="rpm"><name>x</name></package><package type="rpm"><location href="r/a.rpm"/></package></metadata>`)
+	hrefs, err := collectPrimary(ParsePrimary(bytes.NewReader(input)))
+	if err != nil {
+		t.Fatalf("ParsePrimary: %v", err)
+	}
+	// первый package без location → ""; второй → "r/a.rpm".
+	nonEmpty := 0
+	for _, h := range hrefs {
+		if h != "" {
+			nonEmpty++
+		}
+	}
+	if nonEmpty != 1 {
+		t.Fatalf("непустых hrefs = %d, хочу 1; все = %+v", nonEmpty, hrefs)
+	}
+}
+
+func TestParsePrimaryBadLocationAbsolute(t *testing.T) {
+	input := []byte(`<metadata><package type="rpm"><location href="https://evil/x.rpm"/></package></metadata>`)
+	_, err := collectPrimary(ParsePrimary(bytes.NewReader(input)))
+	if !errors.Is(err, ErrBadLocation) {
+		t.Fatalf("ожидалась ErrBadLocation, получено %v", err)
+	}
+}
+
+func TestParsePrimaryTooManyPackages(t *testing.T) {
+	const lim = 3
+	var b bytes.Buffer
+	b.WriteString(`<metadata>`)
+	for i := 0; i < lim+1; i++ {
+		b.WriteString(`<package type="rpm"><location href="r/x.rpm"/></package>`)
+	}
+	b.WriteString(`</metadata>`)
+	hrefs, err := collectPrimary(parsePrimary(bytes.NewReader(b.Bytes()), primaryLimits{pkgs: lim, text: maxPrimText}))
+	if !errors.Is(err, ErrTooManyPackages) {
+		t.Fatalf("ожидалась ErrTooManyPackages, получено %v (hrefs=%d)", err, len(hrefs))
+	}
+	if len(hrefs) != lim {
+		t.Errorf("отдано %d hrefs, хочу %d до ошибки", len(hrefs), lim)
+	}
+}
+
+func TestParsePrimaryUnclosedPackage(t *testing.T) {
+	input := []byte(`<metadata><package type="rpm"><location href="r/x.rpm"/>`)
+	_, err := collectPrimary(ParsePrimary(bytes.NewReader(input)))
+	if !errors.Is(err, ErrUnexpectedEOF) {
+		t.Fatalf("ожидалась ErrUnexpectedEOF, получено %v", err)
+	}
+}
+
+func TestParsePrimaryReaderError(t *testing.T) {
+	r := &errReader{data: []byte(`<metadata><package type="rpm">`), err: io.ErrUnexpectedEOF}
+	_, err := collectPrimary(ParsePrimary(r))
+	if err == nil {
+		t.Fatal("ожидалась прокиданная ошибка ридера, получено nil")
+	}
+}

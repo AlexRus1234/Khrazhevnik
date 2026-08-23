@@ -44,6 +44,35 @@ func (r *fixedRand) UUID4() (string, error) {
 	return u, nil
 }
 
+// Int64 возвращает детерминированное число из хвоста предзагруженного
+// UUID (hex → int), приведённое к [0, max). Это даёт стабильный джиттер
+// в тестах планировщика без отдельного списка чисел.
+func (r *fixedRand) Int64(max int64) int64 {
+	if max <= 0 {
+		return 0
+	}
+	u := r.uuids[r.next%len(r.uuids)]
+	// последние 12 hex-цифр UUID → 48-битное число; достаточно для jitter.
+	var n int64
+	for i := len(u) - 12; i < len(u); i++ {
+		c := u[i]
+		var v int64
+		switch {
+		case c >= '0' && c <= '9':
+			v = int64(c - '0')
+		case c >= 'a' && c <= 'f':
+			v = int64(c-'a') + 10
+		default:
+			continue
+		}
+		n = n*16 + v
+	}
+	if n < 0 {
+		n = -n
+	}
+	return n % max
+}
+
 // failingRand всегда возвращает ошибку.
 type failingRand struct{ err error }
 
@@ -54,3 +83,6 @@ func FailingRand(err error) port.Rand {
 
 // UUID4 возвращает предзагруженную ошибку.
 func (r failingRand) UUID4() (string, error) { return "", r.err }
+
+// Int64 возвращает 0 — тесты на UUID4-сбой не гоняют Int64.
+func (r failingRand) Int64(max int64) int64 { return 0 }

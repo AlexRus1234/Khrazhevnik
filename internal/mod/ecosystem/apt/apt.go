@@ -23,8 +23,11 @@
 package apt
 
 import (
+	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
@@ -147,6 +150,172 @@ func (a *Adapter) Classify(upstreamPath string) (domain.Class, error) {
 		}
 	}
 	return domain.Mutable(mutableUnknownTTL), nil
+}
+
+// Enumerate обходит метаданные apt-репозитория и собирает upstream-пути
+// пакетов (поле Filename в Packages). Remote.Include задаёт dists и
+// опционально компоненты: «stable» (все компоненты из Release) или
+// «stable/main» (только main). Пустой Include — ошибка: apt не имеет
+// корневого индекса dists, перечислить «вообще все» нельзя. Метаданные
+// качаются через meta (движок кеша — singleflight/TTL/метрики).
+// Архитектура «all» не используется для выбора Packages-файла: пакеты
+// Architecture: all перечислены в каждом binary-<arch>/Packages, так
+// что дедуп по Filename убирает повторы.
+func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port.MetaFetcher) ([]string, error) {
+	if meta == nil {
+		return nil, fmt.Errorf("apt: Enumerate: MetaFetcher обязателен")
+	}
+	dists, componentsByDist, err := parseAptInclude(remote.Include)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{})
+	var paths []string
+	for _, dist := range dists {
+		comps, archs, err := a.releaseComponents(ctx, meta, remote.Name, dist)
+		if err != nil {
+			return nil, fmt.Errorf("apt: enumerate dist %s: %w", dist, err)
+		}
+		allowed := componentsByDist[dist]
+		for _, comp := range comps {
+			if len(allowed) > 0 && !allowed[comp] {
+				continue
+			}
+			for _, arch := range archs {
+				if arch == "all" {
+					continue
+				}
+				got, err := a.enumeratePackages(ctx, meta, remote.Name, dist, comp, arch, seen)
+				if err != nil {
+					return nil, fmt.Errorf("apt: enumerate %s/%s/%s: %w", dist, comp, arch, err)
+				}
+				paths = append(paths, got...)
+			}
+		}
+	}
+	return paths, nil
+}
+
+// parseAptInclude разбирает Remote.Include на множество dists и
+// отображение dist → set разрешённых компонент. «stable» — все
+// компоненты из Release (set пустой = нет фильтра); «stable/main» —
+// только main. Пустой Include — ошибка.
+func parseAptInclude(include []string) (dists []string, componentsByDist map[string]map[string]bool, err error) {
+	if len(include) == 0 {
+		return nil, nil, &domain.ValidationError{
+			What: "include", Value: "", Reason: "apt sync: укажите dists (например [\"stable\"] или [\"stable/main\"])",
+		}
+	}
+	componentsByDist = map[string]map[string]bool{}
+	seenDist := map[string]bool{}
+	for _, item := range include {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		dist, comp, ok := strings.Cut(item, "/")
+		if !ok {
+			dist, comp = item, ""
+		}
+		if dist == "" || strings.ContainsAny(dist, " \x00") {
+			return nil, nil, &domain.ValidationError{What: "include", Value: item, Reason: "пустой или некорректный dist"}
+		}
+		if !seenDist[dist] {
+			seenDist[dist] = true
+			dists = append(dists, dist)
+		}
+		if comp != "" {
+			set, ok := componentsByDist[dist]
+			if !ok {
+				set = map[string]bool{}
+				componentsByDist[dist] = set
+			}
+			set[comp] = true
+		}
+	}
+	if len(dists) == 0 {
+		return nil, nil, &domain.ValidationError{What: "include", Value: "", Reason: "нет валидных dists"}
+	}
+	return dists, componentsByDist, nil
+}
+
+// releaseComponents fetch'ит Release dist и возвращает списки
+// Components и Architectures (пробел-разделённые поля).
+func (a *Adapter) releaseComponents(ctx context.Context, meta port.MetaFetcher, remoteName, dist string) ([]string, []string, error) {
+	ecoPath := "/" + Name + "/" + remoteName + "/dists/" + dist + "/Release"
+	body, err := meta.Fetch(ctx, ecoPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer body.Close()
+	var comps, archs []string
+	for s, ferr := range Stanzas(body) {
+		if ferr != nil {
+			return nil, nil, ferr
+		}
+		comps = strings.Fields(s.Get("Components"))
+		archs = strings.Fields(s.Get("Architectures"))
+		// Release — одна stanza; выходим после первой.
+		break
+	}
+	if len(comps) == 0 {
+		return nil, nil, fmt.Errorf("Release без Components")
+	}
+	if len(archs) == 0 {
+		return nil, nil, fmt.Errorf("Release без Architectures")
+	}
+	return comps, archs, nil
+}
+
+// enumeratePackages fetch'ит Packages-файл компонента/арха и достаёт
+// поле Filename каждой записи. Пробует несжатый Packages, затем .gz
+// (Debian часто отдаёт только сжатый). Дедуп по seen (перезаписи
+// «all»-пакетов в разных arch-файлах).
+func (a *Adapter) enumeratePackages(ctx context.Context, meta port.MetaFetcher, remoteName, dist, comp, arch string, seen map[string]struct{}) ([]string, error) {
+	base := "/" + Name + "/" + remoteName + "/dists/" + dist + "/" + comp + "/binary-" + arch + "/Packages"
+	body, err := meta.Fetch(ctx, base)
+	if err != nil {
+		var nf *domain.NotFoundError
+		if errors.As(err, &nf) {
+			body, err = meta.Fetch(ctx, base+".gz")
+			if err != nil {
+				return nil, err
+			}
+			defer body.Close()
+			gz, gzErr := gzip.NewReader(body)
+			if gzErr != nil {
+				return nil, fmt.Errorf("unpack Packages.gz: %w", gzErr)
+			}
+			defer func() { _ = gz.Close() }()
+			return scanFilenames(gz, seen)
+		}
+		return nil, err
+	}
+	defer body.Close()
+	return scanFilenames(body, seen)
+}
+
+// scanFilenames читает Packages-поток и собирает уникальные Filename.
+func scanFilenames(r io.Reader, seen map[string]struct{}) ([]string, error) {
+	var out []string
+	for s, err := range Stanzas(r) {
+		if err != nil {
+			return nil, err
+		}
+		fn := strings.TrimSpace(s.Get("Filename"))
+		if fn == "" {
+			continue
+		}
+		if !strings.HasPrefix(fn, "/") {
+			fn = "/" + fn
+		}
+		if _, ok := seen[fn]; ok {
+			continue
+		}
+		seen[fn] = struct{}{}
+		out = append(out, fn)
+	}
+	return out, nil
 }
 
 // lookupRemote возвращает Remote по имени из кеша; при истечении TTL

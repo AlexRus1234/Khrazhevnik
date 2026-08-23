@@ -17,10 +17,13 @@
 // FakeEcosystem — двойник port.Ecosystem для тестов движка кеша и
 // HTTP-доставки: пути /<name>/pkg/… — immutable, /<name>/idx/… —
 // mutable с настраиваемым TTL, всё остальное — ошибка классификации.
+// Enumerate по умолчанию не поддерживается (как nix): тесты зеркала
+// либо заполняют EnumeratePaths, либо используют настоящий адаптер.
 
 package testutil
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -36,6 +39,13 @@ type FakeEcosystem struct {
 	Base string
 	// MutableTTL — TTL для путей idx/, используемый Classify.
 	MutableTTL time.Duration
+	// EnumeratePaths — список upstream-путей, который Enumerate
+	// отдаёт синхрону зеркала; пусто → *UnsupportedError (по умолчанию
+	// фейк не умеет enumerate, как nix).
+	EnumeratePaths []string
+	// EnumerateErr — если задано, Enumerate возвращает его вместо
+	// EnumeratePaths (имитация сбоя перечисления).
+	EnumerateErr error
 }
 
 // Name возвращает имя экосистемы.
@@ -70,4 +80,21 @@ func (e FakeEcosystem) Classify(upstreamPath string) (domain.Class, error) {
 		return domain.Mutable(e.MutableTTL), nil
 	}
 	return domain.Class{}, &domain.ValidationError{What: "путь upstream", Value: upstreamPath, Reason: "нет схемы pkg/ или idx/"}
+}
+
+// Enumerate отдаёт EnumeratePaths или EnumerateErr; пустая конфигурация —
+// *UnsupportedError (по умолчанию фейк не поддерживает sync, как nix).
+// MetaFetcher не дёргается — тесты зеркала заполняют EnumeratePaths
+// напрямую; для проверки цепочки «метаданные → пути» используют
+// настоящие адаптеры apt/rpm-md.
+func (e FakeEcosystem) Enumerate(_ context.Context, _ domain.Remote, _ port.MetaFetcher) ([]string, error) {
+	if e.EnumerateErr != nil {
+		return nil, e.EnumerateErr
+	}
+	if len(e.EnumeratePaths) == 0 {
+		return nil, &domain.UnsupportedError{What: "enumerate", Why: "FakeEcosystem без EnumeratePaths"}
+	}
+	out := make([]string, len(e.EnumeratePaths))
+	copy(out, e.EnumeratePaths)
+	return out, nil
 }

@@ -17,8 +17,13 @@
 package rpmmmd
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -369,4 +374,123 @@ func TestGlobToRegex(t *testing.T) {
 			t.Errorf("globToRegex(%q).Match(%q) = %v, хочу %v", tc.glob, tc.path, got, tc.want)
 		}
 	}
+}
+
+// fakeMeta — MetaFetcher, отдающий предзагруженные байты по пути.
+type fakeMeta struct {
+	files map[string][]byte
+}
+
+func (m fakeMeta) Fetch(_ context.Context, ecosystemPath string) (io.ReadCloser, error) {
+	b, ok := m.files[ecosystemPath]
+	if !ok {
+		return nil, &domain.NotFoundError{What: "upstream метаданные", Key: ecosystemPath}
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
+}
+
+func mustReadTestdata(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("чтение testdata/%s: %v", name, err)
+	}
+	return b
+}
+
+func newEnumerateAdapter(t *testing.T) *Adapter {
+	t.Helper()
+	a, err := New(testutil.NewFakeRemoteStore(), testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestEnumerateRpmMdChain(t *testing.T) {
+	// repomd → primary.xml → 3 package hrefs
+	a := newEnumerateAdapter(t)
+	meta := fakeMeta{files: map[string][]byte{
+		"/rpm/fedora/repodata/repomd.xml":  mustReadTestdata(t, "repomd-primary.golden"),
+		"/rpm/fedora/repodata/primary.xml": mustReadTestdata(t, "primary.golden"),
+	}}
+	got, err := a.Enumerate(context.Background(), domain.Remote{
+		ID: 1, Name: "fedora", Ecosystem: Name, BaseURL: "https://mirrors.fedoraproject.org/fedora",
+		Mode: domain.ModeMirror, Enabled: true,
+	}, meta)
+	if err != nil {
+		t.Fatalf("Enumerate: %v", err)
+	}
+	want := []string{
+		"/Packages/f/foo-1.0-1.x86_64.rpm",
+		"/Packages/b/bar-2.3-4.aarch64.rpm",
+		"/Packages/b/baz-devel-0.1-1.noarch.rpm",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Enumerate = %+v, хочу %+v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("Enumerate[%d] = %q, хочу %q", i, got[i], w)
+		}
+	}
+}
+
+func TestEnumerateRpmMdGzPrimary(t *testing.T) {
+	// primary.xml.gz — Enumerate распаковывает.
+	primaryGz := newGz(t, mustReadTestdata(t, "primary.golden"))
+	a := newEnumerateAdapter(t)
+	meta := fakeMeta{files: map[string][]byte{
+		"/rpm/fedora/repodata/repomd.xml":     []byte(`<?xml version="1.0"?><repomd xmlns="http://linux.duke.edu/metadata/repo"><data type="primary"><location href="repodata/primary.xml.gz"/></data></repomd>`),
+		"/rpm/fedora/repodata/primary.xml.gz": primaryGz,
+	}}
+	got, err := a.Enumerate(context.Background(), domain.Remote{
+		ID: 1, Name: "fedora", Ecosystem: Name, Include: nil,
+	}, meta)
+	if err != nil {
+		t.Fatalf("Enumerate .gz: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("Enumerate .gz = %+v, хочу 3 hrefs", got)
+	}
+}
+
+func TestEnumerateRpmMdErrors(t *testing.T) {
+	a := newEnumerateAdapter(t)
+	t.Run("repomd без primary", func(t *testing.T) {
+		meta := fakeMeta{files: map[string][]byte{
+			"/rpm/f/repodata/repomd.xml": []byte(`<?xml version="1.0"?><repomd xmlns="http://linux.duke.edu/metadata/repo"><data type="filelists"><location href="repodata/x.xml"/></data></repomd>`),
+		}}
+		_, err := a.Enumerate(context.Background(), domain.Remote{Name: "f", Ecosystem: Name}, meta)
+		if err == nil {
+			t.Fatal("ожидалась ошибка отсутствия primary")
+		}
+	})
+	t.Run("repomd отсутствует — NotFound", func(t *testing.T) {
+		_, err := a.Enumerate(context.Background(), domain.Remote{Name: "f", Ecosystem: Name}, fakeMeta{})
+		var nf *domain.NotFoundError
+		if !errors.As(err, &nf) {
+			t.Fatalf("ошибка = %v, хочу *NotFoundError", err)
+		}
+	})
+	t.Run("nil MetaFetcher — ошибка", func(t *testing.T) {
+		_, err := a.Enumerate(context.Background(), domain.Remote{Name: "f", Ecosystem: Name}, nil)
+		if err == nil {
+			t.Fatal("nil MetaFetcher должен ошибаться")
+		}
+	})
+}
+
+// newGz gzip-упаковывает b для теста.
+func newGz(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := gzip.NewWriter(&buf)
+	if _, err := w.Write(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
