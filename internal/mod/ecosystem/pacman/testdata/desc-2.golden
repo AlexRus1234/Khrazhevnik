@@ -1,0 +1,17 @@
+%FILENAME%
+second-pkg-2.0-1-any.pkg.tar.xz
+
+%NAME%
+second-pkg
+
+%VERSION%
+2.0-1
+
+%DESC%
+Second example package
+
+%ARCH%
+any
+
+%PACKAGER%
+Test Packager <test@example.com>
