@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -37,12 +38,20 @@ import (
 type tarEntries map[string][]byte
 
 // newTar собирает несжатый tar из map «путь → байты». Каталоги создаются
-// автоматически по путям файлов.
+// автоматически по путям файлов. Имена сортируются — порядок записей
+// детерминирован (иначе map-рандомизация ломает тесты, утверждающие
+// порядок, как TestParseDBGolden).
 func newTar(t *testing.T, entries tarEntries) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	for name, content := range entries {
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		content := entries[name]
 		// запись каталога
 		dir := name
 		if idx := strings.LastIndexByte(name, '/'); idx >= 0 {

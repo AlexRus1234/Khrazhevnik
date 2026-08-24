@@ -98,10 +98,15 @@ enabled = true
   `KHRZ_SERVER__PUBLIC_LISTEN`, `KHRZ_STORAGE__S3__SECRET_ACCESS_KEY`,
   `KHRZ_AUTH__JWT_SECRET`, `KHRZ_CACHE__NEGATIVE_TTL_404`. Пустое
   значение env трактуется как «не задано».
-- Записи `[ecosystem.<имя>]`: env может включать известные экосистемы
-  (`apt`, `rpm-md`, `pacman`, `apk`, `nix`) и без упоминания в TOML:
+- Записи `[ecosystem.<имя>]`: все 5 экосистем v1 (`apt`, `rpm-md`,
+  `pacman`, `apk`, `nix`) включены в дефолтном конфиге (M2 — все
+  экосистемы); секция в TOML нужна только чтобы переопределить
+  (`enabled = false`) или задать специфичные поля. Env может включить
+  известную экосистему и без упоминания в TOML:
   `KHRZ_ECOSYSTEM__RPM_MD__ENABLED=true`. В TOML ключи `rpm_md` и
-  `"rpm-md"` эквивалентны (нормализация `_` → `-`).
+  `"rpm-md"` эквивалентны (нормализация `_` → `-`). Сборка без
+  blank-import'а нужного адаптера падает на старте с понятной ошибкой
+  реестра.
 - Значения вида `file:///run/secrets/x` (env или TOML) — читается
   содержимое файла, пробелы/переводы строк обрезаются (quadlet Secret).
 - Duration-поля — строки `time.ParseDuration` (`"8h"`), размеры —
@@ -252,6 +257,26 @@ stale_served,negative_hits,upstream_errors}_total`,
   записи → поле `F:` (путь к .apk). `Remote.Include` — список архитектур
   (например, `["x86_64", "aarch64"]`); пустой — ошибка (apk не имеет
   корневого индекса архитектур).
+- **nix** (сессия 13) — кеш-прокси nix binary cache (narinfo + nar.xz).
+  Путь `/nix/<remote-name>/<остальной-путь>`; `StorageKey` =
+  `cache/nix/<remote-id>/<upstream-path>`. Контент адресован — идеальный
+  immutable-кеш. Полное зеркало `cache.nixos.org` (десятки ТБ) не
+  поддерживается — только pull-through; `Enumerate` возвращает
+  `*domain.UnsupportedError` («зеркало по использованию»: narinfo → nar
+  через `WantNar` — задел для будущего префетча). Классификация:
+  `nar/<32hex>.nar.xz` и `nar/<32hex>.nar` — immutable (навсегда);
+  `<32hex>.narinfo` — mutable{TTL 1h} (маленький, byte-exact, реиспоуз
+  и патчи путей невозможны); `nix-cache-info` — mutable{TTL 1h};
+  `log/<…>` — immutable; прочее — conservative mutable{TTL 1m}.
+  Инвариант nix: narinfo содержит `URL: nar/…` и `Sig: <key>:…` — НЕ
+  переписываем, отдаём побайтово (подписи остаются валидными, если клиент
+  доверяет ключу upstream; `trusted-public-keys` остаётся от upstream).
+  404 на narinfo — штатная ситуация nix-клиента (перебор substituter'ов):
+  negative-cache движка (сессия 06) отдаёт корректный 404 (не 502) и
+  быстро. Парсер narinfo (строки `key: value` + валидатор 32-hex) —
+  `mod/ecosystem/nix/parse.go`, фаззинг `FuzzParseNarinfo` (без паники,
+  размер записи < 16KiB, пути в `URL:`-поле валидны относительно `/nar/`
+  или запись отброшена). `Remote.Include` для nix не используется.
 
 URL-префикс (`port.Ecosystem.URLPrefix()`) чаще совпадает с именем, но
 не всегда (rpm-md → «rpm»); роутер :29202 MATCHит `/{URLPrefix}/*` и

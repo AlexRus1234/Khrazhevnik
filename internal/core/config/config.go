@@ -164,7 +164,24 @@ func defaultConfig() Config {
 		Mirror:  Mirror{Workers: defaultWorkers, IntervalJitter: Duration{defaultJitter}, MaxBandwidth: ByteSize{defaultMaxBandwidth}},
 		Signing: Signing{KeysDir: defaultKeysDir},
 		Metrics: Metrics{Enabled: true},
+		// Экосистемы v1 включены по умолчанию (M2 — все экосистемы):
+		// apt, rpm-md, pacman, apk, nix. Сборка без blank-import'а
+		// нужного адаптера падает на старте (registry.Ecosystem →
+		// понятная ошибка); выключить — [ecosystem.<имя>] enabled=false
+		// или KHRZ_ECOSYSTEM__<ИМЯ>__ENABLED=false.
+		Ecosystem: defaultEcosystems(),
 	}
+}
+
+// defaultEcosystems включает все известные экосистемы v1 по умолчанию.
+// Имена — канонические (с дефисом); normalizeEcosystemKeys с ними
+// совместима (нет подчёркиваний — нормализация идемпотентна).
+func defaultEcosystems() map[string]Ecosystem {
+	out := make(map[string]Ecosystem, len(knownEcosystemNames()))
+	for _, name := range knownEcosystemNames() {
+		out[name] = Ecosystem{Enabled: true}
+	}
+	return out
 }
 
 // Load собирает конфигурацию слоями: defaults → TOML (path == "" —

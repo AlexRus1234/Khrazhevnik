@@ -46,6 +46,7 @@ import (
 	_ "khrazhevnik/internal/mod/db/sqlite"
 	_ "khrazhevnik/internal/mod/ecosystem/apk"
 	_ "khrazhevnik/internal/mod/ecosystem/apt"
+	_ "khrazhevnik/internal/mod/ecosystem/nix"
 	_ "khrazhevnik/internal/mod/ecosystem/pacman"
 	_ "khrazhevnik/internal/mod/ecosystem/rpmmmd"
 	_ "khrazhevnik/internal/mod/storage/fs"

@@ -76,11 +76,18 @@ func TestLoadDefaults(t *testing.T) {
 		{"mirror.max_bandwidth", cfg.Mirror.MaxBandwidth.Bytes, int64(0)},
 		{"signing.keys_dir", cfg.Signing.KeysDir, "/var/lib/khrazhevnik/keys"},
 		{"metrics.enabled", cfg.Metrics.Enabled, true},
-		{"ecosystems", len(cfg.Ecosystem), 0},
+		// Экосистемы v1 включены по умолчанию (M2): apt, rpm-md, pacman,
+		// apk, nix — все enabled=true в дефолтном конфиге.
+		{"ecosystems", len(cfg.Ecosystem), 5},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
 			t.Errorf("%s = %v, хочу %v", c.name, c.got, c.want)
+		}
+	}
+	for _, name := range []string{"apt", "rpm-md", "pacman", "apk", "nix"} {
+		if !cfg.Ecosystem[name].Enabled {
+			t.Errorf("дефолтная экосистема %q должна быть enabled", name)
 		}
 	}
 }
@@ -216,7 +223,8 @@ enabled = true
 	cfg, err := Load(path, withJWT(map[string]string{
 		// выключить описанный в TOML
 		"KHRZ_ECOSYSTEM__PACMAN__ENABLED": "false",
-		// включить отсутствующий в TOML, дефис — подчёркиванием
+		// включить отсутствующий в TOML (он и так включён дефолтом —
+		// проверяем, что env не ломает дефолт-true)
 		"KHRZ_ECOSYSTEM__RPM_MD__ENABLED": "true",
 	}))
 	if err != nil {
@@ -226,10 +234,10 @@ enabled = true
 		t.Error("pacman должен быть выключен через env")
 	}
 	if !cfg.Ecosystem["rpm-md"].Enabled {
-		t.Error("rpm-md должен быть включён через env")
+		t.Error("rpm-md должен быть включён (дефолт + env)")
 	}
-	if len(cfg.Ecosystem) != 2 {
-		t.Errorf("лишние записи ecosystem: %+v", cfg.Ecosystem)
+	if len(cfg.Ecosystem) != 5 {
+		t.Errorf("хочу 5 экосистем (дефолт), got %d: %+v", len(cfg.Ecosystem), cfg.Ecosystem)
 	}
 }
 
