@@ -227,6 +227,31 @@ stale_served,negative_hits,upstream_errors}_total`,
   переиспользуются зеркалом (сессия 11) для Enumerate: repomd →
   `<data type="primary">` location-href → primary.xml[.gz] → hrefs пакетов.
   `Remote.Include` для rpm-md не используется (репо — единое целое по repomd).
+- **pacman** (сессия 12) — кеш-прокси Arch Linux (pacman). Путь
+  `/pacman/<remote-name>/<остальной-путь>`; `StorageKey` =
+  `cache/pacman/<remote-id>/<upstream-path>`. Классификация:
+  `*.pkg.tar.zst|.xz|.gz` и их `.sig` — immutable (content-addressed по
+  NEVRA в имени); репозитарные базы `{repo}.db`, `{repo}.files` и их
+  `.sig`, legacy `.db.tar.*` / `.files.tar.*` — mutable{TTL 5m}; публичные
+  ключи `keys/*` — mutable{TTL 1h}; прочее — conservative mutable{TTL 1m}.
+  Streaming-парсер `{repo}.db` (tar.zst → tar → desc) —
+  `mod/ecosystem/pacman/parse.go`, декомпресс-лимит 1GiB (zip-bomb guard);
+  переиспользуется зеркалом (сессия 11) для Enumerate: `{repo}.db` →
+  desc-записи → поле `%FILENAME%`. `Remote.Include` — список
+  `repo/arch` (например, `["core/x86_64", "extra/x86_64"]`); пустой —
+  ошибка (pacman не имеет корневого индекса репозиториев).
+- **apk** (сессия 12) — кеш-прокси Alpine Linux (apk). Путь
+  `/apk/<remote-name>/<остальной-путь>`; `StorageKey` =
+  `cache/apk/<remote-id>/<upstream-path>`. Классификация: `*.apk` —
+  immutable (content-addressed по имени+версии); `APKINDEX.tar.gz` и
+  `APKINDEX.json` (задел для v3) и их `.sig` — mutable{TTL 5m}; публичные
+  ключи `keys/*` — mutable{TTL 1h}; прочее — conservative mutable{TTL 1m}.
+  Streaming-парсер `APKINDEX.tar.gz` (gzip+tar → текст «K:V») —
+  `mod/ecosystem/apk/parse.go`, декомпресс-лимит 1GiB (zip-bomb guard);
+  переиспользуется зеркалом (сессия 11) для Enumerate: `APKINDEX` →
+  записи → поле `F:` (путь к .apk). `Remote.Include` — список архитектур
+  (например, `["x86_64", "aarch64"]`); пустой — ошибка (apk не имеет
+  корневого индекса архитектур).
 
 URL-префикс (`port.Ecosystem.URLPrefix()`) чаще совпадает с именем, но
 не всегда (rpm-md → «rpm»); роутер :29202 MATCHит `/{URLPrefix}/*` и

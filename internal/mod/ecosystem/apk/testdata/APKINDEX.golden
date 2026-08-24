@@ -1,0 +1,21 @@
+C:Q1EyXBDnDDu9U96x0J/s6OaFGhcTM=
+P:apk-example
+V:1.0-r0
+A:x86_64
+S:1024
+I:2048
+T:example
+U:https://example.com
+L:MIT
+o:apk-example
+m:Test Packager <test@example.com>
+F:x86_64/apk-example-1.0-r0.apk
+
+C:Q1LRd4Sb3Zk5xN9p0J/s6OaFGhcTM=
+P:second-pkg
+V:2.0-r1
+A:any
+S:512
+I:1024
+T:second
+F:x86_64/second-pkg-2.0-r1.apk
