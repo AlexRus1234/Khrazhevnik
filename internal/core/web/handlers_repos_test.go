@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"iter"
 	"net/http"
@@ -143,12 +144,27 @@ func newRepoEnv(t *testing.T) *repoEnv {
 		Repos: repos, Storage: storage, Audit: auditLog,
 		Tasks: tasks, Publish: publish, Clock: clock,
 	})
-	publicH := BuildPublicRouter(Deps{Log: nil, Version: "test", Cache: nil, Ecosystems: nil, Storage: storage, Repos: repos})
+	publicH := BuildPublicRouter(Deps{Log: nil, Version: "test", Cache: nil, Ecosystems: nil, Storage: storage, Repos: repos, Signer: &fakeKeySigner{}})
 	return &repoEnv{
 		admin: adminH, public: publicH, auth: a, repos: repos,
 		storage: storage, publish: publish, clock: clock,
 		jwtAdmin: jwtAdmin, jwtUser: jwtUser, jwtOther: jwtOther, apiAdmin: apiAdmin,
 	}
+}
+
+// fakeKeySigner — port.Signer для тестов публичного роутера: отдаёт
+// фиктивный armored-блок. Реальная подпись метаданных тестируется в
+// mod/sign/openpgp и mod/ecosystem/apt.
+type fakeKeySigner struct{}
+
+func (fakeKeySigner) Sign(context.Context, io.Reader) (io.Reader, error) {
+	return nil, errors.New("not used in /key.asc")
+}
+func (fakeKeySigner) SignDetached(context.Context, io.Reader) (io.Reader, error) {
+	return nil, errors.New("not used in /key.asc")
+}
+func (fakeKeySigner) PublicKey() ([]byte, error) {
+	return []byte("-----BEGIN PGP PUBLIC KEY BLOCK-----\nfake\n-----END PGP PUBLIC KEY BLOCK-----\n"), nil
 }
 
 func callRepo(env *repoEnv, method, path, body, bearer string) *httptest.ResponseRecorder {
@@ -397,5 +413,48 @@ func TestPublicRepoFileNotFound(t *testing.T) {
 	env.public.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusNotFound {
 		t.Errorf("public GET unknown repo = %d, want 404", rec2.Code)
+	}
+}
+
+func TestPublicRepoKey(t *testing.T) {
+	env := newRepoEnv(t)
+	createRepoViaAPI(t, env, "alice", 2)
+	// /repo/<existing>/key.asc — публичный ключ инстанса.
+	req := httptest.NewRequest(http.MethodGet, "/repo/alice/key.asc", nil)
+	rec := httptest.NewRecorder()
+	env.public.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET key.asc = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain", ct)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("BEGIN PGP PUBLIC KEY BLOCK")) {
+		t.Errorf("тело key.asc не armored: %q", rec.Body.String())
+	}
+}
+
+func TestPublicRepoKey_UnknownRepo404(t *testing.T) {
+	env := newRepoEnv(t)
+	req := httptest.NewRequest(http.MethodGet, "/repo/ghost/key.asc", nil)
+	rec := httptest.NewRecorder()
+	env.public.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET key.asc для несуществующего репо = %d, want 404", rec.Code)
+	}
+}
+
+func TestPublicRepoKey_NilSigner503(t *testing.T) {
+	// Без Signer (деградированный режим) /key.asc не регистрируется
+	// вообще — BuildPublicRouter пропускает роут. Проверяем что роут
+	// отсутствует: запрос уходит в 404 (chi default), а не в handler.
+	storage := testutil.NewFakeStorage(testutil.FixedClock(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)))
+	repos := testutil.NewFakeRepoStore()
+	h := BuildPublicRouter(Deps{Storage: storage, Repos: repos}) // Signer nil
+	req := httptest.NewRequest(http.MethodGet, "/repo/x/key.asc", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET key.asc без Signer = %d, want 404 (роут не зарегистрирован)", rec.Code)
 	}
 }

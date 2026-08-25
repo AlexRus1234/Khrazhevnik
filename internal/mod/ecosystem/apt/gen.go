@@ -81,13 +81,25 @@ func init() {
 	// Регистрация repo-адаптера в compile-time реестре: имя совпадает
 	// с именем экосистемы (apt). Фабрика без параметров: генератору
 	// нужен только Storage, который приходит в GenerateIndexes.
+	// Signer внедряется после сборки через SetSigner (wire type-assert'ит
+	// к SignerInjector) — nil = репо не подписывается (сессия 15).
 	registry.RegisterRepoAdapter(Name, func() (port.RepoAdapter, error) {
 		return &Generator{}, nil
 	})
 }
 
-// Generator реализует port.RepoAdapter для apt-репо.
-type Generator struct{}
+// Generator реализует port.RepoAdapter для apt-репо. Внедряемый через
+// port.SignerInjector подписчик включает эмиссию InRelease + Release.gpg
+// после Release; nil = репо не подписывается (сессия 15).
+type Generator struct {
+	signer port.Signer
+}
+
+// SetSigner внедряет подписчик метаданных: после Release генератор
+// эмитит InRelease (cleartext) и Release.gpg (detached бинарный).
+// nil — репо не подписывается (обратная совместимость, тесты без
+// ключа). Вызывается из wire (type-assert к port.SignerInjector).
+func (g *Generator) SetSigner(s port.Signer) { g.signer = s }
 
 // Name — имя экосистемы, совпадает с Adapter.Name.
 func (g *Generator) Name() string { return Name }
@@ -173,6 +185,44 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 		return fmt.Errorf("apt.gen: release: %w", err)
 	}
 	p.Update("write", repo.Name, 4, 4)
+
+	// Фаза 4 (опц.): подпись Release → InRelease (cleartext) + Release.gpg
+	// (detached, бинарный). Ключи в storage — lowercase (inrelease,
+	// release.gpg); apt просит InRelease/Release.gpg с заглавной, публичный
+	// роутер :29202 лоуэркейсит запрос при lookup'е. Подписывается ровно
+	// тот байтовый состав Release, что записан выше (инвариант: метаданные
+	// подписываются как есть, без переписывания — см. docs/ARCHITECTURE.md).
+	// InRelease/Release.gpg НЕ попадают в SHA256-блок Release (это подписи
+	// самого Release, их чексуммы в нём быть не могут — circular), что
+	// совпадает с поведением apt.
+	if g.signer != nil {
+		p.Update("sign", repo.Name, 0, 2)
+		inRelR, err := g.signer.Sign(ctx, bytes.NewReader(release))
+		if err != nil {
+			return fmt.Errorf("apt.gen: InRelease: %w", err)
+		}
+		inRel, err := io.ReadAll(inRelR)
+		if err != nil {
+			return fmt.Errorf("apt.gen: InRelease: чтение: %w", err)
+		}
+		if err := writeAtomic(ctx, storage, prefix+"/dists/"+repoDist+"/inrelease", inRel); err != nil {
+			return fmt.Errorf("apt.gen: InRelease: %w", err)
+		}
+		p.Update("sign", repo.Name, 1, 2)
+		relGpgR, err := g.signer.SignDetached(ctx, bytes.NewReader(release))
+		if err != nil {
+			return fmt.Errorf("apt.gen: Release.gpg: %w", err)
+		}
+		relGpg, err := io.ReadAll(relGpgR)
+		if err != nil {
+			return fmt.Errorf("apt.gen: Release.gpg: чтение: %w", err)
+		}
+		if err := writeAtomic(ctx, storage, prefix+"/dists/"+repoDist+"/release.gpg", relGpg); err != nil {
+			return fmt.Errorf("apt.gen: Release.gpg: %w", err)
+		}
+		p.Update("sign", repo.Name, 2, 2)
+		p.Log("apt.gen: индексы подписаны")
+	}
 	p.Log("apt.gen: индексы записаны")
 	return nil
 }

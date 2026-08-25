@@ -53,6 +53,7 @@ import (
 	_ "khrazhevnik/internal/mod/ecosystem/nix"
 	_ "khrazhevnik/internal/mod/ecosystem/pacman"
 	_ "khrazhevnik/internal/mod/ecosystem/rpmmmd"
+	_ "khrazhevnik/internal/mod/sign/openpgp"
 	_ "khrazhevnik/internal/mod/storage/fs"
 )
 
@@ -82,6 +83,11 @@ type App struct {
 	// отключён (нет mirror-remotes с SyncInterval>0). Stop вызывается
 	// из graceful shutdown каскада.
 	Scheduler *mirrorengine.Scheduler
+	// Signer — подписчик метаданных личных репозиториев (InRelease +
+	// Release.gpg для apt, сессия 15). nil в деградированном режиме
+	// (keygen не удался или модуль не слинкован): apt-репо работают
+	// без подписи (trusted=yes), /key.asc отдаёт 503.
+	Signer port.Signer
 }
 
 // Таймауты upstream-соединения: обрыв установки соединения и ожидания
@@ -150,7 +156,13 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	// собираются из compile-time реестра (только apt в M3; прочие —
 	// сессия 16). Отсутствие адаптера — не ошибка старта: upload падёт
 	// на ValidateObjectPath с UnsupportedError; reindex — то же.
-	publishAdapters := wireRepoAdapters()
+	// Signer — подписчик метаданных (openpgp, сессия 15): генерирует
+	// ключ инстанса в cfg.Signing.KeysDir на первом старте, грузит на
+	// повторных. nil в деградированном режиме (модуль не слинкован или
+	// keygen упал — логируем и работаем без подписи). Внедряется в
+	// RepoAdapter'ы через port.SignerInjector (v1 — только apt).
+	signer := wireSigner(cfg, log)
+	publishAdapters := wireRepoAdapters(signer)
 	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, systemClock{}, publishAdapters)
 	publishAPI := publishSyncer{engine: publishEngine, repos: catalog.Repos, tasks: tasks}
 	scheduler := mirrorengine.NewScheduler(mirrorEngine, catalog.Remotes, uuidRand{}, systemClock{}, cfg.Mirror.IntervalJitter.Duration)
@@ -176,14 +188,17 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		Mirror:         mirrorAPI,
 		Publish:        publishAPI,
 		Scheduler:      scheduler,
+		Signer:         signer,
 	}, nil
 }
 
 // wireRepoAdapters собирает RepoAdapter'ы из compile-time реестра по
 // именам известных экосистем. В M3 зарегистрирован только apt; прочие
 // возвращают ошибку при lookup (registry.RepoAdapter) и пропускаются.
-// Возвращает карту name → RepoAdapter для движка publish.
-func wireRepoAdapters() map[string]port.RepoAdapter {
+// signer (если не nil) внедряется в адаптеры, реализующие
+// port.SignerInjector (v1 — apt: InRelease + Release.gpg). Возвращает
+// карту name → RepoAdapter для движка publish.
+func wireRepoAdapters(signer port.Signer) map[string]port.RepoAdapter {
 	out := map[string]port.RepoAdapter{}
 	for _, name := range registry.Ecosystems() {
 		factory, err := registry.RepoAdapter(name)
@@ -194,9 +209,34 @@ func wireRepoAdapters() map[string]port.RepoAdapter {
 		if err != nil {
 			continue
 		}
+		if signer != nil {
+			if inj, ok := adapter.(port.SignerInjector); ok {
+				inj.SetSigner(signer)
+			}
+		}
 		out[name] = adapter
 	}
 	return out
+}
+
+// wireSigner собирает подписчик метаданных из compile-time реестра
+// (openpgp, сессия 15). Отсутствие регистрации или ошибка keygen —
+// не фатально: логируем и возвращаем nil (publish работает без
+// подписи, /key.asc отдаёт 503). Ключ генерируется на первом старте
+// в cfg.Signing.KeysDir, грузится на повторных.
+func wireSigner(cfg config.Config, log *slog.Logger) port.Signer {
+	factory, err := registry.Signer("openpgp")
+	if err != nil {
+		log.Error("signing: модуль openpgp не слинкован — репозитории без подписи", "err", err)
+		return nil
+	}
+	signer, err := factory(cfg.Signing)
+	if err != nil {
+		log.Error("signing: инициализация подписчика не удалась — репозитории без подписи", "err", err, "keys_dir", cfg.Signing.KeysDir)
+		return nil
+	}
+	log.Info("signing: ключ инстанса готов", "keys_dir", cfg.Signing.KeysDir)
+	return signer
 }
 
 // publishSyncer — обёртка publish.Engine под web.PublishAPI: запуск

@@ -100,3 +100,41 @@ func isImmutableRepoObject(ecosystem, path string) bool {
 	}
 	return false
 }
+
+// handleRepoKey отдаёт публичный ключ инстанса (armored OpenPGP) для
+// apt-клиентов: GET /repo/<name>/key.asc используется в sources.list
+// как signed-by=... Ключ один на все репо (v1 KISS, docs/ARCHITECTURE
+// §7), но URL привязан к имени репо: lookup RepoByName → 404 для
+// несуществующих имён, чтобы не плодить бесконтрольные endpoint'ы.
+// Content-Type text/plain (не application/pgp-keys): apt читает и так,
+// а браузеру человек прочтёт armored блок.
+func handleRepoKey(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "name")
+		if name == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := d.Repos.RepoByName(r.Context(), name); err != nil {
+			var nf *domain.NotFoundError
+			if errors.As(err, &nf) {
+				http.NotFound(w, r)
+				return
+			}
+			writeProxyError(w, err)
+			return
+		}
+		if d.Signer == nil {
+			http.Error(w, "signing unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		pub, err := d.Signer.PublicKey()
+		if err != nil {
+			writeProxyError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_, _ = w.Write(pub)
+	}
+}

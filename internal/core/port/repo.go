@@ -57,6 +57,16 @@ type RepoAdapter interface {
 	GenerateIndexes(ctx context.Context, repo domain.Repo, storage Storage, p RepoProgress) error
 }
 
+// SignerInjector — опциональная способность RepoAdapter'а принять
+// подписчик метаданных. wire (cmd) type-assert'ит каждый собранный
+// адаптер к этому интерфейсу и внедряет Signer в поддерживающие (v1 —
+// только apt: InRelease + Release.gpg; nix — сессия 16 через ed25519).
+// Адаптеры без подписи не реализуют его — wire пропускает. Держим в
+// port, т.к. это общий контракт генераторов, а не apt-специфика.
+type SignerInjector interface {
+	SetSigner(s Signer)
+}
+
 // RepoPrefix возвращает корневой префикс ключей личного репозитория в
 // едином namespace Storage: repo/<repo-id>/<ecosystem>. Слеши — от
 // функции, вызывающий дописывает только путь внутри репо (без ведущего

@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -31,6 +32,10 @@ import (
 	"testing"
 	"time"
 
+	gp "github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/armor"
+	"github.com/ProtonMail/go-crypto/openpgp/clearsign"
+	"github.com/ProtonMail/go-crypto/openpgp/packet"
 	"github.com/klauspost/compress/zstd"
 
 	"khrazhevnik/internal/core/domain"
@@ -545,5 +550,230 @@ func TestGenerateIndexesProgress(t *testing.T) {
 	}
 	if !slices.ContainsFunc(rec.logs, func(s string) bool { return strings.Contains(s, "индексы записаны") }) {
 		t.Errorf("нет строки завершения в логе: %v", rec.logs)
+	}
+}
+
+// fakeSigner — port.Signer на настоящем openpgp-ключе (roundtrip через
+// go-crypto), но без файлового keys_dir: ключ живёт в памяти. Создаётся
+// через openpgp.NewEntity напрямую — генератору метаданных всё равно,
+// как ключ получен; проверяем именно формат InRelease/Release.gpg и
+// валидность подписи под публичным ключом из PublicKey().
+type fakeSigner struct {
+	entity *gp.Entity
+	cfg    *packet.Config
+	pub    []byte
+}
+
+func newFakeSigner(t *testing.T) *fakeSigner {
+	t.Helper()
+	cfg := &packet.Config{
+		Algorithm:   packet.PubKeyAlgoEd25519,
+		DefaultHash: crypto.SHA256,
+	}
+	e, err := gp.NewEntity("fake", "", "fake@example", cfg)
+	if err != nil {
+		t.Fatalf("NewEntity: %v", err)
+	}
+	var buf bytes.Buffer
+	aw, err := armor.Encode(&buf, "PGP PUBLIC KEY BLOCK", nil)
+	if err != nil {
+		t.Fatalf("armor encode: %v", err)
+	}
+	if err := e.Serialize(aw); err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	_ = aw.Close()
+	return &fakeSigner{entity: e, cfg: cfg, pub: buf.Bytes()}
+}
+
+func (f *fakeSigner) Sign(_ context.Context, input io.Reader) (io.Reader, error) {
+	data, err := io.ReadAll(input)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	w, err := clearsign.Encode(&buf, f.entity.PrivateKey, f.cfg)
+	if err != nil {
+		return nil, err
+	}
+	_, _ = w.Write(data)
+	_ = w.Close()
+	return &buf, nil
+}
+
+func (f *fakeSigner) SignDetached(_ context.Context, input io.Reader) (io.Reader, error) {
+	var buf bytes.Buffer
+	if err := gp.DetachSign(&buf, f.entity, input, f.cfg); err != nil {
+		return nil, err
+	}
+	return &buf, nil
+}
+
+func (f *fakeSigner) PublicKey() ([]byte, error) {
+	out := make([]byte, len(f.pub))
+	copy(out, f.pub)
+	return out, nil
+}
+
+func (f *fakeSigner) keyring() gp.EntityList {
+	el, err := gp.ReadArmoredKeyRing(bytes.NewReader(f.pub))
+	if err != nil {
+		panic(err)
+	}
+	return el
+}
+
+func TestGenerateIndexesUnsigned_NoSignatureFiles(t *testing.T) {
+	// Без Signer InRelease/Release.gpg НЕ создаются — обратная
+	// совместимость с тестами/конфигами без ключа.
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	putDeb(t, storage, repo, "pool/main/f/foo.deb", "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: f\n")
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	for _, key := range []string{
+		"repo/1/apt/dists/stable/inrelease",
+		"repo/1/apt/dists/stable/release.gpg",
+	} {
+		if _, err := storage.Get(context.Background(), key); err == nil {
+			t.Errorf("без Signer создан %s", key)
+		}
+	}
+}
+
+func TestGenerateIndexesSigned_InReleaseAndReleaseGpg(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	putDeb(t, storage, repo, "pool/main/f/foo.deb", "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: f\n")
+
+	signer := newFakeSigner(t)
+	g := &Generator{signer: signer}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+
+	release := readStorage(t, storage, "repo/1/apt/dists/stable/release")
+	kring := signer.keyring()
+
+	// InRelease: cleartext-подпись Release; verify под публичным ключом.
+	inRel := readStorage(t, storage, "repo/1/apt/dists/stable/inrelease")
+	if !strings.Contains(string(inRel), "BEGIN PGP SIGNED MESSAGE") {
+		t.Errorf("InRelease не cleartext:\n%s", inRel)
+	}
+	block, _ := clearsign.Decode(inRel)
+	if block == nil {
+		t.Fatal("clearsign.Decode InRelease nil")
+	}
+	want := bytes.ReplaceAll(release, []byte("\n"), []byte("\r\n"))
+	if string(block.Bytes) != string(want) {
+		t.Errorf("InRelease payload ≠ Release (CRLF-каноникализed):\nwant %q\ngot  %q", want, block.Bytes)
+	}
+	if _, err := block.VerifySignature(kring, &packet.Config{}); err != nil {
+		t.Errorf("InRelease verify: %v", err)
+	}
+
+	// Release.gpg: бинарная detached-подпись Release; verify под ключом.
+	relGpg := readStorage(t, storage, "repo/1/apt/dists/stable/release.gpg")
+	if strings.Contains(string(relGpg), "BEGIN PGP") {
+		t.Errorf("Release.gpg должен быть бинарным, не armored")
+	}
+	if _, err := gp.CheckDetachedSignature(kring, bytes.NewReader(release), bytes.NewReader(relGpg), &packet.Config{}); err != nil {
+		t.Errorf("Release.gpg verify: %v", err)
+	}
+
+	// Подпись не должна совпадать с подписью ДРУГОГО Release (тампа):
+	// CheckDetachedSignature для подменённого payload обязана падать.
+	tampered := bytes.Replace(release, []byte("Suite: stable"), []byte("Suite: evil1"), 1)
+	if _, err := gp.CheckDetachedSignature(kring, bytes.NewReader(tampered), bytes.NewReader(relGpg), &packet.Config{}); err == nil {
+		t.Error("ожидалась ошибка verify для tampered Release")
+	}
+}
+
+func TestGenerateIndexesSigned_ProgressHasSignPhase(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	putDeb(t, storage, repo, "pool/main/f/foo.deb", "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: f\n")
+
+	g := &Generator{signer: newFakeSigner(t)}
+	rec := &recordingProgress{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, rec); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	phases := make(map[string]bool)
+	for _, u := range rec.updates {
+		phases[strings.SplitN(u, "/", 2)[0]] = true
+	}
+	if !phases["sign"] {
+		t.Errorf("фаза sign не отработала: %v", rec.updates)
+	}
+	if !slices.ContainsFunc(rec.logs, func(s string) bool { return strings.Contains(s, "подписаны") }) {
+		t.Errorf("нет строки подписи в логе: %v", rec.logs)
+	}
+}
+
+// errSignFail — синтетическая ошибка подписчика для error-веток генератора.
+var errSignFail = errors.New("synthetic signer failure")
+
+type failSigner struct{}
+
+func (failSigner) Sign(context.Context, io.Reader) (io.Reader, error) { return nil, errSignFail }
+func (failSigner) SignDetached(context.Context, io.Reader) (io.Reader, error) {
+	return nil, errSignFail
+}
+func (failSigner) PublicKey() ([]byte, error) { return nil, nil }
+
+// detachFailSigner: Sign ок (настоящем ключе), SignDetached падает —
+// чтобы покрыть error-ветку Release.gpg отдельно от InRelease.
+type detachFailSigner struct{ inner *fakeSigner }
+
+func (d detachFailSigner) Sign(ctx context.Context, r io.Reader) (io.Reader, error) {
+	return d.inner.Sign(ctx, r)
+}
+func (detachFailSigner) SignDetached(context.Context, io.Reader) (io.Reader, error) {
+	return nil, errSignFail
+}
+func (d detachFailSigner) PublicKey() ([]byte, error) { return d.inner.PublicKey() }
+
+func TestGenerateIndexesSigned_SignerSignErrorFails(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	putDeb(t, storage, repo, "pool/main/f/foo.deb", "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: f\n")
+
+	g := &Generator{signer: failSigner{}}
+	err := g.GenerateIndexes(context.Background(), repo, storage, nil)
+	if err == nil || !errors.Is(err, errSignFail) {
+		t.Fatalf("ожидалась errSignFail из Sign, got %v", err)
+	}
+}
+
+func TestGenerateIndexesSigned_SignerDetachErrorFails(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	putDeb(t, storage, repo, "pool/main/f/foo.deb", "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: f\n")
+
+	g := &Generator{signer: detachFailSigner{inner: newFakeSigner(t)}}
+	err := g.GenerateIndexes(context.Background(), repo, storage, nil)
+	if err == nil || !errors.Is(err, errSignFail) {
+		t.Fatalf("ожидалась errSignFail из SignDetached, got %v", err)
+	}
+}
+
+func TestSetSigner(t *testing.T) {
+	g := &Generator{}
+	if g.signer != nil {
+		t.Fatal("новый Generator уже имеет signer")
+	}
+	s := newFakeSigner(t)
+	g.SetSigner(s)
+	if g.signer != s {
+		t.Error("SetSigner не сохранил signer")
 	}
 }

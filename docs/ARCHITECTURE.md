@@ -196,7 +196,20 @@ type MetaFetcher interface {
   label=repo.Name); `port.RepoAdapter.GenerateIndexes` — экосистемный
   генератор (apt в сессии 14, rpm-md/pacman/apk/nix — сессия 16);
   атомарность v1 — перезапись ключей после полной генерации staging,
-  полный atomic-swap вместе с s3 — сессия 17, подпись — сессия 15.
+  полный atomic-swap вместе с s3 — сессия 17;
+- подпись метаданных (сессия 15): один ключ инстанса (ed25519 OpenPGP)
+  генерируется в `signing.keys_dir` на первом старте, грузится на
+  повторных (опц. passphrase через `KHRZ_SIGNING__PASSPHRASE`).
+  `port.Signer` внедряется в `RepoAdapter` через `port.SignerInjector`
+  (v1 — только apt): после `Release` эмитятся `InRelease` (cleartext) и
+  `Release.gpg` (detached, бинарный) — подписывается ровно тот байтовый
+  состав `Release`, что записан в Storage (ни байта переписывания).
+  `InRelease`/`Release.gpg` НЕ попадают в SHA256-блок `Release`
+  (подписи самого Release — circular). Публичный ключ — `GET /repo/<name>/key.asc`
+  на :29202. v1 — ключ один на все репо; per-repo ключи и per-repo
+  `signed=false` — не-цели (KISS). nix narinfo-подпись (ed25519, формат
+  `name:pubkey:sig`) — задел сессии 16 (`mod/sign/ed25519`), живёт вне
+  `port.Signer` (своя модель подписи).
 
 ## 5. Namespace хранения
 

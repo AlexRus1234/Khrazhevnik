@@ -60,6 +60,10 @@ type Deps struct {
 	// Publish — обёртка движка publish для /repos/{id}/reindex (сессия 14);
 	// nil в деградированном режиме — handleReindexRepo отдаёт 503.
 	Publish PublishAPI
+	// Signer — подписчик метаданных личных репозиториев (сессия 15):
+	// отдаёт публичный ключ через GET /repo/<name>/key.asc на публичном
+	// порту :29202. nil в деградированном режиме — /key.asc отдаёт 503.
+	Signer port.Signer
 	// MetricsHandler — /metrics (Prometheus); nil, если метрики
 	// отключены конфигом.
 	MetricsHandler http.Handler
@@ -99,6 +103,12 @@ func BuildPublicRouter(d Deps) http.Handler {
 		// репо (пакеты + сгенерированные индексы). RepoByName — lookup
 		// по имени (не id) для красивых URL клиентов.
 		r.Get("/repo/{name}/*", handleRepoFile(d))
+		// /repo/<name>/key.asc — публичный ключ инстанса для apt-клиентов
+		// (signed-by). Отдан вне wildcard-роута выше, т.к. ключ не лежит
+		// в Storage репо, а берётся из Signer напрямую. nil-Signer → 503.
+		if d.Signer != nil {
+			r.Get("/repo/{name}/key.asc", handleRepoKey(d))
+		}
 	}
 	if d.Cache != nil {
 		// wildcard в синтаксисе chi — «/*»; имя из {path...} (gin/echo)

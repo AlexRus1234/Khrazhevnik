@@ -43,6 +43,7 @@ import (
 
 	_ "khrazhevnik/internal/mod/db/sqlite"
 	_ "khrazhevnik/internal/mod/ecosystem/apt"
+	_ "khrazhevnik/internal/mod/sign/openpgp"
 	_ "khrazhevnik/internal/mod/storage/fs"
 
 	"khrazhevnik/internal/core/config"
@@ -55,11 +56,17 @@ import (
 	"khrazhevnik/internal/core/registry"
 	"khrazhevnik/internal/core/web"
 	"khrazhevnik/internal/testutil"
+
+	gp "github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/clearsign"
+	"github.com/ProtonMail/go-crypto/openpgp/packet"
 )
 
 // publishIntegrationEnv собирает live-сервер с реальным sqlite-каталогом
 // и apt repo-адаптером (через blank-import), как делает wireApp, но в тесте.
-func publishIntegrationEnv(t *testing.T) (*web.Server, string, string) {
+// signer (если не nil) внедряется в apt repo-адаптер (InRelease + Release.gpg)
+// и в публичный роутер (GET /repo/<name>/key.asc).
+func publishIntegrationEnv(t *testing.T, signer port.Signer) (*web.Server, string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	confPath := filepath.Join(dir, "khrazhevnik.toml")
@@ -105,12 +112,12 @@ func publishIntegrationEnv(t *testing.T) (*web.Server, string, string) {
 	}
 	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, http.DefaultClient, clock, cacheengine.Config{}, metrics.NewCache())
 	tasks := web.NewTaskRegistry(2, clock)
-	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, clock, wireRepoAdaptersForTest())
+	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, clock, wireRepoAdaptersForTest(signer))
 	publishAPI := publishSyncerTest{engine: publishEngine, repos: catalog.Repos, tasks: tasks}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := &web.Server{
 		PublicAddr:    cfg.Server.PublicListen,
-		PublicHandler: web.BuildPublicRouter(web.Deps{Log: log, Version: "test", Cache: cacheEngine, Storage: storage, Repos: catalog.Repos}),
+		PublicHandler: web.BuildPublicRouter(web.Deps{Log: log, Version: "test", Cache: cacheEngine, Storage: storage, Repos: catalog.Repos, Signer: signer}),
 		AdminAddr:     cfg.Server.AdminListen,
 		AdminHandler: web.BuildAdminRouter(web.Deps{
 			Log: log, Version: "test", Auth: authService, Cache: cacheEngine,
@@ -165,7 +172,8 @@ func (pp publishProgressTest) Update(phase, current string, processed, total int
 func (pp publishProgressTest) Log(line string) { pp.p.Log(line) }
 
 // wireRepoAdaptersForTest — копия wireRepoAdapters из cmd/wire.go.
-func wireRepoAdaptersForTest() map[string]port.RepoAdapter {
+// signer (если не nil) внедряется в адаптеры через port.SignerInjector.
+func wireRepoAdaptersForTest(signer port.Signer) map[string]port.RepoAdapter {
 	out := map[string]port.RepoAdapter{}
 	for _, name := range registry.Ecosystems() {
 		factory, err := registry.RepoAdapter(name)
@@ -175,6 +183,11 @@ func wireRepoAdaptersForTest() map[string]port.RepoAdapter {
 		adapter, err := factory()
 		if err != nil {
 			continue
+		}
+		if signer != nil {
+			if inj, ok := adapter.(port.SignerInjector); ok {
+				inj.SetSigner(signer)
+			}
 		}
 		out[name] = adapter
 	}
@@ -220,7 +233,7 @@ func buildDebIntegration(t *testing.T, control string) []byte {
 // setup admin → create repo → upload .deb → reindex → публичный GET
 // Packages парсится apt.Stanzas (свой парсер проверяет генератор).
 func TestPublishE2E(t *testing.T) {
-	srv, publicAddr, adminAddr := publishIntegrationEnv(t)
+	srv, publicAddr, adminAddr := publishIntegrationEnv(t, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -345,6 +358,182 @@ func TestPublishE2E(t *testing.T) {
 	// Cache-Control: immutable для pool/*.
 	if cc := debResp.Header.Get("Cache-Control"); !strings.Contains(cc, "immutable") {
 		t.Errorf("Cache-Control .deb = %q, want immutable", cc)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("сервер завершился с ошибкой: %v", err)
+	}
+}
+
+// openpgpSignerForTest собирает port.Signer через реестр (mod/sign/
+// openpgp) с keys_dir под t.TempDir(): ключ генерируется на первом
+// старте, как в продакшн-wire. Возвращает готовый Signer.
+func openpgpSignerForTest(t *testing.T) port.Signer {
+	t.Helper()
+	keysDir := filepath.Join(t.TempDir(), "keys")
+	factory, err := registry.Signer("openpgp")
+	if err != nil {
+		t.Fatalf("registry.Signer openpgp: %v (blank-import забыли?)", err)
+	}
+	signer, err := factory(config.Signing{KeysDir: keysDir})
+	if err != nil {
+		t.Fatalf("openpgp factory: %v", err)
+	}
+	return signer
+}
+
+// waitForReindex запускает reindex и polling /tasks/{id} до succeeded.
+func waitForReindex(t *testing.T, adminAddr, token string, repoID int64) {
+	t.Helper()
+	reindexURL := fmt.Sprintf("http://%s/api/v1/repos/%d/reindex", adminAddr, repoID)
+	reindexResp := post(t, reindexURL, "", token, 202)
+	var taskResp map[string]string
+	_ = json.Unmarshal(reindexResp, &taskResp)
+	taskID := taskResp["task_id"]
+	deadline := time.Now().Add(5 * time.Second)
+	state := ""
+	for time.Now().Before(deadline) {
+		taskBody := get(t, "http://"+adminAddr+"/api/v1/tasks/"+taskID, token, 200)
+		var task map[string]any
+		_ = json.Unmarshal(taskBody, &task)
+		state, _ = task["state"].(string)
+		if state == "succeeded" || state == "failed" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if state != "succeeded" {
+		t.Fatalf("reindex не завершился успешно, state=%s", state)
+	}
+}
+
+// TestPublishSignedE2E — полный цикл личного apt-репо с подписью:
+// ключ инстанса генерируется -> upload .deb -> reindex -> публичные
+// InRelease (cleartext) и Release.gpg (detached) верифицируются
+// go-crypto под ключом, отданным через GET /repo/<name>/key.asc.
+// Реальный apt-get update требует Debian-образа — это smoke-тест
+// сессии 18; здесь проверка подписей валидным OpenPGP-стеком.
+func TestPublishSignedE2E(t *testing.T) {
+	signer := openpgpSignerForTest(t)
+	srv, publicAddr, adminAddr := publishIntegrationEnv(t, signer)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- srv.Run(ctx) }()
+	waitHealthy(t, "http://"+adminAddr+"/healthz")
+
+	post(t, "http://"+adminAddr+"/api/v1/setup", `{"username":"admin","password":"password"}`, "", 201)
+	token := login(t, adminAddr, "admin", "password")
+
+	repoBody := `{"name":"alice","owner_id":1,"ecosystem":"apt","quota":{"max_bytes":0,"max_objects":0}}`
+	resp := post(t, "http://"+adminAddr+"/api/v1/repos", repoBody, token, 201)
+	var created map[string]any
+	if err := json.Unmarshal(resp, &created); err != nil {
+		t.Fatal(err)
+	}
+	repoID := int64(created["id"].(float64))
+
+	deb := buildDebIntegration(t, "Package: foo\nVersion: 1.0-1\nArchitecture: amd64\nDescription: test\n")
+	putURL := fmt.Sprintf("http://%s/api/v1/repos/%d/objects/pool/main/f/foo.deb", adminAddr, repoID)
+	req, _ := http.NewRequest(http.MethodPut, putURL, bytes.NewReader(deb))
+	req.ContentLength = int64(len(deb))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	putResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if putResp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(putResp.Body)
+		t.Fatalf("PUT .deb = %d, тело %s", putResp.StatusCode, b)
+	}
+	_ = putResp.Body.Close()
+
+	waitForReindex(t, adminAddr, token, repoID)
+
+	// GET /repo/alice/key.asc — публичный ключ инстанса.
+	keyURL := fmt.Sprintf("http://%s/repo/alice/key.asc", publicAddr)
+	keyResp, err := http.Get(keyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keyResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET key.asc = %d", keyResp.StatusCode)
+	}
+	keyBody, _ := io.ReadAll(keyResp.Body)
+	keyResp.Body.Close()
+	if !bytes.Contains(keyBody, []byte("BEGIN PGP PUBLIC KEY BLOCK")) {
+		t.Fatalf("key.asc не armored: %q", keyBody)
+	}
+	kring, err := gp.ReadArmoredKeyRing(bytes.NewReader(keyBody))
+	if err != nil {
+		t.Fatalf("ReadArmoredKeyRing key.asc: %v", err)
+	}
+	if len(kring) == 0 {
+		t.Fatal("пустой keyring из key.asc")
+	}
+
+	// GET Release (сырое тело — то, что подписано).
+	releaseURL := fmt.Sprintf("http://%s/repo/alice/dists/stable/Release", publicAddr)
+	releaseResp, err := http.Get(releaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if releaseResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET Release = %d", releaseResp.StatusCode)
+	}
+	releaseBody, _ := io.ReadAll(releaseResp.Body)
+	releaseResp.Body.Close()
+
+	// GET InRelease — cleartext-подпись Release; verify под ключом.
+	inRelURL := fmt.Sprintf("http://%s/repo/alice/dists/stable/InRelease", publicAddr)
+	inRelResp, err := http.Get(inRelURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inRelResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET InRelease = %d", inRelResp.StatusCode)
+	}
+	inRelBody, _ := io.ReadAll(inRelResp.Body)
+	inRelResp.Body.Close()
+	if !bytes.Contains(inRelBody, []byte("BEGIN PGP SIGNED MESSAGE")) {
+		t.Fatalf("InRelease не cleartext: %q", inRelBody[:min(80, len(inRelBody))])
+	}
+	block, _ := clearsign.Decode(inRelBody)
+	if block == nil {
+		t.Fatal("clearsign.Decode InRelease nil")
+	}
+	want := bytes.ReplaceAll(releaseBody, []byte("\n"), []byte("\r\n"))
+	if string(block.Bytes) != string(want) {
+		t.Errorf("InRelease payload ≠ Release (CRLF-каноникализed)")
+	}
+	if _, err := block.VerifySignature(kring, &packet.Config{}); err != nil {
+		t.Errorf("InRelease verify под key.asc: %v", err)
+	}
+
+	// GET Release.gpg — бинарная detached-подпись Release; verify.
+	relGpgURL := fmt.Sprintf("http://%s/repo/alice/dists/stable/Release.gpg", publicAddr)
+	relGpgResp, err := http.Get(relGpgURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relGpgResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET Release.gpg = %d", relGpgResp.StatusCode)
+	}
+	relGpgBody, _ := io.ReadAll(relGpgResp.Body)
+	relGpgResp.Body.Close()
+	if bytes.Contains(relGpgBody, []byte("BEGIN PGP")) {
+		t.Errorf("Release.gpg должен быть бинарным, не armored")
+	}
+	if _, err := gp.CheckDetachedSignature(kring, bytes.NewReader(releaseBody), bytes.NewReader(relGpgBody), &packet.Config{}); err != nil {
+		t.Errorf("Release.gpg verify под key.asc: %v", err)
+	}
+
+	// Tamper: та же сигнатура, подменённый Release — verify обязан упасть.
+	tampered := bytes.Replace(releaseBody, []byte("Suite: stable"), []byte("Suite: evil1"), 1)
+	if _, err := gp.CheckDetachedSignature(kring, bytes.NewReader(tampered), bytes.NewReader(relGpgBody), &packet.Config{}); err == nil {
+		t.Error("ожидалась ошибка verify для tampered Release")
 	}
 
 	cancel()
