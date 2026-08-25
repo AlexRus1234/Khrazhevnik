@@ -59,6 +59,9 @@ type TokenStore interface {
 type RepoStore interface {
 	CreateRepo(ctx context.Context, r domain.Repo) (domain.Repo, error)
 	Repo(ctx context.Context, id int64) (domain.Repo, error)
+	// RepoByName — lookup по имени для публичного роутера :29202
+	// (GET /repo/<name>/<путь>); имена уникальны в таблице repos.
+	RepoByName(ctx context.Context, name string) (domain.Repo, error)
 	Repos(ctx context.Context) ([]domain.Repo, error)
 	UpdateRepo(ctx context.Context, r domain.Repo) error
 	DeleteRepo(ctx context.Context, id int64) error

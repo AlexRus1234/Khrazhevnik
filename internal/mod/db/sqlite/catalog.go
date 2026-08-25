@@ -70,6 +70,7 @@ const (
 		VALUES (?, ?, ?, ?, ?, ?) RETURNING id`
 	sqlRepoSelect = `SELECT id, name, owner_id, ecosystem, quota_bytes, quota_files, created_at FROM repos`
 	sqlRepoByID   = sqlRepoSelect + ` WHERE id = ?`
+	sqlRepoByName = sqlRepoSelect + ` WHERE name = ?`
 	sqlRepoAll    = sqlRepoSelect + ` ORDER BY id`
 	sqlRepoUpdate = `UPDATE repos SET name = ?, owner_id = ?, ecosystem = ?, quota_bytes = ?, quota_files = ? WHERE id = ?`
 	sqlRepoDelete = `DELETE FROM repos WHERE id = ?`
@@ -333,6 +334,17 @@ func (s *Store) Repo(ctx context.Context, id int64) (domain.Repo, error) {
 	})
 	if err != nil {
 		return domain.Repo{}, mapRead(err, "репозиторий", strconv.FormatInt(id, 10))
+	}
+	return r, nil
+}
+
+// RepoByName возвращает репозиторий по имени (для публичного роутера).
+func (s *Store) RepoByName(ctx context.Context, name string) (domain.Repo, error) {
+	r, err := call(ctx, s, func() (domain.Repo, error) {
+		return scanRepo(s.db.QueryRowContext(ctx, sqlRepoByName, name))
+	})
+	if err != nil {
+		return domain.Repo{}, mapRead(err, "репозиторий", name)
 	}
 	return r, nil
 }

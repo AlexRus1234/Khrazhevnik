@@ -266,6 +266,17 @@ func (s *FakeRepoStore) Repo(_ context.Context, id int64) (domain.Repo, error) {
 	return r, nil
 }
 
+// RepoByName возвращает репозиторий по имени (для публичного роутера).
+func (s *FakeRepoStore) RepoByName(_ context.Context, name string) (domain.Repo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.byName[name]
+	if !ok {
+		return domain.Repo{}, &domain.NotFoundError{What: "репозиторий", Key: name}
+	}
+	return s.byID[id], nil
+}
+
 // Repos отдаёт все репозитории по возрастанию ID.
 func (s *FakeRepoStore) Repos(_ context.Context) ([]domain.Repo, error) {
 	s.mu.Lock()

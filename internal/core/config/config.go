@@ -98,6 +98,15 @@ type Mirror struct {
 	MaxBandwidth ByteSize `toml:"max_bandwidth"`
 }
 
+// Publish — параметры личных репозиториев (сессия 14): лимит одного
+// загружаемого объекта и дефолтная квота нового репо (админ может
+// переопределить в POST /api/v1/repos). Нулевая квота = без лимита.
+type Publish struct {
+	MaxObjectSize     ByteSize `toml:"max_object_size"`
+	DefaultQuotaBytes ByteSize `toml:"default_quota_bytes"`
+	DefaultQuotaFiles int64    `toml:"default_quota_files"`
+}
+
 // Signing — каталог ключей подписи (сессия 15).
 type Signing struct {
 	KeysDir string `toml:"keys_dir"`
@@ -122,6 +131,7 @@ type Config struct {
 	Auth      Auth                 `toml:"auth"`
 	Cache     Cache                `toml:"cache"`
 	Mirror    Mirror               `toml:"mirror"`
+	Publish   Publish              `toml:"publish"`
 	Signing   Signing              `toml:"signing"`
 	Metrics   Metrics              `toml:"metrics"`
 	Ecosystem map[string]Ecosystem `toml:"ecosystem"`
@@ -140,7 +150,10 @@ const (
 	defaultNegTTL5xx    = 30 * time.Second
 	defaultWorkers      = 4
 	defaultJitter       = 10 * time.Minute
-	defaultMaxBandwidth = int64(0) // безлимит
+	defaultMaxBandwidth = int64(0)       // безлимит
+	defaultPublishMax   = int64(1 << 30) // 1 GiB на один объект
+	defaultQuotaBytes   = int64(5 << 30) // 5 GiB дефолт
+	defaultQuotaFiles   = 10000
 	defaultKeysDir      = "/var/lib/khrazhevnik/keys"
 )
 
@@ -162,6 +175,7 @@ func defaultConfig() Config {
 			NegativeTTL5xx: Duration{defaultNegTTL5xx},
 		},
 		Mirror:  Mirror{Workers: defaultWorkers, IntervalJitter: Duration{defaultJitter}, MaxBandwidth: ByteSize{defaultMaxBandwidth}},
+		Publish: Publish{MaxObjectSize: ByteSize{defaultPublishMax}, DefaultQuotaBytes: ByteSize{defaultQuotaBytes}, DefaultQuotaFiles: defaultQuotaFiles},
 		Signing: Signing{KeysDir: defaultKeysDir},
 		Metrics: Metrics{Enabled: true},
 		// Экосистемы v1 включены по умолчанию (M2 — все экосистемы):
@@ -243,6 +257,12 @@ func (c Config) validate() []error {
 	}
 	if c.Mirror.IntervalJitter.Duration <= 0 {
 		problems = append(problems, positiveField("mirror.interval_jitter"))
+	}
+	if c.Publish.MaxObjectSize.Bytes <= 0 {
+		problems = append(problems, positiveField("publish.max_object_size"))
+	}
+	if c.Publish.DefaultQuotaFiles < 0 {
+		problems = append(problems, errors.New("конфигурация: publish.default_quota_files: не может быть отрицательным"))
 	}
 	if c.Signing.KeysDir == "" {
 		problems = append(problems, emptyField("signing.keys_dir"))

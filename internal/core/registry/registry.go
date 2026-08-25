@@ -65,20 +65,28 @@ type EcosystemDeps struct {
 // срезы каталога и инфраструктуры, нужные адаптеру для работы.
 type EcosystemFactory = func(cfg config.Ecosystem, deps EcosystemDeps) (port.Ecosystem, error)
 
+// RepoAdapterFactory создаёт адаптер личного репозитория (mod/
+// ecosystem/* — gen.go). Без конфига: экосистемы personal-repo
+// переиспользуют то же имя, что и в ecosystem; генератор индексов
+// не зависит от remotes/clock (читает из Storage напрямую).
+type RepoAdapterFactory = func() (port.RepoAdapter, error)
+
 // state — закрытое глобальное состояние реестра. Единственное
 // разрешённое package-level состояние вне cmd: compile-time реестр
 // (init()-регистрация из mod/*) без него не собрать — см. AGENTS.md.
 type state struct {
-	mu        sync.RWMutex
-	storage   map[string]StorageFactory
-	db        map[string]DBFactory
-	ecosystem map[string]EcosystemFactory
+	mu          sync.RWMutex
+	storage     map[string]StorageFactory
+	db          map[string]DBFactory
+	ecosystem   map[string]EcosystemFactory
+	repoadapter map[string]RepoAdapterFactory
 }
 
 var s = &state{
-	storage:   map[string]StorageFactory{},
-	db:        map[string]DBFactory{},
-	ecosystem: map[string]EcosystemFactory{},
+	storage:     map[string]StorageFactory{},
+	db:          map[string]DBFactory{},
+	ecosystem:   map[string]EcosystemFactory{},
+	repoadapter: map[string]RepoAdapterFactory{},
 }
 
 // RegisterStorage регистрирует фабрику хранилища. Вызывается из
@@ -111,6 +119,17 @@ func RegisterEcosystem(name string, factory EcosystemFactory) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	registerLocked("экосистема", name, s.ecosystem, factory)
+}
+
+// RegisterRepoAdapter регистрирует фабрику адаптера личного репо
+// (mod/ecosystem/*/gen.go). Имя совпадает с именем экосистемы.
+func RegisterRepoAdapter(name string, factory RepoAdapterFactory) {
+	if factory == nil {
+		panic("registry: регистрация repo-адаптера с nil-фабрикой: " + name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	registerLocked("repo-адаптер", name, s.repoadapter, factory)
 }
 
 // registerLocked — общее ядро регистрации; mu уже захвачена.
@@ -155,6 +174,18 @@ func Ecosystem(name string) (EcosystemFactory, error) {
 	return nil, unknownDriver("экосистема", name, sortedNames(s.ecosystem))
 }
 
+// RepoAdapter возвращает фабрику адаптера личного репо по имени
+// экосистемы. nil-фабрика на старте — publish-движок работает без
+// генератора (upload разрешён, reindex падает с UnsupportedError).
+func RepoAdapter(name string) (RepoAdapterFactory, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if fn, ok := s.repoadapter[name]; ok {
+		return fn, nil
+	}
+	return nil, unknownDriver("repo-адаптер", name, sortedNames(s.repoadapter))
+}
+
 // Ecosystems — отсортированные имена зарегистрированных экосистем
 // (для сборки адаптеров в wire и логов старта).
 func Ecosystems() []string {
@@ -169,7 +200,7 @@ func Ecosystems() []string {
 func Empty() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.storage) == 0 && len(s.db) == 0 && len(s.ecosystem) == 0
+	return len(s.storage) == 0 && len(s.db) == 0 && len(s.ecosystem) == 0 && len(s.repoadapter) == 0
 }
 
 // unknownDriver — дружелюбная ошибка lookup'а.

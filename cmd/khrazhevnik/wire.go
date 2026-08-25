@@ -25,6 +25,8 @@ import (
 	"context"
 	crand "crypto/rand"
 	"fmt"
+	"io"
+	"iter"
 	"log/slog"
 	"net"
 	"net/http"
@@ -33,9 +35,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"khrazhevnik/internal/core/config"
+	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/engine/auth"
 	cacheengine "khrazhevnik/internal/core/engine/cache"
 	mirrorengine "khrazhevnik/internal/core/engine/mirror"
+	publishengine "khrazhevnik/internal/core/engine/publish"
 	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/registry"
@@ -54,7 +58,7 @@ import (
 
 // App — собранные зависимости сервера; поля набирают движки
 // (аутентификация — сессия 05, кеш — 06, метрики и задачи — 09,
-// зеркало — 11).
+// зеркало — 11, publish — 14).
 type App struct {
 	Clock          port.Clock
 	Rand           port.Rand
@@ -70,6 +74,10 @@ type App struct {
 	// nil в деградированном режиме (без модулей); API-триггер sync
 	// отдаёт 503 mirror_unavailable.
 	Mirror web.MirrorSync
+	// Publish — API-адаптер движка publish для /repos/{id}/* (сессия 14):
+	// upload/delete/list + reindex через TaskRegistry. nil в деградированном
+	// режиме; хендлеры отдают 503 publish_unavailable.
+	Publish web.PublishAPI
 	// Scheduler — фоновый планировщик зеркал; nil, если авто-sync
 	// отключён (нет mirror-remotes с SyncInterval>0). Stop вызывается
 	// из graceful shutdown каскада.
@@ -138,6 +146,13 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	// Замыкание живёт в wire (cmd — место склейки), чтобы engine/mirror
 	// не зависел от web (depguard: engine → web запрещён архитектурно).
 	mirrorAPI := mirrorSyncer{engine: mirrorEngine, remotes: catalog.Remotes, tasks: tasks}
+	// publishEngine — движок личных репозиториев; RepoAdapter'ы
+	// собираются из compile-time реестра (только apt в M3; прочие —
+	// сессия 16). Отсутствие адаптера — не ошибка старта: upload падёт
+	// на ValidateObjectPath с UnsupportedError; reindex — то же.
+	publishAdapters := wireRepoAdapters()
+	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, systemClock{}, publishAdapters)
+	publishAPI := publishSyncer{engine: publishEngine, repos: catalog.Repos, tasks: tasks}
 	scheduler := mirrorengine.NewScheduler(mirrorEngine, catalog.Remotes, uuidRand{}, systemClock{}, cfg.Mirror.IntervalJitter.Duration)
 	if err := scheduler.Start(context.Background()); err != nil {
 		log.Error("mirror scheduler: старт не удался, авто-sync отключён", "err", err)
@@ -159,9 +174,83 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		Tasks:          tasks,
 		MetricsHandler: metricsHandler,
 		Mirror:         mirrorAPI,
+		Publish:        publishAPI,
 		Scheduler:      scheduler,
 	}, nil
 }
+
+// wireRepoAdapters собирает RepoAdapter'ы из compile-time реестра по
+// именам известных экосистем. В M3 зарегистрирован только apt; прочие
+// возвращают ошибку при lookup (registry.RepoAdapter) и пропускаются.
+// Возвращает карту name → RepoAdapter для движка publish.
+func wireRepoAdapters() map[string]port.RepoAdapter {
+	out := map[string]port.RepoAdapter{}
+	for _, name := range registry.Ecosystems() {
+		factory, err := registry.RepoAdapter(name)
+		if err != nil {
+			continue // не зарегистрирован — пропускаем (M3 — только apt)
+		}
+		adapter, err := factory()
+		if err != nil {
+			continue
+		}
+		out[name] = adapter
+	}
+	return out
+}
+
+// publishSyncer — обёртка publish.Engine под web.PublishAPI: запуск
+// reindex как фоновой задачи TaskRegistry (kind=reindex, label=
+// repo.Name). Живёт в wire (cmd) — единственное место, где core/engine
+// и core/web склеиваются; engine/publish не импортирует web (depguard).
+type publishSyncer struct {
+	engine *publishengine.Engine
+	repos  port.RepoStore
+	tasks  *web.TaskRegistry
+}
+
+// Upload делегирует движку publish (RBAC уже проверен middleware).
+func (p publishSyncer) Upload(ctx context.Context, repo domain.Repo, path string, size int64, body io.Reader, force bool) error {
+	return p.engine.Upload(ctx, repo, path, size, body, force)
+}
+
+// DeleteObject делегирует движку publish.
+func (p publishSyncer) DeleteObject(ctx context.Context, repo domain.Repo, path string) error {
+	return p.engine.Delete(ctx, repo, path)
+}
+
+// ListObjects делегирует движку publish (iter.Seq пробрасывается как
+// есть — горутина Storage.List под каптом).
+func (p publishSyncer) ListObjects(ctx context.Context, repo domain.Repo) iter.Seq[port.Meta] {
+	return p.engine.List(ctx, repo)
+}
+
+// Reindex запускает publish.Engine.Reindex через TaskRegistry.Start.
+func (p publishSyncer) Reindex(ctx context.Context, repoID int64) (string, error) {
+	repo, err := p.repos.Repo(ctx, repoID)
+	if err != nil {
+		return "", err
+	}
+	return p.tasks.Start("reindex", repo.Name, func(ctx context.Context, prog web.Progress) error {
+		// Перечитаем репо: квота/имя могли поменяться между запросом и
+		// запуском воркера; берём свежие в начале reindex.
+		fresh, err := p.repos.Repo(ctx, repoID)
+		if err != nil {
+			return fmt.Errorf("reindex: repo: %w", err)
+		}
+		return p.engine.Reindex(ctx, fresh, publishProgress{p: prog})
+	})
+}
+
+// publishProgress — адаптер web.Progress → publish.Progress: оба
+// интерфейса идентичны по сигнатуре (Update/Log), но это разные типы;
+// замыкание переводит вызовы без аллокаций (как mirrorProgress).
+type publishProgress struct{ p web.Progress }
+
+func (pp publishProgress) Update(phase, current string, processed, total int64) {
+	pp.p.Update(phase, current, processed, total)
+}
+func (pp publishProgress) Log(line string) { pp.p.Log(line) }
 
 // mirrorSyncer — обёртка mirror.Engine под web.MirrorSync: запуск
 // синхронизации remote как фоновой задачи TaskRegistry. Живёт в
