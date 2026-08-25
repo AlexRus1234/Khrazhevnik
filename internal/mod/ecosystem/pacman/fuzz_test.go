@@ -162,3 +162,43 @@ func FuzzParsePacmanDBZstd(f *testing.F) {
 		// ошибки тоже штатны — детерминизм проверен выше.
 	})
 }
+
+// FuzzParsePkgInfo гоняет парсер .PKGINFO на произвольных байтах
+// (байтовый текстовый формат — фаззинг обязателен, сессия 16).
+// Инварианты: не паниковать, не зацикливаться, детерминизм. Потолок
+// 64KiB: ввод > лимита → ErrPkgInfoTooLarge.
+func FuzzParsePkgInfo(f *testing.F) {
+	seeds := [][]byte{
+		{0},
+		[]byte(""),
+		[]byte("garbage not pkginfo"),
+		[]byte("# comment\npkgname = foo\npkgver = 1.0\n"),
+		[]byte("pkgname = foo\r\npkgver = 1.0\r\n"),
+		[]byte("no equals here\npkgname = bar\n"),
+		[]byte("license = MIT\nlicense = GPL\n"),
+		[]byte("size = not-a-number\nbuilddate = 5\n"),
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	// граничный корпус: ровно лимит и лимит+1.
+	f.Add(bytes.Repeat([]byte("a"), maxPkgInfoSize))
+	f.Add(bytes.Repeat([]byte("a"), maxPkgInfoSize+1))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		first, ferr := ParsePkgInfo(bytes.NewReader(data))
+		second, serr := ParsePkgInfo(bytes.NewReader(data))
+		if !sameErr(ferr, serr) {
+			t.Fatalf("недетерминированная ошибка: %v vs %v", ferr, serr)
+		}
+		if (first == nil) != (second == nil) {
+			t.Fatalf("недетерминированный nil")
+		}
+		if first == nil {
+			return
+		}
+		if first.Name != second.Name || first.Version != second.Version {
+			t.Fatalf("недетерминированный разбор: %+v vs %+v", first, second)
+		}
+	})
+}
