@@ -3,10 +3,14 @@ package middleware
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
+
+	"github.com/go-chi/chi/v5"
 
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/engine/auth"
+	"khrazhevnik/internal/core/port"
 )
 
 type userKey struct{}
@@ -156,4 +160,89 @@ func RequireAdminOrAPIToken(a *auth.Service) func(http.Handler) http.Handler {
 			session.ServeHTTP(w, r)
 		})
 	}
+}
+
+// RequireRepoAccess — auth-цепочка для owner-scoped publish-эндпоинтов
+// (/repos/{id}/objects/*, /repos/{id}/reindex). Принимает либо JWT-
+// сессию (тогда проверяем роль admin или владение репо), либо scoped
+// API-токен (тогда проверяем scope admin или `repo:<id>:write`). ID
+// репо берётся из chi URLParam "id" (роут зарегистрирован как
+// /repos/{id}/...). 401 — нет/невалидный bearer; 403 — нет прав.
+//
+// Владельцем считается user.ID == repo.OwnerID. Права repo_perms в
+// БД — отдельный гранулярный механизм, в v1 им выдаются scoped-токены
+// (Session-пользователь — это всегда админ или владелец, perms через
+// токен). Это покрывает RBAC-матрицу сессии 14.
+func RequireRepoAccess(a *auth.Service, repos port.RepoStore) func(http.Handler) http.Handler {
+	sessionMw := RequireSession(a)
+	tokenMw := RequireAPIToken(a)
+	return func(next http.Handler) http.Handler {
+		session := sessionMw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			u, ok := UserFromContext(r.Context())
+			if !ok {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			if u.Role == domain.RoleAdmin {
+				next.ServeHTTP(w, r)
+				return
+			}
+			repoID, ok := repoIDFromURL(r)
+			if !ok {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			repo, err := repos.Repo(r.Context(), repoID)
+			if err == nil && repo.OwnerID == u.ID {
+				next.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "forbidden", http.StatusForbidden)
+		}))
+		token := tokenMw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t, ok := TokenFromContext(r.Context())
+			if !ok {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			repoID, ok := repoIDFromURL(r)
+			if !ok {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			for _, sc := range t.Scopes {
+				if sc == domain.ScopeAdmin || sc.AllowsWrite(repoID) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			http.Error(w, "forbidden", http.StatusForbidden)
+		}))
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, ok := bearer(r)
+			if !ok {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if strings.HasPrefix(raw, "khz_") {
+				token.ServeHTTP(w, r)
+				return
+			}
+			session.ServeHTTP(w, r)
+		})
+	}
+}
+
+// repoIDFromURL достаёт {id} из chi URL и парсит в int64. ok=false
+// для отсутствующего/нечислового ID — middleware трактует как 403.
+func repoIDFromURL(r *http.Request) (int64, bool) {
+	raw := chi.URLParam(r, "id")
+	if raw == "" {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
 }

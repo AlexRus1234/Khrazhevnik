@@ -175,6 +175,29 @@ type MetaFetcher interface {
 - планировщик: per-remote тикер (SyncInterval ± jitter через port.Rand),
   один на процесс; mode=proxy — только ручной sync через API.
 
+Инварианты движка publish (сессия 14):
+
+- ключи личных репо — `repo/<repo-id>/<eco>/<путь>`; путь из запроса
+  проходит `domain.ValidateKey` + `port.RepoAdapter.ValidateObjectPath`
+  (apt — только `pool/*` с известными расширениями; `dists/*` — только
+  генератор, не клиентский upload);
+- immutable-ключи: перезапись существующего пути → 409 `conflict`;
+  `force=true` — только админ, с аудит-записью;
+- квоты — по сумме `Storage.List("repo/<id>/")` на каждый upload
+  (KISS v1: репо обычно единицы-десятки файлов; `repo_objects`-таблица
+  для чек-сумм — в сессии 17, когда s3 без List-обхода);
+- стриминг прямо в `Storage.Put`: `Content-Length` обязателен
+  (ограничение v1), сверка байт на лету; Abort при недокачке/перелимите
+  чистит `tmp/`;
+- RBAC: admin — везде; владелец (`repo.OwnerID == user.ID`) — upload/
+  delete/reindex/list; `repo:<id>:write` scoped-токен — то же; чтение
+  публичное (`GET /repo/<name>/*` на порту :29202);
+- генерация индексов — фоновой задачей TaskRegistry (kind=reindex,
+  label=repo.Name); `port.RepoAdapter.GenerateIndexes` — экосистемный
+  генератор (apt в сессии 14, rpm-md/pacman/apk/nix — сессия 16);
+  атомарность v1 — перезапись ключей после полной генерации staging,
+  полный atomic-swap вместе с s3 — сессия 17, подпись — сессия 15.
+
 ## 5. Namespace хранения
 
 - `cache/<eco>/<remote-id>/<путь-upstream>` — прокси/зеркало, byte-exact.

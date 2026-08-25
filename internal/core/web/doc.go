@@ -15,5 +15,5 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // Package web — HTTP-доставка: chi-роутеры, middleware, TaskRegistry,
-// go:embed SPA; тонкий слой без бизнес-логики.
+// embed-SPA (статика web-интерфейса); тонкий слой без бизнес-логики.
 package web

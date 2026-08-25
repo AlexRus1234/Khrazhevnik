@@ -83,6 +83,11 @@ negative_ttl_404 = "5m" ; negative_ttl_5xx = "30s"
 [mirror]
 workers = 4 ; interval_jitter = "10m"
 
+[publish]
+max_object_size = "1GiB"          # лимит одного загружаемого объекта
+default_quota_bytes = "5GiB"      # квота нового репо по умолчанию (0 = без лимита)
+default_quota_files = 10000       # то же по числу файлов (0 = без лимита)
+
 [signing]
 keys_dir = "/var/lib/khrazhevnik/keys"
 
@@ -153,6 +158,61 @@ enabled = true
 (массив строк: для apt — dists с опциональной компонентой, «stable»
 или «stable/main»; для rpm-md/nix — не используется).
 
+### Личные репозитории (publish, сессия 14)
+
+Upload пакетов пользователями, генерация apt-метаданных, публичная
+раздача из `repo/<id>/<eco>/<путь>`. Подпись InRelease/Release.gpg —
+сессия 15 (пока `Release` без подписи).
+
+| Метод | Путь                                      | Auth                              | Код | Назначение                          |
+|-------|-------------------------------------------|-----------------------------------|-----|-------------------------------------|
+| GET   | `/api/v1/repos`                           | admin                             | 200 | Список репозиториев                 |
+| POST  | `/api/v1/repos`                           | admin                             | 201/400/409 | Создание репо (`name`, `ecosystem`, `owner_id`, `quota`) |
+| GET   | `/api/v1/repos/{id}`                      | admin                             | 200/404 | Данные одного репо             |
+| PATCH | `/api/v1/repos/{id}`                      | admin                             | 200/404/409 | Изменение имени/квоты/владельца |
+| DELETE| `/api/v1/repos/{id}`                      | admin                             | 204/404 | Удаление репо (права каскадом) |
+| GET   | `/api/v1/repos/{id}/perms`                | admin                             | 200/404 | Список прав на запись          |
+| POST  | `/api/v1/repos/{id}/perms`                | admin                             | 204/400/404 | Выдать право записи (`user_id`) |
+| DELETE| `/api/v1/repos/{id}/perms/{userID}`       | admin                             | 204/404 | Отозвать право записи          |
+| GET   | `/api/v1/repos/{id}/objects`              | admin или владелец или `repo:<id>:write` | 200 | Листинг объектов репо |
+| PUT   | `/api/v1/repos/{id}/objects/*`            | admin или владелец или `repo:<id>:write` | 201/409/413 | Upload объекта (стрим, `Content-Length` обязателен) |
+| DELETE| `/api/v1/repos/{id}/objects/*`            | admin или владелец или `repo:<id>:write` | 204/404 | Удаление объекта |
+| POST  | `/api/v1/repos/{id}/reindex`              | admin или владелец или `repo:<id>:write` | 202/409/429 | Запуск reindex-задачи; 409 — дубль, 429 — лимит воркеров |
+
+Поля repo: `name` (slug), `ecosystem` (`apt` — единственный с
+генератором в M3), `owner_id` (существующий пользователь), `quota`
+(`{bytes, files}`, нулевое поле = без лимита). Загрузка: путь после
+`/objects/` — ключ внутри `repo/<id>/<eco>/...` (apt принимает только
+`pool/*` с известными расширениями; `dists/*` генерируются reindex).
+
+RBAC: admin — везде; владелец репо — upload/delete/reindex/list;
+`repo:<id>:write` scoped-токен — то же. Чтение публичное — без auth.
+
+Публичный роутер (:29202): `GET /repo/<repo-name>/<путь>` — lookup
+репо по имени (не id, для красивых URL клиентов), раздача объектов и
+сгенерированных индексов напрямую из Storage с `ETag`/`ModTime` от
+хранилища. Иммутабельные пакеты кешируются клиентами.
+
+Инвариант квоты: сумма `Storage.List("repo/<id>/")` считается при
+каждом upload (KISS v1: репо обычно единицы-десятки файлов); при
+превышении `quota.bytes`/`quota.files` — 413 `quota_exceeded`. Лимит
+одного объекта — `publish.max_object_size` (413 `too_large`).
+
+Стриминг: `Content-Length` обязателен (ограничение v1, в доках);
+несовпадение заявленного и фактического размера → abort + чистый
+`tmp/`. Перезапись существующего ключа → 409 `conflict` (force=false);
+`force=true` — только админ, с записью аудита.
+
+Генерация apt-индексов (`mod/ecosystem/apt/gen.go`, реализует
+`port.RepoAdapter`): обход `repo/<id>/apt/pool/` → для каждого `.deb`
+читается control-stanza через мини-читатель ar+tar+gz/zst (без
+распаковки data-секции — экономим байты и время); выход —
+`dists/stable/main/binary-amd64/Packages` (+ `.gz`), `by-hash/SHA256/*`,
+`dists/stable/Release` (Date/Suite/Components/Architectures/SHA256
+всех файлов). Атомарность v1: перезапись ключей по одному после
+полной генерации staging (окно рассинхрона ~секунды; полный atomic-
+swap — сессия 17 с s3). Полный swap с подписью — сессия 15.
+
 ### Фоновые задачи
 
 | Метод | Путь                       | Auth        | Код | Назначение                          |
@@ -197,8 +257,10 @@ stale_served,negative_hits,upstream_errors}_total`,
 ### Коды ошибок
 
 `not_found`, `conflict`, `forbidden`, `validation_error`, `too_large`,
-`stale`, `task_duplicate`, `task_limit`, `invalid_json`, `setup_already_done`,
-`invalid_setup_token`, `invalid_credentials`, `tasks_unavailable`, `internal`.
+`quota_exceeded`, `stale`, `task_duplicate`, `task_limit`, `invalid_json`,
+`setup_already_done`, `invalid_setup_token`, `invalid_credentials`,
+`tasks_unavailable`, `mirror_unavailable`, `publish_unavailable`, `unsupported`,
+`internal`.
 
 ## Экосистемы
 

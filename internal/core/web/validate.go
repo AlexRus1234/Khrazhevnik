@@ -65,6 +65,8 @@ func statusFor(err error) (int, string) {
 	var val *domain.ValidationError
 	var tooLarge *domain.TooLargeError
 	var stale *domain.StaleError
+	var quota *domain.QuotaExceededError
+	var unsup *domain.UnsupportedError
 	switch {
 	case err == nil:
 		return http.StatusOK, ""
@@ -78,8 +80,15 @@ func statusFor(err error) (int, string) {
 		return http.StatusBadRequest, "validation_error"
 	case errors.As(err, &tooLarge):
 		return http.StatusRequestEntityTooLarge, "too_large"
+	case errors.As(err, &quota):
+		// 413 Payload Too Large: квота — сумма по репо; 507 Insufficient
+		// Storage тоже подходит, но 413 даёт явный сигнал «слишком много»
+		// и не конфликтует с webdav-семантикой.
+		return http.StatusRequestEntityTooLarge, "quota_exceeded"
 	case errors.As(err, &stale):
 		return http.StatusConflict, "stale"
+	case errors.As(err, &unsup):
+		return http.StatusNotImplemented, "unsupported"
 	case errors.Is(err, ErrTaskDuplicate):
 		return http.StatusConflict, "task_duplicate"
 	case errors.Is(err, ErrTaskLimit):

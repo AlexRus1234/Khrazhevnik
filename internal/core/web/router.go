@@ -19,11 +19,14 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"iter"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/engine/auth"
 	"khrazhevnik/internal/core/engine/cache"
 	"khrazhevnik/internal/core/port"
@@ -32,7 +35,7 @@ import (
 
 // Deps — зависимости HTTP-доставки; растёт вместе с движками
 // (аутентификация — сессия 05, кеш — 06, задачи — 09, метрики — 09,
-// зеркало — 11).
+// зеркало — 11, publish — 14).
 type Deps struct {
 	Log        *slog.Logger
 	Version    string
@@ -42,12 +45,21 @@ type Deps struct {
 	Ecosystems map[string]port.Ecosystem
 	// Срезы каталога для админ-API (сессия 09): remotes CRUD, аудит.
 	Remotes port.RemoteStore
+	// Repos — CRUD личных репозиториев + lookup по имени для
+	// публичного роутера :29202 (сессия 14).
+	Repos port.RepoStore
+	// Storage — раздача объектов личных репо публичным роутером
+	// (GET /repo/<name>/* на :29202, сессия 14).
+	Storage port.Storage
 	Audit   port.AuditLog
 	// TaskRegistry — общая инфраструктура фоновых задач (sync, publish).
 	Tasks *TaskRegistry
 	// Mirror — движок синхронизации зеркал (сессия 11); nil в
 	// деградированном режиме — handleSyncRemote отдаёт 503.
 	Mirror MirrorSync
+	// Publish — обёртка движка publish для /repos/{id}/reindex (сессия 14);
+	// nil в деградированном режиме — handleReindexRepo отдаёт 503.
+	Publish PublishAPI
 	// MetricsHandler — /metrics (Prometheus); nil, если метрики
 	// отключены конфигом.
 	MetricsHandler http.Handler
@@ -64,13 +76,30 @@ type MirrorSync interface {
 	Sync(ctx context.Context, remoteID int64) (taskID string, err error)
 }
 
-// BuildPublicRouter — публичный слушатель (:29202): /healthz и, с
-// сессии 06, раздача пакетов экосистем.
+// PublishAPI — тонкий срез publish.Engine для /repos/{id}/* (сессия 14):
+// upload/delete/list объектов и запуск reindex как фоновой задачи
+// TaskRegistry (kind=reindex, label=repo.Name). web не импортирует
+// engine-пакеты (depguard), только порт-совместимый срез.
+type PublishAPI interface {
+	Upload(ctx context.Context, repo domain.Repo, path string, size int64, body io.Reader, force bool) error
+	DeleteObject(ctx context.Context, repo domain.Repo, path string) error
+	ListObjects(ctx context.Context, repo domain.Repo) iter.Seq[port.Meta]
+	Reindex(ctx context.Context, repoID int64) (taskID string, err error)
+}
+
+// BuildPublicRouter — публичный слушатель (:29202): /healthz, раздача
+// пакетов экосистем (сессия 06) и объектов личных репо (сессия 14).
 func BuildPublicRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(RequestID)
 	r.Use(LogRequests(d.logger()))
 	r.Get("/healthz", handleHealthz)
+	if d.Storage != nil && d.Repos != nil {
+		// /repo/<name>/<путь...> — публичная раздача объектов личного
+		// репо (пакеты + сгенерированные индексы). RepoByName — lookup
+		// по имени (не id) для красивых URL клиентов.
+		r.Get("/repo/{name}/*", handleRepoFile(d))
+	}
 	if d.Cache != nil {
 		// wildcard в синтаксисе chi — «/*»; имя из {path...} (gin/echo)
 		// chi не понимает. Путь достаётся URLParam(r, "*").
@@ -135,6 +164,36 @@ func BuildAdminRouter(d Deps) http.Handler {
 				remotes.Patch("/{id}", handleUpdateRemote(d))
 				remotes.Delete("/{id}", handleDeleteRemote(d))
 				remotes.Post("/{id}/sync", handleSyncRemote(d))
+			})
+
+			// /repos — личные репозитории. admin-only CRUD/perms под
+			// adminAuth; upload/delete/reindex под RequireRepoAccess
+			// (admin|owner|repo:<id>:write). Group (не Route) — чтобы
+			// не клеймить корневой path суброутера, иначе GET
+			// /api/v1/repos/{id} из adminAuth-группы уйдёт в 404
+			// суброутера owner-scoped (у него нет Get("/")).
+			repoWrite := authmw.RequireRepoAccess(d.Auth, d.Repos)
+			api.Route("/repos", func(repos chi.Router) {
+				// admin-only: вся CRUD/perms под adminAuth+audit.
+				repos.With(adminAuth, auditInner).Group(func(admin chi.Router) {
+					admin.Get("/", handleListRepos(d))
+					admin.Post("/", handleCreateRepo(d))
+					admin.Get("/{id}", handleGetRepo(d))
+					admin.Patch("/{id}", handleUpdateRepo(d))
+					admin.Delete("/{id}", handleDeleteRepo(d))
+					admin.Get("/{id}/perms", handleListPerms(d))
+					admin.Post("/{id}/perms", handleGrantPerm(d))
+					admin.Delete("/{id}/perms/{userID}", handleRevokePerm(d))
+				})
+				// owner-scoped: objects + reindex под repoWrite+audit.
+				// Паттерны — длинее, чем admin-CRUD, не пересекаются с
+				// /repos/{id} (GET/PATCH/DELETE без хвоста).
+				repos.With(repoWrite, auditInner).Group(func(self chi.Router) {
+					self.Get("/{id}/objects", handleListObjects(d))
+					self.Put("/{id}/objects/*", handlePutObject(d))
+					self.Delete("/{id}/objects/*", handleDeleteObject(d))
+					self.Post("/{id}/reindex", handleReindexRepo(d))
+				})
 			})
 
 			// /tasks — снимки TaskRegistry; admin-only (операторская
