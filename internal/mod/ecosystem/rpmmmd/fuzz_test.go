@@ -103,3 +103,49 @@ func sameErr(a, b error) bool {
 	}
 	return a.Error() == b.Error()
 }
+
+// FuzzParseRPMHeader гоняет мини-парсер RPM-заголовков на произвольных
+// байтах (байтовый формат — фаззинг обязателен, см. сессию 16).
+// Инварианты: не паниковать, не зацикливаться (таймаут ловит), повторный
+// разбор тех же байт даёт тот же результат (детерминизм). Потолки
+// nindex/dataLen уже в парсере — фаззер не передаёт лимиты.
+func FuzzParseRPMHeader(f *testing.F) {
+	// Посев-корпус: валидный .rpm (buildRPM) + битые варианты.
+	seeds := [][]byte{
+		{0},
+		[]byte(""),
+		[]byte("not an rpm"),
+		// lead magic без продолжения.
+		{0xed, 0xab, 0xee, 0xdb},
+	}
+	// lead (magic + нули до 96 байт) без sig/main header — обрезка.
+	leadOnly := make([]byte, leadSize)
+	leadOnly[0], leadOnly[1], leadOnly[2], leadOnly[3] = 0xed, 0xab, 0xee, 0xdb
+	leadOnly[4] = 3
+	seeds = append(seeds, leadOnly)
+	// Валидный .rpm через buildRPM (тестовый helper gen_test.go).
+	seeds = append(seeds, buildRPM("foo", "1.0", "1", "x86_64", "test", 4096, 1724323200))
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		first, ferr := ParseRPMHeader(bytes.NewReader(data))
+		second, serr := ParseRPMHeader(bytes.NewReader(data))
+		if !sameErr(ferr, serr) {
+			t.Fatalf("недетерминированная ошибка: %v vs %v", ferr, serr)
+		}
+		if (first == nil) != (second == nil) {
+			t.Fatalf("недетерминированный nil: %v vs %v", first, second)
+		}
+		if first == nil {
+			return
+		}
+		if first.Name != second.Name || first.Version != second.Version ||
+			first.Release != second.Release || first.Arch != second.Arch ||
+			first.Summary != second.Summary || first.Size != second.Size ||
+			first.BuildTime != second.BuildTime || first.Epoch != second.Epoch {
+			t.Fatalf("недетерминированный разбор: %+v vs %+v", first, second)
+		}
+	})
+}
