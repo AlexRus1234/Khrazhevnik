@@ -24,11 +24,24 @@ import (
 	"io"
 )
 
-// Signer — источник detached/inline-подписи метаданных. Sign читает
-// input полностью и возвращает ридер с подписанными данными;
-// PublicKey — публичный ключ в формате реализации (armored OpenPGP
-// или база64 ed25519) для отдачи клиентам.
+// Signer — источник подписи метаданных личного репозитория. Реализации
+// — mod/sign/openpgp (apt/rpm-md/pacman/apk: InRelease + Release.gpg)
+// и mod/sign/ed25519 (nix narinfo, сессия 16).
+//
+// Sign возвращает cleartext-подпись input: читаемый текст с встроенной
+// OpenPGP-подписью (формат InRelease apt — apt-get update умеет только
+// такой inline-формат). Input вычитывается полностью: cleartext
+// требует знания всего сообщения перед эмиссией dash-escaped блока.
+//
+// SignDetached возвращает отдельную (detached) подпись input — бинарный
+// OpenPGP-сигнатурный пакет (формат Release.gpg apt: бинарный, не
+// armored — apt парсит именно бинарный). Потоковый: input передаётся
+// в подписант напрямую, без полной буферизации.
+//
+// PublicKey — armored публичный ключ для раздачи клиентам через
+// GET /repo/<name>/key.asc (публичный порт :29202).
 type Signer interface {
 	Sign(ctx context.Context, input io.Reader) (io.Reader, error)
+	SignDetached(ctx context.Context, input io.Reader) (io.Reader, error)
 	PublicKey() ([]byte, error)
 }

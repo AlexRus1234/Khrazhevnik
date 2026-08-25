@@ -71,6 +71,14 @@ type EcosystemFactory = func(cfg config.Ecosystem, deps EcosystemDeps) (port.Eco
 // не зависит от remotes/clock (читает из Storage напрямую).
 type RepoAdapterFactory = func() (port.RepoAdapter, error)
 
+// SignerFactory создаёт подписчик метаданных личных репозиториев
+// (mod/sign/openpgp — сессия 15). cfg — секция [signing]: keys_dir +
+// опциональная passphrase. Единственный продакшен-подписчик v1 —
+// openpgp (ed25519 для nix — сессия 16, живёт вне port.Signer). nil
+// от фабрики или отсутствие регистрации — publish работает без
+// подписи (apt с trusted=yes; /key.asc отдаёт 503).
+type SignerFactory = func(cfg config.Signing) (port.Signer, error)
+
 // state — закрытое глобальное состояние реестра. Единственное
 // разрешённое package-level состояние вне cmd: compile-time реестр
 // (init()-регистрация из mod/*) без него не собрать — см. AGENTS.md.
@@ -80,6 +88,7 @@ type state struct {
 	db          map[string]DBFactory
 	ecosystem   map[string]EcosystemFactory
 	repoadapter map[string]RepoAdapterFactory
+	signer      map[string]SignerFactory
 }
 
 var s = &state{
@@ -87,6 +96,7 @@ var s = &state{
 	db:          map[string]DBFactory{},
 	ecosystem:   map[string]EcosystemFactory{},
 	repoadapter: map[string]RepoAdapterFactory{},
+	signer:      map[string]SignerFactory{},
 }
 
 // RegisterStorage регистрирует фабрику хранилища. Вызывается из
@@ -130,6 +140,17 @@ func RegisterRepoAdapter(name string, factory RepoAdapterFactory) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	registerLocked("repo-адаптер", name, s.repoadapter, factory)
+}
+
+// RegisterSigner регистрирует фабрику подписчика метаданных
+// (mod/sign/openpgp). Единственная регистрация v1 — «openpgp».
+func RegisterSigner(name string, factory SignerFactory) {
+	if factory == nil {
+		panic("registry: регистрация подписчика с nil-фабрикой: " + name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	registerLocked("подписчик", name, s.signer, factory)
 }
 
 // registerLocked — общее ядро регистрации; mu уже захвачена.
@@ -186,6 +207,18 @@ func RepoAdapter(name string) (RepoAdapterFactory, error) {
 	return nil, unknownDriver("repo-адаптер", name, sortedNames(s.repoadapter))
 }
 
+// Signer возвращает фабрику подписчика по имени. Отсутствие
+// регистрации — не ошибка старта: publish работает без подписи
+// (вызывающий логирует и оставляет nil-Signer).
+func Signer(name string) (SignerFactory, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if fn, ok := s.signer[name]; ok {
+		return fn, nil
+	}
+	return nil, unknownDriver("подписчик", name, sortedNames(s.signer))
+}
+
 // Ecosystems — отсортированные имена зарегистрированных экосистем
 // (для сборки адаптеров в wire и логов старта).
 func Ecosystems() []string {
@@ -200,7 +233,7 @@ func Ecosystems() []string {
 func Empty() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.storage) == 0 && len(s.db) == 0 && len(s.ecosystem) == 0 && len(s.repoadapter) == 0
+	return len(s.storage) == 0 && len(s.db) == 0 && len(s.ecosystem) == 0 && len(s.repoadapter) == 0 && len(s.signer) == 0
 }
 
 // unknownDriver — дружелюбная ошибка lookup'а.

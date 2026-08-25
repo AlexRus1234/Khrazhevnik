@@ -107,9 +107,13 @@ type Publish struct {
 	DefaultQuotaFiles int64    `toml:"default_quota_files"`
 }
 
-// Signing — каталог ключей подписи (сессия 15).
+// Signing — каталог ключей подписи (сессия 15). Passphrase опциональна:
+// пусто = приватный ключ инстанса хранится в private.asc открыто; задано
+// = ключ шифруется S2K (AES-256). Источник — env KHRZ_SIGNING__PASSPHRASE
+// (file://-развёртка работает как для остальных секретов).
 type Signing struct {
-	KeysDir string `toml:"keys_dir"`
+	KeysDir    string `toml:"keys_dir"`
+	Passphrase string `toml:"passphrase"`
 }
 
 // Metrics — экспорт Prometheus.
