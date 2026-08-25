@@ -36,6 +36,9 @@ func resetForTesting(t *testing.T) {
 	s.storage = map[string]StorageFactory{}
 	s.db = map[string]DBFactory{}
 	s.ecosystem = map[string]EcosystemFactory{}
+	s.repoadapter = map[string]RepoAdapterFactory{}
+	s.signer = map[string]SignerFactory{}
+	s.narsigner = map[string]NarSignerFactory{}
 }
 
 func TestStorageRegisterAndLookup(t *testing.T) {
@@ -100,11 +103,29 @@ func TestEmpty(t *testing.T) {
 	}
 }
 
+func TestNarSignerRegisterAndLookup(t *testing.T) {
+	resetForTesting(t)
+	sentinel := errors.New("narboom")
+	RegisterNarSigner("ed25519", func(config.Signing) (port.NarSigner, error) { return nil, sentinel })
+
+	fn, err := NarSigner("ed25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, cerr := fn(config.Signing{}); !errors.Is(cerr, sentinel) {
+		t.Errorf("фабрика вернула %v, хочу sentinel", cerr)
+	}
+	if _, err := NarSigner("unknown"); err == nil || !strings.Contains(err.Error(), "доступны: ed25519") {
+		t.Errorf("lookup неизвестного nar-подписчика: %v", err)
+	}
+}
+
 func TestRegisterDuplicatesPanic(t *testing.T) {
 	resetForTesting(t)
 	storage := func(config.Storage) (port.Storage, error) { return nil, nil }
 	db := func(config.Database) (CatalogSet, error) { return CatalogSet{}, nil }
 	eco := func(config.Ecosystem, EcosystemDeps) (port.Ecosystem, error) { return nil, nil }
+	nar := func(config.Signing) (port.NarSigner, error) { return nil, nil }
 
 	cases := []struct {
 		name string
@@ -113,6 +134,7 @@ func TestRegisterDuplicatesPanic(t *testing.T) {
 		{"storage", func() { RegisterStorage("dup", storage) }},
 		{"db", func() { RegisterDB("dup", db) }},
 		{"ecosystem", func() { RegisterEcosystem("dup", eco) }},
+		{"nar", func() { RegisterNarSigner("dup", nar) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -137,6 +159,7 @@ func TestRegisterInvalidPanics(t *testing.T) {
 		{"nil-фабрика", func() { RegisterStorage("x", nil) }},
 		{"nil БД", func() { RegisterDB("x", nil) }},
 		{"nil экосистема", func() { RegisterEcosystem("x", nil) }},
+		{"nil nar", func() { RegisterNarSigner("x", nil) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

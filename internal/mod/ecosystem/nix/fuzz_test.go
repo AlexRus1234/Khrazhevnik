@@ -93,3 +93,93 @@ func FuzzParseNarinfo(f *testing.F) {
 		}
 	})
 }
+
+// FuzzResignNarinfo гоняет переподпись narinfo на произвольных байтах.
+// Инварианты (сессия 16): не паниковать, не зацикливаться; non-Sig
+// контент байт-точно сохраняется (stripSig(in) == stripSig(out)). Потолок
+// 16KiB: ввод > лимита → narinfo не обрабатывается (resignNarinfo
+// проверяет размер, но resignNarinfoBytes вызывается только для валидных;
+// здесь гоняем сам байт-уровень без размерного guard, поэтому ограничиваем
+// ввод фаззера 16KiB через seed-корпус и проверку длины).
+func FuzzResignNarinfo(f *testing.F) {
+	golden, err := os.ReadFile(filepath.Clean("testdata/narinfo.golden"))
+	if err != nil {
+		f.Fatalf("чтение посева: %v", err)
+	}
+	seeds := [][]byte{
+		{0},
+		[]byte(""),
+		[]byte("garbage"),
+		[]byte("URL: nar/" + narHash32 + ".nar.xz\n"),
+		[]byte("Sig: k:v==\n"),
+		[]byte("A: x\nB: y\nSig: old\nC: z\n"),
+		golden,
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+
+	signer := &stubNarSigner{}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		out := resignNarinfoBytes(data, signer)
+		// non-Sig контент обязан сохраниться (байт-точно, modulo trailing
+		// \n — resign всегда добавляет trailing \n для Sig-строки, даже
+		// если во входе его не было).
+		inStripped := bytes.TrimRight(stripSigForFuzz(data), "\n")
+		outStripped := bytes.TrimRight(stripSigForFuzz(out), "\n")
+		if !bytes.Equal(inStripped, outStripped) {
+			t.Fatalf("non-Sig контент изменился:\nin:  %q\nout: %q", inStripped, outStripped)
+		}
+		// ровно одна Sig-строка в результате (наш ключ инстанса).
+		sigCount := bytes.Count(out, []byte("\nSig:"))
+		if len(out) > 0 && bytes.HasPrefix(out, []byte("Sig:")) {
+			sigCount++
+		}
+		if sigCount != 1 {
+			t.Fatalf("Sig-строк в out = %d, хочу 1 (in=%d байт)", sigCount, len(data))
+		}
+		_ = sameErr // подавим unused, если ни один fuzz выше не звал
+	})
+}
+
+// stubNarSigner — детерминированный port.NarSigner для фаззинга. Sig
+// обязан быть однострочным (без встроенных \n), как у настоящего ed25519
+// (base64 не содержит \n) — иначе \n внутри sig-значения породил бы
+// «фантомные» строки при ре-разборе и сломал бы инвариант.
+type stubNarSigner struct{}
+
+func (stubNarSigner) Sign(msg []byte) string {
+	// hex от msg — детерминирован, \n-free (только 0-9a-f), имитирует
+	// base64-sig настоящего ed25519 (по формату, не по крипто-силе).
+	return "stub:AAAA:" + hexEncodeForFuzz(msg)
+}
+func (stubNarSigner) PubKeyB64() string { return "AAAA" }
+func (stubNarSigner) Name() string      { return "stub" }
+
+// hexEncodeForFuzz — hex-кодирование без \n (только 0-9a-f). Дубликат
+// hexEncode из publish_test.go (test-файлы одного пакета, но держим
+// независимым от порядка компиляции).
+func hexEncodeForFuzz(b []byte) string {
+	const hex = "0123456789abcdef"
+	out := make([]byte, len(b)*2)
+	for i, v := range b {
+		out[2*i] = hex[v>>4]
+		out[2*i+1] = hex[v&0xf]
+	}
+	return string(out)
+}
+
+// stripSigForFuzz — копия stripSigLines (publish_test.go) для fuzz-пакета;
+// test-файлы одного пакета, но чтобы не плодить зависимость от порядка
+// компиляции, дублируем (как sameErr дублируется).
+func stripSigForFuzz(content []byte) []byte {
+	lines := bytes.Split(content, []byte("\n"))
+	var out [][]byte
+	for _, l := range lines {
+		if !bytes.HasPrefix(l, []byte("Sig:")) {
+			out = append(out, l)
+		}
+	}
+	return bytes.Join(out, []byte("\n"))
+}

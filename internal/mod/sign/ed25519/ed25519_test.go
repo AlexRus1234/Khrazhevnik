@@ -19,6 +19,9 @@ package ed25519
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -175,4 +178,70 @@ func TestSign_DeterministicPerKey(t *testing.T) {
 	if s1.Sign(msg) != s2.Sign(msg) {
 		t.Error("подписи из одного ключа различаются")
 	}
+}
+
+func TestLoadOrGenerate_PersistsAcrossCalls(t *testing.T) {
+	dir := t.TempDir()
+	s1, err := LoadOrGenerate("khrazhevnik", dir)
+	if err != nil {
+		t.Fatalf("LoadOrGenerate (first): %v", err)
+	}
+	// Файл создан с правами 0600.
+	info, err := os.Stat(filepath.Join(dir, narKeyFile))
+	if err != nil {
+		t.Fatalf("ключевой файл не создан: %v", err)
+	}
+	// 0600 — только на POSIX; на Windows chmod no-op.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("права ключевого файла = %o, хочу 0600", info.Mode().Perm())
+	}
+	// Второй вызов — загружает тот же ключ (fingerprint стабилен).
+	s2, err := LoadOrGenerate("khrazhevnik", dir)
+	if err != nil {
+		t.Fatalf("LoadOrGenerate (second): %v", err)
+	}
+	if s1.PubKeyB64() != s2.PubKeyB64() {
+		t.Fatalf("pubkey изменился между вызовами: %s vs %s", s1.PubKeyB64(), s2.PubKeyB64())
+	}
+	// Подпись первого pubkey валидирует подпись второго (тот же ключ).
+	msg := []byte("store path narinfo")
+	ok, err := VerifyWithPubKey(msg, s1.Sign(msg), s2.PubKeyB64())
+	if err != nil || !ok {
+		t.Errorf("подпись s1 не валидируется pubkey s2: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestLoadOrGenerate_NameValidation(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := LoadOrGenerate("", dir); err == nil {
+		t.Error("пустое имя принято")
+	}
+	if _, err := LoadOrGenerate("bad:name", dir); err == nil {
+		t.Error("имя с ':' принято")
+	}
+	if _, err := LoadOrGenerate("k", ""); err == nil {
+		t.Error("пустой keys_dir принят")
+	}
+}
+
+func TestLoadOrGenerate_CorruptedFile(t *testing.T) {
+	dir := t.TempDir()
+	// Запишем файл неверной длины — загрузка упадёт.
+	if err := os.WriteFile(filepath.Join(dir, narKeyFile), []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOrGenerate("k", dir); err == nil {
+		t.Error("битый ключевой файл загружен без ошибки")
+	}
+}
+
+// Compile-time: Signer удовлетворяет port.NarSigner.
+func TestSignerImplementsNarSigner(t *testing.T) {
+	var _ interface {
+		Sign(msg []byte) string
+		PubKeyB64() string
+		Name() string
+	} = (*Signer)(nil)
+	// подавим unused-base64-warning, если предыдущие тести не трогают.
+	_ = base64.StdEncoding
 }

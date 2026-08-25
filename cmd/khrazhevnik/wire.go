@@ -53,6 +53,7 @@ import (
 	_ "khrazhevnik/internal/mod/ecosystem/nix"
 	_ "khrazhevnik/internal/mod/ecosystem/pacman"
 	_ "khrazhevnik/internal/mod/ecosystem/rpmmmd"
+	_ "khrazhevnik/internal/mod/sign/ed25519"
 	_ "khrazhevnik/internal/mod/sign/openpgp"
 	_ "khrazhevnik/internal/mod/storage/fs"
 )
@@ -88,6 +89,10 @@ type App struct {
 	// (keygen не удался или модуль не слинкован): apt-репо работают
 	// без подписи (trusted=yes), /key.asc отдаёт 503.
 	Signer port.Signer
+	// NarSigner — nix narinfo-подписчик (ed25519, сессия 16). nil в
+	// деградированном режиме: nix narinfo не переподписываются (отдаются
+	// как есть, подписи upstream валидны, если клиент им доверяет).
+	NarSigner port.NarSigner
 }
 
 // Таймауты upstream-соединения: обрыв установки соединения и ожидания
@@ -162,7 +167,8 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	// keygen упал — логируем и работаем без подписи). Внедряется в
 	// RepoAdapter'ы через port.SignerInjector (v1 — только apt).
 	signer := wireSigner(cfg, log)
-	publishAdapters := wireRepoAdapters(signer)
+	narSigner := wireNarSigner(cfg, log)
+	publishAdapters := wireRepoAdapters(signer, narSigner)
 	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, systemClock{}, publishAdapters)
 	publishAPI := publishSyncer{engine: publishEngine, repos: catalog.Repos, tasks: tasks}
 	scheduler := mirrorengine.NewScheduler(mirrorEngine, catalog.Remotes, uuidRand{}, systemClock{}, cfg.Mirror.IntervalJitter.Duration)
@@ -189,21 +195,25 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		Publish:        publishAPI,
 		Scheduler:      scheduler,
 		Signer:         signer,
+		NarSigner:      narSigner,
 	}, nil
 }
 
 // wireRepoAdapters собирает RepoAdapter'ы из compile-time реестра по
-// именам известных экосистем. В M3 зарегистрирован только apt; прочие
-// возвращают ошибку при lookup (registry.RepoAdapter) и пропускаются.
-// signer (если не nil) внедряется в адаптеры, реализующие
-// port.SignerInjector (v1 — apt: InRelease + Release.gpg). Возвращает
+// именам известных экосистем. В M3 зарегистрированы apt (сессия 14),
+// rpm-md/pacman/apk/nix (сессия 16); прочие возвращают ошибку при
+// lookup (registry.RepoAdapter) и пропускаются. signer (если не nil)
+// внедряется в адаптеры, реализующие port.SignerInjector (v1 — apt:
+// InRelease + Release.gpg; rpm-md/pacman/apk: detached индекс-sig).
+// narSigner (если не nil) внедряется в адаптеры, реализующие
+// port.NarSignerInjector (v1 — nix: переподпись narinfo). Возвращает
 // карту name → RepoAdapter для движка publish.
-func wireRepoAdapters(signer port.Signer) map[string]port.RepoAdapter {
+func wireRepoAdapters(signer port.Signer, narSigner port.NarSigner) map[string]port.RepoAdapter {
 	out := map[string]port.RepoAdapter{}
 	for _, name := range registry.Ecosystems() {
 		factory, err := registry.RepoAdapter(name)
 		if err != nil {
-			continue // не зарегистрирован — пропускаем (M3 — только apt)
+			continue // не зарегистрирован — пропускаем
 		}
 		adapter, err := factory()
 		if err != nil {
@@ -214,9 +224,34 @@ func wireRepoAdapters(signer port.Signer) map[string]port.RepoAdapter {
 				inj.SetSigner(signer)
 			}
 		}
+		if narSigner != nil {
+			if inj, ok := adapter.(port.NarSignerInjector); ok {
+				inj.SetNarSigner(narSigner)
+			}
+		}
 		out[name] = adapter
 	}
 	return out
+}
+
+// wireNarSigner собирает nix narinfo-подписчик из compile-time реестра
+// (ed25519, сессия 16). Отсутствие регистрации или ошибка — не фатально:
+// логируем и возвращаем nil (nix narinfo не переподписываются, отдаются
+// как есть). Ключ генерируется на первом старте в cfg.Signing.KeysDir
+// (файл nix-ed25519.key, 0600), грузится на повторных.
+func wireNarSigner(cfg config.Config, log *slog.Logger) port.NarSigner {
+	factory, err := registry.NarSigner("ed25519")
+	if err != nil {
+		log.Error("nix signing: модуль ed25519 не слинкован — narinfo не переподписываются", "err", err)
+		return nil
+	}
+	signer, err := factory(cfg.Signing)
+	if err != nil {
+		log.Error("nix signing: инициализация nar-подписчика не удалась — narinfo не переподписываются", "err", err, "keys_dir", cfg.Signing.KeysDir)
+		return nil
+	}
+	log.Info("nix signing: narinfo-ключ готов", "keys_dir", cfg.Signing.KeysDir, "pubkey", signer.PubKeyB64())
+	return signer
 }
 
 // wireSigner собирает подписчик метаданных из compile-time реестра

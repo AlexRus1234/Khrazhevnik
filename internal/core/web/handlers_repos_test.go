@@ -458,3 +458,73 @@ func TestPublicRepoKey_NilSigner503(t *testing.T) {
 		t.Errorf("GET key.asc без Signer = %d, want 404 (роут не зарегистрирован)", rec.Code)
 	}
 }
+
+// fakeNarKeySigner — port.NarSigner для тестов публичного роутера:
+// отдаёт фиктивный «name:pubkey-b64». Реальная narinfo-подпись
+// тестируется в mod/sign/ed25519 и mod/ecosystem/nix.
+type fakeNarKeySigner struct{}
+
+func (fakeNarKeySigner) Sign(_ []byte) string { return "test:test-pub:test-sig==" }
+func (fakeNarKeySigner) PubKeyB64() string    { return "test-pub" }
+func (fakeNarKeySigner) Name() string         { return "test" }
+
+// newRepoEnvWithNarSigner — repoEnv с публичным роутером, включающим
+// NarSigner (для /nix-key.asc). Пересобирает только public router env,
+// сохраняя storage/repos/auth/admin из newRepoEnv (чтобы createRepoViaAPI
+// через env.admin создавал репо в том же repos, что видит public router).
+func newRepoEnvWithNarSigner(t *testing.T) *repoEnv {
+	t.Helper()
+	env := newRepoEnv(t)
+	// Пересоберём public router с NarSigner, на тех же storage/repos.
+	env.public = BuildPublicRouter(Deps{
+		Log: nil, Version: "test", Cache: nil, Ecosystems: nil,
+		Storage: env.storage, Repos: env.repos,
+		Signer:    &fakeKeySigner{},
+		NarSigner: &fakeNarKeySigner{},
+	})
+	return env
+}
+
+func TestPublicRepoNixKey(t *testing.T) {
+	env := newRepoEnvWithNarSigner(t)
+	createRepoViaAPI(t, env, "alice", 2)
+	// /repo/<existing>/nix-key.asc — публичный narinfo-ключ инстанса.
+	req := httptest.NewRequest(http.MethodGet, "/repo/alice/nix-key.asc", nil)
+	rec := httptest.NewRecorder()
+	env.public.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET nix-key.asc = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain", ct)
+	}
+	// Формат trusted-public-keys: «name:pubkey-b64\n».
+	want := "test:test-pub\n"
+	if rec.Body.String() != want {
+		t.Errorf("тело nix-key.asc = %q, want %q", rec.Body.String(), want)
+	}
+}
+
+func TestPublicRepoNixKey_UnknownRepo404(t *testing.T) {
+	env := newRepoEnvWithNarSigner(t)
+	req := httptest.NewRequest(http.MethodGet, "/repo/ghost/nix-key.asc", nil)
+	rec := httptest.NewRecorder()
+	env.public.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET nix-key.asc для несуществующего репо = %d, want 404", rec.Code)
+	}
+}
+
+func TestPublicRepoNixKey_NilNarSigner404(t *testing.T) {
+	// Без NarSigner (деградированный режим) /nix-key.asc не
+	// регистрируется вообще — BuildPublicRouter пропускает роут.
+	storage := testutil.NewFakeStorage(testutil.FixedClock(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)))
+	repos := testutil.NewFakeRepoStore()
+	h := BuildPublicRouter(Deps{Storage: storage, Repos: repos}) // NarSigner nil
+	req := httptest.NewRequest(http.MethodGet, "/repo/x/nix-key.asc", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET nix-key.asc без NarSigner = %d, want 404 (роут не зарегистрирован)", rec.Code)
+	}
+}

@@ -138,3 +138,38 @@ func handleRepoKey(d Deps) http.HandlerFunc {
 		_, _ = w.Write(pub)
 	}
 }
+
+// handleRepoNixKey отдаёт публичный narinfo-ключ инстанса (ed25519,
+// формат «name:pubkey-b64», сессия 16) для nix-клиентов: GET /repo/
+// <name>/nix-key.asc добавляется в nix.conf trusted-public-keys.
+// Ключ один на все репо (v1 KISS), но URL привязан к имени репо:
+// lookup RepoByName → 404 для несуществующих имён. Content-Type
+// text/plain: браузеру человек прочтёт, nix-клиент читает «name:pubkey».
+func handleRepoNixKey(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "name")
+		if name == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := d.Repos.RepoByName(r.Context(), name); err != nil {
+			var nf *domain.NotFoundError
+			if errors.As(err, &nf) {
+				http.NotFound(w, r)
+				return
+			}
+			writeProxyError(w, err)
+			return
+		}
+		if d.NarSigner == nil {
+			http.Error(w, "nix signing unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		// Формат trusted-public-keys: «name:pubkey-b64» (pubkey — base64
+		// raw ed25519). nix.conf: trusted-public-keys = khrazhevnik:<pubkey>.
+		body := d.NarSigner.Name() + ":" + d.NarSigner.PubKeyB64() + "\n"
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_, _ = w.Write([]byte(body))
+	}
+}

@@ -79,6 +79,13 @@ type RepoAdapterFactory = func() (port.RepoAdapter, error)
 // подписи (apt с trusted=yes; /key.asc отдаёт 503).
 type SignerFactory = func(cfg config.Signing) (port.Signer, error)
 
+// NarSignerFactory создаёт nix narinfo-подписчик (mod/sign/ed25519 —
+// сессия 16, живёт вне port.Signer: своя, более простая модель подписи
+// «name:pubkey:signature»). cfg — секция [signing]: keys_dir (ключ
+// ed25519 персистится рядом с openpgp, отдельным файлом). nil от фабрики
+// или отсутствие регистрации — nix narinfo не переподписывается.
+type NarSignerFactory = func(cfg config.Signing) (port.NarSigner, error)
+
 // state — закрытое глобальное состояние реестра. Единственное
 // разрешённое package-level состояние вне cmd: compile-time реестр
 // (init()-регистрация из mod/*) без него не собрать — см. AGENTS.md.
@@ -89,6 +96,7 @@ type state struct {
 	ecosystem   map[string]EcosystemFactory
 	repoadapter map[string]RepoAdapterFactory
 	signer      map[string]SignerFactory
+	narsigner   map[string]NarSignerFactory
 }
 
 var s = &state{
@@ -97,6 +105,7 @@ var s = &state{
 	ecosystem:   map[string]EcosystemFactory{},
 	repoadapter: map[string]RepoAdapterFactory{},
 	signer:      map[string]SignerFactory{},
+	narsigner:   map[string]NarSignerFactory{},
 }
 
 // RegisterStorage регистрирует фабрику хранилища. Вызывается из
@@ -151,6 +160,17 @@ func RegisterSigner(name string, factory SignerFactory) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	registerLocked("подписчик", name, s.signer, factory)
+}
+
+// RegisterNarSigner регистрирует фабрику nix narinfo-подписчика
+// (mod/sign/ed25519 — сессия 16). Регистрация v1 — «ed25519».
+func RegisterNarSigner(name string, factory NarSignerFactory) {
+	if factory == nil {
+		panic("registry: регистрация nar-подписчика с nil-фабрикой: " + name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	registerLocked("nar-подписчик", name, s.narsigner, factory)
 }
 
 // registerLocked — общее ядро регистрации; mu уже захвачена.
@@ -219,6 +239,18 @@ func Signer(name string) (SignerFactory, error) {
 	return nil, unknownDriver("подписчик", name, sortedNames(s.signer))
 }
 
+// NarSigner возвращает фабрику nix narinfo-подписчика по имени.
+// Отсутствие регистрации — не ошибка старта: nix narinfo не
+// переподписывается (вызывающий логирует и оставляет nil).
+func NarSigner(name string) (NarSignerFactory, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if fn, ok := s.narsigner[name]; ok {
+		return fn, nil
+	}
+	return nil, unknownDriver("nar-подписчик", name, sortedNames(s.narsigner))
+}
+
 // Ecosystems — отсортированные имена зарегистрированных экосистем
 // (для сборки адаптеров в wire и логов старта).
 func Ecosystems() []string {
@@ -233,7 +265,7 @@ func Ecosystems() []string {
 func Empty() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.storage) == 0 && len(s.db) == 0 && len(s.ecosystem) == 0 && len(s.repoadapter) == 0 && len(s.signer) == 0
+	return len(s.storage) == 0 && len(s.db) == 0 && len(s.ecosystem) == 0 && len(s.repoadapter) == 0 && len(s.signer) == 0 && len(s.narsigner) == 0
 }
 
 // unknownDriver — дружелюбная ошибка lookup'а.

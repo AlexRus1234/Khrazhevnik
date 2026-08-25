@@ -201,15 +201,21 @@ type MetaFetcher interface {
   генерируется в `signing.keys_dir` на первом старте, грузится на
   повторных (опц. passphrase через `KHRZ_SIGNING__PASSPHRASE`).
   `port.Signer` внедряется в `RepoAdapter` через `port.SignerInjector`
-  (v1 — только apt): после `Release` эмитятся `InRelease` (cleartext) и
-  `Release.gpg` (detached, бинарный) — подписывается ровно тот байтовый
-  состав `Release`, что записан в Storage (ни байта переписывания).
+  (v1 — apt: InRelease + Release.gpg; rpm-md/pacman/apk: detached
+  индекс-sig через тот же OpenPGP Signer, сессия 16): после
+  `Release`/`repomd.xml`/`<repo>.db`/`APKINDEX.tar.gz` эмитится
+  `*.asc`/`*.sig` (detached, бинарный) — подписывается ровно тот байтовый
+  состав индекса, что записан в Storage (ни байта переписывания).
   `InRelease`/`Release.gpg` НЕ попадают в SHA256-блок `Release`
   (подписи самого Release — circular). Публичный ключ — `GET /repo/<name>/key.asc`
   на :29202. v1 — ключ один на все репо; per-repo ключи и per-repo
   `signed=false` — не-цели (KISS). nix narinfo-подпись (ed25519, формат
-  `name:pubkey:sig`) — задел сессии 16 (`mod/sign/ed25519`), живёт вне
-  `port.Signer` (своя модель подписи).
+  `name:pubkey:sig`) — `port.NarSigner` (живёт вне `port.Signer`: своя,
+  более простая модель подписи), внедряется в nix RepoAdapter через
+  `port.NarSignerInjector` (сессия 16): narinfo переподписывается по
+  строгим правилам (только поле Sig заменяется, остальное байт-точно;
+  golden-тест на дифф). Публичный narinfo-ключ — `GET /repo/<name>/nix-key.asc`
+  (формат `name:pubkey-b64`) на :29202.
 
 ## 5. Namespace хранения
 

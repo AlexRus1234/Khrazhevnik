@@ -64,6 +64,11 @@ type Deps struct {
 	// отдаёт публичный ключ через GET /repo/<name>/key.asc на публичном
 	// порту :29202. nil в деградированном режиме — /key.asc отдаёт 503.
 	Signer port.Signer
+	// NarSigner — nix narinfo-подписчик (ed25519, сессия 16): отдаёт
+	// публичный ключ (формат «name:pubkey-b64») через GET /repo/<name>/nix-key.asc
+	// на публичном порту :29202. nil в деградированном режиме —
+	// /nix-key.asc отдаёт 503. Живёт вне port.Signer (своя модель подписи).
+	NarSigner port.NarSigner
 	// MetricsHandler — /metrics (Prometheus); nil, если метрики
 	// отключены конфигом.
 	MetricsHandler http.Handler
@@ -103,6 +108,16 @@ func BuildPublicRouter(d Deps) http.Handler {
 		// репо (пакеты + сгенерированные индексы). RepoByName — lookup
 		// по имени (не id) для красивых URL клиентов.
 		r.Get("/repo/{name}/*", handleRepoFile(d))
+		// /repo/<name>/nix-key.asc — публичный narinfo-ключ инстанса
+		// (формат «name:pubkey-b64», сессия 16) для nix-клиентов
+		// (trusted-public-keys). Отдан вне wildcard-роута, т.к. ключ не
+		// лежит в Storage репо, а берётся из NarSigner напрямую.
+		// nil-NarSigner → 503. Регистрируется ДО /key.asc: chi v5
+		// приоритезирует статичные роуты над wildcard по порядку
+		// регистрации — более специфичные первыми.
+		if d.NarSigner != nil {
+			r.Get("/repo/{name}/nix-key.asc", handleRepoNixKey(d))
+		}
 		// /repo/<name>/key.asc — публичный ключ инстанса для apt-клиентов
 		// (signed-by). Отдан вне wildcard-роута выше, т.к. ключ не лежит
 		// в Storage репо, а берётся из Signer напрямую. nil-Signer → 503.

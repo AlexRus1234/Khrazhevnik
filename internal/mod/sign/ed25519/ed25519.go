@@ -32,8 +32,41 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
+
+	"khrazhevnik/internal/core/config"
+	"khrazhevnik/internal/core/port"
+	"khrazhevnik/internal/core/registry"
 )
+
+// narSignerName — метка ключа nix в sig-строке («khrazhevnik:pubkey:sig»).
+// Клиенты добавляют «khrazhevnik:<pubkey-b64>» в trusted-public-keys.
+// KISS v1: один ключ инстанса на все nix-репо (как у openpgp).
+const narSignerName = "khrazhevnik"
+
+// narKeyFile — имя файла приватного ключа ed25519 в keys_dir (рядом с
+// private.asc openpgp). Сырые 64 байта, права 0600.
+const narKeyFile = "nix-ed25519.key"
+
+func init() {
+	// Compile-time регистрация фабрики nar-подписчика в реестре: wire
+	// (cmd) находит по имени «ed25519» и вызывает с cfg.Signing. Ключ
+	// персистится в keys_dir/nix-ed25519.key (0600): первый старт —
+	// генерация, повторные — загрузка (fingerprint стабилен, чтобы
+	// trusted-public-keys клиентов не протухали между рестартами).
+	registry.RegisterNarSigner(narSignerKind, func(cfg config.Signing) (port.NarSigner, error) {
+		return LoadOrGenerate(narSignerName, cfg.KeysDir)
+	})
+}
+
+// narSignerKind — имя регистрации в реестре.
+const narSignerKind = "ed25519"
+
+// Compile-time: Signer реализует port.NarSigner (Sign/PubKeyB64/Name).
+var _ port.NarSigner = (*Signer)(nil)
 
 // Signer — ed25519 ключ инстанса для nix narinfo-подписи. PubKey —
 // base64 публичной части; Name — метка подписи (nix идентифицирует
@@ -141,4 +174,53 @@ func VerifyWithPubKey(msg []byte, sigLine, wantPubB64 string) (bool, error) {
 		return false, nil
 	}
 	return Verify(msg, sigLine)
+}
+
+// LoadOrGenerate готовит narinfo-ключ инстанса в keysDir. Первый старт:
+// генерация ed25519, экспорт сырого приватного ключа (64 байта) в
+// keysDir/nix-ed25519.key (0600). Повторный старт: загрузка 64 байт и
+// восстановление Signer'а. Стабильность pubkey между рестартами —
+// инвариант: клиенты доверяют pubkey в trusted-public-keys, смена ключа
+// инвалидировала бы все ранее подписанные narinfo. keysDir создаётся
+// с 0700 (как у openpgp).
+func LoadOrGenerate(name, keysDir string) (*Signer, error) {
+	if name == "" {
+		return nil, errors.New("ed25519: пустое имя ключа")
+	}
+	if strings.ContainsAny(name, ":") {
+		return nil, fmt.Errorf("ed25519: имя ключа %q содержит ':'", name)
+	}
+	if keysDir == "" {
+		return nil, errors.New("ed25519: пустой keys_dir")
+	}
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		return nil, fmt.Errorf("ed25519: keys_dir %s: %w", keysDir, err)
+	}
+	path := filepath.Join(keysDir, narKeyFile)
+	if f, err := os.Open(path); err == nil {
+		priv, rerr := io.ReadAll(f)
+		_ = f.Close()
+		if rerr != nil {
+			return nil, fmt.Errorf("ed25519: чтение %s: %w", path, rerr)
+		}
+		if len(priv) != ed25519.PrivateKeySize {
+			return nil, fmt.Errorf("ed25519: %s: размер %d, хочу %d", path, len(priv), ed25519.PrivateKeySize)
+		}
+		return FromKey(name, ed25519.PrivateKey(priv))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("ed25519: open %s: %w", path, err)
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("ed25519: генерация ключа: %w", err)
+	}
+	if err := os.WriteFile(path, priv, 0o600); err != nil {
+		return nil, fmt.Errorf("ed25519: запись %s: %w", path, err)
+	}
+	return &Signer{
+		name:   name,
+		priv:   priv,
+		pub:    pub,
+		pubB64: base64.StdEncoding.EncodeToString(pub),
+	}, nil
 }
