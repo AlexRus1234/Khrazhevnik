@@ -10,11 +10,14 @@
 *.out
 *.prof
 
-# Web: node-зависимости и сборка SPA (сессия 18). Embed-заглушка
-# internal/core/web/assets/index.html НЕ исключается — go:embed
-# требует её на этапе сборки; готовый UI подменяет её позже.
+# Web: node-зависимости и локальные сборки SPA. internal/core/web/assets/
+# тоже исключён: в git его нет (.gitignore, сессия 18.1), а Containerfile
+# собирает бандл заново в web-stage (FROM node:22-alpine AS web) и кладёт в
+# build-stage через COPY --from=web для //go:embed. Локальные артефакты
+# (make web-build) в образ не протекают — сборка воспроизводима.
 web/node_modules/
 web/dist/
+internal/core/web/assets/
 
 # Данные времени выполнения (контейнер пишет в /var/lib/khrazhevnik)
 /data/
