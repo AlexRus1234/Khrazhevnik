@@ -73,6 +73,57 @@ func TestUpsertNumberedDialect(t *testing.T) {
 	}
 }
 
+func TestPostgresPlaceholder(t *testing.T) {
+	d := Postgres{}
+	if got := d.Placeholder(1); got != "$1" {
+		t.Fatalf("Placeholder(1) = %q, хочу $1", got)
+	}
+	if got := d.Placeholder(12); got != "$12" {
+		t.Fatalf("Placeholder(12) = %q, хочу $12", got)
+	}
+}
+
+func TestPostgresUpsertSuffix(t *testing.T) {
+	got := Postgres{}.UpsertSuffix("key", []string{"etag", "size"})
+	want := "ON CONFLICT (key) DO UPDATE SET etag = EXCLUDED.etag, size = EXCLUDED.size"
+	if got != want {
+		t.Fatalf("UpsertSuffix =\n%s\nхочу\n%s", got, want)
+	}
+}
+
+func TestUpsertPostgres(t *testing.T) {
+	got := Upsert(Postgres{}, "object_index", "key",
+		[]string{"key", "etag", "size", "content_type", "last_modified", "expires_at"})
+	want := "INSERT INTO object_index (key, etag, size, content_type, last_modified, expires_at) " +
+		"VALUES ($1, $2, $3, $4, $5, $6) " +
+		"ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key, etag = EXCLUDED.etag, " +
+		"size = EXCLUDED.size, content_type = EXCLUDED.content_type, " +
+		"last_modified = EXCLUDED.last_modified, expires_at = EXCLUDED.expires_at"
+	if got != want {
+		t.Fatalf("Upsert =\n%s\nхочу\n%s", got, want)
+	}
+}
+
+func TestMariaDBPlaceholder(t *testing.T) {
+	d := MariaDB{}
+	if got := d.Placeholder(3); got != "?" {
+		t.Fatalf("Placeholder(3) = %q, хочу ?", got)
+	}
+}
+
+func TestUpsertMariaDB(t *testing.T) {
+	got := Upsert(MariaDB{}, "object_index", "key",
+		[]string{"key", "etag", "size", "content_type", "last_modified", "expires_at"})
+	want := "INSERT INTO object_index (key, etag, size, content_type, last_modified, expires_at) " +
+		"VALUES (?, ?, ?, ?, ?, ?) " +
+		"ON DUPLICATE KEY UPDATE key = VALUES(key), etag = VALUES(etag), " +
+		"size = VALUES(size), content_type = VALUES(content_type), " +
+		"last_modified = VALUES(last_modified), expires_at = VALUES(expires_at)"
+	if got != want {
+		t.Fatalf("Upsert =\n%s\nхочу\n%s", got, want)
+	}
+}
+
 func TestNow(t *testing.T) {
 	ts := time.Date(2026, 8, 21, 12, 34, 56, 0, time.UTC)
 	if got := Now(ts); got != 1787315696 {

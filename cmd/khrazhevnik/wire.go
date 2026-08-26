@@ -47,6 +47,8 @@ import (
 
 	// Модули: регистрация в compile-time реестре. Каждая новая
 	// экосистема/драйвер добавляется сюда одной строкой.
+	_ "khrazhevnik/internal/mod/db/mariadb"
+	_ "khrazhevnik/internal/mod/db/postgres"
 	_ "khrazhevnik/internal/mod/db/sqlite"
 	_ "khrazhevnik/internal/mod/ecosystem/apk"
 	_ "khrazhevnik/internal/mod/ecosystem/apt"

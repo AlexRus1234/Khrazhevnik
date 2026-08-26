@@ -16,22 +16,23 @@
 
 // Package dbtalk — общий мини-шим SQL-диалектов каталога (НЕ в mod):
 // один и тот же переносимый SQL из mod/db/* отличается только
-// плейсхолдерами и синтаксисом upsert. Сейчас здесь только sqlite;
-// postgres/mariadb добавят свои варианты в реестр диалектов (сессия 17).
+// плейсхолдерами и синтаксисом upsert. Реестр диалектов: SQLite
+// (modernc), Postgres (pgx), MariaDB (go-sql-driver).
 package dbtalk
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // Dialect — различия SQL-диалектов, достаточные для переносимого
-// каталога. Реализации — типы без состояния: реестр диалектов
-// (сессия 17) будет отображать имя драйвера → Dialect.
+// каталога. Реализации — типы без состояния: каждый адаптер БД
+// (mod/db/*) держит свой диалект и собирает через него upsert.
 type Dialect interface {
 	// Placeholder возвращает плейсхолдер аргумента номер n (с 1):
-	// sqlite — «?», postgres — «$n».
+	// sqlite/mariadb — «?», postgres — «$n».
 	Placeholder(n int) string
 	// UpsertSuffix — хвост INSERT после VALUES (…): как превратить
 	// конфликт уникальности key в обновление колонок cols.
@@ -51,6 +52,43 @@ func (SQLite) UpsertSuffix(key string, cols []string) string {
 		sets[i] = col + " = excluded." + col
 	}
 	return fmt.Sprintf("ON CONFLICT (%s) DO UPDATE SET %s", key, strings.Join(sets, ", "))
+}
+
+// Postgres — диалект postgres (pgx): нумерованные плейсхолдеры «$n» и
+// ON CONFLICT … DO UPDATE SET col=EXCLUDED.col (канонический регистр
+// postgres; lowercase excluded тоже валиден, но EXCLUDED — устоявшийся
+// стиль документации).
+type Postgres struct{}
+
+// Placeholder возвращает «$n» — нумерованные аргументы postgres.
+func (Postgres) Placeholder(n int) string { return "$" + strconv.Itoa(n) }
+
+// UpsertSuffix строит «ON CONFLICT (key) DO UPDATE SET col=EXCLUDED.col, …».
+func (Postgres) UpsertSuffix(key string, cols []string) string {
+	sets := make([]string, len(cols))
+	for i, col := range cols {
+		sets[i] = col + " = EXCLUDED." + col
+	}
+	return fmt.Sprintf("ON CONFLICT (%s) DO UPDATE SET %s", key, strings.Join(sets, ", "))
+}
+
+// MariaDB — диалект mariadb (go-sql-driver): «?» (позиционные, как
+// sqlite) и ON DUPLICATE KEY UPDATE col=VALUES(col). VALUES(col)
+// поддерживается и MySQL, и MariaDB (в MariaDB 11 устарел, но работает;
+// альтернатива AS new — MariaDB-специфика, её не используем ради
+// совместимости с MySQL-кластерами).
+type MariaDB struct{}
+
+// Placeholder возвращает «?» — позиционные аргументы mysql/mariadb.
+func (MariaDB) Placeholder(int) string { return "?" }
+
+// UpsertSuffix строит «ON DUPLICATE KEY UPDATE col=VALUES(col), …».
+func (MariaDB) UpsertSuffix(_ string, cols []string) string {
+	sets := make([]string, len(cols))
+	for i, col := range cols {
+		sets[i] = col + " = VALUES(" + col + ")"
+	}
+	return "ON DUPLICATE KEY UPDATE " + strings.Join(sets, ", ")
 }
 
 // Upsert собирает полный INSERT-upsert по диалекту: таблица table,

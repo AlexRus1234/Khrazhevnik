@@ -1,0 +1,94 @@
+// Хражевник — кеш-прокси и зеркало linux-репозиториев
+// Copyright (C) 2026 AlexRus1234
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+package mariadb
+
+import (
+	"database/sql"
+	"errors"
+	"testing"
+
+	"github.com/go-sql-driver/mysql"
+
+	"khrazhevnik/internal/core/domain"
+	"khrazhevnik/internal/core/port"
+)
+
+// Компиляция срезов порта: Store обязан реализовать весь каталог.
+var (
+	_ port.UserStore   = (*Store)(nil)
+	_ port.TokenStore  = (*Store)(nil)
+	_ port.RepoStore   = (*Store)(nil)
+	_ port.RemoteStore = (*Store)(nil)
+	_ port.JobStore    = (*Store)(nil)
+	_ port.AuditLog    = (*Store)(nil)
+	_ port.ObjectIndex = (*Store)(nil)
+)
+
+func TestObjectMetaUpsertSQL(t *testing.T) {
+	got := objectMetaUpsertSQL()
+	want := "INSERT INTO object_index (`key`, storage_key, etag, size, content_type, last_modified, expires_at) " +
+		"VALUES (?, ?, ?, ?, ?, ?, ?) " +
+		"ON DUPLICATE KEY UPDATE `key` = VALUES(`key`), storage_key = VALUES(storage_key), " +
+		"etag = VALUES(etag), size = VALUES(size), content_type = VALUES(content_type), " +
+		"last_modified = VALUES(last_modified), expires_at = VALUES(expires_at)"
+	if got != want {
+		t.Fatalf("objectMetaUpsertSQL =\n%s\nхочу\n%s", got, want)
+	}
+}
+
+func TestRetryable(t *testing.T) {
+	if !isRetryable(&mysql.MySQLError{Number: errLockDeadlock}) {
+		t.Error("1213 (deadlock) должен быть retryable")
+	}
+	if !isRetryable(&mysql.MySQLError{Number: errLockWaitTimeout}) {
+		t.Error("1205 (lock_wait_timeout) должен быть retryable")
+	}
+	// уникальный конфликт — НЕ retryable
+	if isRetryable(&mysql.MySQLError{Number: errDupEntry}) {
+		t.Error("1062 (dup) не должен быть retryable")
+	}
+	if isRetryable(nil) || isRetryable(sql.ErrNoRows) {
+		t.Error("isRetryable матчит посторонние ошибки")
+	}
+}
+
+func TestMapRead(t *testing.T) {
+	err := mapRead(sql.ErrNoRows, "пользователь", "x")
+	var nf *domain.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("sql.ErrNoRows → хочу NotFoundError, получено %v", err)
+	}
+}
+
+func TestMapWrite(t *testing.T) {
+	var cf *domain.ConflictError
+	err := mapWrite(&mysql.MySQLError{Number: errDupEntry}, "пользователь", "alice")
+	if !errors.As(err, &cf) || cf.Reason != "" {
+		t.Fatalf("1062 → Conflict без причины, получено %v", err)
+	}
+	err = mapWrite(&mysql.MySQLError{Number: errNoRefRow}, "репо", "x")
+	if !errors.As(err, &cf) || cf.Reason != "нарушение внешнего ключа" {
+		t.Fatalf("1452 → Conflict с FK-причиной, получено %v", err)
+	}
+	err = mapWrite(&mysql.MySQLError{Number: errRowReferenced}, "репо", "x")
+	if !errors.As(err, &cf) || cf.Reason != "нарушение внешнего ключа" {
+		t.Fatalf("1451 → Conflict с FK-причиной, получено %v", err)
+	}
+	if err := mapWrite(errors.New("иное"), "x", "y"); err == nil {
+		t.Fatal("иная ошибка не должна стать nil")
+	}
+}
