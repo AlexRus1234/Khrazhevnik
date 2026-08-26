@@ -16,6 +16,11 @@
 # Web
 web/node_modules/
 web/dist/
+# Собранный SPA-бандл встраивается через //go:embed; источником служит
+# web/ (npm run build). Не коммитится: vite с emptyOutDir стирает папку,
+# а заглушку для сборки без фронтенда восстанавливает `make clean`/`make
+# web-stub` (зависимость lint/test/build). По образцу lentovodec.
+internal/core/web/assets/
 
 # Секреты и локальное окружение
 .env
