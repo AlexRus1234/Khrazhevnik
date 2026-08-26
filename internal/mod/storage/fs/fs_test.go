@@ -19,14 +19,12 @@ package fs
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
+	"runtime"
 	"testing"
 
+	"khrazhevnik/internal/contract"
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/testutil"
@@ -43,299 +41,24 @@ func newTest(t *testing.T) *Storage {
 	return st
 }
 
-// put фиксирует объект с содержимым content.
-func put(t *testing.T, st *Storage, key, content string) {
-	t.Helper()
-	w, err := st.Put(context.Background(), key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Write([]byte(content)); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Commit(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// keys собирает ключи из List.
-func keys(ctx context.Context, st *Storage, prefix string) []string {
-	var out []string
-	for m := range st.List(ctx, prefix) {
-		out = append(out, m.Key)
-	}
-	return out
-}
-
-func TestCommitGetStatListDelete(t *testing.T) {
-	ctx := context.Background()
-	st := newTest(t)
-
-	put(t, st, "cache/apt/1/pool/main/a/a.deb", "aaa")
-	put(t, st, "cache/apt/1/pool/main/b/b.deb", "bbbb")
-	put(t, st, "repo/2/apt/x.pkg", "xx")
-
-	obj, err := st.Get(ctx, "cache/apt/1/pool/main/a/a.deb")
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := io.ReadAll(obj.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := obj.Body.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if string(body) != "aaa" {
-		t.Fatalf("Get = %q", body)
-	}
-
-	meta, err := st.Stat(ctx, "cache/apt/1/pool/main/a/a.deb")
-	if err != nil || meta.Key != "cache/apt/1/pool/main/a/a.deb" || meta.Size != 3 {
-		t.Fatalf("Stat = %+v, %v", meta, err)
-	}
-	if meta.ModTime.IsZero() {
-		t.Fatal("ModTime не заполнен")
-	}
-
-	got := keys(ctx, st, "cache/apt/1/")
-	if len(got) != 2 || got[0] != "cache/apt/1/pool/main/a/a.deb" || got[1] != "cache/apt/1/pool/main/b/b.deb" {
-		t.Fatalf("List = %v", got)
-	}
-	all := keys(ctx, st, "")
-	if len(all) != 3 {
-		t.Fatalf("List всех = %v", all)
-	}
-
-	if err := st.Delete(ctx, "cache/apt/1/pool/main/a/a.deb"); err != nil {
-		t.Fatal(err)
-	}
-	err = st.Delete(ctx, "cache/apt/1/pool/main/a/a.deb")
-	wantNotFound(t, err)
-	_, err = st.Get(ctx, "cache/apt/1/pool/main/a/a.deb")
-	wantNotFound(t, err)
-}
-
-// wantNotFound — общий ассерт.
-func wantNotFound(t *testing.T, err error) {
-	t.Helper()
-	if err == nil {
-		t.Fatal("ожидалась ошибка")
-	}
-	var nf *domain.NotFoundError
-	if !errors.As(err, &nf) {
-		t.Fatalf("хочу NotFoundError, получено: %v", err)
-	}
-}
-
-func TestOverwriteByCommit(t *testing.T) {
-	ctx := context.Background()
-	st := newTest(t)
-	put(t, st, "cache/x", "old")
-	put(t, st, "cache/x", "new-longer")
-
-	obj, err := st.Get(ctx, "cache/x")
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, _ := io.ReadAll(obj.Body)
-	_ = obj.Body.Close()
-	if string(body) != "new-longer" {
-		t.Fatalf("после перезаписи = %q", body)
-	}
-	if m, _ := st.Stat(ctx, "cache/x"); m.Size != int64(len("new-longer")) {
-		t.Fatalf("Size = %d", m.Size)
-	}
-}
-
-func TestAbortDiscards(t *testing.T) {
-	ctx := context.Background()
-	st := newTest(t)
-
-	w, err := st.Put(ctx, "cache/y")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Write([]byte("discard me")); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Abort(ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = st.Get(ctx, "cache/y")
-	wantNotFound(t, err)
-	if got := keys(ctx, st, ""); len(got) != 0 {
-		t.Fatalf("после Abort видны объекты: %v", got)
-	}
-	// tmp-каталог пуст: временных файлов не осталось
-	entries, err := os.ReadDir(filepath.Join(st.root, tmpDir))
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("tmp после Abort: %v (err %v)", entries, err)
-	}
-}
-
-func TestWriterStateMachine(t *testing.T) {
-	ctx := context.Background()
-	st := newTest(t)
-
-	w, _ := st.Put(ctx, "cache/z")
-	if err := w.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Commit(ctx); err == nil {
-		t.Fatal("повторный Commit не вернул ошибку")
-	}
-	if err := w.Abort(ctx); err == nil {
-		t.Fatal("Abort после Commit не вернул ошибку")
-	}
-	if _, err := w.Write([]byte("x")); err == nil {
-		t.Fatal("Write после Commit не вернул ошибку")
-	}
-
-	w2, _ := st.Put(ctx, "cache/z2")
-	_ = w2.Abort(ctx)
-	if err := w2.Abort(ctx); err == nil {
-		t.Fatal("повторный Abort не вернул ошибку")
-	}
-}
-
-func TestTraversalRejected(t *testing.T) {
-	ctx := context.Background()
-	st := newTest(t)
-	put(t, st, "cache/ok", "v")
-
-	bad := []string{
-		"", "/abs", "a/../b", "../escape", "..", "a//b", "a/./b",
-		"Back\\slash", "UPPER", "percent%", "пробел x", "nul\x00byte",
-	}
-	for _, key := range bad {
-		var ike *domain.InvalidKeyError
-		if _, err := st.Get(ctx, key); !errors.As(err, &ike) {
-			t.Fatalf("Get(%q): хочу InvalidKeyError, получено %v", key, err)
-		}
-		if _, err := st.Stat(ctx, key); !errors.As(err, &ike) {
-			t.Fatalf("Stat(%q): хочу InvalidKeyError, получено %v", key, err)
-		}
-		if _, err := st.Put(ctx, key); !errors.As(err, &ike) {
-			t.Fatalf("Put(%q): хочу InvalidKeyError, получено %v", key, err)
-		}
-		if err := st.Delete(ctx, key); !errors.As(err, &ike) {
-			t.Fatalf("Delete(%q): хочу InvalidKeyError, получено %v", key, err)
-		}
-	}
-	// недопустимый префикс не касается диска и не отдаёт ничего
-	if got := keys(ctx, st, "../"); got != nil {
-		t.Fatalf("List(../) = %v", got)
-	}
-	if got := keys(ctx, st, "UPPER/"); got != nil {
-		t.Fatalf("List(UPPER/) = %v", got)
-	}
-}
-
-func TestLongKeys(t *testing.T) {
-	ctx := context.Background()
-	st := newTest(t)
-
-	// валидный длинный ключ: сегменты короткие (лимиты ФС), общая
-	// длина — сотни байт
-	deep := strings.TrimSuffix(strings.Repeat("k/", 300), "/") + "/leaf.deb"
-	if len(deep) <= 1024 {
-		put(t, st, deep, "deep")
-		obj, err := st.Get(ctx, deep)
+// TestStorageContract — общий контрактный suite port.Storage (сессии 04
+// + 17); тот же код в test/integration гоняет s3 через minio. Фабрика
+// использует настоящий cryptoRand — тесту параллельной записи нужны
+// уникальные tmp-имена (FixedRand дал бы коллизию на O_EXCL).
+func TestStorageContract(t *testing.T) {
+	contract.StorageSuite(t, func(t *testing.T) port.Storage {
+		st, err := New(filepath.Join(t.TempDir(), "store"), cryptoRand{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		_ = obj.Body.Close()
-	}
-
-	// за пределами maxKeyLen — отказ до обращения к диску
-	tooLong := strings.Repeat("a/", 600) + "x"
-	var ike *domain.InvalidKeyError
-	if _, err := st.Stat(ctx, tooLong); !errors.As(err, &ike) {
-		t.Fatalf("Stat(tooLong): %v", err)
-	}
+		return st
+	})
 }
 
-func TestParallelPutSameKey(t *testing.T) {
-	ctx := context.Background()
-	// боевой источник случайности: FixedRand раздаёт один UUID по кругу
-	// и параллельные писатели столкнутся на O_EXCL
-	st, err := New(filepath.Join(t.TempDir(), "store"), cryptoRand{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	const writers = 8
-	var wg sync.WaitGroup
-	errs := make(chan error, writers)
-	for i := 0; i < writers; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			w, err := st.Put(ctx, "cache/race")
-			if err != nil {
-				errs <- err
-				return
-			}
-			if _, err := w.Write([]byte(fmt.Sprintf("writer-%d", i))); err != nil {
-				errs <- err
-				return
-			}
-			if err := w.Commit(ctx); err != nil {
-				errs <- err
-			}
-		}(i)
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Fatal(err)
-	}
-
-	obj, err := st.Get(ctx, "cache/race")
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, _ := io.ReadAll(obj.Body)
-	_ = obj.Body.Close()
-	if len(body) != len("writer-0") {
-		t.Fatalf("содержимое после гонки: %q", body)
-	}
-	// tmp-каталог пуст: все временные файлы переименованы
-	entries, err := os.ReadDir(filepath.Join(st.root, tmpDir))
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("tmp после гонки: %d файлов (err %v)", len(entries), err)
-	}
-}
-
-func TestGetDirIsNotObject(t *testing.T) {
-	ctx := context.Background()
-	st := newTest(t)
-	put(t, st, "cache/d/inner", "x")
-
-	_, err := st.Get(ctx, "cache/d")
-	wantNotFound(t, err)
-	_, err = st.Stat(ctx, "cache/d")
-	wantNotFound(t, err)
-}
-
-func TestCanceledContext(t *testing.T) {
-	st := newTest(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	if _, err := st.Get(ctx, "cache/x"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("Get с отменённым ctx: %v", err)
-	}
-	if _, err := st.Put(ctx, "cache/x"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("Put с отменённым ctx: %v", err)
-	}
-	put(t, st, "cache/x", "v") // живой контекст
-	if got := keys(ctx, st, ""); got != nil {
-		t.Fatalf("List с отменённым ctx = %v", got)
-	}
-}
+// fs-специфичные кейсы: каталог-корень, недоступный root, сбой Rand,
+// Commit поверх файла-каталога, удаление непустого каталога, List без
+// корня. Контрактный suite (выше) покрывает commit/abort/list/traversal
+// и пр.; здесь — только то, что зависит от posix-файлов.
 
 func TestNewRejectsEmptyRoot(t *testing.T) {
 	if _, err := New("", testutil.FixedRand()); err == nil {
@@ -355,26 +78,9 @@ func TestNewUnwritableRoot(t *testing.T) {
 	}
 }
 
-func TestReservedTmpNamespace(t *testing.T) {
-	ctx := context.Background()
-	st := newTest(t)
-	var ike *domain.InvalidKeyError
-	for _, key := range []string{"tmp", "tmp/anything", "tmp/x/y.deb"} {
-		if _, err := st.Put(ctx, key); !errors.As(err, &ike) {
-			t.Fatalf("Put(%q): %v", key, err)
-		}
-		if _, err := st.Get(ctx, key); !errors.As(err, &ike) {
-			t.Fatalf("Get(%q): %v", key, err)
-		}
-		if err := st.Delete(ctx, key); !errors.As(err, &ike) {
-			t.Fatalf("Delete(%q): %v", key, err)
-		}
-	}
-}
-
 func TestPutRandFailure(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "store")
-	st, err := New(root, testutil.FailingRand(fmt.Errorf("rand сдох")))
+	st, err := New(root, testutil.FailingRand(errors.New("rand сдох")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +93,7 @@ func TestCommitMkdirFailure(t *testing.T) {
 	ctx := context.Background()
 	st := newTest(t)
 	// «cache/x» занят файлом — каталог для «cache/x/y» не создать
-	put(t, st, "cache/x", "файл")
+	putCommit(t, st, "cache/x", "файл")
 	w, err := st.Put(ctx, "cache/x/y")
 	if err != nil {
 		t.Fatal(err)
@@ -408,7 +114,7 @@ func TestCommitMkdirFailure(t *testing.T) {
 func TestDeleteNonEmptyDirPassesThrough(t *testing.T) {
 	ctx := context.Background()
 	st := newTest(t)
-	put(t, st, "cache/d/inner", "x")
+	putCommit(t, st, "cache/d/inner", "x")
 	// «cache/d» — непустой каталог: os.Remove откажет, это не NotFound
 	err := st.Delete(ctx, "cache/d")
 	if err == nil {
@@ -423,13 +129,112 @@ func TestDeleteNonEmptyDirPassesThrough(t *testing.T) {
 func TestListAfterRootRemoved(t *testing.T) {
 	ctx := context.Background()
 	st := newTest(t)
-	put(t, st, "cache/x", "v")
+	putCommit(t, st, "cache/x", "v")
 	if err := os.RemoveAll(st.root); err != nil {
 		t.Fatal(err)
 	}
-	if got := keys(ctx, st, ""); got != nil {
+	if got := listKeys(ctx, st, ""); got != nil {
 		t.Fatalf("List без корня = %v", got)
 	}
+}
+
+func TestAbortLeavesTmpEmpty(t *testing.T) {
+	ctx := context.Background()
+	st := newTest(t)
+	w, err := st.Put(ctx, "cache/y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("discard")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Abort(ctx); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(st.root, tmpDir))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("tmp после Abort: %v (err %v)", entries, err)
+	}
+}
+
+func TestAbortTmpAlreadyRemoved(t *testing.T) {
+	// На Windows нельзя удалить открытый файл (w.file держит хэндл);
+	// Linux позволяет unlink открытого файла — там тест валиден.
+	if runtime.GOOS == "windows" {
+		t.Skip("удаление открытого файла неприменимо на Windows")
+	}
+	ctx := context.Background()
+	st := newTest(t)
+	w, err := st.Put(ctx, "cache/g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	// tmp-файл удалили внешне (краш/чистка) — Abort не должен падать
+	// на os.IsNotExist, а молча завершиться.
+	if err := os.Remove(filepath.Join(st.root, tmpDir, "00000000-0000-4000-8000-000000000000")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Abort(ctx); err != nil {
+		t.Fatalf("Abort без tmp-файла: %v", err)
+	}
+}
+
+func TestCryptoRandInt64(t *testing.T) {
+	r := cryptoRand{}
+	if n := r.Int64(0); n != 0 {
+		t.Fatalf("Int64(0) = %d, хочу 0", n)
+	}
+	if n := r.Int64(-1); n != 0 {
+		t.Fatalf("Int64(-1) = %d, хочу 0", n)
+	}
+	for i := 0; i < 100; i++ {
+		n := r.Int64(100)
+		if n < 0 || n >= 100 {
+			t.Fatalf("Int64(100) = %d вне [0,100)", n)
+		}
+	}
+}
+
+func TestCryptoRandUUID4(t *testing.T) {
+	r := cryptoRand{}
+	u, err := r.UUID4()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(u) != 36 {
+		t.Fatalf("UUID4 len = %d, хочу 36", len(u))
+	}
+	// версия 4: 14-й символ (index 14) — '4'
+	if u[14] != '4' {
+		t.Fatalf("UUID4 версия не 4: %q", u[14])
+	}
+}
+
+// putCommit фиксирует объект с содержимым content (fs-локальный helper
+// контрактного put, но здесь нужен в fs-специфичных кейсах).
+func putCommit(t *testing.T, st *Storage, key, content string) {
+	t.Helper()
+	w, err := st.Put(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func listKeys(ctx context.Context, st *Storage, prefix string) []string {
+	var out []string
+	for m := range st.List(ctx, prefix) {
+		out = append(out, m.Key)
+	}
+	return out
 }
 
 // compile-time: Storage реализует весь порт.

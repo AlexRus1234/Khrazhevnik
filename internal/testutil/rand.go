@@ -15,11 +15,18 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // Двойники port.Rand: FixedRand раздаёт предзагруженные UUID по кругу,
-// FailingRand отбивает сбоем (проверка обработок ошибок в engine).
+// FailingRand отбивает сбоем (проверка обработок ошибок в engine),
+// RealRand — настоящий crypto/rand (контрактным suite нужен уникальный
+// tmp/спул-имя в тесте параллельной записи; FixedRand дал бы коллизию).
 
 package testutil
 
-import "khrazhevnik/internal/core/port"
+import (
+	crand "crypto/rand"
+	"fmt"
+
+	"khrazhevnik/internal/core/port"
+)
 
 // fixedRand циклически раздаёт предзагруженные UUID; при пустом
 // списке — нулевой UUID v4.
@@ -81,8 +88,44 @@ func FailingRand(err error) port.Rand {
 	return failingRand{err: err}
 }
 
-// UUID4 возвращает предзагруженную ошибку.
+// Int64 возвращает предзагруженную ошибку.
 func (r failingRand) UUID4() (string, error) { return "", r.err }
 
 // Int64 возвращает 0 — тесты на UUID4-сбой не гоняют Int64.
 func (r failingRand) Int64(max int64) int64 { return 0 }
+
+// realRand — port.Rand поверх crypto/rand: канонический UUID v4 и
+// [0, max) из 8 байт. Контрактным suite нужен настоящий источник
+// случайности (уникальные tmp/спул-имена в параллельной записи).
+type realRand struct{}
+
+// RealRand возвращает port.Rand на crypto/rand.
+func RealRand() port.Rand { return realRand{} }
+
+// UUID4 генерирует канонический UUID v4 (8-4-4-4-12, lowercase).
+func (realRand) UUID4() (string, error) {
+	var b [16]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("testutil: чтение crypto/rand: %w", err)
+	}
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
+}
+
+// Int64 возвращает неотрицательное число в [0, max) из 8 байт crypto/rand.
+func (realRand) Int64(max int64) int64 {
+	if max <= 0 {
+		return 0
+	}
+	var b [8]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return 0
+	}
+	n := int64(b[0])<<56 | int64(b[1])<<48 | int64(b[2])<<40 | int64(b[3])<<32 |
+		int64(b[4])<<24 | int64(b[5])<<16 | int64(b[6])<<8 | int64(b[7])
+	if n < 0 {
+		n = -n
+	}
+	return n % max
+}

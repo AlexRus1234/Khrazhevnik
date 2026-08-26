@@ -107,6 +107,14 @@ issues:
         - errcheck
         - gosec
         - unparam
+    # internal/contract — общие контрактные suite (CatalogSuite/Storage
+    # Suite), импортируются только _test.go; логика тестовая, высокая
+    # цикломатическая сложность здесь уместна (как в _test.go).
+    - path: internal/contract/.*\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - unparam
     - path: cmd/khrazhevnik/main\.go
       linters:
         - revive
