@@ -14,17 +14,46 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-# CI: vet → lint → test (+race) → сборка с версией из тега.
-# Инфраструктура раннера — по образцу lentovodec/Intermasq:
-# fedora-контейнер, Nora-прокси, step-ca, Go из tarball.
+# CI: build + test pipeline. Structure mirrors the lentovodec/Intermasq
+# build workflow (workflow_dispatch + inputs, fedora:44 runner, Nora
+# proxy, step-ca, Go tarball). Project-specific additions: services block
+# (postgres/mariadb/minio для контрактных suite сессии 17) и отдельная
+# oci job (сборка образа + smoke + push в ghcr.io — Хражевник контейнерный
+# сервис, в отличие от CLI-бинарника lentovodec).
 
-name: CI
+name: Build and Test Hrazhevnik
 
 on:
   workflow_dispatch:
+    inputs:
+      push_to_registry:
+        description: "Upload binary to Forgejo Packages and Release on success?"
+        required: true
+        default: false
+        type: boolean
+      publish_github:
+        description: "Create GitHub Release and upload binary assets?"
+        required: true
+        default: false
+        type: boolean
+      publish_codeberg:
+        description: "Create Codeberg Release and upload binary assets?"
+        required: true
+        default: false
+        type: boolean
+      version_tag:
+        description: "Fallback version when HEAD has no exact v* tag."
+        required: false
+        default: ""
+        type: string
+      run_race_tests:
+        description: "Run go test with -race (slower, more thorough)?"
+        required: true
+        default: true
+        type: boolean
 
 jobs:
-  ci:
+  build-test:
     runs-on: docker
     container:
       image: fedora:44
@@ -43,9 +72,8 @@ jobs:
     # mariadb и minio (S3-совместимое хранилище). Доступны из job-
     # контейнера по имени сервиса как хостнейма (postgres:5432 и т.д.).
     # Контрактные suite в test/integration/contract_drivers_test.go
-    #_gate'ятся по env KHRZ_TEST_*_DSN/ENDPOINT; без env — Skip.
-    # fs+sqlite гоняются всегда (без внешних сервисов); контейнер-смоук
-    # из сессии 10 отдельной oci-job — его не трогаем.
+    # гейт'ятся по env KHRZ_TEST_*_DSN/ENDPOINT; без env — t.Skip.
+    # fs+sqlite гоняются всегда (без внешних сервисов).
     services:
       postgres:
         image: postgres:16
@@ -63,7 +91,7 @@ jobs:
           MARIADB_DATABASE: khrazhevnik
         options: --health-cmd="mariadb-admin ping -h localhost -u root -prootpass" --health-interval=5s --health-timeout=3s --health-retries=10
       minio:
-        # minio/minio: запуск server /data; креды — env MINIO_ROOT_*.
+        # minio/minio: запуск `server /data`; креды — env MINIO_ROOT_*.
         # health/live — встроенный liveness-эндпойнт минио.
         image: minio/minio
         env:
@@ -102,10 +130,12 @@ jobs:
         # nodejs нужен НЕ проекту, а раннеру: act/act_runner исполняет
         # JS-экшены (actions/checkout@v4) через node ВНУТРИ job-контейнера;
         # fedora:44 его не содержит → crun "node not found", exit 127.
+        # jq — для парсинга JSON в publish-шагах ниже.
         run: |
           dnf install -y --setopt=install_weak_deps=False \
             bash tar \
             nodejs \
+            jq \
             gcc
 
       - name: Install Go toolchain
@@ -120,6 +150,10 @@ jobs:
           echo "/usr/local/go/bin" >> $GITHUB_PATH
           /usr/local/go/bin/go version
 
+      # Build frontend (cd web && npm ci && npm run build) добавляется в
+      # сессии 18.1 вместе со scaffold'ом Vue SPA и //go:embed. Сейчас
+      # web/ пустой, go:embed не wire'нут — go build от фронтенда не зависит.
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -128,18 +162,29 @@ jobs:
 
       - name: Determine build version
         env:
+          VERSION_INPUT: ${{ github.event.inputs.version_tag }}
           SHA: ${{ github.sha }}
         run: |
           TAG_VERSION="$(git describe --exact-match --tags --match='v*' HEAD 2>/dev/null || true)"
           if [ -n "$TAG_VERSION" ]; then
             VERSION="$TAG_VERSION"
             echo "Using exact Git tag: $VERSION"
+          elif [ -n "$VERSION_INPUT" ]; then
+            VERSION="$VERSION_INPUT"
+            echo "HEAD has no exact v* tag; using workflow input: $VERSION"
           else
             VERSION="sha-${SHA:0:8}"
-            echo "HEAD has no exact v* tag; using: $VERSION"
+            echo "HEAD has no exact v* tag and no input; using: $VERSION"
           fi
+
+          case "$VERSION" in
+            v[0-9]*|sha-[0-9a-f]*) ;;
+            *) echo "::error::invalid version '$VERSION' (expected v* or sha-<hex>)"; exit 1 ;;
+          esac
+
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "APP_VERSION=${VERSION#v}" >> "$GITHUB_ENV"
+          echo "EXACT_TAG=$TAG_VERSION" >> "$GITHUB_ENV"
 
       - name: Install golangci-lint
         # Пин той же версии, что в локальной разработке; собирается
@@ -147,37 +192,6 @@ jobs:
         run: |
           go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
-
-      - name: go vet
-        run: go vet ./...
-
-      - name: golangci-lint
-        run: golangci-lint run ./...
-
-      - name: go test
-        run: go test ./... -count=1
-
-      - name: go test -race
-        # -race requires CGO (and gcc). The binary itself is built with
-        # CGO_ENABLED=0 for static linking; tests opt back in here.
-        env:
-          CGO_ENABLED: "1"
-        run: go test -race ./... -count=1
-
-      - name: go test -integration
-        # Живые слушатели, реальный TOML-конфиг, graceful shutdown.
-        # Контрактные suite (сессия 17) гоняют каталог/хранилище по
-        # всем драйверам: sqlite+fs — всегда; postgres/mariadb/s3 —
-        # через сервисные контейнеры (env ниже). Без env — t.Skip.
-        env:
-          CGO_ENABLED: "1"
-          KHRZ_TEST_POSTGRES_DSN: "postgres://khrazhevnik:khrazhevnik@postgres:5432/khrazhevnik"
-          KHRZ_TEST_MARIADB_DSN: "khrazhevnik:khrazhevnik@tcp(mariadb:3306)/khrazhevnik"
-          KHRZ_TEST_S3_ENDPOINT: "http://minio:9000"
-          KHRZ_TEST_S3_REGION: "us-east-1"
-          KHRZ_TEST_S3_ACCESS_KEY: "minioadmin"
-          KHRZ_TEST_S3_SECRET_KEY: "minioadmin"
-        run: go test -race -tags integration ./test/integration/... -count=1
 
       - name: Build binary
         # Для package main линкер Go 1.26 принимает только путь main.Version
@@ -194,14 +208,169 @@ jobs:
           # но интеграционными тестами, не CI-сборкой).
           ./khrazhevnik-ci -version
 
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt check
+        run: |
+          FMT_OUT="$(gofmt -l .)"
+          if [ -n "$FMT_OUT" ]; then
+            echo "::error::Files need gofmt:"
+            echo "$FMT_OUT"
+            exit 1
+          fi
+
+      - name: golangci-lint
+        run: golangci-lint run ./...
+
+      - name: Go tests (unit + integration)
+        # -race requires CGO (and gcc). The binary itself is built with
+        # CGO_ENABLED=0 for static linking (modernc.org/sqlite is pure Go);
+        # tests opt back in here. Integration suite (test/integration/...)
+        # — build-tag-gated (-tags integration), гоняется с сервисными
+        # контейнерами (postgres/mariadb/minio выше).
+        env:
+          RACE_FLAG: ${{ github.event.inputs.run_race_tests == 'true' && '-race' || '' }}
+          CGO_ENABLED: "1"
+          KHRZ_TEST_POSTGRES_DSN: "postgres://khrazhevnik:khrazhevnik@postgres:5432/khrazhevnik"
+          KHRZ_TEST_MARIADB_DSN: "khrazhevnik:khrazhevnik@tcp(mariadb:3306)/khrazhevnik"
+          KHRZ_TEST_S3_ENDPOINT: "http://minio:9000"
+          KHRZ_TEST_S3_REGION: "us-east-1"
+          KHRZ_TEST_S3_ACCESS_KEY: "minioadmin"
+          KHRZ_TEST_S3_SECRET_KEY: "minioadmin"
+        run: |
+          echo "Running: go test ./... $RACE_FLAG -count=1"
+          go test ./... $RACE_FLAG -count=1
+          echo "Running: integration suite"
+          go test $RACE_FLAG -tags=integration ./test/integration/... -count=1
+
+      - name: Coverage report
+        # Separate step (no -race) so instrumentation overhead & race detector
+        # don't skew numbers. Informational only — thresholds live in
+        # docs/TESTING.md.
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          go test ./... -count=1 -coverprofile coverage.out
+          echo "===== Coverage summary ====="
+          go tool cover -func coverage.out | tail -n 1
+          echo "===== Per-package ====="
+          go tool cover -func coverage.out | grep -E '^khrazhevnik/' | sort
+
       - name: Show binary info
         run: |
           ls -lh khrazhevnik-ci
-          sha256sum khrazhevnik-ci | tee khrazhevnik-ci.sha256
+          ARTIFACT_NAME="khrazhevnik-${VERSION}-linux-amd64"
+          cp khrazhevnik-ci "$ARTIFACT_NAME"
+          sha256sum "$ARTIFACT_NAME" | tee "${ARTIFACT_NAME}.sha256"
+
+      - name: Publish to Forgejo Packages
+        if: success() && github.event.inputs.push_to_registry == 'true'
+        env:
+          UPLOAD_TOKEN: ${{ secrets.UPLOAD_TOKEN }}
+        run: |
+          echo "Publishing as version: $VERSION"
+          ARTIFACT_NAME="khrazhevnik-${VERSION}-linux-amd64"
+
+          PUBLISH_FILES="$ARTIFACT_NAME ${ARTIFACT_NAME}.sha256"
+          echo "Files to publish: $PUBLISH_FILES"
+
+          # Generic package registry: каждый файл по своему пути.
+          for FILE in $PUBLISH_FILES; do
+            curl -fSR --cacert /etc/pki/ca-trust/source/anchors/step-ca.crt \
+                 --user "alexrus:${UPLOAD_TOKEN}" \
+                 --upload-file "./${FILE}" \
+                 "https://git.yadr00.internal/api/packages/AlexRus1234/generic/khrazhevnik/${VERSION}/${FILE}"
+          done
+          echo "Published Forgejo packages: $PUBLISH_FILES"
+
+          API="https://git.yadr00.internal/api/v1/repos/AlexRus1234/Hrazhevnik"
+          RELEASE_ID="$(curl -fsSL --user "alexrus:${UPLOAD_TOKEN}" \
+            "$API/releases/tags/${VERSION}" 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)"
+          if [ -z "$RELEASE_ID" ]; then
+            BODY="$(jq -n --arg tag "$VERSION" '{tag_name:$tag, name:$tag, draft:false, prerelease:($tag | test("-"))}')"
+            RELEASE="$(curl -fsSL -X POST \
+              --user "alexrus:${UPLOAD_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              "$API/releases" -d "$BODY")"
+            RELEASE_ID="$(jq -r '.id' <<<"$RELEASE")"
+            test -n "$RELEASE_ID" && test "$RELEASE_ID" != "null"
+          else
+            echo "Release ${VERSION} already exists (id=${RELEASE_ID}), reusing"
+          fi
+          for FILE in $PUBLISH_FILES; do
+            curl -fsSL -X POST \
+              --user "alexrus:${UPLOAD_TOKEN}" \
+              -F "attachment=@${FILE}" \
+              "$API/releases/${RELEASE_ID}/assets?name=${FILE}"
+          done
+          echo "Published local Forgejo Release ${VERSION}"
+
+      - name: Publish GitHub Release
+        if: success() && github.event.inputs.publish_github == 'true'
+        env:
+          RELEASE_TOKEN: ${{ secrets.TOKEN_GITHUB }}
+        run: |
+          if [ "$EXACT_TAG" != "$VERSION" ]; then
+            echo "::error::GitHub Release requires HEAD to have the exact tag $VERSION"
+            exit 1
+          fi
+          ARTIFACT_NAME="khrazhevnik-${VERSION}-linux-amd64"
+          PUBLISH_FILES="$ARTIFACT_NAME ${ARTIFACT_NAME}.sha256"
+          echo "Files to publish: $PUBLISH_FILES"
+          API="https://api.github.com/repos/AlexRus1234/Hrazhevnik"
+          BODY="$(jq -n --arg tag "$VERSION" '{tag_name:$tag, name:$tag, draft:false, prerelease:($tag | test("-"))}')"
+          RELEASE="$(curl -fsSL -X POST \
+            -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'Content-Type: application/json' \
+            "$API/releases" -d "$BODY")"
+          UPLOAD_URL="$(jq -r '.upload_url' <<<"$RELEASE" | sed 's/{?name,label}//')"
+          test -n "$UPLOAD_URL" && test "$UPLOAD_URL" != "null"
+          for FILE in $PUBLISH_FILES; do
+            curl -fsSL -X POST \
+              -H "Authorization: Bearer ${RELEASE_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'Content-Type: application/octet-stream' \
+              --data-binary "@${FILE}" \
+              "${UPLOAD_URL}?name=${FILE}"
+          done
+          echo "Published GitHub Release ${VERSION} (files: $PUBLISH_FILES)"
+
+      - name: Publish Codeberg Release
+        if: success() && github.event.inputs.publish_codeberg == 'true'
+        env:
+          RELEASE_TOKEN: ${{ secrets.TOKEN_CODEBERG }}
+        run: |
+          if [ "$EXACT_TAG" != "$VERSION" ]; then
+            echo "::error::Codeberg Release requires HEAD to have the exact tag $VERSION"
+            exit 1
+          fi
+          ARTIFACT_NAME="khrazhevnik-${VERSION}-linux-amd64"
+          PUBLISH_FILES="$ARTIFACT_NAME ${ARTIFACT_NAME}.sha256"
+          echo "Files to publish: $PUBLISH_FILES"
+          API="https://codeberg.org/api/v1/repos/AlexRus1234/Hrazhevnik"
+          BODY="$(jq -n --arg tag "$VERSION" '{tag_name:$tag, name:$tag, draft:false, prerelease:($tag | test("-"))}')"
+          RELEASE="$(curl -fsSL -X POST \
+            -H "Authorization: token ${RELEASE_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            "$API/releases" -d "$BODY")"
+          RELEASE_ID="$(jq -r '.id' <<<"$RELEASE")"
+          test -n "$RELEASE_ID" && test "$RELEASE_ID" != "null"
+          for FILE in $PUBLISH_FILES; do
+            curl -fsSL -X POST \
+              -H "Authorization: token ${RELEASE_TOKEN}" \
+              -F "attachment=@${FILE}" \
+              "$API/releases/${RELEASE_ID}/assets?name=${FILE}"
+          done
+          echo "Published Codeberg Release ${VERSION} (files: $PUBLISH_FILES)"
 
       - name: Cleanup
         if: always()
-        run: rm -f khrazhevnik-ci khrazhevnik-ci.sha256
+        run: |
+          rm -f khrazhevnik-ci \
+                khrazhevnik-*linux-amd64 khrazhevnik-*linux-amd64.sha256 \
+                coverage.out
 
   # Сборка OCI-образа из scratch → дымовые тесты → push в registry.
   # Отдельная job: podman-in-container требует --privileged (создание

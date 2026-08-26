@@ -20,7 +20,7 @@ WORKDIR /src
 COPY . .
 # -X main.Version: линкер Go 1.26 для package main принимает только
 # "main.Version", не полный importpath (полный путь молча не apply'ится;
-# проверено локально, см. .forgejo/workflows/ci.yml).
+# проверено локально, см. .forgejo/workflows/build.yml).
 RUN set -e; \
     v="${VERSION}"; \
     if [ -z "$v" ]; then v="$(git describe --tags --always 2>/dev/null || echo dev)"; fi; \
