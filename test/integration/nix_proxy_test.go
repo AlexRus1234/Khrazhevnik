@@ -70,7 +70,7 @@ type nixUpstream struct {
 func newNixUpstream(t *testing.T) *nixUpstream {
 	t.Helper()
 	u := &nixUpstream{
-		nar: []byte("NIX-NAR-CONTENT-100-bytes-padding-padding-padding-padding!"),
+		nar:       []byte("NIX-NAR-CONTENT-100-bytes-padding-padding-padding-padding!"),
 		cacheInfo: []byte("StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 40\n"),
 	}
 	// narinfo реального вида: 5 полей + Sig. URL ссылает на nar/<hash>.nar.xz.

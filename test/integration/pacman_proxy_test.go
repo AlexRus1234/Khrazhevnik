@@ -46,8 +46,8 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	cacheengine "khrazhevnik/internal/core/engine/cache"
 	"khrazhevnik/internal/core/domain"
+	cacheengine "khrazhevnik/internal/core/engine/cache"
 	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/web"
@@ -58,11 +58,11 @@ import (
 // pacmanUpstream — httptest-сервер с мини-Arch-репо: core.db
 // (zstd-сжатый tar с 2 desc) + 2 .pkg.tar.zst. Считает запросы по пути.
 type pacmanUpstream struct {
-	mu       atomic.Int64
-	pkg1     []byte
-	pkg2     []byte
-	coreDB   []byte
-	srv      *httptest.Server
+	mu     atomic.Int64
+	pkg1   []byte
+	pkg2   []byte
+	coreDB []byte
+	srv    *httptest.Server
 }
 
 func newPacmanUpstream(t *testing.T) *pacmanUpstream {

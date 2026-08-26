@@ -44,8 +44,8 @@ import (
 	"testing"
 	"time"
 
-	cacheengine "khrazhevnik/internal/core/engine/cache"
 	"khrazhevnik/internal/core/domain"
+	cacheengine "khrazhevnik/internal/core/engine/cache"
 	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/web"
@@ -56,11 +56,11 @@ import (
 // apkUpstream — httptest-сервер с мини-Alpine-репо: APKINDEX.tar.gz
 // (gzip+tar с APKINDEX-текстом) + 2 .apk. Считает запросы по пути.
 type apkUpstream struct {
-	mu        atomic.Int64
-	apk1      []byte
-	apk2      []byte
-	apkIndex  []byte
-	srv       *httptest.Server
+	mu       atomic.Int64
+	apk1     []byte
+	apk2     []byte
+	apkIndex []byte
+	srv      *httptest.Server
 }
 
 func newApkUpstream(t *testing.T) *apkUpstream {
