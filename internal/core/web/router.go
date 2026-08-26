@@ -235,6 +235,13 @@ func BuildAdminRouter(d Deps) http.Handler {
 			api.With(adminAuth).Get("/audit", handleAuditPage(d))
 		}
 	})
+	// /ui и /ui/* — встроенный SPA (админский порт :30202). Смонтирован
+	// после /api/v1, /metrics, /healthz: паттерны не пересекаются, chi
+	// приоритезирует статические роуты над wildcard по порядку регистрации.
+	// SPA-fallback на index.html для deep-links — см. handleSPA.
+	spa := handleSPA()
+	r.Get("/ui", spa)
+	r.Get("/ui/*", spa)
 	return r
 }
 
