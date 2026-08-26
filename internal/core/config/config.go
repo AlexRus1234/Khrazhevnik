@@ -57,7 +57,9 @@ type FSStorage struct {
 	Path string `toml:"path"`
 }
 
-// S3Storage — S3-совместимое хранилище (mod/storage/s3).
+// S3Storage — S3-совместимое хранилище (mod/storage/s3). Спул-каталог
+// (storage.s3.spool_dir) — локальный диск, куда Put пишет байты до
+// одиночного атомарного PutObject; при Abort/сбое спул удаляется.
 type S3Storage struct {
 	Endpoint        string `toml:"endpoint"`
 	Region          string `toml:"region"`
@@ -65,6 +67,7 @@ type S3Storage struct {
 	PathStyle       bool   `toml:"path_style"`
 	AccessKeyID     string `toml:"access_key_id"`
 	SecretAccessKey string `toml:"secret_access_key"`
+	SpoolDir        string `toml:"spool_dir"`
 }
 
 // Database — драйвер каталога и строка подключения (mod/db/*).
@@ -159,13 +162,14 @@ const (
 	defaultQuotaBytes   = int64(5 << 30) // 5 GiB дефолт
 	defaultQuotaFiles   = 10000
 	defaultKeysDir      = "/var/lib/khrazhevnik/keys"
+	defaultS3Spool      = "/var/lib/khrazhevnik/spool"
 )
 
 // defaultConfig — нижний слой: значения до TOML и env.
 func defaultConfig() Config {
 	return Config{
 		Server:  Server{PublicListen: defaultPublicListen, AdminListen: defaultAdminListen},
-		Storage: Storage{Driver: DriverFS, FS: FSStorage{Path: defaultFSPath}},
+		Storage: Storage{Driver: DriverFS, FS: FSStorage{Path: defaultFSPath}, S3: S3Storage{SpoolDir: defaultS3Spool}},
 		Database: Database{
 			Driver: DriverSQLite,
 			DSN:    defaultSQLiteDSN,
@@ -292,6 +296,7 @@ func (c Config) validateStorage() []error {
 			{"storage.s3.bucket", s3.Bucket},
 			{"storage.s3.access_key_id", s3.AccessKeyID},
 			{"storage.s3.secret_access_key", s3.SecretAccessKey},
+			{"storage.s3.spool_dir", s3.SpoolDir},
 		} {
 			if f.value == "" {
 				problems = append(problems, emptyField(f.name))

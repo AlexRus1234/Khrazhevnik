@@ -58,6 +58,7 @@ import (
 	_ "khrazhevnik/internal/mod/sign/ed25519"
 	_ "khrazhevnik/internal/mod/sign/openpgp"
 	_ "khrazhevnik/internal/mod/storage/fs"
+	_ "khrazhevnik/internal/mod/storage/s3"
 )
 
 // App — собранные зависимости сервера; поля набирают движки

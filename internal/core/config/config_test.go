@@ -147,6 +147,9 @@ enabled = false
 		cfg.Storage.S3.SecretAccessKey != "key" {
 		t.Errorf("storage.s3 разобран неверно: %+v", cfg.Storage.S3)
 	}
+	if cfg.Storage.S3.SpoolDir != defaultS3Spool {
+		t.Errorf("storage.s3.spool_dir: дефолт не подставился, got %q", cfg.Storage.S3.SpoolDir)
+	}
 	if cfg.Database.Driver != "postgres" || cfg.Database.DSN != "postgres://u:p@localhost/khrazhevnik" {
 		t.Errorf("database = %+v", cfg.Database)
 	}

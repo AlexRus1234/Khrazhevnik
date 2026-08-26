@@ -162,12 +162,12 @@ func TestWireFsSqliteCatalog(t *testing.T) {
 
 // TestWireRejectsUnknownDriver — реестр с реальными модулями находит
 // известные драйверы и даёт дружелюбную ошибку на неизвестное имя.
-// postgres/mariadb слинкованы сюда (contract_drivers_test.go импортирует
-// их); s3 будет подключён в сессии-17 commit 3.
+// s3/postgres/mariadb слинкованы сюда импортами контрактных suite
+// (contract_drivers_test.go), поэтому resolve по ним succeeds.
 func TestWireRejectsUnknownDriver(t *testing.T) {
-	for _, name := range []string{config.DriverFS, config.DriverSQLite, config.DriverPostgres, config.DriverMariaDB} {
+	for _, name := range []string{config.DriverFS, config.DriverS3, config.DriverSQLite, config.DriverPostgres, config.DriverMariaDB} {
 		switch {
-		case name == config.DriverFS:
+		case name == config.DriverFS || name == config.DriverS3:
 			if _, err := registry.Storage(name); err != nil {
 				t.Fatalf("storage %s слинкован, но фабрика не нашлась: %v", name, err)
 			}
@@ -176,10 +176,6 @@ func TestWireRejectsUnknownDriver(t *testing.T) {
 				t.Fatalf("БД %s слинкована, но фабрика не нашлась: %v", name, err)
 			}
 		}
-	}
-	// s3 ещё не слинкован — реестр даёт ошибку
-	if _, err := registry.Storage(config.DriverS3); err == nil {
-		t.Fatal("s3 не слинкован, но фабрика нашлась")
 	}
 	if _, err := registry.Storage("oracle"); err == nil {
 		t.Fatal("неизвестный драйвер oracle не вернул ошибку")
