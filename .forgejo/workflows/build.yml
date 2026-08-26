@@ -238,6 +238,9 @@ jobs:
           KHRZ_TEST_S3_REGION: "us-east-1"
           KHRZ_TEST_S3_ACCESS_KEY: "minioadmin"
           KHRZ_TEST_S3_SECRET_KEY: "minioadmin"
+          # Путь к собранному артефакту для test/integration/binary_smoke_test.go
+          # (exec'ит khrazhevnik-ci как процесс; build-test job собирает его ранее).
+          KHRZ_TEST_BINARY: "${{ github.workspace }}/khrazhevnik-ci"
         run: |
           echo "Running: go test ./... $RACE_FLAG -count=1"
           go test ./... $RACE_FLAG -count=1
@@ -372,25 +375,23 @@ jobs:
                 khrazhevnik-*linux-amd64 khrazhevnik-*linux-amd64.sha256 \
                 coverage.out
 
-  # Сборка OCI-образа → smoke → push в Forgejo container registry.
-  # Алгоритм по образцу 0_ЦОД/container-build (mortis и др.): job-контейнер
-  # quay.io/containers/podman (podman преднастроен для nested-CI), storage
-  # driver vfs (overlay-in-overlay не поддерживается внутри раннера), push
-  # в git.yadr00.internal/build/khrazhevnik. --privileged оставлен для smoke
-  # (podman run с портами/volumes/namespace'ами); для build/push vfs хватает
-  # и без него.
+  # Сборка OCI-образа → push в Forgejo container registry.
+  # Алгоритм 1-в-1 по образцу 0_ЦОД/container-build (mortis/nora/memos):
+  # job-контейнер quay.io/containers/podman (podman преднастроен для nested-
+  # CI), storage driver vfs флагом на каждом podman-вызове (overlay-in-overlay
+  # не поддерживается внутри раннера), push в git.yadr00.internal/build/
+  # khrazhevnik. БЕЗ --privileged и БЕЗ smoke: контейнер = FROM scratch
+  # (бинарник + CA-bundle), функционально идентичен артефакту, который уже
+  # протестирован в build-test job — включая binary-smoke (exec'ит
+  # khrazhevnik-ci как процесс: /healthz→setup→login→proxy byte-exact→404
+  # →SIGTERM exit 0), см. test/integration/binary_smoke_test.go. Container-
+  # smoke (test/smoke/smoke.sh, podman run) — только локально перед релизом:
+  # rootless-podman runner не даёт вложенности, в CI контейнер через
+  # `podman run` не тестируется.
   oci:
     runs-on: docker
     container:
       image: quay.io/containers/podman:latest
-      options: --privileged
-    env:
-      # vfs: единственный driver, работающий на overlayfs backing FS внутри
-      # контейнера раннера. Конфиг-файлом (а не флагом --storage-driver) —
-      # чтобы и bare-вызовы podman из test/smoke/smoke.sh использовали vfs
-      # (иначе образ, собранный в vfs, не найдётся из default-overlay storage
-      # smoke-скрипта → smoke попытается пересобрать с overlay и упадёт).
-      CONTAINERS_STORAGE_CONF: /tmp/vfs-storage.conf
 
     steps:
       - name: Trust Local CA
@@ -413,14 +414,11 @@ jobs:
 
       - name: Install dependencies
         # git — checkout + git describe в Containerfile; nodejs — для
-        # actions/checkout@v4 (JS-экшен); python3+jq — smoke.sh (fixture
-        # upstream + парсинг JSON); curl+bash — CA + smoke.sh. make НЕ нужен
-        # (podman build зовём напрямую, по образцу container-build, а не
-        # через Makefile — Makefile оставлен для локальных сборок с overlay).
-        run: dnf install -y --setopt=install_weak_deps=False git curl bash nodejs jq python3
-
-      - name: Configure podman storage (vfs)
-        run: printf '[storage]\ndriver = "vfs"\n' > /tmp/vfs-storage.conf
+        # actions/checkout@v4 (JS-экшен); curl — CA-даунлоад; bash — шелл-
+        # степы. python3/jq/make НЕ нужны: smoke убран (бинарник гоняет
+        # build-test job через binary_smoke_test.go), podman build зовём
+        # напрямую (Makefile — только для локальных сборок с overlay).
+        run: dnf install -y --setopt=install_weak_deps=False git curl bash nodejs
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -441,18 +439,13 @@ jobs:
           echo "IS_TAG=${TAG_VERSION:+yes}" >> "$GITHUB_ENV"
 
       - name: Build image
-        # amd64 single-platform; multi-арх релиз — отдельным прогоном с QEMU.
+        # vfs: единственный driver, работающий на overlayfs backing FS внутри
+        # контейнера раннера. amd64 single-platform; multi-арх релиз — с QEMU.
         run: |
-          podman build \
+          podman --storage-driver=vfs build \
             --build-arg VERSION="${VERSION}" \
             -t git.yadr00.internal/build/khrazhevnik:${VERSION} \
             -f deploy/Containerfile .
-
-      - name: Smoke test
-        env:
-          IMAGE: git.yadr00.internal/build/khrazhevnik
-          TAG: ${{ env.VERSION }}
-        run: test/smoke/smoke.sh
 
       - name: Push to Forgejo Registry
         env:
@@ -462,17 +455,17 @@ jobs:
             echo "::warning::secrets.UPLOAD_TOKEN не задан — push пропущен"
             exit 0
           fi
-          podman login git.yadr00.internal -u alexrus -p "$UPLOAD_TOKEN"
-          podman push git.yadr00.internal/build/khrazhevnik:${VERSION}
+          podman --storage-driver=vfs login git.yadr00.internal -u alexrus -p "$UPLOAD_TOKEN"
+          podman --storage-driver=vfs push git.yadr00.internal/build/khrazhevnik:${VERSION}
 
       - name: Tag and push :latest (release tag)
         if: env.IS_TAG == 'yes'
         env:
           UPLOAD_TOKEN: ${{ secrets.UPLOAD_TOKEN }}
         run: |
-          podman tag git.yadr00.internal/build/khrazhevnik:${VERSION} git.yadr00.internal/build/khrazhevnik:latest
-          podman push git.yadr00.internal/build/khrazhevnik:latest
+          podman --storage-driver=vfs tag git.yadr00.internal/build/khrazhevnik:${VERSION} git.yadr00.internal/build/khrazhevnik:latest
+          podman --storage-driver=vfs push git.yadr00.internal/build/khrazhevnik:latest
 
       - name: Cleanup
         if: always()
-        run: podman system prune -a -f
+        run: podman --storage-driver=vfs system prune -a -f
