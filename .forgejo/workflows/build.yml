@@ -397,9 +397,10 @@ jobs:
         # nodejs нужен НЕ проекту, а раннеру: act/act_runner исполняет
         # JS-экшены (actions/checkout@v4) через node ВНУТРИ job-контейнера;
         # fedora:44 его не содержит → crun "node not found", exit 127.
+        # make — для `make image` (Makefile target обёртывает podman build).
         run: |
           dnf install -y --setopt=install_weak_deps=False \
-            git curl podman python3 jq nodejs
+            git curl podman python3 jq nodejs make
 
       - name: Trust Local CA
         run: |
