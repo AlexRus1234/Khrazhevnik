@@ -97,7 +97,10 @@ CREATE TABLE audit_log (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE object_index (
-    `key`          TEXT NOT NULL,
+    -- MariaDB требует длину для PK по текстовой колонке (Error 1170);
+    -- postgres/sqlite держат TEXT PK без длины. 767 — безопасный предел
+    -- utf8mb4 InnoDB (767*4=3068 < 3072 байт max key length).
+    `key`          VARCHAR(767) NOT NULL,
     etag          TEXT NOT NULL DEFAULT '',
     size          BIGINT NOT NULL DEFAULT 0,
     content_type  TEXT NOT NULL DEFAULT '',
