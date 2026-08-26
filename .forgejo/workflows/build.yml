@@ -372,41 +372,55 @@ jobs:
                 khrazhevnik-*linux-amd64 khrazhevnik-*linux-amd64.sha256 \
                 coverage.out
 
-  # Сборка OCI-образа из scratch → дымовые тесты → push в registry.
-  # Отдельная job: podman-in-container требует --privileged (создание
-  # user-namespace'ов внутри раннера). Теги пробрасывают образ в
-  # ghcr.io; прочие пушей — локальная метка localhost/testing (по
-  # образцу Intermasq: «не тег — не релиз»).
+  # Сборка OCI-образа → smoke → push в Forgejo container registry.
+  # Алгоритм по образцу 0_ЦОД/container-build (mortis и др.): job-контейнер
+  # quay.io/containers/podman (podman преднастроен для nested-CI), storage
+  # driver vfs (overlay-in-overlay не поддерживается внутри раннера), push
+  # в git.yadr00.internal/build/khrazhevnik. --privileged оставлен для smoke
+  # (podman run с портами/volumes/namespace'ами); для build/push vfs хватает
+  # и без него.
   oci:
     runs-on: docker
     container:
-      image: fedora:44
-      # podman внутри контейнера раннера открывает own namespaces —
-      # без --privileged (в частности CAP_SYS_ADMIN + binfmt_misc)
-      # сборка и `podman run` падают на "can't create namespace".
+      image: quay.io/containers/podman:latest
       options: --privileged
     env:
-      GOPROXY: "https://nora.panelka.yadr01.internal/go,direct"
-      GOSUMDB: "off"
-      GOPRIVATE: "git.yadr00.internal/*"
+      # vfs: единственный driver, работающий на overlayfs backing FS внутри
+      # контейнера раннера. Конфиг-файлом (а не флагом --storage-driver) —
+      # чтобы и bare-вызовы podman из test/smoke/smoke.sh использовали vfs
+      # (иначе образ, собранный в vfs, не найдётся из default-overlay storage
+      # smoke-скрипта → smoke попытается пересобрать с overlay и упадёт).
+      CONTAINERS_STORAGE_CONF: /tmp/vfs-storage.conf
 
     steps:
-      - name: Install system dependencies
-        # git/curl — для checkout и CA; podman — сборка/ран образа;
-        # python3+jq — fixture-upstream и парсинг JSON в smoke.sh.
-        # nodejs нужен НЕ проекту, а раннеру: act/act_runner исполняет
-        # JS-экшены (actions/checkout@v4) через node ВНУТРИ job-контейнера;
-        # fedora:44 его не содержит → crun "node not found", exit 127.
-        # make — для `make image` (Makefile target обёртывает podman build).
-        run: |
-          dnf install -y --setopt=install_weak_deps=False \
-            git curl podman python3 jq nodejs make
-
       - name: Trust Local CA
         run: |
           curl -k https://172.20.0.1:9000/roots.pem -o /etc/pki/ca-trust/source/anchors/step-ca.crt
           update-ca-trust
           git config --global http.sslCAInfo /etc/pki/ca-trust/source/anchors/step-ca.crt
+
+      - name: Configure Nora RPM repo
+        run: |
+          cat > /etc/yum.repos.d/nora.repo << 'EOF'
+          [nora-runner]
+          name=Nora Runner Dependencies
+          baseurl=https://nora.panelka.yadr01.internal/rpm/runner/
+          gpgcheck=0
+          enabled=1
+          priority=1
+          sslverify=1
+          EOF
+
+      - name: Install dependencies
+        # git — checkout + git describe в Containerfile; nodejs — для
+        # actions/checkout@v4 (JS-экшен); python3+jq — smoke.sh (fixture
+        # upstream + парсинг JSON); curl+bash — CA + smoke.sh. make НЕ нужен
+        # (podman build зовём напрямую, по образцу container-build, а не
+        # через Makefile — Makefile оставлен для локальных сборок с overlay).
+        run: dnf install -y --setopt=install_weak_deps=False git curl bash nodejs jq python3
+
+      - name: Configure podman storage (vfs)
+        run: printf '[storage]\ndriver = "vfs"\n' > /tmp/vfs-storage.conf
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -427,40 +441,38 @@ jobs:
           echo "IS_TAG=${TAG_VERSION:+yes}" >> "$GITHUB_ENV"
 
       - name: Build image
-        # Только amd64 в CI — кросс-сборка arm64 через QEMU медленная и
-        # требует qemu-user-static+binfmt_misc (опционально, см. Makefile).
-        # Мульти-арх релиз собирается отдельно при наличии QEMU.
+        # amd64 single-platform; multi-арх релиз — отдельным прогоном с QEMU.
         run: |
-          make image PLATFORMS=linux/amd64 \
-            IMAGE=ghcr.io/alexrus1234/khrazhevnik TAG="${VERSION}"
+          podman build \
+            --build-arg VERSION="${VERSION}" \
+            -t git.yadr00.internal/build/khrazhevnik:${VERSION} \
+            -f deploy/Containerfile .
 
       - name: Smoke test
         env:
-          IMAGE: ghcr.io/alexrus1234/khrazhevnik
+          IMAGE: git.yadr00.internal/build/khrazhevnik
           TAG: ${{ env.VERSION }}
         run: test/smoke/smoke.sh
 
-      - name: Tag localhost/testing (non-release)
-        if: env.IS_TAG != 'yes'
-        run: |
-          podman tag ghcr.io/alexrus1234/khrazhevnik:${VERSION} localhost/testing:latest
-          echo "Образ отмечен как localhost/testing:latest (не релизный билд)"
-
-      - name: Push to registry (release tag)
-        if: env.IS_TAG == 'yes'
+      - name: Push to Forgejo Registry
         env:
-          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          UPLOAD_TOKEN: ${{ secrets.UPLOAD_TOKEN }}
         run: |
-          if [ -z "$REGISTRY_TOKEN" ]; then
-            echo "::warning::secrets.REGISTRY_TOKEN не задан — push пропущен"
+          if [ -z "$UPLOAD_TOKEN" ]; then
+            echo "::warning::secrets.UPLOAD_TOKEN не задан — push пропущен"
             exit 0
           fi
-          podman login ghcr.io -u "$REGISTRY_USER" -p "$REGISTRY_TOKEN"
-          podman push ghcr.io/alexrus1234/khrazhevnik:${VERSION}
-          podman tag  ghcr.io/alexrus1234/khrazhevnik:${VERSION} ghcr.io/alexrus1234/khrazhevnik:latest
-          podman push ghcr.io/alexrus1234/khrazhevnik:latest
+          podman login git.yadr00.internal -u alexrus -p "$UPLOAD_TOKEN"
+          podman push git.yadr00.internal/build/khrazhevnik:${VERSION}
 
-      - name: Cleanup image
+      - name: Tag and push :latest (release tag)
+        if: env.IS_TAG == 'yes'
+        env:
+          UPLOAD_TOKEN: ${{ secrets.UPLOAD_TOKEN }}
+        run: |
+          podman tag git.yadr00.internal/build/khrazhevnik:${VERSION} git.yadr00.internal/build/khrazhevnik:latest
+          podman push git.yadr00.internal/build/khrazhevnik:latest
+
+      - name: Cleanup
         if: always()
-        run: podman rmi -f ghcr.io/alexrus1234/khrazhevnik:${VERSION} localhost/testing:latest >/dev/null 2>&1 || true
+        run: podman system prune -a -f
