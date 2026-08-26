@@ -130,11 +130,13 @@ jobs:
         # nodejs нужен НЕ проекту, а раннеру: act/act_runner исполняет
         # JS-экшены (actions/checkout@v4) через node ВНУТРИ job-контейнера;
         # fedora:44 его не содержит → crun "node not found", exit 127.
+        # npm — для сборки Vue-SPA (cd web && npm ci && npm run build,
+        # шаг ниже): до сессии 18.1 фронтенда не было, npm был не нужен.
         # jq — для парсинга JSON в publish-шагах ниже.
         run: |
           dnf install -y --setopt=install_weak_deps=False \
             bash tar \
-            nodejs \
+            nodejs npm \
             jq \
             gcc
 
@@ -150,9 +152,10 @@ jobs:
           echo "/usr/local/go/bin" >> $GITHUB_PATH
           /usr/local/go/bin/go version
 
-      # Build frontend (cd web && npm ci && npm run build) добавляется в
-      # сессии 18.1 вместе со scaffold'ом Vue SPA и //go:embed. Сейчас
-      # web/ пустой, go:embed не wire'нут — go build от фронтенда не зависит.
+      - name: Configure npm registry to Nora
+        # Все внешние зависимости через Nora (как и GOPROXY выше):
+        # изолирует сборку от registry.npmjs.org, единый кеш/зеркало.
+        run: npm config set registry https://nora.panelka.yadr01.internal/npm/
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -185,6 +188,14 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "APP_VERSION=${VERSION#v}" >> "$GITHUB_ENV"
           echo "EXACT_TAG=$TAG_VERSION" >> "$GITHUB_ENV"
+
+      - name: Build frontend
+        # ДО любого Go-команда: internal/core/web/spa.go делает
+        # //go:embed assets и //go:embed assets/index.html — без собранного
+        # бандла (папки assets нет в git, см. .gitignore) go vet /
+        # golangci-lint / go test / go build падают на compile-time embed.
+        # web-build = vue-tsc (typecheck) + vite build → ../internal/core/web/assets.
+        run: cd web && npm ci && npm run build
 
       - name: Install golangci-lint
         # Пин той же версии, что в локальной разработке; собирается
