@@ -394,9 +394,12 @@ jobs:
       - name: Install system dependencies
         # git/curl — для checkout и CA; podman — сборка/ран образа;
         # python3+jq — fixture-upstream и парсинг JSON в smoke.sh.
+        # nodejs нужен НЕ проекту, а раннеру: act/act_runner исполняет
+        # JS-экшены (actions/checkout@v4) через node ВНУТРИ job-контейнера;
+        # fedora:44 его не содержит → crun "node not found", exit 127.
         run: |
           dnf install -y --setopt=install_weak_deps=False \
-            git curl podman python3 jq
+            git curl podman python3 jq nodejs
 
       - name: Trust Local CA
         run: |
