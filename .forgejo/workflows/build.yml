@@ -70,7 +70,9 @@ jobs:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
         options: --health-cmd="curl -fsS http://localhost:9000/minio/health/live || exit 1" --health-interval=5s --health-timeout=3s --health-retries=10
-        cmd: server /data
+        cmd:
+          - server
+          - /data
 
     steps:
       - name: Install git first (minimal fedora image lacks it)
