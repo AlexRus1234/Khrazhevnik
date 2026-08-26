@@ -1,0 +1,55 @@
+# Хражевник — rootless podman quadlet (S3 + postgres).
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Пример прод-режима: объекты в S3 (minio или любой S3-совместимый
+# сервис), каталог в postgres. fs+sqlite-quadlet (khrazhevnik.container)
+# — KISS-вариант для homelab; этот — для развёртываний, где хранилище
+# вынесено из контейнера (объекты — в S3, БД — внешний postgres).
+#
+# Установка (rootless, пользовательский systemd):
+#   cp deploy/quadlet/khrazhevnik-s3.container ~/.config/containers/systemd/
+#   podman secret create jwt-secret "$(openssl rand -hex 32)"
+#   podman secret create s3-secret-key "<secret access key>"
+#   mkdir -p /var/lib/khrazhevnik/spool && sudo chown 65534:65534 /var/lib/khrazhevnik/spool
+#   systemctl --user daemon-reload
+#   systemctl --user start khrazhevnik-s3.service
+#
+# S3-режим не требует volume для объектов (бакет — вне контейнера);
+# writable нужен только спулу (storage.s3.spool_dir, дефолт
+# /var/lib/khrazhevnik/spool) — туда Put пишет байты до атомарного
+# PutObject. ReadOnlyRootfs=true; спул — единственный writable-mount.
+# Ключи S3 и DSN postgres — через Podman Secret (env), не в файле.
+
+[Container]
+Image=ghcr.io/alexrus1234/khrazhevnik:v0.1.0
+ContainerName=khrazhevnik-s3
+PublishPort=29202:29202
+PublishPort=127.0.0.1:30202:30202
+ReadOnly=true
+# Спул — единственный writable-volume в s3-режиме (объекты в бакете).
+Volume=/var/lib/khrazhevnik/spool:/var/lib/khrazhevnik/spool
+# Драйверы: s3 + postgres (defaults — fs+sqlite, здесь переопределено env).
+Environment=KHRZ_STORAGE__DRIVER=s3
+Environment=KHRZ_DATABASE__DRIVER=postgres
+# S3: endpoint/region/bucket (ключи — через Secret ниже).
+Environment=KHRZ_STORAGE__S3__ENDPOINT=https://s3.example.org:9000
+Environment=KHRZ_STORAGE__S3__REGION=ru
+Environment=KHRZ_STORAGE__S3__BUCKET=khrazhevnik
+Environment=KHRZ_STORAGE__S3__PATH_STYLE=true
+# Postgres DSN (можно через Secret, если пароль не в строке).
+Environment=KHRZ_DATABASE__DSN=postgres://khrazhevnik@db.example.org:5432/khrazhevnik
+# Адаптеры экосистем (defaults включают все 5; явно для примера).
+Environment=KHRZ_ECOSYSTEM__APT__ENABLED=true
+Environment=KHRZ_ECOSYSTEM__RPM_MD__ENABLED=true
+# Секреты: JWT, S3 secret access key (access key можно в env или Secret).
+Secret=jwt-secret,type=env,target=KHRZ_AUTH__JWT_SECRET
+Secret=s3-secret-key,type=env,target=KHRZ_STORAGE__S3__SECRET_ACCESS_KEY
+# Graceful shutdown каскад: HTTP 5с + фоновые задачи 30с.
+StopTimeout=40
+AutoUpdate=registry
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

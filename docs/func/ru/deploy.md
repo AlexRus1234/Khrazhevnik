@@ -160,3 +160,9 @@ make image TAG=v0.1.0           # с версией
 make image PLATFORMS=linux/amd64,linux/arm64 TAG=v0.1.0  # multi-arch (нужен qemu-user-static)
 make smoke                      # дымовой тест собранного образа
 ```
+
+## Выбор хранилища и БД
+
+Дефолт (fs + sqlite) — KISS для homelab. Для прода — S3 + postgres/
+mariadb: пример quadlet — `deploy/quadlet/khrazhevnik-s3.container`.
+Подробности и рекомендации — в [storage-db.md](storage-db.md).

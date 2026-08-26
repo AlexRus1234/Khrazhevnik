@@ -39,6 +39,39 @@ jobs:
       # The 'update-ca-trust' step below adds step-ca to the system bundle,
       # after which all tools trust both public CAs AND step-ca transparently.
 
+    # Сервисные контейнеры для контрактных suite (сессия 17): postgres,
+    # mariadb и minio (S3-совместимое хранилище). Доступны из job-
+    # контейнера по имени сервиса как хостнейма (postgres:5432 и т.д.).
+    # Контрактные suite в test/integration/contract_drivers_test.go
+    #_gate'ятся по env KHRZ_TEST_*_DSN/ENDPOINT; без env — Skip.
+    # fs+sqlite гоняются всегда (без внешних сервисов); контейнер-смоук
+    # из сессии 10 отдельной oci-job — его не трогаем.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: khrazhevnik
+          POSTGRES_PASSWORD: khrazhevnik
+          POSTGRES_DB: khrazhevnik
+        options: --health-cmd="pg_isready -U khrazhevnik" --health-interval=5s --health-timeout=3s --health-retries=10
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_USER: khrazhevnik
+          MARIADB_PASSWORD: khrazhevnik
+          MARIADB_ROOT_PASSWORD: rootpass
+          MARIADB_DATABASE: khrazhevnik
+        options: --health-cmd="mariadb-admin ping -h localhost -u root -prootpass" --health-interval=5s --health-timeout=3s --health-retries=10
+      minio:
+        # minio/minio: запуск server /data; креды — env MINIO_ROOT_*.
+        # health/live — встроенный liveness-эндпойнт минио.
+        image: minio/minio
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        options: --health-cmd="curl -fsS http://localhost:9000/minio/health/live || exit 1" --health-interval=5s --health-timeout=3s --health-retries=10
+        cmd: server /data
+
     steps:
       - name: Install git first (minimal fedora image lacks it)
         run: dnf install -y --setopt=install_weak_deps=False git curl
@@ -131,8 +164,17 @@ jobs:
 
       - name: go test -integration
         # Живые слушатели, реальный TOML-конфиг, graceful shutdown.
+        # Контрактные suite (сессия 17) гоняют каталог/хранилище по
+        # всем драйверам: sqlite+fs — всегда; postgres/mariadb/s3 —
+        # через сервисные контейнеры (env ниже). Без env — t.Skip.
         env:
           CGO_ENABLED: "1"
+          KHRZ_TEST_POSTGRES_DSN: "postgres://khrazhevnik:khrazhevnik@postgres:5432/khrazhevnik"
+          KHRZ_TEST_MARIADB_DSN: "khrazhevnik:khrazhevnik@tcp(mariadb:3306)/khrazhevnik"
+          KHRZ_TEST_S3_ENDPOINT: "http://minio:9000"
+          KHRZ_TEST_S3_REGION: "us-east-1"
+          KHRZ_TEST_S3_ACCESS_KEY: "minioadmin"
+          KHRZ_TEST_S3_SECRET_KEY: "minioadmin"
         run: go test -race -tags integration ./test/integration/... -count=1
 
       - name: Build binary
