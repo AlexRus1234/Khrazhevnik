@@ -17,14 +17,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 import { createRouter, createWebHistory } from 'vue-router'
+import { getToken, UNAUTHORIZED_EVENT } from '../api'
+import { markLoggedOut } from '../stores/auth'
 import Login from '../views/Login.vue'
 import Dashboard from '../views/Dashboard.vue'
 import Remotes from '../views/Remotes.vue'
 import Repos from '../views/Repos.vue'
+import RepoDetail from '../views/RepoDetail.vue'
+import Users from '../views/Users.vue'
+import Audit from '../views/Audit.vue'
+import Keys from '../views/Keys.vue'
 
 // History mode с базой '/ui/' (совпадает с vite base и mount-поинтом /ui
-// админского роутера). Страницы-заглушки без функциональности; навигационные
-// гарды (redirect→/login при отсутствии сессии) и API-связка — сессия 18.2.
+// админского роутера). Гард: без токена — только /login; 401 от любого
+// запроса (UNAUTHORIZED_EVENT из api.ts) выкидывает на /login.
 const router = createRouter({
   history: createWebHistory('/ui/'),
   routes: [
@@ -33,7 +39,24 @@ const router = createRouter({
     { path: '/dashboard', name: 'dashboard', component: Dashboard },
     { path: '/remotes', name: 'remotes', component: Remotes },
     { path: '/repos', name: 'repos', component: Repos },
+    { path: '/repos/:id', name: 'repo-detail', component: RepoDetail },
+    { path: '/users', name: 'users', component: Users },
+    { path: '/audit', name: 'audit', component: Audit },
+    { path: '/keys', name: 'keys', component: Keys },
   ],
+})
+
+router.beforeEach((to) => {
+  if (to.name !== 'login' && getToken() === null) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+})
+
+window.addEventListener(UNAUTHORIZED_EVENT, () => {
+  markLoggedOut()
+  if (router.currentRoute.value.name !== 'login') {
+    void router.push({ name: 'login' })
+  }
 })
 
 export default router
