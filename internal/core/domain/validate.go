@@ -36,9 +36,12 @@ const (
 )
 
 // ValidateKey проверяет ключ единого namespace хранения: только
-// [a-z0-9/._-], без «..», без ведущего/хвостового «/», без пустых
-// сегментов, длиной до maxKeyLen. Возвращает *InvalidKeyError со всеми
-// нарушениями сразу (errors.Join причин).
+// [a-zA-Z0-9/._-], без «..», без ведущего/хвостового «/», без пустых
+// сегментов, длиной до maxKeyLen. Верхний регистр допущен осознанно
+// (сессия 19): пути реальных пакетов бывают case-чувствительными
+// (/pool/Foo.deb ≠ /pool/foo.deb), а traversal-инварианты от регистра
+// не зависят. Возвращает *InvalidKeyError со всеми нарушениями сразу
+// (errors.Join причин).
 func ValidateKey(key string) error {
 	var reasons []error
 	if key == "" {
@@ -81,11 +84,14 @@ func ValidateKey(key string) error {
 	return nil
 }
 
-// allowedKeyByte — whitelist байтов ключа; %, верхний регистр, «\»,
-// нулевые байты и прочее отсекаются здесь.
+// allowedKeyByte — whitelist байтов ключа; %, «\», нулевые байты и
+// прочее отсекаются здесь. Верхний регистр разрешён: case-чувствительные
+// пути upstream не должны склеиваться в один ключ кеша.
 func allowedKeyByte(b byte) bool {
 	switch {
 	case b >= 'a' && b <= 'z':
+		return true
+	case b >= 'A' && b <= 'Z':
 		return true
 	case b >= '0' && b <= '9':
 		return true

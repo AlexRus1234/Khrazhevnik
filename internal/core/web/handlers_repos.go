@@ -348,9 +348,11 @@ func handlePutObject(d Deps) http.HandlerFunc {
 			writeErrCode(w, http.StatusBadRequest, "validation_error")
 			return
 		}
-		// Лоуэркейс: domain.ValidateKey пропускает только [a-z0-9/._-];
-		// apt-клиенты иногда присылают имена с верхним регистром —
-		// нормализуем здесь, до ValidateKey в движке.
+		// Лоуэркейс — v1-конвенция «опубликованные ключи lowercase»
+		// (docs/func/ru/personal-repos.md): генераторы индексов и
+		// клиентские URL рассчитаны на неё. Сессия 19 разрешила
+		// верхний регистр в ValidateKey для case-чувствительных
+		// путей прокси-кеша — ветку publish сознательно не меняем.
 		objPath = strings.ToLower(objPath)
 		size := r.ContentLength
 		if size < 0 {

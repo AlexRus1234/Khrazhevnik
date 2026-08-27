@@ -58,9 +58,9 @@ func (e FakeEcosystem) Name() string { return e.NameOf }
 // совпадает с именем (как у apt).
 func (e FakeEcosystem) URLPrefix() string { return e.NameOf }
 
-// Resolve переводит /<name>/<rest> в Target. Ключ хранения всегда
-// нижний регистр: реальный upstream-путь может содержать заглавные
-// (Packages.gz), а доменные ключи — только [a-z0-9/._-].
+// Resolve переводит /<name>/<rest> в Target. Ключ хранения сохраняет
+// регистр upstream-пути (как apt с сессии 19): case-чувствительные
+// пути не должны склеиваться в один ключ кеша.
 func (e FakeEcosystem) Resolve(ecosystemPath string) (port.Target, bool) {
 	prefix := "/" + e.NameOf + "/"
 	if !strings.HasPrefix(ecosystemPath, prefix) {
@@ -70,7 +70,7 @@ func (e FakeEcosystem) Resolve(ecosystemPath string) (port.Target, bool) {
 	return port.Target{
 		UpstreamURL:  e.Base + "/" + rest,
 		UpstreamPath: "/" + rest,
-		StorageKey:   "cache/" + e.NameOf + "/" + strings.ToLower(rest),
+		StorageKey:   "cache/" + e.NameOf + "/" + rest,
 		Checksum:     e.Checksum,
 	}, true
 }

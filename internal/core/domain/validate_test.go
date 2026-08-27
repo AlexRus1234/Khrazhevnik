@@ -29,6 +29,11 @@ func TestValidateKey(t *testing.T) {
 		"tmp/00000000-0000-4000-8000-000000000000",
 		"a",
 		"0/9/_.-",
+		// Верхний регистр легален: case-чувствительные пути upstream
+		// (/pool/Foo.deb ≠ /pool/foo.deb) не должны склеиваться.
+		"cache/apt/1/pool/Foo.deb",
+		"Cache/UPPER",
+		"cache/apt/1/dists/stable/Packages.gz",
 	}
 	for _, key := range valid {
 		if err := ValidateKey(key); err != nil {
@@ -37,7 +42,7 @@ func TestValidateKey(t *testing.T) {
 	}
 
 	// Нападки: traversal, абсолютные пути, кодированные точки,
-	// нулевые байты, windows-слэши, верхний регистр, URL-мусор.
+	// нулевые байты, windows-слэши, URL-мусор.
 	invalid := map[string]string{
 		"":                               "пустой",
 		"/abs/path":                      "ведущий слэш",
@@ -54,7 +59,6 @@ func TestValidateKey(t *testing.T) {
 		"cache/x\x00y":                   "нулевой байт",
 		`C:\win\path`:                    "windows-путь",
 		`\\server\share`:                 "UNC-путь",
-		"Cache/UPPER":                    "верхний регистр",
 		"cache/a?b":                      "URL-мусор",
 		"cache/a b":                      "пробел",
 		"объект":                         "не-ascii",

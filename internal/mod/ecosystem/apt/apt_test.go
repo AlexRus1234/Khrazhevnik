@@ -217,9 +217,10 @@ func TestResolveKnownRemote(t *testing.T) {
 	}
 }
 
-func TestResolveUppercaseStorageKeyLowercased(t *testing.T) {
-	// StorageKey лоуэркейсит путь (доменный ключ — только [a-z0-9/._-]),
-	// но UpstreamURL/Path сохраняют регистр (byte-exact к upstream).
+func TestResolveUppercaseStorageKeyPreserved(t *testing.T) {
+	// Регистр сохраняется во всех полях Target (сессия 19):
+	// лоуэркейс StorageKey склеивал бы /pool/Foo.deb и /pool/foo.deb
+	// в один ключ кеша — poisoning на case-чувствительном upstream.
 	a := newResolveAdapter(t, domain.Remote{
 		ID: 1, Name: "ubuntu", BaseURL: "https://archive.ubuntu.com/ubuntu", Enabled: true,
 	})
@@ -230,8 +231,8 @@ func TestResolveUppercaseStorageKeyLowercased(t *testing.T) {
 	if target.UpstreamPath != "/dists/stable/main/binary-amd64/Packages.gz" {
 		t.Errorf("UpstreamPath сохранил не оригинальный регистр: %q", target.UpstreamPath)
 	}
-	if target.StorageKey != "cache/apt/1/dists/stable/main/binary-amd64/packages.gz" {
-		t.Errorf("StorageKey не лоуэркейшен: %q", target.StorageKey)
+	if target.StorageKey != "cache/apt/1/dists/stable/main/binary-amd64/Packages.gz" {
+		t.Errorf("StorageKey потерял регистр: %q", target.StorageKey)
 	}
 }
 

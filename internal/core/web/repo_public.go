@@ -35,8 +35,12 @@ import (
 
 // handleRepoFile — раздача объекта личного репо по имени. Ключ в
 // Storage: repo/<repo-id>/<ecosystem>/<путь>. Путь — chi URLParam "*"
-// (raw хвост после /repo/{name}/). Лоуэркейс: ключи проходят
-// domain.ValidateKey, который не пускает верхний регистр.
+// (raw хвост после /repo/{name}/). Лоуэркейс — не рудимент ValidateKey
+// (сессия 19 разрешила верхний регистр в ключах), а v1-конвенция
+// личных репо: publish и генераторы пишут ключи в lowercase, а
+// apt-клиенты запрашивают индексы с заглавной (Packages/Release) —
+// нормализация запроса сводит их. Прокси-кеш upstream (handleProxy)
+// регистр НЕ нормализует: там пути case-чувствительны.
 func handleRepoFile(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := chi.URLParam(r, "name")

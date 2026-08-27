@@ -165,7 +165,9 @@ func traversalRejected(t *testing.T, st port.Storage) {
 	put(t, st, "cache/ok", "v")
 	bad := []string{
 		"", "/abs", "a/../b", "../escape", "..", "a//b", "a/./b",
-		"Back\\slash", "UPPER", "percent%", "пробел x", "nul\x00byte",
+		"Back\\slash", "percent%", "пробел x", "nul\x00byte",
+		// UPPER/верхний регистр легален с сессии 19 (case-чувствительные
+		// пути upstream) — в списке отвергаемых больше не числится.
 	}
 	for _, key := range bad {
 		var ike *domain.InvalidKeyError

@@ -109,12 +109,14 @@ func (a *Adapter) URLPrefix() string { return Name }
 // Resolve переводит /apt/<remote-name>/<остальной-путь> в Target.
 // false — путь не принадлежит apt или remote неизвестен/выключен.
 // Кеш remotes обновляется по TTL 30с: перезапуск не нужен для вновь
-// добавленных upstream'ов. UpstreamURL/UpstreamPath сохраняют оригинальный
-// регистр (byte-exact к upstream); StorageKey лоуэркейсит путь —
-// доменный ключ допускает только [a-z0-9/._-]. Checksum заполняется,
-// если Enumerate (sync зеркала) уже разбирал Packages с SHA256 этого
-// пути; без sync чексумм нет — движок честно деградирует к
-// Content-Length.
+// добавленных upstream'ов. Регистр сохраняется во всех трёх полях
+// (byte-exact к upstream): StorageKey допускает верхний регистр после
+// расширения charset в domain.ValidateKey — лоуэркейс склеивал бы
+// /pool/Foo.deb и /pool/foo.deb в один ключ кеша, и второй клиент
+// получал бы байты первого (poisoning на case-чувствительном upstream).
+// Checksum заполняется, если Enumerate (sync зеркала) уже разбирал
+// Packages с SHA256 этого пути; без sync чексумм нет — движок честно
+// деградирует к Content-Length.
 func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 	prefix := "/" + Name + "/"
 	if !strings.HasPrefix(ecosystemPath, prefix) {
@@ -135,7 +137,7 @@ func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 	target := port.Target{
 		UpstreamURL:  base + upstreamPath,
 		UpstreamPath: upstreamPath,
-		StorageKey:   "cache/" + Name + "/" + strconv.FormatInt(remote.ID, 10) + strings.ToLower(upstreamPath),
+		StorageKey:   "cache/" + Name + "/" + strconv.FormatInt(remote.ID, 10) + upstreamPath,
 	}
 	if sum, ok := a.sums.lookup(remote.ID, upstreamPath); ok {
 		target.Checksum = sum

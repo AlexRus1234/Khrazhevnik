@@ -90,7 +90,8 @@ func TestCheckKeyTraversal(t *testing.T) {
 	s := &Storage{}
 	bad := []string{
 		"", "/abs", "a/../b", "../escape", "..", "a//b", "a/./b",
-		"Back\\slash", "UPPER", "percent%", "пробел x", "nul\x00byte",
+		"Back\\slash", "percent%", "пробел x", "nul\x00byte",
+		// UPPER легален с сессии 19 — верхний регистр не traversal.
 	}
 	for _, key := range bad {
 		var ike *domain.InvalidKeyError
@@ -123,7 +124,8 @@ func TestValidPrefix(t *testing.T) {
 	if !validPrefix("") || !validPrefix("cache/apt/") || !validPrefix("cache/apt/1") {
 		t.Fatal("validPrefix отклонил валидный префикс")
 	}
-	if validPrefix("../") || validPrefix("UPPER/") {
+	// UPPER/ легален с сессии 19 (регистр разрешён в ValidateKey).
+	if validPrefix("../") || validPrefix("a?b/") {
 		t.Fatal("validPrefix принял недопустимый префикс")
 	}
 }
