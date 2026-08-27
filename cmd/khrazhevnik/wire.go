@@ -410,10 +410,17 @@ func (a *App) WaitTasks(ctx context.Context) error {
 
 // outboundHTTPClient — Doer для запросов upstream: таймауты только на
 // соединение и заголовки; тело живёт столько, сколько живёт контекст.
+// DisableCompression: иначе Go-транспорт сам шлёт Accept-Encoding: gzip
+// и прозрачно расживает ответ — в кеш записались бы расжатые байты с
+// ETag сжатого варианта и без Content-Encoding (инвариант «метаданные
+// upstream побайтово» сломан для всех upstream с динамическим gzip).
+// Клиентские заголовки и так не форвардятся (engine строит новый GET),
+// поэтому upstream всегда получает identity.
 func outboundHTTPClient() *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
+			DisableCompression:    true,
 			DialContext:           (&net.Dialer{Timeout: upstreamConnectTimeout, KeepAlive: 30 * time.Second}).DialContext,
 			TLSHandshakeTimeout:   upstreamConnectTimeout,
 			ResponseHeaderTimeout: upstreamConnectTimeout,
