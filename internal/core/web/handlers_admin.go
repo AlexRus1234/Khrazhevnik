@@ -400,6 +400,31 @@ func handleCreateToken(d Deps) http.HandlerFunc {
 	}
 }
 
+// tokenOut — DTO API-токена для списка: без SHA256 (хеш — внутренняя
+// кухня), с префиксом для узнавания. Сырой токен отдаётся один раз —
+// только в ответе создания (handleCreateToken). Нулевые времена —
+// бессрочный/неотозванный токен (omitempty на time.Time не работает).
+type tokenOut struct {
+	ID        int64          `json:"id"`
+	Name      string         `json:"name"`
+	Prefix    string         `json:"prefix"`
+	Scopes    []domain.Scope `json:"scopes"`
+	CreatedAt time.Time      `json:"created_at"`
+	ExpiresAt time.Time      `json:"expires_at"`
+	RevokedAt time.Time      `json:"revoked_at,omitempty"`
+}
+
+func tokenOutFrom(t domain.APIToken) tokenOut {
+	scopes := t.Scopes
+	if scopes == nil {
+		scopes = []domain.Scope{}
+	}
+	return tokenOut{
+		ID: t.ID, Name: t.Name, Prefix: t.Prefix, Scopes: scopes,
+		CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt, RevokedAt: t.RevokedAt,
+	}
+}
+
 // handleListTokens переезд из handlers_auth.
 func handleListTokens(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -412,7 +437,11 @@ func handleListTokens(d Deps) http.HandlerFunc {
 			writeErr(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, ts)
+		out := make([]tokenOut, 0, len(ts))
+		for _, t := range ts {
+			out = append(out, tokenOutFrom(t))
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 

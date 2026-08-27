@@ -135,6 +135,9 @@ func handleRepoKey(d Deps) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
+		// CORS: ключ публичный, а админка живёт на другом порту (:30202)
+		// — SPA фетчит текст ключа для экрана «Ключи» (сессия 18.2).
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		_, _ = w.Write(pub)
 	}
 }
@@ -170,6 +173,8 @@ func handleRepoNixKey(d Deps) http.HandlerFunc {
 		body := d.NarSigner.Name() + ":" + d.NarSigner.PubKeyB64() + "\n"
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
+		// CORS — как в handleRepoKey: публичный ключ с другого порта.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		_, _ = w.Write([]byte(body))
 	}
 }
