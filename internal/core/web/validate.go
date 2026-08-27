@@ -159,6 +159,7 @@ type remoteInput struct {
 	Mode         string        `json:"mode"`
 	Enabled      *bool         `json:"enabled"`
 	SyncInterval time.Duration `json:"sync_interval"`
+	Include      []string      `json:"include"`
 }
 
 // validate проверяет поля remoteInput и возвращает первую ошибку

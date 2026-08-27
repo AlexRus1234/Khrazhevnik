@@ -32,6 +32,8 @@ import (
 )
 
 // remoteOut — DTO ответа remote: ID и поля без аудиторских мусора.
+// Include нормализуется в пустой срез, чтобы JSON был [], а не null
+// (SPA рендерит список без nil-проверок).
 type remoteOut struct {
 	ID           int64             `json:"id"`
 	Name         string            `json:"name"`
@@ -40,14 +42,19 @@ type remoteOut struct {
 	Mode         domain.RemoteMode `json:"mode"`
 	Enabled      bool              `json:"enabled"`
 	SyncInterval time.Duration     `json:"sync_interval"`
+	Include      []string          `json:"include"`
 	CreatedAt    time.Time         `json:"created_at"`
 }
 
 // remoteOutFrom модели → DTO.
 func remoteOutFrom(r domain.Remote) remoteOut {
+	include := r.Include
+	if include == nil {
+		include = []string{}
+	}
 	return remoteOut{
 		ID: r.ID, Name: r.Name, Ecosystem: r.Ecosystem, BaseURL: r.BaseURL,
-		Mode: r.Mode, Enabled: r.Enabled, CreatedAt: r.CreatedAt,
+		Mode: r.Mode, Enabled: r.Enabled, Include: include, CreatedAt: r.CreatedAt,
 	}
 }
 
@@ -84,7 +91,7 @@ func handleCreateRemote(d Deps) http.HandlerFunc {
 		}
 		rem, err := d.Remotes.CreateRemote(r.Context(), domain.Remote{
 			Name: in.Name, Ecosystem: in.Ecosystem, BaseURL: in.BaseURL,
-			Mode: domain.RemoteMode(in.Mode), Enabled: enabled,
+			Mode: domain.RemoteMode(in.Mode), Enabled: enabled, Include: in.Include,
 			CreatedAt: d.clock().Now(),
 		})
 		if err != nil {
@@ -128,7 +135,7 @@ func handleUpdateRemote(d Deps) http.HandlerFunc {
 		updated := domain.Remote{
 			ID: existing.ID, Name: in.Name, Ecosystem: in.Ecosystem,
 			BaseURL: in.BaseURL, Mode: domain.RemoteMode(in.Mode),
-			Enabled: enabled, CreatedAt: existing.CreatedAt,
+			Enabled: enabled, Include: in.Include, CreatedAt: existing.CreatedAt,
 		}
 		if err := d.Remotes.UpdateRemote(r.Context(), updated); err != nil {
 			writeErr(w, err)
