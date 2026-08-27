@@ -55,16 +55,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   job собирает OCI-образ и гоняет дымовой E2E (healthz, bootstrap,
   byte-exact прокси, 404, SIGTERM-shutdown); push в registry на тег.
 
-## M2 — зеркало и все экосистемы
+## M2 — зеркало и все экосистемы ✅
+
+**Статус: завершён (сессии 11–13, 17).**
 
 - Sync-воркеры зеркал с resume, планировщик (сессия 11 — выполнена).
 - Адаптеры pacman (.tar.zst) и apk (APKINDEX).
 - Адаптер nix (narinfo/nar.xz прокси).
 - S3-storage, драйверы postgres/mariadb, контейнерные тесты в CI.
 
-## M3 — личные подписанные репозитории + UI (→ v1.0.0)
+## M3 — личные подписанные репозитории + UI ✅ (релиз v1.0.0 отложен)
+
+**Статус: завершён функционально (сессии 14–16, 18.1–18.4)** — код,
+UI, документация. Тег v1.0.0 и публикация артефактов — после
+проверочного рефакторинга (чеклист — [RELEASE.md](RELEASE.md)).
 
 - Publish-ядро: upload, квоты, RBAC, генерация apt-индексов.
-- OpenPGP-подпись личных репо.
+- OpenPGP-подпись личных репо (+ переподпись nix-narinfo).
 - Генераторы метаданных rpm-md/pacman/apk/nix.
-- Vue UI, e2e-smoke, пользовательская документация.
+- Vue 3 SPA (`//go:embed`, i18n ru/en), Playwright e2e-смоук (opt-in).
+- Пользовательская документация (`docs/func/ru/`: quickstart, config,
+  api, ui, ecosystems/, deploy, personal-repos) + README + RELEASE.md.
