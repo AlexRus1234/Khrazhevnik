@@ -24,7 +24,7 @@
 // (не 502) и negative-cached (повтор не дёргает upstream). Сессия 13.
 //
 // nix-совместимость проверяется руками (шаги — в коммите сессии 13 и
-// docs/func/ru/nix.md):
+// docs/func/ru/ecosystems/nix.md):
 //
 //	khrazhevnik -add-remote nix/cache=https://cache.nixos.org
 //	# /etc/nix/nix.conf:

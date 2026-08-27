@@ -27,6 +27,9 @@ scoped-токен `repo:<id>:write`) и `POST /api/v1/repos/{id}/reindex`
 Поддерживаемые экосистемы v1: apt, rpm-md, pacman, apk, nix. Каждая имеет
 свой генератор индексов (`mod/ecosystem/*/gen.go`, сессии 14/16) и
 опциональную подпись метаданных ключом инстанса (сессия 15/16).
+Настройка клиентов по экосистемам — в [ecosystems/](ecosystems/);
+эта страница — общий flow публикации. Управлять репо можно и из
+[веб-админки](ui.md).
 
 ## Общий flow
 
@@ -139,25 +142,14 @@ curl -s -X POST http://127.0.0.1:30202/api/v1/repos/1/reindex \
 - **Публичный narinfo-ключ:** `GET /repo/<name>/nix-key.asc` (формат
   `name:pubkey-b64`, НЕ armored OpenPGP — у nix своя модель подписи).
 - **Без NarSigner** (деградированный режим): narinfo отдаются как есть
-  (подписи upstream валидны, если клиент им доверяет — см. [nix.md](nix.md)).
+  (подписи upstream валидны, если клиент им доверяет — см.
+  [ecosystems/nix.md](ecosystems/nix.md)).
 
 ## Ручной чеклист релиза
 
-Перед релизом v1.0.0 (сессия 18) проверить руками, что личное репо каждой
-из 5 экосистем устанавливается реальным пакетным менеджером:
-
-- [ ] apt: `apt-get update && apt-get install` из личного репо с
-      `signed-by=key.asc` (без `trusted=yes`).
-- [ ] dnf: `dnf makecache && dnf install` из личного репо с
-      `gpgcheck=1` + `rpm --import key.asc`.
-- [ ] zypper: `zypper refresh && zypper install` из личного репо.
-- [ ] pacman: `pacman -Sy && pacman -S` из личного репо с
-      `pacman-key --add key.asc`.
-- [ ] apk: `apk update && apk add` из личного репо с ключом в
-      `/etc/apk/keys/`.
-- [ ] nix: `nix-shell -p hello --substituters <репо>` с
-      `trusted-public-keys = khrazhevnik:<pubkey>` (переподписанные
-      narinfo валидируются ключом инстанса).
-
-CI гоняет только формат парсерами (свои же парсеры проверяют свои
-генераторы — roundtrip); реальные клиенты — ручной чеклист выше.
+Перед релизом v1.0.0 личные репо всех 5 экосистем проверяются руками
+реальными пакетными менеджерами (apt/dnf/zypper/pacman/apk/nix):
+install пакета из подписанного репо с валидацией подписи. Полный
+чеклист — [docs/RELEASE.md](../../RELEASE.md). CI гоняет только формат
+парсерами (свои же парсеры проверяют свои генераторы — roundtrip);
+реальные клиенты — ручной чеклист (в CI невозможно: nested-podman).

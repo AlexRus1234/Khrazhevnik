@@ -20,15 +20,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 Основная дистрибуция — OCI-образ из scratch под rootless podman
 quadlet. Альтернатива — голый бинарник (CGO-free, static) под systemd
-или любой процесс-супервизор. Контейнер слушает два порта:
+или любой процесс-супервизор. Быстрая установка — в
+[quickstart.md](quickstart.md); эта страница — справочник развёртывания.
+
+Контейнер слушает два порта:
 
 | Порт  | Доступ          | Назначение                                      |
 |-------|-----------------|-------------------------------------------------|
-| 29202 | публичный       | раздача пакетов (`/<eco>/<remote>/<путь>`) + `/healthz` |
-| 30202 | 127.0.0.1 only  | админ-API `/api/v1`, `/metrics`, позже SPA `/ui`   |
+| 29202 | публичный       | раздача пакетов (`/<eco>/<remote>/<путь>`, `/repo/<name>/*`) + `/healthz` |
+| 30202 | 127.0.0.1 only  | админ-API `/api/v1`, `/metrics`, веб-админка `/ui` |
 
 Rootless: оба порта ≥1024, порты ниже 1024 — через reverse-proxy
-nginx/caddy на хосте.
+nginx/caddy на хосте. Контейнер: `USER 65534:65534`, scratch (только
+бинарник + CA-bundle), rootfs read-only (`ReadOnlyRootfs=true` в
+quadlet), writable — только volume `/var/lib/khrazhevnik`; PID 1 =
+бинарник (сабпроцессов нет, зомби-реапер не нужен), graceful shutdown:
+SIGTERM → HTTP 5с → задачи 30с.
 
 ## Требования
 
@@ -66,9 +73,11 @@ systemctl --user status khrazhevnik.service
 
 ## Первый запуск: bootstrap
 
-Каталог БД пуст → первый шаг — создать админа через `/api/v1/setup`,
-затем добавить upstream'ы (remotes). Альтернатива для headless — флаг
-`-add-remote` (пишет remote в БД без поднятия сервера).
+Каталог БД пуст → откройте `http://127.0.0.1:30202/ui/` — веб-админка
+сама предложит создать первого админа ([ui.md](ui.md)). Те же шаги
+через API: создать админа через `/api/v1/setup`, затем добавить
+upstream'ы (remotes). Альтернатива для headless — флаг `-add-remote`
+(пишет remote в БД без поднятия сервера).
 
 ```sh
 # 1. Первый админ (один раз, пока таблица users пуста).
@@ -99,29 +108,22 @@ podman exec khrazhevnik /khrazhevnik -add-remote apt/debian=https://deb.debian.o
 
 ## Настройка клиентов на прокси
 
+Хражевник прозрачен: путь после `/<remote-name>/` пробрасывается
+upstream'у побайтово, подписи и чексуммы остаются валидны — keyring
+клиента не меняется. Примеры (полные страницы с mirror/include — в
+[ecosystems/](ecosystems/)):
+
 ### apt (Debian/Ubuntu)
 
-Заменить `http://deb.debian.org/debian` на прокси в
-`/etc/apt/sources.list` (или `/etc/apt/sources.list.d/*.sources` для
-deb822). Хражевник прозрачен: путь после `/<remote-name>/` пробрасывается
-upstream'у побайтово, подписи и чексуммы остаются валидны.
+`/etc/apt/sources.list.d/khrazhevnik.list`:
 
 ```
 deb http://<хражевник>:29202/apt/debian stable main
 ```
 
-Для deb822 (`/etc/apt/sources.list.d/debian.sources`):
-
-```
-Types: deb
-URIs: http://<хражевник>:29202/apt/debian
-Suites: stable
-Components: main
-```
-
 ### dnf / Zypper (rpm-md)
 
-Файл `/etc/yum.repos.d/khrazhevnik.repo` (dnf) или
+`/etc/yum.repos.d/khrazhevnik.repo` (dnf) или
 `/etc/zypp/repos.d/khrazhevnik.repo` (zypper). URL-префикс rpm-md —
 `rpm` (короче имени адаптера `rpm-md`, как пишут в `.repo` baseurl).
 
@@ -132,6 +134,13 @@ baseurl=http://<хражевник>:29202/rpm/fedora/releases/$releasever/Everyt
 enabled=1
 gpgcheck=1
 ```
+
+### pacman / apk / nix
+
+`Server = http://<хражевник>:29202/pacman/<remote>/$repo/os/$arch`,
+строка в `/etc/apk/repositories`, `substituters` в `nix.conf` — см.
+[ecosystems/pacman.md](ecosystems/pacman.md),
+[ecosystems/apk.md](ecosystems/apk.md), [ecosystems/nix.md](ecosystems/nix.md).
 
 ## Свой TOML-конфиг (опционально)
 
@@ -150,7 +159,9 @@ systemctl --user daemon-reload
 systemctl --user restart khrazhevnik.service
 ```
 
-Схема TOML и env — в [docs/SPECIFICATION.md](../../SPECIFICATION.md#Конфигурация).
+Схема TOML и env (секреты `file://`, все ключи и дефолты) — в
+[config.md](config.md); канон для разработчиков — в
+[docs/SPECIFICATION.md](../../SPECIFICATION.md#Конфигурация).
 
 ## Сборка образа локально
 

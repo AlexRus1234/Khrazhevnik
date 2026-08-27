@@ -18,7 +18,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 # Спецификация
 
-Скелет; дополняется по мере реализации (REST API — пока placeholder).
+Канон для разработчиков (слои, контракты, БД, REST). Пользовательская
+документация — [func/ru/](func/ru/) (quickstart, config, api, deploy,
+ui, ecosystems, personal-repos).
 
 ## Назначение
 

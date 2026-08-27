@@ -45,7 +45,7 @@ func init() {
 	// с именем экосистемы (nix). NarSigner внедряется через SetNarSigner
 	// (wire type-assert'ит к port.NarSignerInjector) — nil = narinfo не
 	// переподписывается (как есть, подписи upstream валидны, если клиент
-	// им доверяет — docs/func/ru/nix.md).
+	// им доверяет — docs/func/ru/ecosystems/nix.md).
 	registry.RegisterRepoAdapter(Name, func() (port.RepoAdapter, error) {
 		return &Generator{}, nil
 	})
