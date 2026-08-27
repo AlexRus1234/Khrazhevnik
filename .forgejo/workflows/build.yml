@@ -51,6 +51,11 @@ on:
         required: true
         default: true
         type: boolean
+      run_e2e_tests:
+        description: "Run Playwright E2E smoke (web/e2e) vs the built binary? Installs chromium; opt-in."
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   build-test:
@@ -270,6 +275,35 @@ jobs:
           go tool cover -func coverage.out | tail -n 1
           echo "===== Per-package ====="
           go tool cover -func coverage.out | grep -E '^khrazhevnik/' | sort
+
+      - name: L4 — Playwright E2E (opt-in)
+        # Web UI e2e-смоук поверх СОБРАННОГО артефакта khrazhevnik-ci:
+        # global-setup (web/e2e/global-setup.ts) сам поднимает бинарник
+        # с temp-TOML на свободных портах и убивает его после прогона
+        # (вложенный podman на раннере невозможен — потому не контейнер,
+        # а exec процесса; паттерн binary_smoke_test.go). Сценарий:
+        # setup → login → apt-репо → upload .deb → reindex → публичный
+        # Release byte-exact + переключатель ru/en + локализация кодов
+        # ошибок (web/e2e/smoke.spec.ts).
+        #
+        # NOTE on deps (проверено в Intermasq L4): `npx playwright install
+        # --with-deps` знает только apt (Ubuntu/Debian) и на fedora-контейнере
+        # падает на `apt-get: command not found`. Поэтому shared-lib-депы
+        # chromium ставим сами через dnf, браузер — без --with-deps. Полный
+        # gtk3 НЕ ставим: тянет десктоп-стек (pipewire/openh264 с внешнего
+        # кодек-зеркала); headless-хрому достаточно перечисленного.
+        if: success() && github.event.inputs.run_e2e_tests == 'true'
+        env:
+          KHRZ_TEST_BINARY: "${{ github.workspace }}/khrazhevnik-ci"
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            nss nspr atk at-spi2-atk cups-libs libdrm libxkbcommon \
+            libX11 libXcomposite libXdamage libXext libXfixes libXrandr \
+            mesa-libgbm pango alsa-lib libxshmfence
+          cd web
+          # @playwright/test уже в node_modules (npm ci шага Build frontend).
+          npx playwright install chromium
+          npx playwright test
 
       - name: Show binary info
         run: |
