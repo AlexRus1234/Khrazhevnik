@@ -454,6 +454,15 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 	if resp.StatusCode == 304 && old != nil {
 		updated := *old
 		updated.ExpiresAt = e.clock.Now().Add(class.TTL)
+		// RFC 9110 разрешает серверу обновлять валидаторы в 304:
+		// свежие ETag/Last-Modified продлевают будущие conditional
+		// запросы, а не только TTL.
+		if etag := resp.Header.Get("ETag"); etag != "" {
+			updated.ETag = etag
+		}
+		if t, parseErr := parseHTTPTime(resp.Header.Get("Last-Modified")); parseErr == nil {
+			updated.LastModified = t
+		}
 		if err := e.index.PutObjectMeta(ctx, updated); err != nil {
 			return domain.ObjectMeta{}, false, err
 		}
@@ -511,7 +520,7 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 		ContentType: resp.Header.Get("Content-Type"),
 	}
 	if v := resp.Header.Get("Last-Modified"); v != "" {
-		if t, parseErr := time.Parse(time.RFC1123, v); parseErr == nil {
+		if t, parseErr := parseHTTPTime(v); parseErr == nil {
 			meta.LastModified = t
 		}
 	}
@@ -564,6 +573,25 @@ func checksumHasher(algo string) hexHash {
 		return hexHash{md5.New()}
 	}
 	return hexHash{}
+}
+
+// parseHTTPTime разбирает HTTP-date в форматах RFC 9110: IMF-fixdate
+// (RFC1123/RFC1123Z), obsolete RFC850 и asctime. Цепочка раскладок —
+// как у net/http.ParseTime (в engine нет net/http — депгард), но с
+// добавкой RFC1123Z. Неизвестный формат — ошибка: валидатор просто не
+// запомнится, это деградация к полному скачиванию, не поломка.
+func parseHTTPTime(v string) (time.Time, error) {
+	for _, layout := range []string{
+		time.RFC1123,
+		time.RFC1123Z,
+		time.RFC850,
+		time.ANSIC,
+	} {
+		if t, err := time.Parse(layout, v); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, &domain.ValidationError{What: "HTTP-date", Value: v, Reason: "нераспознанный формат"}
 }
 
 // copyBody стримит тело в writer с проверками: лимит на лету (chunked
