@@ -164,7 +164,16 @@ type MetaFetcher interface {
   попадают ровно те байты, что отдал сервер, с родными ETag и
   Content-Encoding. Без этого транспорт расживал бы ответы за спиной
   кеша: расжатое тело с ETag сжатого варианта — poisoning подписанных
-  метаданных.
+  метаданных;
+- верификация чексумм: если индекс экосистемы знает хеш объекта
+  (`port.Target.Checksum`), движок на лету сверяет sha256/sha1/md5
+  (hashing-tee в `copyBody`) и при несовпадении не коммитит объект:
+  Abort + negative-cache на TTL 5xx — битый/подменённый upstream не
+  отравляет immutable-кеш («навсегда»). Наполнение — на адаптерах при
+  Enumerate (sync зеркала): apt — SHA256 из stanza Packages, rpm-md —
+  checksum из repomd.xml (repodata-файлы), apk — SHA1 из поля C:
+  APKINDEX; pacman — не-цель v1 (парсер .db не читает %SHA256SUM%).
+  Нет чексуммы в индексе — честная деградация к сверке Content-Length.
 
 Инварианты движка зеркала (сессия 11):
 

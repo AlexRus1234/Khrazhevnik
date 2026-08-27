@@ -65,12 +65,14 @@ var (
 )
 
 // IndexEntry — одна запись из APKINDEX: поле F: (путь к .apk) и
-// опционально P: (имя пакета), V: (версия) для будущих нужд. Парсер
-// извлекает только то, что нужно Enumerate.
+// опционально P: (имя пакета), V: (версия), C: (raw чексумма пакета,
+// формат apk-tools «Q1+base64») для верификации скачиваний. Парсер
+// извлекает только то, что нужно Enumerate и таблице чексумм.
 type IndexEntry struct {
 	FilePath string
 	Name     string
 	Version  string
+	Checksum string
 }
 
 // parseLimits — потолки парсера. Вынесены в структуру, чтобы тесты
@@ -276,6 +278,10 @@ func applyIndexField(entry *IndexEntry, line string) bool {
 	case "V":
 		if entry.Version == "" {
 			entry.Version = val
+		}
+	case "C":
+		if entry.Checksum == "" {
+			entry.Checksum = val
 		}
 	}
 	return true

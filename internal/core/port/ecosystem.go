@@ -27,6 +27,17 @@ import (
 	"khrazhevnik/internal/core/domain"
 )
 
+// Checksum — ожидаемый дайджест объекта, извлечённый адаптером из
+// индекса экосистемы (repomd.xml, Packages, APKINDEX). Zero value —
+// «чексумма неизвестна»: движок живёт как раньше (сверка
+// Content-Length), это честная деградация, а не ошибка.
+type Checksum struct {
+	// Algo — «sha256», «sha1» или «md5»; пусто — чексуммы нет.
+	Algo string
+	// Hex — hex-дайджест в lowercase (сверка регистронезависима).
+	Hex string
+}
+
 // Target — куда бьёмся и где кешируем: полный URL upstream-объекта,
 // его путь и ключ хранения. StorageKey вида
 // cache/<eco>/<remote-id>/<upstream-path> — уникален и стабилен
@@ -35,6 +46,9 @@ type Target struct {
 	UpstreamURL  string
 	UpstreamPath string
 	StorageKey   string
+	// Checksum — хеш объекта из индекса экосистемы, если он там есть;
+	// движок кеша не коммитит объект, чьё тело не сошлось с ним.
+	Checksum Checksum
 }
 
 // MetaFetcher отдаёт байты метаданных upstream через движок кеша:

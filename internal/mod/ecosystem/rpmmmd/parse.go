@@ -58,9 +58,14 @@ var (
 // соответствуют дочерним элементам createrepo_c; неизвестные элементы
 // игнорируются (forward-compat).
 type DataElement struct {
-	Type         string
-	Checksum     string // checksum (сжатого объекта)
-	OpenChecksum string // open-checksum (несжатого содержимого)
+	Type string
+	// Checksum — hex-дайджест сжатого объекта (того, что по location);
+	// ChecksumType — его алгоритм из атрибута type («sha256», …):
+	// без него hex не привязать к алгоритму сверки движком кеша.
+	Checksum     string
+	ChecksumType string
+	// OpenChecksum — дайджест несжатого содержимого (open-checksum).
+	OpenChecksum string
 	Size         int64  // size (сжатого)
 	OpenSize     int64  // open-size
 	LocationHref string // путь относительно корня репозитория
@@ -144,6 +149,9 @@ func readDataElement(dec *xml.Decoder, start xml.StartElement, lim parseLimits) 
 					return DataElement{}, err
 				}
 				continue
+			}
+			if t.Name.Local == "checksum" {
+				el.ChecksumType = attrValue(t, "type")
 			}
 			text, terr := readText(dec, lim.text)
 			if terr != nil {

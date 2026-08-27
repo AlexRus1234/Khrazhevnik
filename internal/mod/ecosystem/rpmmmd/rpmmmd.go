@@ -73,6 +73,7 @@ type Adapter struct {
 	remotes port.RemoteStore
 	clock   port.Clock
 	rules   []compiledRule
+	sums    *checksumIndex
 
 	mu          sync.RWMutex
 	remoteCache map[string]remoteEntry
@@ -101,6 +102,7 @@ func New(remotes port.RemoteStore, clock port.Clock) (*Adapter, error) {
 		remotes:     remotes,
 		clock:       clock,
 		rules:       compileRules(),
+		sums:        newChecksumIndex(),
 		remoteCache: map[string]remoteEntry{},
 	}, nil
 }
@@ -118,7 +120,10 @@ func (a *Adapter) URLPrefix() string { return URLPrefix }
 // Кеш remotes обновляется по TTL 30с: перезапуск не нужен для вновь
 // добавленных upstream'ов. UpstreamURL/UpstreamPath сохраняют оригинальный
 // регистр (byte-exact к upstream); StorageKey лоуэркейсит путь — доменный
-// ключ допускает только [a-z0-9/._-].
+// ключ допускает только [a-z0-9/._-]. Checksum заполняется чексуммой из
+// repomd.xml (если Enumerate уже разбирал его): движок кеша сверяет
+// скачанные repodata с корневым индексом; без sync — честная деградация
+// к Content-Length.
 func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 	prefix := "/" + URLPrefix + "/"
 	if !strings.HasPrefix(ecosystemPath, prefix) {
@@ -136,11 +141,15 @@ func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 		return port.Target{}, false
 	}
 	base := strings.TrimRight(remote.BaseURL, "/")
-	return port.Target{
+	target := port.Target{
 		UpstreamURL:  base + upstreamPath,
 		UpstreamPath: upstreamPath,
 		StorageKey:   "cache/" + Name + "/" + strconv.FormatInt(remote.ID, 10) + strings.ToLower(upstreamPath),
-	}, true
+	}
+	if sum, ok := a.sums.lookup(remote.ID, upstreamPath); ok {
+		target.Checksum = sum
+	}
+	return target, true
 }
 
 // Classify делит объекты rpm-md по изменчивости. Пакеты (.rpm/.drpm/.src.rpm)
@@ -167,20 +176,29 @@ func (a *Adapter) Classify(upstreamPath string) (domain.Class, error) {
 // используется: репо — единое целое по repomd. Метаданные качаются через
 // meta (движок кеша — singleflight/TTL/метрики). primary.xml может быть
 // сжат (gzip) — расширение .gz автоматически распаковывается.
+//
+// Побочный эффект — наполнение таблицы чексумм remote из repomd.xml
+// (checksum каждого <data>): после успешного Enumerate прокси-ветка
+// сверяет скачанные repodata с корневым индексом. Чексуммы пакетов из
+// primary.xml не собираются: парсер primary извлекает только location
+// (v1 — чексуммы пакетов rpm-md не верифицируются, задокументировано).
 func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port.MetaFetcher) ([]string, error) {
 	if meta == nil {
 		return nil, fmt.Errorf("rpm-md: Enumerate: MetaFetcher обязателен")
 	}
-	primaryHref, err := a.primaryHref(ctx, meta, remote.Name)
+	sums, href, err := a.parseRepomd(ctx, meta, remote.Name)
 	if err != nil {
 		return nil, err
 	}
-	body, err := meta.Fetch(ctx, "/"+URLPrefix+"/"+remote.Name+"/"+primaryHref)
+	// repomd разобран целиком — его знания о repodata валидны, даже
+	// если primary дальше не качнулся.
+	a.sums.replace(remote.ID, sums)
+	body, err := meta.Fetch(ctx, "/"+URLPrefix+"/"+remote.Name+"/"+href)
 	if err != nil {
-		return nil, fmt.Errorf("rpm-md: primary %s: %w", primaryHref, err)
+		return nil, fmt.Errorf("rpm-md: primary %s: %w", href, err)
 	}
 	defer body.Close()
-	r, err := unwrapGzIfNeeded(body, primaryHref)
+	r, err := unwrapGzIfNeeded(body, href)
 	if err != nil {
 		return nil, err
 	}
@@ -190,36 +208,48 @@ func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port
 		}
 	}()
 	var paths []string
-	for href, perr := range ParsePrimary(r) {
+	for pkgHref, perr := range ParsePrimary(r) {
 		if perr != nil {
 			return nil, fmt.Errorf("rpm-md: parse primary: %w", perr)
 		}
-		if href == "" {
+		if pkgHref == "" {
 			continue
 		}
-		paths = append(paths, "/"+href)
+		paths = append(paths, "/"+pkgHref)
 	}
 	return paths, nil
 }
 
-// primaryHref fetch'ит repomd.xml и возвращает location-href элемента
-// <data type="primary">. primary — обязательный элемент rpm-md; его
-// отсутствие — ошибка перечисления.
-func (a *Adapter) primaryHref(ctx context.Context, meta port.MetaFetcher, remoteName string) (string, error) {
+// parseRepomd fetch'ит repomd.xml и возвращает чексуммы repodata-файлов
+// (checksum каждого <data> по его location — алгоритм из атрибута type)
+// и location-href элемента <data type="primary">. primary — обязательный
+// элемент rpm-md; его отсутствие — ошибка перечисления.
+func (a *Adapter) parseRepomd(ctx context.Context, meta port.MetaFetcher, remoteName string) (map[string]port.Checksum, string, error) {
 	body, err := meta.Fetch(ctx, "/"+URLPrefix+"/"+remoteName+"/repodata/repomd.xml")
 	if err != nil {
-		return "", fmt.Errorf("rpm-md: repomd.xml: %w", err)
+		return nil, "", fmt.Errorf("rpm-md: repomd.xml: %w", err)
 	}
 	defer body.Close()
+	sums := map[string]port.Checksum{}
+	primary := ""
 	for el, ferr := range ParseRepomd(body) {
 		if ferr != nil {
-			return "", fmt.Errorf("rpm-md: parse repomd: %w", ferr)
+			return nil, "", fmt.Errorf("rpm-md: parse repomd: %w", ferr)
 		}
-		if el.Type == "primary" && el.LocationHref != "" {
-			return el.LocationHref, nil
+		if el.LocationHref == "" {
+			continue
+		}
+		if sum, ok := hexChecksum(el.ChecksumType, el.Checksum); ok {
+			sums["/"+el.LocationHref] = sum
+		}
+		if el.Type == "primary" && primary == "" {
+			primary = el.LocationHref
 		}
 	}
-	return "", fmt.Errorf("rpm-md: repomd без <data type=\"primary\">")
+	if primary == "" {
+		return nil, "", fmt.Errorf("rpm-md: repomd без <data type=\"primary\">")
+	}
+	return sums, primary, nil
 }
 
 // unwrapGzIfNeeded оборачивает body в gzip.Reader, если имя файла

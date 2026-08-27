@@ -66,6 +66,7 @@ type Adapter struct {
 	remotes port.RemoteStore
 	clock   port.Clock
 	rules   []compiledRule
+	sums    *checksumIndex
 
 	mu          sync.RWMutex
 	remoteCache map[string]remoteEntry
@@ -94,6 +95,7 @@ func New(remotes port.RemoteStore, clock port.Clock) (*Adapter, error) {
 		remotes:     remotes,
 		clock:       clock,
 		rules:       compileRules(),
+		sums:        newChecksumIndex(),
 		remoteCache: map[string]remoteEntry{},
 	}, nil
 }
@@ -110,7 +112,9 @@ func (a *Adapter) URLPrefix() string { return Name }
 // Кеш remotes обновляется по TTL 30с: перезапуск не нужен для вновь
 // добавленных upstream'ов. UpstreamURL/UpstreamPath сохраняют оригинальный
 // регистр (byte-exact к upstream); StorageKey лоуэркейсит путь — доменный
-// ключ допускает только [a-z0-9/._-].
+// ключ допускает только [a-z0-9/._-]. Checksum заполняется SHA1 из поля
+// C: APKINDEX (если Enumerate уже разбирал индекс); без sync — честная
+// деградация к Content-Length.
 func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 	prefix := "/" + Name + "/"
 	if !strings.HasPrefix(ecosystemPath, prefix) {
@@ -128,11 +132,15 @@ func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 		return port.Target{}, false
 	}
 	base := strings.TrimRight(remote.BaseURL, "/")
-	return port.Target{
+	target := port.Target{
 		UpstreamURL:  base + upstreamPath,
 		UpstreamPath: upstreamPath,
 		StorageKey:   "cache/" + Name + "/" + strconv.FormatInt(remote.ID, 10) + strings.ToLower(upstreamPath),
-	}, true
+	}
+	if sum, ok := a.sums.lookup(remote.ID, upstreamPath); ok {
+		target.Checksum = sum
+	}
+	return target, true
 }
 
 // Classify делит объекты apk по изменчивости. Пакеты (.apk) — immutable
@@ -163,6 +171,10 @@ func (a *Adapter) Classify(upstreamPath string) (domain.Class, error) {
 // «<arch>/APKINDEX.tar.gz». Пустой Include — ошибка: apk не имеет
 // корневого индекса архитектур, перечислить «вообще все» нельзя.
 // Метаданные качаются через meta (движок кеша — singleflight/TTL/метрики).
+//
+// Побочный эффект — наполнение таблицы чексумм remote из поля C:
+// записей (SHA1 пакета): после успешного sync прокси-ветка сверяет
+// скачанные .apk с индексом.
 func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port.MetaFetcher) ([]string, error) {
 	if meta == nil {
 		return nil, fmt.Errorf("apk: Enumerate: MetaFetcher обязателен")
@@ -172,9 +184,10 @@ func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port
 		return nil, err
 	}
 	seen := make(map[string]struct{})
+	sums := make(map[string]port.Checksum)
 	var paths []string
 	for _, arch := range archs {
-		got, err := a.enumerateArch(ctx, meta, remote.Name, arch)
+		got, err := a.enumerateArch(ctx, meta, remote.Name, arch, seen, sums)
 		if err != nil {
 			return nil, fmt.Errorf("apk: enumerate %s: %w", arch, err)
 		}
@@ -186,6 +199,9 @@ func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port
 			paths = append(paths, p)
 		}
 	}
+	// Только после полного прохода: частичный sync не должен оставлять
+	// таблицу, «знающую» меньше, чем прежняя.
+	a.sums.replace(remote.ID, sums)
 	return paths, nil
 }
 
@@ -216,10 +232,10 @@ func parseApkInclude(include []string) ([]string, error) {
 }
 
 // enumerateArch fetch'ит <arch>/APKINDEX.tar.gz и достаёт поле F: каждой
-// записи. Путь пакета в APKINDEX — относительный от корня репо (Alpine
-// кладёт пакеты в pool/<arch>/ или прямо в <arch>/; APKINDEX хранит
-// полный относительный путь в F:).
-func (a *Adapter) enumerateArch(ctx context.Context, meta port.MetaFetcher, remoteName, arch string) ([]string, error) {
+// записи (и C: — для таблицы чексумм). Путь пакета в APKINDEX —
+// относительный от корня репо (Alpine кладёт пакеты в pool/<arch>/ или
+// прямо в <arch>/; APKINDEX хранит полный относительный путь в F:).
+func (a *Adapter) enumerateArch(ctx context.Context, meta port.MetaFetcher, remoteName, arch string, seen map[string]struct{}, sums map[string]port.Checksum) ([]string, error) {
 	indexRel := arch + "/APKINDEX.tar.gz"
 	indexEcoPath := "/" + Name + "/" + remoteName + "/" + indexRel
 	body, err := meta.Fetch(ctx, indexEcoPath)
@@ -238,6 +254,11 @@ func (a *Adapter) enumerateArch(ctx context.Context, meta port.MetaFetcher, remo
 		}
 		if !strings.HasPrefix(p, "/") {
 			p = "/" + p
+		}
+		if _, ok := seen[p]; !ok {
+			if sum, ok := csumFromIndex(entry.Checksum); ok {
+				sums[p] = sum
+			}
 		}
 		paths = append(paths, p)
 	}

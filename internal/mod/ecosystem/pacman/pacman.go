@@ -161,6 +161,12 @@ func (a *Adapter) Classify(upstreamPath string) (domain.Class, error) {
 // «<repo>/os/<arch>/<filename>». Пустой Include — ошибка: pacman не имеет
 // корневого индекса репозиториев, перечислить «вообще все» нельзя.
 // Метаданные качаются через meta (движок кеша — singleflight/TTL/метрики).
+//
+// Чексуммы (не-цель v1): desc-запись upstream .db содержит %SHA256SUM%,
+// но парсер (parse.go) извлекает только %FILENAME%/%NAME%/%VERSION% —
+// таблица чексумм для Target.Checksum не наполняется, движок живёт
+// сверкой Content-Length. Расширить ParseDesc — после первого
+// практического кейса битого pacman-upstream.
 func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port.MetaFetcher) ([]string, error) {
 	if meta == nil {
 		return nil, fmt.Errorf("pacman: Enumerate: MetaFetcher обязателен")

@@ -39,6 +39,9 @@ type FakeEcosystem struct {
 	Base string
 	// MutableTTL — TTL для путей idx/, используемый Classify.
 	MutableTTL time.Duration
+	// Checksum — если задан (Algo непуст), выдаётся в Target каждого
+	// Resolve: тесты верификации чексумм движка кеша.
+	Checksum port.Checksum
 	// EnumeratePaths — список upstream-путей, который Enumerate
 	// отдаёт синхрону зеркала; пусто → *UnsupportedError (по умолчанию
 	// фейк не умеет enumerate, как nix).
@@ -68,6 +71,7 @@ func (e FakeEcosystem) Resolve(ecosystemPath string) (port.Target, bool) {
 		UpstreamURL:  e.Base + "/" + rest,
 		UpstreamPath: "/" + rest,
 		StorageKey:   "cache/" + e.NameOf + "/" + strings.ToLower(rest),
+		Checksum:     e.Checksum,
 	}, true
 }
 

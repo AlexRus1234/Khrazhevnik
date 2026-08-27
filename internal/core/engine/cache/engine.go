@@ -23,10 +23,15 @@ package cache
 
 import (
 	"context"
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -481,9 +486,17 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 	if err != nil {
 		return domain.ObjectMeta{}, false, err
 	}
-	n, err := e.copyBody(w, resp.Body, resp.ContentLength)
+	n, err := e.copyBody(w, resp.Body, resp.ContentLength, target.Checksum, target.UpstreamURL)
 	if err != nil {
 		_ = w.Abort(context.Background())
+		var cm *checksumMismatch
+		if errors.As(err, &cm) {
+			// Битый/подменённый upstream не должен отравить immutable
+			// («навсегда») кеш: объект не закоммичен, повторные
+			// запросы до конца TTL не долбят upstream.
+			e.metrics.UpstreamErrors.Add(1)
+			e.rememberNegative(target.StorageKey, e.cfg.NegativeTTL5xx, err)
+		}
 		return domain.ObjectMeta{}, false, err
 	}
 	if err := w.Commit(ctx); err != nil {
@@ -516,23 +529,80 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 	return meta, false, nil
 }
 
+// checksumMismatch — тело не сошлось с чексуммой из индекса
+// экосистемы. Локальный тип: наружу уходит обёрнутым в
+// *domain.UpstreamError, а различать его внутри движка нужно только
+// для negative-cache (несовпадение — сбой upstream, не клиента).
+type checksumMismatch struct {
+	algo, want, got string
+}
+
+// Error реализует интерфейс error.
+func (e *checksumMismatch) Error() string {
+	return fmt.Sprintf("checksum mismatch (%s): ожидалось %s, получено %s", e.algo, e.want, e.got)
+}
+
+// hexHash — streaming-хеш с hex-итогом: один интерфейс для
+// sha256/sha1/md5, чтобы copyBody не ветвился по алгоритмам.
+type hexHash struct {
+	hash.Hash
+}
+
+// SumHex возвращает hex-дайджест скорманных байт.
+func (h hexHash) SumHex() string { return fmt.Sprintf("%x", h.Sum(nil)) }
+
+// checksumHasher выбирает streaming-хеш под алгоритм из индекса
+// экосистемы; неизвестный алгоритм (как и отсутствие чексуммы) — nil:
+// верифицировать нечем, это честная деградация к Content-Length.
+func checksumHasher(algo string) hexHash {
+	switch strings.ToLower(algo) {
+	case "sha256", "sha-256":
+		return hexHash{sha256.New()}
+	case "sha1", "sha-1":
+		return hexHash{sha1.New()}
+	case "md5":
+		return hexHash{md5.New()}
+	}
+	return hexHash{}
+}
+
 // copyBody стримит тело в writer с проверками: лимит на лету (chunked
-// без Content-Length тоже ограничен) и сверка с заявленной длиной.
-func (e *Engine) copyBody(w port.Writer, body io.Reader, length int64) (int64, error) {
+// без Content-Length тоже ограничен), сверка с заявленной длиной и —
+// если индекс экосистемы знает хеш объекта — hashing-tee со сверкой
+// sha256/sha1/md5: объект с «чужими» байтами коммита не увидит
+// (Abort у вызывающего).
+func (e *Engine) copyBody(w port.Writer, body io.Reader, length int64, sum port.Checksum, url string) (int64, error) {
 	src := body
 	if e.cfg.MaxObjectSize > 0 {
 		// +1 байт: чтобы отличить «ровно лимит» от «лимит превышен»
 		src = io.LimitReader(body, e.cfg.MaxObjectSize+1)
 	}
-	n, err := io.Copy(w, src)
+	var dst io.Writer = w
+	var hasher hexHash
+	if h := checksumHasher(sum.Algo); h.Hash != nil {
+		hasher = h
+		dst = io.MultiWriter(w, h)
+	}
+	n, err := io.Copy(dst, src)
 	if err != nil {
-		return n, &domain.UpstreamError{Err: err}
+		return n, &domain.UpstreamError{URL: url, Err: err}
 	}
 	if e.cfg.MaxObjectSize > 0 && n > e.cfg.MaxObjectSize {
 		return n, &domain.TooLargeError{Size: n, Limit: e.cfg.MaxObjectSize}
 	}
 	if length >= 0 && n != length {
-		return n, &domain.UpstreamError{Err: fmt.Errorf("content-length: получено %d байт, заявлено %d", n, length)}
+		return n, &domain.UpstreamError{URL: url, Err: fmt.Errorf("content-length: получено %d байт, заявлено %d", n, length)}
+	}
+	if hasher.Hash != nil {
+		got := hasher.SumHex()
+		// Индексы пишут hex в lowercase, но сверяем регистронезависимо:
+		// чужой формат не должен превращаться в poisoning-отказ.
+		if !strings.EqualFold(got, sum.Hex) {
+			return n, &domain.UpstreamError{
+				URL: url,
+				Err: &checksumMismatch{algo: sum.Algo, want: sum.Hex, got: got},
+			}
+		}
 	}
 	e.metrics.BytesFromUpstream.Add(n)
 	return n, nil

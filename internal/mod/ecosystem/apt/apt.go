@@ -65,6 +65,7 @@ type Adapter struct {
 	remotes port.RemoteStore
 	clock   port.Clock
 	rules   []compiledRule
+	sums    *checksumIndex
 
 	mu          sync.RWMutex
 	remoteCache map[string]remoteEntry
@@ -93,6 +94,7 @@ func New(remotes port.RemoteStore, clock port.Clock) (*Adapter, error) {
 		remotes:     remotes,
 		clock:       clock,
 		rules:       compileRules(),
+		sums:        newChecksumIndex(),
 		remoteCache: map[string]remoteEntry{},
 	}, nil
 }
@@ -109,7 +111,10 @@ func (a *Adapter) URLPrefix() string { return Name }
 // Кеш remotes обновляется по TTL 30с: перезапуск не нужен для вновь
 // добавленных upstream'ов. UpstreamURL/UpstreamPath сохраняют оригинальный
 // регистр (byte-exact к upstream); StorageKey лоуэркейсит путь —
-// доменный ключ допускает только [a-z0-9/._-].
+// доменный ключ допускает только [a-z0-9/._-]. Checksum заполняется,
+// если Enumerate (sync зеркала) уже разбирал Packages с SHA256 этого
+// пути; без sync чексумм нет — движок честно деградирует к
+// Content-Length.
 func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 	prefix := "/" + Name + "/"
 	if !strings.HasPrefix(ecosystemPath, prefix) {
@@ -127,11 +132,15 @@ func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 		return port.Target{}, false
 	}
 	base := strings.TrimRight(remote.BaseURL, "/")
-	return port.Target{
+	target := port.Target{
 		UpstreamURL:  base + upstreamPath,
 		UpstreamPath: upstreamPath,
 		StorageKey:   "cache/" + Name + "/" + strconv.FormatInt(remote.ID, 10) + strings.ToLower(upstreamPath),
-	}, true
+	}
+	if sum, ok := a.sums.lookup(remote.ID, upstreamPath); ok {
+		target.Checksum = sum
+	}
+	return target, true
 }
 
 // Classify делит объекты apt по изменчивости. Пакеты (pool/) и
@@ -158,9 +167,13 @@ func (a *Adapter) Classify(upstreamPath string) (domain.Class, error) {
 // «stable/main» (только main). Пустой Include — ошибка: apt не имеет
 // корневого индекса dists, перечислить «вообще все» нельзя. Метаданные
 // качаются через meta (движок кеша — singleflight/TTL/метрики).
-// Архитектура «all» не используется для выбора Packages-файла: пакеты
+// Архитектура «all» не используется для выбора Packages-файлов: пакеты
 // Architecture: all перечислены в каждом binary-<arch>/Packages, так
 // что дедуп по Filename убирает повторы.
+//
+// Побочный эффект — наполнение таблицы чексумм remote из поля SHA256
+// stanza: после успешного sync прокси-ветка сверяет скачанные .deb с
+// индексом (checksum-index живёт до следующего Enumerate).
 func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port.MetaFetcher) ([]string, error) {
 	if meta == nil {
 		return nil, fmt.Errorf("apt: Enumerate: MetaFetcher обязателен")
@@ -170,6 +183,7 @@ func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port
 		return nil, err
 	}
 	seen := make(map[string]struct{})
+	sums := make(map[string]port.Checksum)
 	var paths []string
 	for _, dist := range dists {
 		comps, archs, err := a.releaseComponents(ctx, meta, remote.Name, dist)
@@ -185,7 +199,7 @@ func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port
 				if arch == "all" {
 					continue
 				}
-				got, err := a.enumeratePackages(ctx, meta, remote.Name, dist, comp, arch, seen)
+				got, err := a.enumeratePackages(ctx, meta, remote.Name, dist, comp, arch, seen, sums)
 				if err != nil {
 					return nil, fmt.Errorf("apt: enumerate %s/%s/%s: %w", dist, comp, arch, err)
 				}
@@ -193,6 +207,9 @@ func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port
 			}
 		}
 	}
+	// Только после полного прохода: частичный sync не должен оставлять
+	// таблицу, «знающую» меньше, чем прежняя.
+	a.sums.replace(remote.ID, sums)
 	return paths, nil
 }
 
@@ -268,10 +285,10 @@ func (a *Adapter) releaseComponents(ctx context.Context, meta port.MetaFetcher, 
 }
 
 // enumeratePackages fetch'ит Packages-файл компонента/арха и достаёт
-// поле Filename каждой записи. Пробует несжатый Packages, затем .gz
-// (Debian часто отдаёт только сжатый). Дедуп по seen (перезаписи
-// «all»-пакетов в разных arch-файлах).
-func (a *Adapter) enumeratePackages(ctx context.Context, meta port.MetaFetcher, remoteName, dist, comp, arch string, seen map[string]struct{}) ([]string, error) {
+// поле Filename каждой записи (и SHA256 — для таблицы чексумм).
+// Пробует несжатый Packages, затем .gz (Debian часто отдаёт только
+// сжатый). Дедуп по seen (перезаписи «all»-пакетов в разных arch-файлах).
+func (a *Adapter) enumeratePackages(ctx context.Context, meta port.MetaFetcher, remoteName, dist, comp, arch string, seen map[string]struct{}, sums map[string]port.Checksum) ([]string, error) {
 	base := "/" + Name + "/" + remoteName + "/dists/" + dist + "/" + comp + "/binary-" + arch + "/Packages"
 	body, err := meta.Fetch(ctx, base)
 	if err != nil {
@@ -287,16 +304,17 @@ func (a *Adapter) enumeratePackages(ctx context.Context, meta port.MetaFetcher, 
 				return nil, fmt.Errorf("unpack Packages.gz: %w", gzErr)
 			}
 			defer func() { _ = gz.Close() }()
-			return scanFilenames(gz, seen)
+			return scanFilenames(gz, seen, sums)
 		}
 		return nil, err
 	}
 	defer body.Close()
-	return scanFilenames(body, seen)
+	return scanFilenames(body, seen, sums)
 }
 
-// scanFilenames читает Packages-поток и собирает уникальные Filename.
-func scanFilenames(r io.Reader, seen map[string]struct{}) ([]string, error) {
+// scanFilenames читает Packages-поток и собирает уникальные Filename
+// (+SHA256 stanza в sums — первое вхождение выигрывает, как и в seen).
+func scanFilenames(r io.Reader, seen map[string]struct{}, sums map[string]port.Checksum) ([]string, error) {
 	var out []string
 	for s, err := range Stanzas(r) {
 		if err != nil {
@@ -313,6 +331,9 @@ func scanFilenames(r io.Reader, seen map[string]struct{}) ([]string, error) {
 			continue
 		}
 		seen[fn] = struct{}{}
+		if sum, ok := hexChecksum("sha256", s.Get("SHA256")); ok {
+			sums[fn] = sum
+		}
 		out = append(out, fn)
 	}
 	return out, nil
