@@ -22,6 +22,7 @@ import { RouterLink, useRoute } from 'vue-router'
 import { request, uploadObject } from '../api'
 import { errText } from '../errors'
 import { formatBytes, formatSpeed, formatTime } from '../format'
+import { t } from '../i18n'
 import type { Perm, Repo, RepoObject, TaskSnapshot, User } from '../types'
 
 const route = useRoute()
@@ -83,7 +84,7 @@ function relKey(key: string): string {
 
 async function deleteObject(key: string): Promise<void> {
   const rel = relKey(key)
-  if (!window.confirm(`Удалить объект «${rel}»?`)) return
+  if (!window.confirm(t('repo.deleteObjectConfirm', { rel }))) return
   try {
     await request('DELETE', `/repos/${repoID}/objects/${key.split('/').map(encodeURIComponent).join('/')}`)
     await loadObjects()
@@ -118,7 +119,7 @@ function onFileChange(e: Event): void {
 
 async function submitUpload(): Promise<void> {
   if (uploading.value || file.value === null || objPath.value === '') {
-    uploadError.value = file.value === null ? 'выберите файл' : 'укажите путь внутри репо'
+    uploadError.value = file.value === null ? t('repo.noFile') : t('repo.noPath')
     return
   }
   uploading.value = true
@@ -135,7 +136,7 @@ async function submitUpload(): Promise<void> {
       const sec = (performance.now() - uploadStartedAt) / 1000
       if (sec > 0) uploadSpeed.value = p.loaded / sec
     })
-    uploadDone.value = `загружено: ${objPath.value}`
+    uploadDone.value = t('repo.uploaded', { path: objPath.value })
     objPath.value = ''
     file.value = null
     const input = document.getElementById('upload-file') as HTMLInputElement | null
@@ -187,7 +188,7 @@ async function pollReindex(taskID: string): Promise<void> {
     reindexTask.value = await request<TaskSnapshot>('GET', `/tasks/${taskID}`)
   } catch {
     reindexTask.value = null
-    reindexError.value = 'задача исчезла (рестарт сервера?)'
+    reindexError.value = t('repo.reindexLost')
     stopReindexPoll()
     return
   }
@@ -231,23 +232,23 @@ function userName(id: number): string {
   <section>
     <div class="row spread">
       <h1>
-        <RouterLink to="/repos">Репозитории</RouterLink> /
+        <RouterLink to="/repos">{{ t('nav.repos') }}</RouterLink> /
         <span class="mono">{{ repo?.name ?? `#${repoID}` }}</span>
       </h1>
       <button class="btn primary" :disabled="reindexTask?.state === 'running'" @click="reindex">
-        {{ reindexTask?.state === 'running' ? 'Переиндексация…' : 'Переиндексировать' }}
+        {{ reindexTask?.state === 'running' ? t('repo.reindexing') : t('repo.reindex') }}
       </button>
     </div>
     <p v-if="error" class="error">{{ error }}</p>
 
     <div v-if="repo" class="panel">
       <div class="row">
-        <span class="dim">экосистема:</span> {{ repo.ecosystem }}
-        <span class="dim">владелец:</span> #{{ repo.owner_id }}
-        <span class="dim">квота:</span>
-        {{ repo.quota.max_bytes > 0 ? formatBytes(repo.quota.max_bytes) : '∞ байт' }} /
-        {{ repo.quota.max_objects > 0 ? repo.quota.max_objects : '∞ файлов' }}
-        <span class="dim">создан:</span> {{ formatTime(repo.created_at) }}
+        <span class="dim">{{ t('repo.ecosystem') }}</span> {{ repo.ecosystem }}
+        <span class="dim">{{ t('repo.owner') }}</span> #{{ repo.owner_id }}
+        <span class="dim">{{ t('repo.quota') }}</span>
+        {{ repo.quota.max_bytes > 0 ? formatBytes(repo.quota.max_bytes) : t('repo.infBytes') }} /
+        {{ repo.quota.max_objects > 0 ? repo.quota.max_objects : t('repo.infFiles') }}
+        <span class="dim">{{ t('repo.created') }}</span> {{ formatTime(repo.created_at) }}
       </div>
       <div v-if="reindexTask" class="row">
         <span class="badge" :class="reindexTask.state">{{ reindexTask.state }}</span>
@@ -261,19 +262,19 @@ function userName(id: number): string {
     </div>
 
     <div class="panel">
-      <h2>Загрузка пакета</h2>
+      <h2>{{ t('repo.uploadTitle') }}</h2>
       <form class="grid" @submit.prevent="submitUpload">
         <div class="row">
           <label class="field grow2"
-            >Путь внутри репо (apt — pool/*)
+            >{{ t('repo.pathLabel') }}
             <input v-model="objPath" required placeholder="pool/main/myapp_1.0_amd64.deb" />
           </label>
           <label class="field"
-            >Файл
+            >{{ t('repo.fileLabel') }}
             <input id="upload-file" type="file" required @change="onFileChange" />
           </label>
           <label class="field check"
-            >перезапись (force, админ)
+            >{{ t('repo.forceLabel') }}
             <input v-model="force" type="checkbox" />
           </label>
         </div>
@@ -290,20 +291,20 @@ function userName(id: number): string {
         <p v-else-if="uploadDone" class="ok">{{ uploadDone }}</p>
         <div class="row">
           <button class="btn primary" type="submit" :disabled="uploading">
-            {{ uploading ? 'Загрузка…' : 'Загрузить' }}
+            {{ uploading ? t('repo.uploading') : t('repo.uploadBtn') }}
           </button>
         </div>
       </form>
     </div>
 
     <div class="panel">
-      <h2>Объекты ({{ objects.length }})</h2>
+      <h2>{{ t('repo.objects', { n: objects.length }) }}</h2>
       <table v-if="objects.length > 0">
         <thead>
           <tr>
-            <th>Путь</th>
-            <th>Размер</th>
-            <th>Изменён</th>
+            <th>{{ t('repo.colPath') }}</th>
+            <th>{{ t('repo.colSize') }}</th>
+            <th>{{ t('repo.colModified') }}</th>
             <th></th>
           </tr>
         </thead>
@@ -313,24 +314,22 @@ function userName(id: number): string {
             <td>{{ formatBytes(o.size) }}</td>
             <td class="dim">{{ formatTime(o.mod_time) }}</td>
             <td>
-              <button class="btn danger small" @click="deleteObject(o.key)">Удалить</button>
+              <button class="btn danger small" @click="deleteObject(o.key)">{{ t('common.delete') }}</button>
             </td>
           </tr>
         </tbody>
       </table>
-      <p v-else class="dim">Пусто. Загрузите пакеты и запустите переиндексацию.</p>
+      <p v-else class="dim">{{ t('repo.objectsEmpty') }}</p>
     </div>
 
     <div class="panel">
-      <h2>Права на запись</h2>
-      <p class="dim">
-        Владелец (#{{ repo?.owner_id }}) пишет всегда; здесь — дополнительные пользователи.
-      </p>
+      <h2>{{ t('repo.permsTitle') }}</h2>
+      <p class="dim">{{ t('repo.permsHint', { id: repo?.owner_id ?? 0 }) }}</p>
       <table v-if="perms.length > 0">
         <thead>
           <tr>
-            <th>Пользователь</th>
-            <th>Выдано</th>
+            <th>{{ t('common.user') }}</th>
+            <th>{{ t('repo.colGranted') }}</th>
             <th></th>
           </tr>
         </thead>
@@ -339,22 +338,22 @@ function userName(id: number): string {
             <td>{{ userName(p.user_id) }} (#{{ p.user_id }})</td>
             <td class="dim">{{ formatTime(p.created_at) }}</td>
             <td>
-              <button class="btn danger small" @click="revoke(p.user_id)">Отозвать</button>
+              <button class="btn danger small" @click="revoke(p.user_id)">{{ t('repo.revoke') }}</button>
             </td>
           </tr>
         </tbody>
       </table>
-      <p v-else class="dim">Доп. прав нет.</p>
+      <p v-else class="dim">{{ t('repo.permsEmpty') }}</p>
       <form v-if="usersError === ''" class="row" @submit.prevent="grant">
         <label class="field"
-        >Пользователь
+        >{{ t('common.user') }}
           <select v-model="grantUserID" required>
             <option v-for="u in users" :key="u.id" :value="u.id">
               {{ u.username }} (#{{ u.id }})
             </option>
           </select>
         </label>
-        <button class="btn" type="submit">Выдать право</button>
+        <button class="btn" type="submit">{{ t('repo.grantBtn') }}</button>
       </form>
       <p v-if="permError" class="error">{{ permError }}</p>
     </div>

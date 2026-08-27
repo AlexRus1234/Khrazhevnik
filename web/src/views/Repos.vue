@@ -22,6 +22,7 @@ import { RouterLink } from 'vue-router'
 import { request } from '../api'
 import { errText } from '../errors'
 import { formatBytes, formatTime } from '../format'
+import { t } from '../i18n'
 import type { Repo, User } from '../types'
 
 // Генераторы метаданных есть у apt и nix (сессии 14/15/16); остальные
@@ -105,7 +106,7 @@ async function submit(): Promise<void> {
     },
   }
   if (body.quota.max_bytes < 0 || body.quota.max_objects < 0 || Number.isNaN(body.quota.max_bytes) || Number.isNaN(body.quota.max_objects)) {
-    formError.value = 'квоты — неотрицательные числа (байты и файлы; 0 = без лимита)'
+    formError.value = t('repos.quotaError')
     return
   }
   busy.value = true
@@ -126,7 +127,7 @@ async function submit(): Promise<void> {
 }
 
 async function remove(r: Repo): Promise<void> {
-  if (!window.confirm(`Удалить репозиторий «${r.name}»? Права удалятся каскадом.`)) return
+  if (!window.confirm(t('repos.deleteConfirm', { name: r.name }))) return
   try {
     await request('DELETE', `/repos/${r.id}`)
     await load()
@@ -144,33 +145,33 @@ function ownerName(id: number): string {
 <template>
   <section>
     <div class="row spread">
-      <h1>Личные репозитории</h1>
+      <h1>{{ t('repos.title') }}</h1>
       <button
         v-if="usersError === ''"
         class="btn primary"
         @click="openCreate"
       >
-        Добавить
+        {{ t('common.add') }}
       </button>
     </div>
     <p v-if="error" class="error">{{ error }}</p>
 
     <div v-if="showForm" class="panel">
-      <h2>{{ editingID === null ? 'Новый репозиторий' : `Репозиторий: ${fName}` }}</h2>
+      <h2>{{ editingID === null ? t('repos.newRepo') : t('repos.editRepo', { name: fName }) }}</h2>
       <form class="grid" @submit.prevent="submit">
         <div class="row">
           <label class="field"
-            >Имя (slug)
+            >{{ t('repos.nameSlug') }}
             <input v-model="fName" required placeholder="myrepo" />
           </label>
           <label class="field"
-            >Экосистема
+            >{{ t('common.ecosystem') }}
             <select v-model="fEcosystem">
               <option v-for="e in ECOSYSTEMS" :key="e" :value="e">{{ e }}</option>
             </select>
           </label>
           <label class="field"
-            >Владелец
+            >{{ t('common.owner') }}
             <select v-model="fOwner" required>
               <option v-for="u in users" :key="u.id" :value="u.id">
                 {{ u.username }} (#{{ u.id }})
@@ -180,20 +181,20 @@ function ownerName(id: number): string {
         </div>
         <div class="row">
           <label class="field"
-            >Квота, байт (0 — без лимита)
+            >{{ t('repos.quotaBytes') }}
             <input v-model="fQuotaBytes" placeholder="5368709120" />
           </label>
           <label class="field"
-            >Квота, файлов (0 — без лимита)
+            >{{ t('repos.quotaFiles') }}
             <input v-model="fQuotaFiles" placeholder="10000" />
           </label>
         </div>
         <p v-if="formError" class="error">{{ formError }}</p>
         <div class="row">
           <button class="btn primary" type="submit" :disabled="busy">
-            {{ editingID === null ? 'Создать' : 'Сохранить' }}
+            {{ editingID === null ? t('common.create') : t('common.save') }}
           </button>
-          <button class="btn" type="button" @click="showForm = false">Отмена</button>
+          <button class="btn" type="button" @click="showForm = false">{{ t('common.cancel') }}</button>
         </div>
       </form>
     </div>
@@ -202,11 +203,11 @@ function ownerName(id: number): string {
       <table v-if="repos.length > 0">
         <thead>
           <tr>
-            <th>Имя</th>
-            <th>Экосистема</th>
-            <th>Владелец</th>
-            <th>Квота</th>
-            <th>Создан</th>
+            <th>{{ t('common.name') }}</th>
+            <th>{{ t('common.ecosystem') }}</th>
+            <th>{{ t('common.owner') }}</th>
+            <th>{{ t('repos.quota') }}</th>
+            <th>{{ t('common.created') }}</th>
             <th></th>
           </tr>
         </thead>
@@ -224,16 +225,16 @@ function ownerName(id: number): string {
             <td class="dim">{{ formatTime(r.created_at) }}</td>
             <td>
               <div class="row actions">
-                <RouterLink class="btn" :to="`/repos/${r.id}`">Открыть</RouterLink>
-                <button class="btn" @click="openEdit(r)">Править</button>
-                <button class="btn danger" @click="remove(r)">Удалить</button>
+                <RouterLink class="btn" :to="`/repos/${r.id}`">{{ t('common.open') }}</RouterLink>
+                <button class="btn" @click="openEdit(r)">{{ t('common.edit') }}</button>
+                <button class="btn danger" @click="remove(r)">{{ t('common.delete') }}</button>
               </div>
             </td>
           </tr>
         </tbody>
       </table>
-      <p v-else-if="loaded" class="dim">Репозиториев нет.</p>
-      <p v-else class="dim">Загрузка…</p>
+      <p v-else-if="loaded" class="dim">{{ t('repos.empty') }}</p>
+      <p v-else class="dim">{{ t('common.loading') }}</p>
     </div>
   </section>
 </template>

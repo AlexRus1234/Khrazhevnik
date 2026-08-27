@@ -21,6 +21,8 @@ import { ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { login, setToken, setup } from '../api'
 import { errText } from '../errors'
+import LangSwitch from '../components/LangSwitch.vue'
+import { t } from '../i18n'
 import { markLoggedIn } from '../stores/auth'
 
 const router = useRouter()
@@ -40,7 +42,7 @@ const error = ref('')
 async function submit(): Promise<void> {
   if (busy.value) return
   if (mode.value === 'setup' && password.value !== password2.value) {
-    error.value = 'пароли не совпадают'
+    error.value = t('login.passwordMismatch')
     return
   }
   busy.value = true
@@ -65,8 +67,11 @@ async function submit(): Promise<void> {
 
 <template>
   <section class="panel login-panel">
-    <h1>Хражевник</h1>
-    <p class="dim">Кеш-прокси и зеркало linux-репозиториев</p>
+    <div class="row spread">
+      <h1>Хражевник</h1>
+      <LangSwitch />
+    </div>
+    <p class="dim">{{ t('login.tagline') }}</p>
 
     <div class="row tabswitch">
       <button
@@ -75,7 +80,7 @@ async function submit(): Promise<void> {
         type="button"
         @click="mode = 'login'"
       >
-        Вход
+        {{ t('login.tabLogin') }}
       </button>
       <button
         class="btn ghost"
@@ -83,17 +88,17 @@ async function submit(): Promise<void> {
         type="button"
         @click="mode = 'setup'"
       >
-        Первичная настройка
+        {{ t('login.tabSetup') }}
       </button>
     </div>
 
     <form class="grid" @submit.prevent="submit">
       <label class="field"
-        >Логин
+        >{{ t('login.username') }}
         <input v-model="username" autocomplete="username" required />
       </label>
       <label class="field"
-        >Пароль
+        >{{ t('login.password') }}
         <input
           v-model="password"
           type="password"
@@ -102,19 +107,19 @@ async function submit(): Promise<void> {
         />
       </label>
       <label v-if="mode === 'setup'" class="field"
-        >Пароль ещё раз
+        >{{ t('login.password2') }}
         <input v-model="password2" type="password" autocomplete="new-password" required />
       </label>
       <label v-if="mode === 'setup'" class="field"
-        >Setup-токен (если задан на сервере)
+        >{{ t('login.setupToken') }}
         <input v-model="setupToken" autocomplete="off" placeholder="KHRZ_SETUP_TOKEN" />
       </label>
       <p v-if="error" class="error">{{ error }}</p>
       <button class="btn primary" type="submit" :disabled="busy">
-        {{ mode === 'login' ? 'Войти' : 'Создать администратора и войти' }}
+        {{ t(mode === 'login' ? 'login.submitLogin' : 'login.submitSetup') }}
       </button>
       <p v-if="mode === 'setup'" class="dim">
-        Доступно один раз — только пока в базе нет ни одного пользователя.
+        {{ t('login.setupHint') }}
       </p>
     </form>
   </section>

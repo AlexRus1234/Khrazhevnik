@@ -21,6 +21,7 @@ import { onMounted, ref } from 'vue'
 import { request } from '../api'
 import { errText } from '../errors'
 import { formatTime, parseDuration } from '../format'
+import { t } from '../i18n'
 import type { ApiToken, User } from '../types'
 
 // Экран admin-only: не-админ увидит forbidden — честно показываем
@@ -86,7 +87,7 @@ async function createUser(): Promise<void> {
 }
 
 async function removeUser(u: User): Promise<void> {
-  if (!window.confirm(`Удалить пользователя «${u.username}»? Токены отзовутся.`)) return
+  if (!window.confirm(t('users.deleteConfirm', { name: u.username }))) return
   try {
     await request('DELETE', `/users/${u.id}`)
     await load()
@@ -124,11 +125,11 @@ async function issueToken(u: User): Promise<void> {
   // TTL — опциональная duration («30d», «12h»); пусто — бессрочный.
   const ttlNS = parseDuration(tTTL.value)
   if (ttlNS === null) {
-    tError.value[u.id] = 'TTL: примеры «12h», «30d»; пусто — бессрочный'
+    tError.value[u.id] = t('users.ttlError')
     return
   }
   if (tScope.value === 'repo' && !/^\d+$/.test(tRepoID.value)) {
-    tError.value[u.id] = 'укажите числовой ID репозитория'
+    tError.value[u.id] = t('users.repoIDError')
     return
   }
   tError.value[u.id] = ''
@@ -184,25 +185,25 @@ function zeroTime(iso: string | undefined): boolean {
 <template>
   <section>
     <div class="row spread">
-      <h1>Пользователи</h1>
-      <button class="btn primary" @click="showForm = !showForm">Добавить</button>
+      <h1>{{ t('users.title') }}</h1>
+      <button class="btn primary" @click="showForm = !showForm">{{ t('common.add') }}</button>
     </div>
     <p v-if="error" class="error">{{ error }}</p>
 
     <div v-if="showForm" class="panel">
-      <h2>Новый пользователь</h2>
+      <h2>{{ t('users.newUser') }}</h2>
       <form class="grid" @submit.prevent="createUser">
         <div class="row">
           <label class="field"
-            >Логин
+            >{{ t('login.username') }}
             <input v-model="fUsername" required />
           </label>
           <label class="field"
-            >Пароль
+            >{{ t('login.password') }}
             <input v-model="fPassword" type="password" required autocomplete="new-password" />
           </label>
           <label class="field"
-            >Роль
+            >{{ t('users.role') }}
             <select v-model="fRole">
               <option value="user">user</option>
               <option value="admin">admin</option>
@@ -211,8 +212,8 @@ function zeroTime(iso: string | undefined): boolean {
         </div>
         <p v-if="formError" class="error">{{ formError }}</p>
         <div class="row">
-          <button class="btn primary" type="submit" :disabled="busy">Создать</button>
-          <button class="btn" type="button" @click="showForm = false">Отмена</button>
+          <button class="btn primary" type="submit" :disabled="busy">{{ t('common.create') }}</button>
+          <button class="btn" type="button" @click="showForm = false">{{ t('common.cancel') }}</button>
         </div>
       </form>
     </div>
@@ -221,9 +222,9 @@ function zeroTime(iso: string | undefined): boolean {
       <table v-if="users.length > 0">
         <thead>
           <tr>
-            <th>Логин</th>
-            <th>Роль</th>
-            <th>Создан</th>
+            <th>{{ t('login.username') }}</th>
+            <th>{{ t('users.role') }}</th>
+            <th>{{ t('common.created') }}</th>
             <th></th>
           </tr>
         </thead>
@@ -238,9 +239,9 @@ function zeroTime(iso: string | undefined): boolean {
               <td>
                 <div class="row actions">
                   <button class="btn" @click="toggleTokens(u)">
-                    {{ expanded === u.id ? 'Скрыть токены' : 'API-токены' }}
+                    {{ expanded === u.id ? t('users.tokensHide') : t('users.tokensShow') }}
                   </button>
-                  <button class="btn danger" @click="removeUser(u)">Удалить</button>
+                  <button class="btn danger" @click="removeUser(u)">{{ t('common.delete') }}</button>
                 </div>
               </td>
             </tr>
@@ -248,18 +249,18 @@ function zeroTime(iso: string | undefined): boolean {
               <td colspan="4">
                 <div v-if="freshToken[u.id]" class="fresh">
                   <p class="warn">
-                    Токен «{{ freshToken[u.id].name }}» показывается один раз — скопируйте:
+                    {{ t('users.freshTokenHint', { name: freshToken[u.id].name }) }}
                   </p>
                   <div class="row">
                     <pre class="snippet grow mono">{{ freshToken[u.id].token }}</pre>
                     <button class="btn" @click="copyFresh">
-                      {{ copied ? 'Скопировано' : 'Копировать' }}
+                      {{ copied ? t('users.copied') : t('users.copy') }}
                     </button>
                   </div>
                 </div>
                 <form class="row" @submit.prevent="issueToken(u)">
                   <label class="field"
-                    >Имя
+                    >{{ t('users.tokenName') }}
                     <input v-model="tName" placeholder="deploy" required />
                   </label>
                   <label class="field"
@@ -270,37 +271,37 @@ function zeroTime(iso: string | undefined): boolean {
                     </select>
                   </label>
                   <label v-if="tScope === 'repo'" class="field"
-                    >ID репо
+                    >{{ t('users.repoID') }}
                     <input v-model="tRepoID" placeholder="3" required />
                   </label>
                   <label class="field"
                     >TTL
                     <input v-model="tTTL" placeholder="30d" />
                   </label>
-                  <button class="btn" type="submit">Выпустить</button>
+                  <button class="btn" type="submit">{{ t('users.issue') }}</button>
                 </form>
                 <p v-if="tError[u.id]" class="error">{{ tError[u.id] }}</p>
                 <p v-if="tokenError[u.id]" class="error">{{ tokenError[u.id] }}</p>
                 <table v-if="tokens[u.id]">
                   <thead>
                     <tr>
-                      <th>Имя</th>
-                      <th>Префикс</th>
-                      <th>Scopes</th>
-                      <th>Создан</th>
-                      <th>Истекает</th>
+                      <th>{{ t('users.tokenName') }}</th>
+                      <th>{{ t('users.colPrefix') }}</th>
+                      <th>{{ t('users.scopes') }}</th>
+                      <th>{{ t('common.created') }}</th>
+                      <th>{{ t('users.expires') }}</th>
                       <th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="t in tokens[u.id]" :key="t.id">
-                      <td>{{ t.name }}</td>
-                      <td class="mono">{{ t.prefix }}…</td>
-                      <td class="mono">{{ t.scopes.join(', ') }}</td>
-                      <td class="dim">{{ formatTime(t.created_at) }}</td>
-                      <td class="dim">{{ zeroTime(t.expires_at) ? 'бессрочно' : formatTime(t.expires_at) }}</td>
+                    <tr v-for="tok in tokens[u.id]" :key="tok.id">
+                      <td>{{ tok.name }}</td>
+                      <td class="mono">{{ tok.prefix }}…</td>
+                      <td class="mono">{{ tok.scopes.join(', ') }}</td>
+                      <td class="dim">{{ formatTime(tok.created_at) }}</td>
+                      <td class="dim">{{ zeroTime(tok.expires_at) ? t('users.never') : formatTime(tok.expires_at) }}</td>
                       <td>
-                        <button class="btn danger small" @click="revokeToken(u, t)">Отозвать</button>
+                        <button class="btn danger small" @click="revokeToken(u, tok)">{{ t('repo.revoke') }}</button>
                       </td>
                     </tr>
                   </tbody>
@@ -310,8 +311,8 @@ function zeroTime(iso: string | undefined): boolean {
           </template>
         </tbody>
       </table>
-      <p v-else-if="loaded" class="dim">Пользователей нет.</p>
-      <p v-else class="dim">Загрузка…</p>
+      <p v-else-if="loaded" class="dim">{{ t('users.empty') }}</p>
+      <p v-else class="dim">{{ t('common.loading') }}</p>
     </div>
   </section>
 </template>

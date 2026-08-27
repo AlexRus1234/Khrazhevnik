@@ -21,6 +21,7 @@ import { onMounted, ref } from 'vue'
 import { request } from '../api'
 import { errText } from '../errors'
 import { formatTime } from '../format'
+import { t } from '../i18n'
 import type { AuditEntry } from '../types'
 
 // Keyset-пагинация: after_id — последний увиденный ID (SPECIFICATION
@@ -57,9 +58,9 @@ onMounted(load)
 <template>
   <section>
     <div class="row spread">
-      <h1>Аудит</h1>
+      <h1>{{ t('audit.title') }}</h1>
       <button class="btn" :disabled="loading || done" @click="load">
-        {{ done ? 'Всё загружено' : loading ? 'Загрузка…' : 'Ещё' }}
+        {{ done ? t('audit.allLoaded') : loading ? t('common.loading') : t('audit.more') }}
       </button>
     </div>
     <p v-if="error" class="error">{{ error }}</p>
@@ -69,12 +70,12 @@ onMounted(load)
         <thead>
           <tr>
             <th>ID</th>
-            <th>Время</th>
-            <th>Актор</th>
-            <th>Действие</th>
-            <th>Объект</th>
-            <th>Результат</th>
-            <th>Детали</th>
+            <th>{{ t('audit.colTime') }}</th>
+            <th>{{ t('audit.colActor') }}</th>
+            <th>{{ t('audit.colAction') }}</th>
+            <th>{{ t('audit.colObject') }}</th>
+            <th>{{ t('audit.colResult') }}</th>
+            <th>{{ t('audit.colDetails') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -93,8 +94,8 @@ onMounted(load)
           </tr>
         </tbody>
       </table>
-      <p v-else-if="!loading" class="dim">Записей нет.</p>
-      <p v-else class="dim">Загрузка…</p>
+      <p v-else-if="!loading" class="dim">{{ t('audit.empty') }}</p>
+      <p v-else class="dim">{{ t('common.loading') }}</p>
     </div>
   </section>
 </template>

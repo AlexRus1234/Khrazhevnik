@@ -20,6 +20,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { computed, onMounted, ref, watch } from 'vue'
 import { request } from '../api'
 import { errText } from '../errors'
+import { t } from '../i18n'
 import type { Repo } from '../types'
 
 // Ключи раздаются с публичного порта (:29202), а SPA живёт на админском
@@ -90,7 +91,7 @@ async function loadKey(): Promise<void> {
       keyError.value = `HTTP ${resp.status}: ${await resp.text()}`
     }
   } catch {
-    keyError.value = 'публичный порт недоступен — проверьте origin'
+    keyError.value = t('keys.portUnavailable')
   }
   if (repo.value.ecosystem === 'nix') {
     try {
@@ -116,13 +117,13 @@ watch([selected, origin], () => {
 
 <template>
   <section>
-    <h1>Ключи</h1>
+    <h1>{{ t('keys.title') }}</h1>
     <p v-if="error" class="error">{{ error }}</p>
 
     <div class="panel">
       <div class="row">
         <label class="field"
-          >Репозиторий
+          >{{ t('keys.repo') }}
           <select v-model.number="selected">
             <option v-for="r in repos" :key="r.id" :value="r.id">
               {{ r.name }} ({{ r.ecosystem }})
@@ -130,47 +131,43 @@ watch([selected, origin], () => {
           </select>
         </label>
         <label class="field grow"
-          >Публичный origin (порт раздачи пакетов)
+          >{{ t('keys.publicOrigin') }}
           <input v-model="origin" @change="saveOrigin" />
         </label>
       </div>
-      <p class="dim">
-        Ключ один на все репозитории инстанса; URL привязан к имени репо.
-      </p>
+      <p class="dim">{{ t('keys.hint') }}</p>
     </div>
 
     <template v-if="repo">
       <div class="panel">
         <div class="row spread">
-          <h2>Публичный ключ (OpenPGP)</h2>
+          <h2>{{ t('keys.publicKey') }}</h2>
           <a class="btn" :href="keyURL" :download="`${repo.name}.asc`" target="_blank" rel="noopener">
-            Скачать {{ repo.name }}.asc
+            {{ t('keys.downloadFile', { name: `${repo.name}.asc` }) }}
           </a>
         </div>
         <p class="dim mono">{{ keyURL }}</p>
-        <p v-if="loading" class="dim">Загрузка…</p>
+        <p v-if="loading" class="dim">{{ t('common.loading') }}</p>
         <p v-else-if="keyError" class="error">{{ keyError }}</p>
         <pre v-else-if="keyText" class="snippet mono">{{ keyText }}</pre>
 
         <template v-if="repo.ecosystem === 'apt'">
           <h2>sources.list</h2>
           <pre class="snippet mono">{{ aptSnippet }}</pre>
-          <p class="dim">
-            Скачайте ключ в /usr/share/keyrings/ и добавьте строку в sources.list.
-          </p>
+          <p class="dim">{{ t('keys.sourcesHint') }}</p>
         </template>
       </div>
 
       <div v-if="repo.ecosystem === 'nix'" class="panel">
         <div class="row spread">
-          <h2>Nix-ключ (trusted-public-keys)</h2>
+          <h2>{{ t('keys.nixKey') }}</h2>
           <a class="btn" :href="nixKeyURL" :download="`${repo.name}-nix.asc`" target="_blank" rel="noopener">
-            Скачать
+            {{ t('keys.download') }}
           </a>
         </div>
         <p class="dim mono">{{ nixKeyURL }}</p>
         <pre v-if="nixKeyText" class="snippet mono">{{ nixKeyText }}</pre>
-        <p v-else class="dim">ed25519-подпись narinfo не инициализирована.</p>
+        <p v-else class="dim">{{ t('keys.nixUnavailable') }}</p>
       </div>
     </template>
   </section>

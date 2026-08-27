@@ -17,12 +17,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 // Форматтеры UI: байты, Go-durations (нс), скорости, времена.
-// Дублировать библиотеку нечего — три чистые функции.
+// Дублировать библиотеку нечего — три чистые функции. Единицы
+// измерения — через i18n (fmt.*): форматтер вызывается из шаблонов,
+// поэтому смена языка перевызвывает его с новым словарём.
+
+import { t } from './i18n'
 
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n)) return '—'
-  if (n < 1024) return `${n} Б`
-  const units = ['КиБ', 'МиБ', 'ГиБ', 'ТиБ', 'ПиБ']
+  if (n < 1024) return `${n} ${t('fmt.bytes')}`
+  const units = [t('fmt.kib'), t('fmt.mib'), t('fmt.gib'), t('fmt.tib'), t('fmt.pib')]
   let v = n
   let i = -1
   do {
@@ -34,22 +38,23 @@ export function formatBytes(n: number): string {
 
 export function formatSpeed(bps: number): string {
   if (!Number.isFinite(bps) || bps <= 0) return '—'
-  return `${formatBytes(bps)}/с`
+  return `${formatBytes(bps)}${t('fmt.perSec')}`
 }
 
 // formatDuration — наносекунды → «1ч 5м 3с» (как в конфиге, но без
 // дробных).
 export function formatDuration(ns: number): string {
   if (!Number.isFinite(ns)) return '—'
-  if (ns === 0) return 'только вручную'
+  if (ns === 0) return t('fmt.manualOnly')
   const totalSec = Math.round(ns / 1e9)
   const h = Math.floor(totalSec / 3600)
   const m = Math.floor((totalSec % 3600) / 60)
   const s = totalSec % 60
   const parts: string[] = []
-  if (h > 0) parts.push(`${h}ч`)
-  if (m > 0) parts.push(`${h > 0 ? String(m).padStart(2, '0') : m}м`)
-  if (s > 0 || parts.length === 0) parts.push(`${parts.length > 0 ? String(s).padStart(2, '0') : s}с`)
+  if (h > 0) parts.push(`${h}${t('fmt.h')}`)
+  if (m > 0) parts.push(`${h > 0 ? String(m).padStart(2, '0') : m}${t('fmt.m')}`)
+  if (s > 0 || parts.length === 0)
+    parts.push(`${parts.length > 0 ? String(s).padStart(2, '0') : s}${t('fmt.s')}`)
   return parts.join(' ')
 }
 

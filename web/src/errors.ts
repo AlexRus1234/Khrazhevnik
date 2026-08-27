@@ -16,42 +16,22 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
-// Маппинг snake_case-кодов API в ru-текст (docs/SPECIFICATION.md §Коды
-// ошибок). Hardcoded ru — сессия 18.3 вынесет в i18n-словари; коды не
-// меняются, меняется только источник строки.
+// Маппинг snake_case-кодов API (docs/SPECIFICATION.md §Коды ошибок) в
+// локализованный текст: строка живёт в locales/{ru,en}.json (errors.*),
+// коды стабильны. Неизвестный фронту код → «ошибка (HTTP N)»; сетевой
+// сбой (status 0) → network. t() читает locale при вызове — строки,
+// отрендеренные в шаблоне через errText, реагируют на смену языка.
 
 import { ApiError } from './api'
-
-const CODES: Record<string, string> = {
-  network: 'сервер недоступен',
-  auth_required: 'требуется вход',
-  invalid_credentials: 'неверный логин или пароль',
-  setup_already_done: 'первичный администратор уже создан',
-  invalid_setup_token: 'неверный setup-токен',
-  not_found: 'не найдено',
-  conflict: 'конфликт: объект уже существует',
-  forbidden: 'недостаточно прав',
-  validation_error: 'неверные данные формы',
-  too_large: 'объект больше лимита загрузки',
-  quota_exceeded: 'квота репозитория превышена',
-  stale: 'данные устарели, обновите',
-  task_duplicate: 'задача уже запущена',
-  task_limit: 'достигнут лимит параллельных задач',
-  invalid_json: 'сервер не понял запрос (invalid_json)',
-  tasks_unavailable: 'реестр задач недоступен',
-  mirror_unavailable: 'движок зеркала недоступен',
-  publish_unavailable: 'движок publish недоступен',
-  unsupported: 'операция не поддерживается для этой экосистемы',
-  length_required: 'не передан Content-Length',
-  internal: 'внутренняя ошибка сервера',
-  unknown: 'ошибка',
-}
+import { t, tr } from './i18n'
 
 export function errText(e: unknown): string {
   if (e instanceof ApiError) {
-    if (e.code in CODES) return CODES[e.code]
-    if (e.status > 0) return `ошибка (HTTP ${e.status})`
-    return CODES.network
+    if (e.code === 'unknown') return t('errors.unknown')
+    const s = tr(`errors.${e.code}`)
+    if (s !== null) return s
+    if (e.status > 0) return t('errors.httpStatus', { status: e.status })
+    return t('errors.network')
   }
-  return 'неизвестная ошибка'
+  return t('errors.fallback')
 }

@@ -19,6 +19,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <script setup lang="ts">
 import { RouterLink, RouterView, useRouter } from 'vue-router'
 import { logout } from './api'
+import LangSwitch from './components/LangSwitch.vue'
+import { t } from './i18n'
 import { loggedIn, markLoggedOut } from './stores/auth'
 
 const router = useRouter()
@@ -35,14 +37,15 @@ async function onLogout(): Promise<void> {
     <header v-if="loggedIn" class="topbar">
       <span class="brand">Хражевник</span>
       <nav class="tabs">
-        <RouterLink to="/dashboard">Дашборд</RouterLink>
-        <RouterLink to="/remotes">Источники</RouterLink>
-        <RouterLink to="/repos">Репозитории</RouterLink>
-        <RouterLink to="/users">Пользователи</RouterLink>
-        <RouterLink to="/audit">Аудит</RouterLink>
-        <RouterLink to="/keys">Ключи</RouterLink>
+        <RouterLink to="/dashboard">{{ t('nav.dashboard') }}</RouterLink>
+        <RouterLink to="/remotes">{{ t('nav.remotes') }}</RouterLink>
+        <RouterLink to="/repos">{{ t('nav.repos') }}</RouterLink>
+        <RouterLink to="/users">{{ t('nav.users') }}</RouterLink>
+        <RouterLink to="/audit">{{ t('nav.audit') }}</RouterLink>
+        <RouterLink to="/keys">{{ t('nav.keys') }}</RouterLink>
       </nav>
-      <button class="btn ghost logout" @click="onLogout">Выйти</button>
+      <LangSwitch />
+      <button class="btn ghost logout" @click="onLogout">{{ t('nav.logout') }}</button>
     </header>
 
     <main class="content">

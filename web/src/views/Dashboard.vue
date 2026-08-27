@@ -21,6 +21,7 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { request } from '../api'
 import { errText } from '../errors'
 import { formatBytes, formatSpeed, formatTime } from '../format'
+import { t } from '../i18n'
 import type { CacheStats, TaskSnapshot } from '../types'
 
 const stats = ref<CacheStats | null>(null)
@@ -72,88 +73,86 @@ function pct(ratio: number): string {
 
 <template>
   <section>
-    <h1>Дашборд</h1>
+    <h1>{{ t('dashboard.title') }}</h1>
     <p v-if="error" class="error">{{ error }}</p>
 
     <div class="panel">
-      <h2>Кеш</h2>
+      <h2>{{ t('dashboard.cache') }}</h2>
       <div v-if="stats" class="grid cards">
         <div class="card">
-          <span class="dim">Hit ratio</span>
+          <span class="dim">{{ t('dashboard.hitRatio') }}</span>
           <div class="value">{{ pct(stats.hit_ratio) }}</div>
         </div>
         <div class="card">
-          <span class="dim">Попадания</span>
+          <span class="dim">{{ t('dashboard.hits') }}</span>
           <div class="value">{{ stats.hits }}</div>
         </div>
         <div class="card">
-          <span class="dim">Промахи</span>
+          <span class="dim">{{ t('dashboard.misses') }}</span>
           <div class="value">{{ stats.misses }}</div>
         </div>
         <div class="card">
-          <span class="dim">Stale отдач</span>
+          <span class="dim">{{ t('dashboard.staleServed') }}</span>
           <div class="value">{{ stats.stale_served }}</div>
         </div>
         <div class="card">
-          <span class="dim">Отриц. попаданий</span>
+          <span class="dim">{{ t('dashboard.negativeHits') }}</span>
           <div class="value">{{ stats.negative_hits }}</div>
         </div>
         <div class="card">
-          <span class="dim">Ошибок upstream</span>
+          <span class="dim">{{ t('dashboard.upstreamErrors') }}</span>
           <div class="value">{{ stats.upstream_errors }}</div>
         </div>
         <div class="card">
-          <span class="dim">Скачано с upstream</span>
+          <span class="dim">{{ t('dashboard.bytesFromUpstream') }}</span>
           <div class="value">{{ formatBytes(stats.bytes_from_upstream) }}</div>
         </div>
         <div class="card">
-          <span class="dim">Отдано клиентам</span>
+          <span class="dim">{{ t('dashboard.bytesToClients') }}</span>
           <div class="value">{{ formatBytes(stats.bytes_to_clients) }}</div>
         </div>
       </div>
-      <p v-else class="dim">Загрузка…</p>
+      <p v-else class="dim">{{ t('common.loading') }}</p>
     </div>
 
     <div class="panel">
       <div class="row spread">
-        <h2>Фоновые задачи</h2>
+        <h2>{{ t('dashboard.tasks') }}</h2>
         <a class="btn" :href="metricsURL" target="_blank" rel="noopener">/metrics</a>
       </div>
-      <p class="dim">
-        Prometheus: <span class="mono">{{ metricsURL }}</span> — доступ по токену сессии/админ.
-      </p>
+      <p class="dim">{{ t('dashboard.prometheusHint', { url: metricsURL }) }}</p>
       <table v-if="tasks.length > 0">
         <thead>
           <tr>
-            <th>Задача</th>
-            <th>Цель</th>
-            <th>Состояние</th>
-            <th>Прогресс</th>
-            <th>Скорость</th>
-            <th>Начало</th>
-            <th>Ошибка</th>
+            <th>{{ t('dashboard.colTask') }}</th>
+            <th>{{ t('dashboard.colTarget') }}</th>
+            <th>{{ t('dashboard.colState') }}</th>
+            <th>{{ t('dashboard.colProgress') }}</th>
+            <th>{{ t('dashboard.colSpeed') }}</th>
+            <th>{{ t('dashboard.colStarted') }}</th>
+            <th>{{ t('dashboard.colError') }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="t in tasks" :key="t.id">
-            <td>{{ t.kind }}</td>
-            <td>{{ t.label }}</td>
+          <tr v-for="task in tasks" :key="task.id">
+            <td>{{ task.kind }}</td>
+            <td>{{ task.label }}</td>
             <td>
-              <span class="badge" :class="t.state">{{ t.state }}</span>
+              <span class="badge" :class="task.state">{{ task.state }}</span>
             </td>
             <td>
-              <template v-if="t.total > 0"
-                >{{ t.processed }}/{{ t.total }} ({{ Math.round(t.percent) }} %)</template
+              <template v-if="task.total > 0"
+                >{{ task.processed }}/{{ task.total }} ({{ Math.round(task.percent) }} %)</template
               >
-              <template v-else>{{ t.phase }} {{ t.current }}</template>
+              <template v-else>{{ task.phase }} {{ task.current }}</template>
             </td>
-            <td>{{ formatSpeed(t.speed_bps) }}</td>
-            <td>{{ formatTime(t.started_at) }}</td>
-            <td class="error">{{ t.error ?? '' }}</td>
+            <td>{{ formatSpeed(task.speed_bps) }}</td>
+            <td>{{ formatTime(task.started_at) }}</td>
+            <td class="error">{{ task.error ?? '' }}</td>
           </tr>
         </tbody>
       </table>
-      <p v-else class="dim">Активных задач нет.</p>
+      <p v-else class="dim">{{ t('dashboard.noTasks') }}</p>
     </div>
   </section>
 </template>

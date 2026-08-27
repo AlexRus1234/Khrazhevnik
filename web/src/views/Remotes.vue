@@ -21,6 +21,7 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { request } from '../api'
 import { errText } from '../errors'
 import { formatDuration, formatSpeed, formatTime, parseDuration } from '../format'
+import { t } from '../i18n'
 import type { Remote, TaskSnapshot } from '../types'
 
 const ECOSYSTEMS = ['apt', 'rpm-md', 'pacman', 'apk', 'nix']
@@ -86,7 +87,7 @@ async function submit(): Promise<void> {
   if (busy.value) return
   const intervalNS = parseDuration(fInterval.value)
   if (intervalNS === null) {
-    formError.value = 'интервал: примеры «30m», «1h», «1h30m», пусто — только вручную'
+    formError.value = t('remotes.intervalError')
     return
   }
   const body = {
@@ -119,7 +120,7 @@ async function submit(): Promise<void> {
 }
 
 async function remove(r: Remote): Promise<void> {
-  if (!window.confirm(`Удалить источник «${r.name}»? Кеш останется.`)) return
+  if (!window.confirm(t('remotes.deleteConfirm', { name: r.name }))) return
   try {
     await request('DELETE', `/remotes/${r.id}`)
     await load()
@@ -189,30 +190,30 @@ onUnmounted(() => {
 <template>
   <section>
     <div class="row spread">
-      <h1>Источники</h1>
-      <button class="btn primary" @click="openCreate">Добавить</button>
+      <h1>{{ t('remotes.title') }}</h1>
+      <button class="btn primary" @click="openCreate">{{ t('common.add') }}</button>
     </div>
     <p v-if="error" class="error">{{ error }}</p>
 
     <div v-if="showForm" class="panel">
-      <h2>{{ editingID === null ? 'Новый источник' : `Источник: ${fName}` }}</h2>
+      <h2>{{ editingID === null ? t('remotes.newRemote') : t('remotes.editRemote', { name: fName }) }}</h2>
       <form class="grid" @submit.prevent="submit">
         <div class="row">
           <label class="field"
-            >Имя (slug)
+            >{{ t('remotes.nameSlug') }}
             <input v-model="fName" required placeholder="debian" />
           </label>
           <label class="field"
-            >Экосистема
+            >{{ t('common.ecosystem') }}
             <select v-model="fEcosystem">
               <option v-for="e in ECOSYSTEMS" :key="e" :value="e">{{ e }}</option>
             </select>
           </label>
           <label class="field"
-            >Режим
+            >{{ t('remotes.mode') }}
             <select v-model="fMode">
-              <option value="proxy">proxy (кеш по запросу)</option>
-              <option value="mirror">mirror (фоновый sync)</option>
+              <option value="proxy">{{ t('remotes.modeProxy') }}</option>
+              <option value="mirror">{{ t('remotes.modeMirror') }}</option>
             </select>
           </label>
         </div>
@@ -222,24 +223,24 @@ onUnmounted(() => {
         </label>
         <div class="row">
           <label class="field"
-            >Интервал sync (mirror)
-            <input v-model="fInterval" placeholder="1h; пусто — только вручную" />
+            >{{ t('remotes.syncInterval') }}
+            <input v-model="fInterval" :placeholder="t('remotes.syncIntervalPlaceholder')" />
           </label>
           <label class="field check"
-            >Включён
+            >{{ t('remotes.enabled') }}
             <input v-model="fEnabled" type="checkbox" />
           </label>
         </div>
         <label class="field"
-          >Include (по строке: «stable», «stable/main» — apt; «core/x86_64» — pacman; arch — apk)
+          >{{ t('remotes.include') }}
           <textarea v-model="fInclude" rows="3" placeholder="stable&#10;stable/main"></textarea>
         </label>
         <p v-if="formError" class="error">{{ formError }}</p>
         <div class="row">
           <button class="btn primary" type="submit" :disabled="busy">
-            {{ editingID === null ? 'Создать' : 'Сохранить' }}
+            {{ editingID === null ? t('common.create') : t('common.save') }}
           </button>
-          <button class="btn" type="button" @click="showForm = false">Отмена</button>
+          <button class="btn" type="button" @click="showForm = false">{{ t('common.cancel') }}</button>
         </div>
       </form>
     </div>
@@ -248,14 +249,14 @@ onUnmounted(() => {
       <table v-if="remotes.length > 0">
         <thead>
           <tr>
-            <th>Имя</th>
-            <th>Экосистема</th>
+            <th>{{ t('common.name') }}</th>
+            <th>{{ t('common.ecosystem') }}</th>
             <th>Base URL</th>
-            <th>Режим</th>
-            <th>Вкл</th>
-            <th>Sync</th>
+            <th>{{ t('remotes.mode') }}</th>
+            <th>{{ t('remotes.colOn') }}</th>
+            <th>{{ t('remotes.colSync') }}</th>
             <th>Include</th>
-            <th>Создан</th>
+            <th>{{ t('common.created') }}</th>
             <th></th>
           </tr>
         </thead>
@@ -265,7 +266,7 @@ onUnmounted(() => {
             <td>{{ r.ecosystem }}</td>
             <td class="mono url">{{ r.base_url }}</td>
             <td>{{ r.mode }}</td>
-            <td>{{ r.enabled ? 'да' : 'нет' }}</td>
+            <td>{{ r.enabled ? t('common.yes') : t('common.no') }}</td>
             <td>
               <template v-if="syncing[r.id] && syncProgress[r.id]">
                 <span class="badge running">{{ syncProgress[r.id].phase }}</span>
@@ -284,10 +285,10 @@ onUnmounted(() => {
                   :disabled="syncing[r.id]"
                   @click="syncNow(r)"
                 >
-                  {{ syncing[r.id] ? 'Синхр…' : 'Sync' }}
+                  {{ syncing[r.id] ? t('remotes.syncing') : 'Sync' }}
                 </button>
-                <button class="btn" @click="openEdit(r)">Править</button>
-                <button class="btn danger" @click="remove(r)">Удалить</button>
+                <button class="btn" @click="openEdit(r)">{{ t('common.edit') }}</button>
+                <button class="btn danger" @click="remove(r)">{{ t('common.delete') }}</button>
               </div>
               <p v-if="syncError[r.id]" class="error">{{ syncError[r.id] }}</p>
               <p
@@ -300,11 +301,8 @@ onUnmounted(() => {
           </tr>
         </tbody>
       </table>
-      <p v-else-if="loaded" class="dim">
-        Источников нет. Добавьте upstream — например apt/debian =
-        https://deb.debian.org/debian.
-      </p>
-      <p v-else class="dim">Загрузка…</p>
+      <p v-else-if="loaded" class="dim">{{ t('remotes.empty') }}</p>
+      <p v-else class="dim">{{ t('common.loading') }}</p>
     </div>
   </section>
 </template>
