@@ -105,7 +105,11 @@ export async function request<T>(method: string, path: string, opts: RequestOpti
   } catch {
     throw new ApiError(0, 'network', 'network')
   }
-  if (resp.status === 401) {
+  // 401 от любого запроса = протухшая сессия: чистим токен и
+  // оповещаем. Исключение — сам /auth/login: его 401 несёт код
+  // invalid_credentials (или rate-limit) и должен дойти до экрана
+  // входа как есть, иначе локализация кодов ошибок теряет смысл.
+  if (resp.status === 401 && path !== '/auth/login') {
     setToken(null)
     window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
     throw new ApiError(401, 'auth_required', 'auth_required')

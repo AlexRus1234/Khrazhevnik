@@ -1,0 +1,5 @@
+# Артефакты Playwright — в git не попадают (браузеры ставятся
+# отдельно: npx playwright install chromium).
+test-results/
+playwright-report/
+.auth/
