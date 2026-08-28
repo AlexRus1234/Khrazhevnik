@@ -169,12 +169,12 @@ func BuildAdminRouter(d Deps) http.Handler {
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Get("/", handleAPIRoot(d))
 		if d.Auth != nil {
-		limiter := authmw.NewLoginRateLimit(d.TrustedProxies...)
-		// /setup — анонимный входной пункт, как и /auth/login: тот же
-		// rate-limit (аудит 2026-08-27 — bootstrap-окно не должно быть
-		// бесплатным брутфорс-полигоном).
-		api.With(limiter.Middleware).Post("/setup", handleSetup(d))
-		api.With(limiter.Middleware).Post("/auth/login", handleLogin(d, limiter))
+			limiter := authmw.NewLoginRateLimit(d.TrustedProxies...)
+			// /setup — анонимный входной пункт, как и /auth/login: тот же
+			// rate-limit (аудит 2026-08-27 — bootstrap-окно не должно быть
+			// бесплатным брутфорс-полигоном).
+			api.With(limiter.Middleware).Post("/setup", handleSetup(d))
+			api.With(limiter.Middleware).Post("/auth/login", handleLogin(d, limiter))
 			api.With(authmw.RequireSession(d.Auth)).Post("/auth/logout", handleLogout(d))
 
 			// adminAuth — auth-цепочка для admin-only роутов: сессия

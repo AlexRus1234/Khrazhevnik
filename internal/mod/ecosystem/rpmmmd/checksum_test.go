@@ -92,7 +92,7 @@ func TestResolveRepodataChecksumsAfterEnumerate(t *testing.T) {
 	// primary в repomd — .xml.gz (как у настоящих репозиториев):
 	// Enumerate тянет его по location-href и сам распаковывает gzip.
 	meta := fakeMeta{files: map[string][]byte{
-		"/rpm/fedora/repodata/repomd.xml":  []byte(testRepomdChecksums),
+		"/rpm/fedora/repodata/repomd.xml":     []byte(testRepomdChecksums),
 		"/rpm/fedora/repodata/primary.xml.gz": gzBytes(t, testPrimaryOne),
 	}}
 	if _, err := a.Enumerate(context.Background(), remote, meta); err != nil {
