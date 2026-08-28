@@ -101,6 +101,11 @@ func Open(cfg config.Database) (*Store, error) {
 	}
 	db.SetMaxOpenConns(poolMaxOpen)
 	db.SetMaxIdleConns(poolMaxIdle)
+	// Lifetime-ы обязательны: mariadb — внешний сервер за возможными
+	// firewall/NAT-таймаутами; без них пул держит бессмертные коннекты,
+	// которые умирают посреди запроса.
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(2 * time.Minute)
 	if err := migrate(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, err

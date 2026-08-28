@@ -90,6 +90,10 @@ func Open(cfg config.Database) (*Store, error) {
 	}
 	db.SetMaxOpenConns(poolMaxOpen)
 	db.SetMaxIdleConns(poolMaxIdle)
+	// ConnMaxLifetime/ConnMaxIdleTime не выставляем осознанно: база
+	// локальная (файл/память) — коннекты не рвутся firewall-таймаутами,
+	// а пересоздание соединений только сбрасывало бы PRAGMA-состояние
+	// (busy_timeout/foreign_keys/WAL) без выигрыша.
 	if err := migrate(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, err
