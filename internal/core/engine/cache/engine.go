@@ -66,6 +66,9 @@ type negative struct {
 const (
 	negativeCap = 10000
 	metaCap     = 10000
+	// deleteConcurrency — потолок параллельных фоновых удалений прошлых
+	// версий mutable-объектов: всплеск замен не должен выметать носитель.
+	deleteConcurrency = 4
 )
 
 // Статусы исхода кеша для X-Cache.
@@ -97,6 +100,16 @@ type Engine struct {
 	// записи внутри запуска — вместе дают уникальный ключ версии.
 	nonce uint64
 	seq   atomic.Uint64
+
+	// Фоновые удаления прошлых версий: семафор ограничивает
+	// параллелизм, счётчик+idle-канал — Drain при shutdown (не
+	// sync.WaitGroup: Add с нулевым счётчиком concurrently с Wait
+	// паникует в новом Go, а revalidate может завершиться посреди
+	// Drain'а).
+	delSem     chan struct{}
+	delMu      sync.Mutex
+	delPending int
+	delIdle    chan struct{} // закрывается при delPending == 0
 }
 
 // New создаёт движок кеша.
@@ -114,6 +127,7 @@ func New(storage port.Storage, index port.ObjectIndex, doer port.Doer, clock por
 		meta:     make(map[string]domain.ObjectMeta),
 		negative: make(map[string]negative),
 		nonce:    uint64(clock.Now().UnixNano()),
+		delSem:   make(chan struct{}, deleteConcurrency),
 	}
 }
 
@@ -718,14 +732,54 @@ func (e *Engine) versionedKey(key string) string {
 // Ошибки сознательно игнорируются: читатели старой версии могут
 // держать файл открытым (Windows не удаляет открытые файлы); остатки
 // подберёт фоновая чистка хранилища (сессии 09/11).
+//
+// Голая горутина (до аудита 2026-08-27) не имела ни потолка
+// параллелизма, ни ожидания при shutdown — процесс убивал удаление
+// посреди storage.Delete. Семафор ограничивает всплеск,
+// DrainBackgroundDeletes дожимает очередь в каскаде остановки.
 func (e *Engine) deleteInBackground(old *domain.ObjectMeta) {
 	key := old.StorageKey
 	if key == "" {
 		key = old.Key
 	}
+	e.delMu.Lock()
+	if e.delPending == 0 {
+		e.delIdle = make(chan struct{})
+	}
+	e.delPending++
+	e.delMu.Unlock()
 	go func() {
+		e.delSem <- struct{}{}
 		_ = e.storage.Delete(context.Background(), key)
+		<-e.delSem
+		e.delMu.Lock()
+		e.delPending--
+		if e.delPending == 0 {
+			close(e.delIdle)
+		}
+		e.delMu.Unlock()
 	}()
+}
+
+// DrainBackgroundDeletes ждёт завершения всех фоновых удалений или
+// отмены ctx. Встраивается в graceful shutdown: web-сервер уже ждёт
+// фоновые задачи 30s — удаление дожимается в том же пути.
+func (e *Engine) DrainBackgroundDeletes(ctx context.Context) error {
+	for {
+		e.delMu.Lock()
+		idle, pending := e.delIdle, e.delPending
+		e.delMu.Unlock()
+		if pending == 0 {
+			return nil
+		}
+		select {
+		case <-idle:
+			// idle закрыт, но после него могли добавить новые — цикл
+			// перепроверит счётчик
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 func (e *Engine) rememberMeta(key string, meta domain.ObjectMeta) {

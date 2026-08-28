@@ -403,17 +403,23 @@ func wireEcosystems(cfg config.Config, remotes port.RemoteStore) (map[string]por
 // WaitTasks — хук graceful shutdown: отменяет ctx-дерево фоновых
 // задач и ждёт их завершения в рамках таймаута каскада (server.go).
 // Зеркало: сначала стопаем scheduler (per-remote тикеры), затем
-// TaskRegistry (ручные sync и потенциальные publish — сессия 14).
+// TaskRegistry (ручные sync и потенциальные publish — сессия 14),
+// затем дожимаем фоновые удаления прошлых версий mutable-объектов.
 func (a *App) WaitTasks(ctx context.Context) error {
 	if a.Scheduler != nil {
 		if err := a.Scheduler.Stop(ctx); err != nil {
 			return err
 		}
 	}
-	if a.Tasks == nil {
-		return nil
+	if a.Tasks != nil {
+		if err := a.Tasks.WaitAll(ctx); err != nil {
+			return err
+		}
 	}
-	return a.Tasks.WaitAll(ctx)
+	if a.Cache != nil {
+		return a.Cache.DrainBackgroundDeletes(ctx)
+	}
+	return nil
 }
 
 // NotifyRemotesChanged — хук для web.Deps: будит reconcile-цикл
