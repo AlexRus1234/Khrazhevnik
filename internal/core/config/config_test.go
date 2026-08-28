@@ -17,6 +17,7 @@
 package config
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -273,6 +274,45 @@ func TestLoadFileSecret(t *testing.T) {
 	bad := writeTemp(t, "missing.toml", "[auth]\njwt_secret = \"file:///nonexistent/dir/secret\"\n")
 	if _, err := Load(bad, envOf(nil)); err == nil || !strings.Contains(err.Error(), "file://-секрета") {
 		t.Errorf("ожидалась ошибка чтения file://-секрета, got %v", err)
+	}
+}
+
+func TestLoadTrustedProxies(t *testing.T) {
+	path := writeTemp(t, "conf.toml", `
+[http]
+trusted_proxies = ["10.0.0.0/8", "127.0.0.1/32"]
+`)
+	cfg, err := Load(path, withJWT(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.HTTP.TrustedProxies) != 2 || cfg.HTTP.TrustedProxies[0] != "10.0.0.0/8" {
+		t.Fatalf("trusted_proxies = %+v", cfg.HTTP.TrustedProxies)
+	}
+	parsed, err := cfg.ParsedTrustedProxies()
+	if err != nil || len(parsed) != 2 || !parsed[0].Contains(net.ParseIP("10.1.2.3")) {
+		t.Fatalf("ParsedTrustedProxies = %+v, %v", parsed, err)
+	}
+
+	// env — CSV-список, перекрывает TOML.
+	cfg, err = Load(path, withJWT(map[string]string{
+		"KHRZ_HTTP__TRUSTED_PROXIES": "192.168.0.0/16, 172.16.0.0/12",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.HTTP.TrustedProxies) != 2 || cfg.HTTP.TrustedProxies[0] != "192.168.0.0/16" {
+		t.Fatalf("env trusted_proxies = %+v", cfg.HTTP.TrustedProxies)
+	}
+
+	// мусорный CIDR — проблема запуска, а не молчаливый пропуск.
+	bad := writeTemp(t, "bad.toml", `
+[http]
+trusted_proxies = ["not-a-cidr"]
+`)
+	_, err = Load(bad, withJWT(nil))
+	if err == nil || !strings.Contains(err.Error(), "http.trusted_proxies") {
+		t.Fatalf("мусорный CIDR прошёл валидацию: %v", err)
 	}
 }
 

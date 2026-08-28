@@ -68,6 +68,11 @@ env**. Пакет `internal/core/config`.
 public_listen = ":29202"
 admin_listen = ":30202"
 
+[http]
+# trusted_proxies = ["10.0.0.0/8"]  # CIDR'ы reverse-прокси: rate-limit
+#                                   # логина считает по клиенту из
+#                                   # X-Forwarded-For; пусто — RemoteAddr.
+
 [storage]
 driver = "fs"                    # fs | s3
 [storage.fs]

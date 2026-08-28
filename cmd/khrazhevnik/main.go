@@ -88,6 +88,10 @@ func run(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
+	trusted, err := cfg.ParsedTrustedProxies()
+	if err != nil {
+		return err
+	}
 
 	srv := &web.Server{
 		PublicAddr:    cfg.Server.PublicListen,
@@ -100,6 +104,7 @@ func run(ctx context.Context, configPath string) error {
 			SetupToken:     cfg.Auth.SetupToken,
 			Cache:          app.Cache,
 			Ecosystems:     app.Ecosystems,
+			TrustedProxies: trusted,
 			Remotes:        app.Catalog.Remotes,
 			Repos:          app.Catalog.Repos,
 			Storage:        app.Storage,

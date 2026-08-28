@@ -64,6 +64,9 @@ func applyStructEnv(v reflect.Value, segs []string, get func(string) string) []e
 			errs = applyStructEnv(fv, path, get)
 		case field.Type.Kind() == reflect.Map:
 			errs = applyEcosystemMapEnv(fv, path, get)
+		case field.Type.Kind() == reflect.Slice && field.Type.Elem().Kind() == reflect.String:
+			// список строк (http.trusted_proxies): env — через запятую
+			errs = applyLeafEnv(fv, path, get, setStringSliceFromString)
 		default:
 			errs = applyLeafEnv(fv, path, get, setSimpleFromString)
 		}
@@ -156,6 +159,20 @@ func setByteSizeFromString(fv reflect.Value, raw string) error {
 		return fmt.Errorf("значение %q не является размером (пример: \"20GiB\")", raw)
 	}
 	fv.Set(reflect.ValueOf(ByteSize{n}))
+	return nil
+}
+
+// setStringSliceFromString — CSV-список в []string (пробелы по краям
+// элементов срезаются; пустые элементы игнорируются).
+func setStringSliceFromString(fv reflect.Value, raw string) error {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	fv.Set(reflect.ValueOf(out))
 	return nil
 }
 

@@ -56,6 +56,19 @@ Secret=s3-key,env=KHRZ_STORAGE__S3__SECRET_ACCESS_KEY
 | `public_listen`| `:29202`  | `KHRZ_SERVER__PUBLIC_LISTEN` | Раздача пакетов + `/healthz`|
 | `admin_listen` | `:30202`  | `KHRZ_SERVER__ADMIN_LISTEN`  | `/api/v1`, `/metrics`, `/ui`|
 
+## `[http]`
+
+| Ключ              | Default | Env                                   | Назначение                |
+|-------------------|---------|---------------------------------------|---------------------------|
+| `trusted_proxies` | —       | `KHRZ_HTTP__TRUSTED_PROXIES` (CSV)    | CIDR'ы reverse-прокси     |
+
+Пусто — rate-limit логина считает по `RemoteAddr` (статус-кво).
+Заполнено — адрес клиента берётся из `X-Forwarded-For` справа налево
+до первой недоверенной позиции. Без этого все клиенты за прокси делят
+одну корзину 10/мин (глобальный lockout логина); с лишней доверенностью
+клиент подделывает XFF и обходит лимит. Карта корзин ограничена
+10000 записей (ротация IPv6 не растит её бесконечно).
+
 ## `[storage]`
 
 | Ключ     | Default | Env                    | Назначение            |

@@ -22,6 +22,7 @@ import (
 	"io"
 	"iter"
 	"log/slog"
+	"net"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -43,6 +44,10 @@ type Deps struct {
 	SetupToken string
 	Cache      *cache.Engine
 	Ecosystems map[string]port.Ecosystem
+	// TrustedProxies — CIDR'ы reverse-прокси для rate-limit'а логина
+	// (http.trusted_proxies, аудит 2026-08-27): nil/пусто — корзина по
+	// RemoteAddr; заполнено — адрес клиента из X-Forwarded-For.
+	TrustedProxies []*net.IPNet
 	// Срезы каталога для админ-API (сессия 09): remotes CRUD, аудит.
 	Remotes port.RemoteStore
 	// Repos — CRUD личных репозиториев + lookup по имени для
@@ -157,7 +162,7 @@ func BuildAdminRouter(d Deps) http.Handler {
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Get("/", handleAPIRoot(d))
 		if d.Auth != nil {
-		limiter := authmw.NewLoginRateLimit()
+		limiter := authmw.NewLoginRateLimit(d.TrustedProxies...)
 		// /setup — анонимный входной пункт, как и /auth/login: тот же
 		// rate-limit (аудит 2026-08-27 — bootstrap-окно не должно быть
 		// бесплатным брутфорс-полигоном).

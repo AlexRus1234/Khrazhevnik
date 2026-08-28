@@ -45,6 +45,15 @@ type Server struct {
 	AdminListen  string `toml:"admin_listen"`
 }
 
+// HTTP — параметры HTTP-доставки (адреса — server.*). TrustedProxies —
+// CIDR'ы reverse-прокси, чьим X-Forwarded-For можно верить при
+// rate-limit логина: пусто — статус-кво RemoteAddr (XFF игнорируется
+// как подделываемый), заполнено — адрес клиента из XFF до доверенной
+// границы (без этого все клиенты за прокси делят одну корзину 10/мин).
+type HTTP struct {
+	TrustedProxies []string `toml:"trusted_proxies"`
+}
+
 // Storage — выбор бэкенда объектов и его параметры.
 type Storage struct {
 	Driver string    `toml:"driver"`
@@ -133,6 +142,7 @@ type Ecosystem struct {
 // Config — полная конфигурация сервера.
 type Config struct {
 	Server    Server               `toml:"server"`
+	HTTP      HTTP                 `toml:"http"`
 	Storage   Storage              `toml:"storage"`
 	Database  Database             `toml:"database"`
 	Auth      Auth                 `toml:"auth"`
@@ -238,6 +248,7 @@ func (c Config) validate() []error {
 	var problems []error
 	problems = append(problems, checkListen("server.public_listen", c.Server.PublicListen)...)
 	problems = append(problems, checkListen("server.admin_listen", c.Server.AdminListen)...)
+	problems = append(problems, c.validateHTTP()...)
 	problems = append(problems, c.validateStorage()...)
 	problems = append(problems, c.validateDatabase()...)
 
@@ -276,6 +287,35 @@ func (c Config) validate() []error {
 		problems = append(problems, emptyField("signing.keys_dir"))
 	}
 	return problems
+}
+
+// validateHTTP проверяет CIDR'ы доверенных прокси: мусорная запись
+// должна падать на старте, а не молча игнорироваться (расширенная
+// доверенность — не то, что настраивают вслепую).
+func (c Config) validateHTTP() []error {
+	var problems []error
+	for _, cidr := range c.HTTP.TrustedProxies {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			problems = append(problems, fmt.Errorf(
+				"конфигурация: http.trusted_proxies: %q не CIDR (пример: \"10.0.0.0/8\")", cidr))
+		}
+	}
+	return problems
+}
+
+// ParsedTrustedProxies — разобранные CIDR'ы http.trusted_proxies
+// (после валидации; отдельный вызов — чтобы web-слою не таскать
+// парсинг строк конфига).
+func (c Config) ParsedTrustedProxies() ([]*net.IPNet, error) {
+	out := make([]*net.IPNet, 0, len(c.HTTP.TrustedProxies))
+	for _, cidr := range c.HTTP.TrustedProxies {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return nil, fmt.Errorf("конфигурация: http.trusted_proxies: %q: %w", cidr, err)
+		}
+		out = append(out, ipNet)
+	}
+	return out, nil
 }
 
 // validateStorage проверяет драйвер хранилища и поля его секции

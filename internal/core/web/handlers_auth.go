@@ -82,7 +82,7 @@ func handleLogin(d Deps, limiter *authmw.LoginRateLimit) http.HandlerFunc {
 			writeErrCode(w, http.StatusUnauthorized, "invalid_credentials")
 			return
 		}
-		limiter.Reset(r.RemoteAddr)
+		limiter.ResetRequest(r)
 		writeJSON(w, http.StatusOK, map[string]string{"token": token})
 	}
 }
