@@ -42,9 +42,9 @@ func TestObjectMetaUpsertSQL(t *testing.T) {
 	got := objectMetaUpsertSQL()
 	want := "INSERT INTO object_index (`key`, storage_key, etag, size, content_type, last_modified, expires_at) " +
 		"VALUES (?, ?, ?, ?, ?, ?, ?) " +
-		"ON DUPLICATE KEY UPDATE `key` = VALUES(`key`), storage_key = VALUES(storage_key), " +
-		"etag = VALUES(etag), size = VALUES(size), content_type = VALUES(content_type), " +
-		"last_modified = VALUES(last_modified), expires_at = VALUES(expires_at)"
+		"AS new ON DUPLICATE KEY UPDATE `key` = new.`key`, storage_key = new.storage_key, " +
+		"etag = new.etag, size = new.size, content_type = new.content_type, " +
+		"last_modified = new.last_modified, expires_at = new.expires_at"
 	if got != want {
 		t.Fatalf("objectMetaUpsertSQL =\n%s\nхочу\n%s", got, want)
 	}

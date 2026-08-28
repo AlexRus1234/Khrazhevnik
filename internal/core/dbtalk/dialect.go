@@ -73,22 +73,22 @@ func (Postgres) UpsertSuffix(key string, cols []string) string {
 }
 
 // MariaDB — диалект mariadb (go-sql-driver): «?» (позиционные, как
-// sqlite) и ON DUPLICATE KEY UPDATE col=VALUES(col). VALUES(col)
-// поддерживается и MySQL, и MariaDB (в MariaDB 11 устарел, но работает;
-// альтернатива AS new — MariaDB-специфика, её не используем ради
-// совместимости с MySQL-кластерами).
+// sqlite) и INSERT … AS new ON DUPLICATE KEY UPDATE col=new.col —
+// alias-синтаксис MariaDB ≥10.3 (VALUES(col) в MariaDB 11 устарел и
+// сыплет предупреждениями на каждый upsert). MySQL-кластеры — не-цель
+// v1: миграции (TEXT DEFAULT) и так требуют MariaDB.
 type MariaDB struct{}
 
 // Placeholder возвращает «?» — позиционные аргументы mysql/mariadb.
 func (MariaDB) Placeholder(int) string { return "?" }
 
-// UpsertSuffix строит «ON DUPLICATE KEY UPDATE col=VALUES(col), …».
+// UpsertSuffix строит «AS new ON DUPLICATE KEY UPDATE col = new.col, …».
 func (MariaDB) UpsertSuffix(_ string, cols []string) string {
 	sets := make([]string, len(cols))
 	for i, col := range cols {
-		sets[i] = col + " = VALUES(" + col + ")"
+		sets[i] = col + " = new." + col
 	}
-	return "ON DUPLICATE KEY UPDATE " + strings.Join(sets, ", ")
+	return "AS new ON DUPLICATE KEY UPDATE " + strings.Join(sets, ", ")
 }
 
 // Upsert собирает полный INSERT-upsert по диалекту: таблица table,

@@ -53,7 +53,7 @@ blank-import'ом в `cmd/khrazhevnik/wire.go` и выбираются TOML-ко
 |---------|------------|----------------|----------|
 | `sqlite` (modernc, CGO-free) | KISS, embedded | нет (`:memory:` или файл) | `migrations/sqlite/` |
 | `postgres` (pgx/v5) | прод, внешний сервер | postgres ≥ 13 | `migrations/postgres/` |
-| `mariadb` (go-sql-driver/mysql) | прод, внешняя MariaDB/MySQL | mariadb ≥ 10.5 / mysql ≥ 8 | `migrations/mariadb/` |
+| `mariadb` (go-sql-driver/mysql) | прод, внешняя MariaDB | mariadb ≥ 10.3 (MySQL — не-цель v1) | `migrations/mariadb/` |
 
 - **sqlite** (`[database] driver = "sqlite"`, `dsn = "путь"`): embedded,
   WAL, `busy_timeout=5000`, retry на `SQLITE_BUSY`. Ноль внешних
@@ -63,11 +63,14 @@ blank-import'ом в `cmd/khrazhevnik/wire.go` и выбираются TOML-ко
   (40P01/55P03). Нумерованные плейсхолдеры `$n`, `ON CONFLICT … DO
   UPDATE SET col=EXCLUDED.col`. DSN — стандартная postgres-строка
   (`postgres://user:pass@host/db?…`).
-- **mariadb**: внешний сервер (MariaDB 11 или MySQL 8), InnoDB для FK
-  enforcement, retry на дедлок/lock_wait_timeout (1213/1205). Позиционные
-  плейсхолдеры `?`, `ON DUPLICATE KEY UPDATE col=VALUES(col)`, id через
-  `LastInsertId`. DSN — стандартная mysql-строка
-  (`user:pass@tcp(host:3306)/db?params…`).
+- **mariadb**: внешний сервер (MariaDB ≥ 10.3 / MySQL — не-цель v1),
+  InnoDB для FK enforcement, retry на дедлок/lock_wait_timeout
+  (1213/1205). Позиционные плейсхолдеры `?`, upsert — `INSERT … AS new
+  ON DUPLICATE KEY UPDATE col=new.col` (alias-синтаксис, MariaDB ≥10.3;
+  VALUES(col) устарел в MariaDB 11), id через `LastInsertId`. DSN —
+  стандартная mysql-строка (`user:pass@tcp(host:3306)/db?params…`);
+  `clientFoundRows=true` выставляется принудительно — UPDATE отдаёт
+  matched rows, как у sqlite/postgres.
 
 Миграции — goose v3, embedded SQL, по диалекту на драйвер. `Up`
 идемпотентен: повторный старт на актуальной схеме — no-op. Состав
