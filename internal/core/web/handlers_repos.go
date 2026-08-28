@@ -31,6 +31,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"khrazhevnik/internal/core/domain"
+	authmw "khrazhevnik/internal/core/web/middleware"
 )
 
 // repoOut — DTO ответа репо: поля без аудит-мусора.
@@ -325,11 +326,10 @@ func handleListObjects(d Deps) http.HandlerFunc {
 
 // handlePutObject — PUT /api/v1/repos/{id}/objects/*: стриминг upload.
 // Content-Length обязателен (v1); force=true (query) — переписать
-// существующий ключ (RBAC: только админ, scoped-токен не пройдёт
-// валидацию контракта force в движке — v1: middleware отсекает чужих,
-// внутри движка роль не проверяется; для строгости можно добавить
-// RBAC-role-чек внутри handler, но KISS — admin через middleware
-// ужеADMIN-gated по owner-or-admin-or-scoped; scoped-токен без force).
+// существующий ключ. force — привилегия админ-сессии (аудит
+// 2026-08-27): перезапись опубликованных content-addressed объектов
+// равна отравлению репо, scoped-токен repo:<id>:write и не-админ-
+// владелец получают 403 (RequireRepoAccess остаётся, поверх — роль).
 func handlePutObject(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Publish == nil {
@@ -365,6 +365,10 @@ func handlePutObject(d Deps) http.HandlerFunc {
 			return
 		}
 		force := r.URL.Query().Has("force")
+		if force && !isAdminSession(r) {
+			writeErrCode(w, http.StatusForbidden, "admin_required")
+			return
+		}
 		if err := d.Publish.Upload(r.Context(), repo, objPath, size, r.Body, force); err != nil {
 			writeErr(w, err)
 			return
@@ -372,6 +376,18 @@ func handlePutObject(d Deps) http.HandlerFunc {
 		*r = *r.WithContext(WithAuditAction(r.Context(), "repo.object.upload"))
 		writeJSON(w, http.StatusCreated, map[string]any{"path": objPath, "size": size})
 	}
+}
+
+// isAdminSession — админ-сессия без API-токена: user из auth-контекста
+// с ролью admin, пришедший по JWT (не по khz_-токену). Даже admin-
+// scoped токен для force не годится: компрометация токена не должна
+// давать перезапись опубликованных объектов (аудит 2026-08-27).
+func isAdminSession(r *http.Request) bool {
+	if _, isToken := authmw.TokenFromContext(r.Context()); isToken {
+		return false
+	}
+	u, ok := authmw.UserFromContext(r.Context())
+	return ok && u.Role == domain.RoleAdmin
 }
 
 // handleDeleteObject — DELETE /api/v1/repos/{id}/objects/*.

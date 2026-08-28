@@ -104,7 +104,8 @@ reindex/листинг конкретного репо).
 
 `quota` — `{bytes, files}`, нулевое поле = без лимита. Upload:
 перезапись существующего ключа → 409 `conflict` (параметр `force=true`
-— только админ); превышение квоты → 413 `quota_exceeded`; лимит
+— только админ-сессия: scoped-токен и владелец получают 403
+`admin_required`); превышение квоты → 413 `quota_exceeded`; лимит
 объекта → 413 `too_large`; несовпадение `Content-Length` → abort и
 чистый `tmp/`. Формат путей и генерируемые индексы — по экосистемам в
 [personal-repos.md](personal-repos.md).

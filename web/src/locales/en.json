@@ -179,6 +179,7 @@
   "errors.not_found": "not found",
   "errors.conflict": "conflict: object already exists",
   "errors.forbidden": "insufficient permissions",
+  "errors.admin_required": "overwriting a published object is admin-only",
   "errors.validation_error": "invalid form data",
   "errors.too_large": "object exceeds the upload limit",
   "errors.payload_too_large": "request body exceeds 1 MiB",

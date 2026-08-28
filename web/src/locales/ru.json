@@ -179,6 +179,7 @@
   "errors.not_found": "не найдено",
   "errors.conflict": "конфликт: объект уже существует",
   "errors.forbidden": "недостаточно прав",
+  "errors.admin_required": "перезапись опубликованного объекта — только администратор",
   "errors.validation_error": "неверные данные формы",
   "errors.too_large": "объект больше лимита загрузки",
   "errors.payload_too_large": "тело запроса больше 1 МиБ",

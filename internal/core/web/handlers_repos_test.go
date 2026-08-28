@@ -336,6 +336,67 @@ func TestRepoUploadConflict(t *testing.T) {
 	}
 }
 
+// TestRepoUploadForceAdminOnly — force=admin-сессия (аудит 2026-08-27):
+// scoped-токен repo:<id>:write, не-админ-владелец и admin-scoped
+// API-токен перезапись опубликованных объектов не делают (403
+// admin_required); конфликт без force — 409 как раньше.
+func TestRepoUploadForceAdminOnly(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	path := "/api/v1/repos/" + itoaRepo(repoID) + "/objects/pool/main/a/foo.deb"
+
+	put := func(bearer string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, path+"?force=true", strings.NewReader("v2"))
+		req.ContentLength = 2
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		rec := httptest.NewRecorder()
+		env.admin.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Объект существует (владелец загружает без force).
+	first := httptest.NewRequest(http.MethodPut, path, strings.NewReader("v1"))
+	first.ContentLength = 2
+	first.Header.Set("Authorization", "Bearer "+env.jwtUser)
+	rec := httptest.NewRecorder()
+	env.admin.ServeHTTP(rec, first)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("первый upload владельцем = %d, want 201", rec.Code)
+	}
+
+	for name, tc := range map[string]struct {
+		bearer string
+		status int
+	}{
+		"scoped token":  {issueRepoWriteToken(t, env, 2, repoID), http.StatusForbidden},
+		"owner session": {env.jwtUser, http.StatusForbidden},
+		"admin token":   {env.apiAdmin, http.StatusForbidden},
+		// без auth RequireRepoAccess отсекает раньше хендлера — 401.
+		"no auth": {"", http.StatusUnauthorized},
+	} {
+		if w := put(tc.bearer); w.Code != tc.status {
+			t.Errorf("%s: force = %d, want %d (тело %s)", name, w.Code, tc.status, w.Body.String())
+		} else if tc.status == http.StatusForbidden && !strings.Contains(w.Body.String(), "admin_required") {
+			t.Errorf("%s: код ошибки = %s, хочу admin_required", name, w.Body.String())
+		}
+	}
+	// Админ-сессия проходит.
+	if w := put(env.jwtAdmin); w.Code != http.StatusCreated {
+		t.Errorf("admin session: force = %d, want 201 (тело %s)", w.Code, w.Body.String())
+	}
+	// Повторная загрузка без force — по-прежнему 409 (не сломали).
+	req := httptest.NewRequest(http.MethodPut, path, strings.NewReader("v3"))
+	req.ContentLength = 2
+	req.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	rec2 := httptest.NewRecorder()
+	env.admin.ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusConflict {
+		t.Errorf("повторный upload без force = %d, want 409", rec2.Code)
+	}
+}
+
 func TestRepoUploadNoContentLength(t *testing.T) {
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
