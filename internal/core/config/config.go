@@ -243,6 +243,12 @@ func Load(path string, envGetter func(string) string) (Config, error) {
 	return cfg, nil
 }
 
+// minJWTSecretLen — нижняя граница JWT-секрета: HS256 подписывает
+// HMAC'ом по этому ключу, короткий секрет брутфорсится оффлайн по
+// любому выпущенному токену (аудит 2026-08-27). 32 байта = 256 бит —
+// размер хеша SHA-256.
+const minJWTSecretLen = 32
+
 // validate собирает все проблемы конфигурации сразу (fail-fast).
 func (c Config) validate() []error {
 	var problems []error
@@ -255,6 +261,10 @@ func (c Config) validate() []error {
 	if c.Auth.JWTSecret == "" {
 		problems = append(problems, errors.New(
 			"конфигурация: auth.jwt_secret пуст — задайте env KHRZ_AUTH__JWT_SECRET (значение может быть file:///run/secrets/jwt_secret)"))
+	} else if len(c.Auth.JWTSecret) < minJWTSecretLen {
+		problems = append(problems, fmt.Errorf(
+			"конфигурация: auth.jwt_secret: нужно не меньше %d байт, задано %d — короткий секрет брутфорсится оффлайн (сгенерируйте: openssl rand -base64 32)",
+			minJWTSecretLen, len(c.Auth.JWTSecret)))
 	}
 	if c.Auth.SessionTTL.Duration <= 0 {
 		problems = append(problems, positiveField("auth.session_ttl"))

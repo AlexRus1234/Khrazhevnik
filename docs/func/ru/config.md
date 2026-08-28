@@ -113,8 +113,10 @@ Secret=s3-key,env=KHRZ_STORAGE__S3__SECRET_ACCESS_KEY
 | `session_ttl` | `8h`    | `KHRZ_AUTH__SESSION_TTL`       | TTL JWT-сессии админки           |
 | `setup_token` | —       | `KHRZ_AUTH__SETUP_TOKEN`       | Опц. защита одноразового `/setup`|
 
-`jwt_secret` непуст — fail-fast валидация падает на старте без него.
-Не кладите его в TOML проде: env или `file://`.
+`jwt_secret` непуст и не короче **32 байт** — fail-fast валидация
+падает на старте иначе (короткий секрет HS256 брутфорсится оффлайн;
+сгенерируйте `openssl rand -base64 32`). Не кладите его в TOML проде:
+env или `file://`.
 
 ## `[cache]`
 

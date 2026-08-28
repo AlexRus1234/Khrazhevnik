@@ -67,6 +67,7 @@ func statusFor(err error) (int, string) {
 	var stale *domain.StaleError
 	var quota *domain.QuotaExceededError
 	var unsup *domain.UnsupportedError
+	var badKey *domain.InvalidKeyError
 	switch {
 	case err == nil:
 		return http.StatusOK, ""
@@ -78,6 +79,10 @@ func statusFor(err error) (int, string) {
 		return http.StatusForbidden, "forbidden"
 	case errors.As(err, &val):
 		return http.StatusBadRequest, "validation_error"
+	case errors.As(err, &badKey):
+		// мусорный путь клиента — не 5xx и не флуд error-логов
+		// (аудит 2026-08-27)
+		return http.StatusBadRequest, "invalid_key"
 	case errors.As(err, &tooLarge):
 		return http.StatusRequestEntityTooLarge, "too_large"
 	case errors.As(err, &quota):

@@ -181,6 +181,7 @@
   "errors.forbidden": "недостаточно прав",
   "errors.admin_required": "перезапись опубликованного объекта — только администратор",
   "errors.validation_error": "неверные данные формы",
+  "errors.invalid_key": "недопустимый путь объекта",
   "errors.too_large": "объект больше лимита загрузки",
   "errors.payload_too_large": "тело запроса больше 1 МиБ",
   "errors.quota_exceeded": "квота репозитория превышена",

@@ -26,6 +26,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/engine/auth"
@@ -103,10 +104,13 @@ type PublishAPI interface {
 
 // BuildPublicRouter — публичный слушатель (:29202): /healthz, раздача
 // пакетов экосистем (сессия 06) и объектов личных репо (сессия 14).
+// Recoverer внутри логгера: паника хендлера отдаёт 500, но строка
+// запроса пишется с итоговым статусом (аудит 2026-08-27).
 func BuildPublicRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(RequestID)
 	r.Use(LogRequests(d.logger()))
+	r.Use(chimw.Recoverer)
 	r.Get("/healthz", handleHealthz)
 	if d.Storage != nil && d.Repos != nil {
 		// /repo/<name>/<путь...> — публичная раздача объектов личного
@@ -139,25 +143,28 @@ func BuildPublicRouter(d Deps) http.Handler {
 }
 
 // BuildAdminRouter — админский слушатель (:30202): /healthz, /api/v1,
-// /metrics (Prometheus, за auth) и позже SPA /ui.
+// /metrics (Prometheus, за auth) и SPA /ui. SecurityHeaders накрывают
+// и API, и SPA: nosniff/DENY/CSP — дешёвая страховка против сниффинга
+// и фрейминга админской поверхности (аудит 2026-08-27).
 func BuildAdminRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(RequestID)
 	r.Use(LogRequests(d.logger()))
+	r.Use(chimw.Recoverer)
+	r.Use(SecurityHeaders)
 	r.Get("/healthz", handleHealthz)
 	if d.MetricsHandler != nil {
-		// /metrics — за RequireSession|RequireAPIToken с admin scope:
-		// экспонешиал счётчиков кеша и латенси — внутренняя кухня,
-		// публичный анонимный доступ недопустим.
-		authChain := func() func(http.Handler) http.Handler {
-			if d.Auth == nil {
-				// Без auth-сервиса (деградированный режим) — отдаём как
-				// есть: в этом режиме и считать нечего, но путь живёт.
-				return func(h http.Handler) http.Handler { return h }
-			}
-			return authmw.RequireAdminOrAPIToken(d.Auth)
-		}()
-		r.With(authChain).Handle("/metrics", d.MetricsHandler)
+		if d.Auth == nil {
+			// fail closed: без auth-сервиса метрики не отдаются вовсе —
+			// счётчики кеша и латенси внутренняя кухня, «путь живёт без
+			// защиты» худшая альтернатива молчаливого 503 (аудит 2026-08-27).
+			r.Get("/metrics", func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "metrics unavailable without auth", http.StatusServiceUnavailable)
+			})
+		} else {
+			// /metrics — за RequireAdminOrAPIToken с admin scope.
+			r.With(authmw.RequireAdminOrAPIToken(d.Auth)).Handle("/metrics", d.MetricsHandler)
+		}
 	}
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Get("/", handleAPIRoot(d))

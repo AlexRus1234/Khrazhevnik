@@ -86,9 +86,13 @@ func writeProxyError(w http.ResponseWriter, err error) {
 	var nf *domain.NotFoundError
 	var tooLarge *domain.TooLargeError
 	var upstream *domain.UpstreamError
+	var badKey *domain.InvalidKeyError
 	switch {
 	case errors.As(err, &nf):
 		http.Error(w, "not found", http.StatusNotFound)
+	case errors.As(err, &badKey):
+		// мусорный путь клиента — 400, не 5xx-флод в логах
+		http.Error(w, "invalid storage path", http.StatusBadRequest)
 	case errors.As(err, &tooLarge):
 		http.Error(w, "upstream object too large", http.StatusBadGateway)
 	case errors.As(err, &upstream):

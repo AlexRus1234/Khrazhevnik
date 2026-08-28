@@ -135,9 +135,11 @@ enabled = true
 - Duration-поля — строки `time.ParseDuration` (`"8h"`), размеры —
   `"20GiB"`/`"512MiB"`/`"1024"` (байты).
 - Валидация fail-fast, список **всех** проблем сразу: `jwt_secret`
-  непуст (env обязателен), драйверы из допустимых, duration/порты
-  валидны, для выбранного драйвера обязательны его поля (у s3 —
-  endpoint/region/bucket/ключи).
+  непуст (env обязателен) и не короче 32 байт (HS256 с коротким ключом
+  брутфорсится оффлайн; генерация — `openssl rand -base64 32`),
+  `http.trusted_proxies` — валидные CIDR'ы, драйверы из допустимых,
+  duration/порты валидны, для выбранного драйвера обязательны его поля
+  (у s3 — endpoint/region/bucket/ключи).
 - Уровень логов — env `KHRZ_LOG_LEVEL` (`debug|info|warn|error`,
   default `info`), читается при старте.
 

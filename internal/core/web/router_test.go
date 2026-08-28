@@ -23,7 +23,61 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	chimw "github.com/go-chi/chi/v5/middleware"
 )
+
+// TestRecovererTurnsPanicInto500 — паника хендлера отдаёт 500, процесс
+// жив, строка запроса логируется с итоговым статусом (аудит
+// 2026-08-27). Стек — как в Build*Router: RequestID → LogRequests →
+// Recoverer.
+func TestRecovererTurnsPanicInto500(t *testing.T) {
+	buf := &bytes.Buffer{}
+	log := slog.New(slog.NewTextHandler(buf, nil))
+	h := RequestID(LogRequests(log)(chimw.Recoverer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		panic("boom")
+	}))))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("паника = %d, хочу 500", rec.Code)
+	}
+	if !strings.Contains(buf.String(), "status=500") {
+		t.Errorf("500 не попал в лог:\n%s", buf.String())
+	}
+}
+
+// TestMetricsFailClosedWithoutAuth — без auth-сервиса /metrics не
+// отдаётся вовсе (503), а не живёт без защиты (аудит 2026-08-27).
+func TestMetricsFailClosedWithoutAuth(t *testing.T) {
+	h := BuildAdminRouter(Deps{Version: "test", MetricsHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("secret counters"))
+	})})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/metrics без Auth = %d, хочу 503", rec.Code)
+	}
+}
+
+// TestAdminSecurityHeaders — nosniff/DENY/CSP на API и /ui (аудит
+// 2026-08-27).
+func TestAdminSecurityHeaders(t *testing.T) {
+	h := BuildAdminRouter(Deps{Version: "test"})
+	for _, path := range []string{"/api/v1/", "/ui"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options = %q", path, got)
+		}
+		if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+			t.Errorf("%s: X-Frame-Options = %q", path, got)
+		}
+		if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'self'") {
+			t.Errorf("%s: CSP = %q", path, got)
+		}
+	}
+}
 
 func TestHealthz(t *testing.T) {
 	for name, h := range map[string]http.Handler{

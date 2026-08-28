@@ -87,7 +87,7 @@ func runAddRemote(configPath, spec string) error {
 func bootstrapEnv(key string) string {
 	const jwtKey = "KHRZ_AUTH__JWT_SECRET"
 	if key == jwtKey && os.Getenv(jwtKey) == "" {
-		return "bootstrap-not-used-by-server"
+		return "bootstrap-not-used-by-server-0123456789ab"
 	}
 	return os.Getenv(key)
 }

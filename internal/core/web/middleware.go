@@ -117,3 +117,25 @@ func LogRequests(log *slog.Logger) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// spaContentSecurityPolicy — CSP админской поверхности: SPA грузит
+// только собственные бандлы (script 'self'), стили Vue используют
+// inline-атрибуты ('unsafe-inline' в style-src — данных, не скриптов),
+// картинки — data:-иконки. connect-src 'self' закрывает API-вызовы.
+const spaContentSecurityPolicy = "default-src 'self'; script-src 'self'; " +
+	"style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+	"connect-src 'self'; font-src 'self'; object-src 'none'; " +
+	"base-uri 'self'; frame-ancestors 'none'"
+
+// SecurityHeaders — базовые заголовки админ-поверхности (API + /ui,
+// аудит 2026-08-27): nosniff гасит content-type sniffing, DENY —
+// фрейминг админки, CSP — инъекции сторонних ресурсов в SPA.
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", spaContentSecurityPolicy)
+		next.ServeHTTP(w, r)
+	})
+}

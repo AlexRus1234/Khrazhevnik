@@ -67,7 +67,7 @@ func adminIntegrationEnv(t *testing.T) (*web.Server, *registry.CatalogSet, *web.
 		"[database]\n" +
 		"dsn = \"" + filepath.ToSlash(filepath.Join(dir, "khrazhevnik.db")) + "\"\n\n" +
 		"[auth]\n" +
-		"jwt_secret = \"integration-secret\"\n"
+		"jwt_secret = \"integration-secret-integration-secret-0123\"\n"
 	if err := os.WriteFile(confPath, []byte(tomlCfg), 0o600); err != nil {
 		t.Fatal(err)
 	}

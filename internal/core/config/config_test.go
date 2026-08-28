@@ -30,9 +30,10 @@ func envOf(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
-// withJWT — env с единственным обязательным секретом.
+// withJWT — env с единственным обязательным секретом (32+ байт —
+// валидация длины, аудит 2026-08-27).
 func withJWT(extra map[string]string) func(string) string {
-	m := map[string]string{"KHRZ_AUTH__JWT_SECRET": "topsecret"}
+	m := map[string]string{"KHRZ_AUTH__JWT_SECRET": "topsecret-topsecret-topsecret-0123456789"}
 	for k, v := range extra {
 		m[k] = v
 	}
@@ -65,7 +66,7 @@ func TestLoadDefaults(t *testing.T) {
 		{"storage.fs.path", cfg.Storage.FS.Path, "/var/lib/khrazhevnik/store"},
 		{"database.driver", cfg.Database.Driver, "sqlite"},
 		{"database.dsn", cfg.Database.DSN, "/var/lib/khrazhevnik/khrazhevnik.db"},
-		{"auth.jwt_secret", cfg.Auth.JWTSecret, "topsecret"},
+		{"auth.jwt_secret", cfg.Auth.JWTSecret, "topsecret-topsecret-topsecret-0123456789"},
 		{"auth.session_ttl", cfg.Auth.SessionTTL.Duration, 8 * time.Hour},
 		{"cache.mutable_ttl", cfg.Cache.MutableTTL.Duration, 5 * time.Minute},
 		{"cache.stale_if_error", cfg.Cache.StaleIfError, true},
@@ -247,26 +248,26 @@ enabled = true
 
 func TestLoadFileSecret(t *testing.T) {
 	// файл-секрет с переводами строк и пробелами по краям
-	secretFile := writeTemp(t, "jwt.txt", "  s3cr3t-value\n\n")
+	secretFile := writeTemp(t, "jwt.txt", "  s3cr3t-value-with-enough-length-32-bytes!!\n\n")
 	tomlPath := writeTemp(t, "conf.toml", "jwt_secret = \"file://"+filepath.ToSlash(secretFile)+"\"\n[auth]\njwt_secret = \"file://"+filepath.ToSlash(secretFile)+"\"\n")
 
 	cfg, err := Load(tomlPath, envOf(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Auth.JWTSecret != "s3cr3t-value" {
+	if cfg.Auth.JWTSecret != "s3cr3t-value-with-enough-length-32-bytes!!" {
 		t.Errorf("jwt_secret из file:// = %q", cfg.Auth.JWTSecret)
 	}
 
 	// file:// работает и для значений из env
-	envSecret := writeTemp(t, "env-secret.txt", "env-secret\n")
+	envSecret := writeTemp(t, "env-secret.txt", "env-secret-with-enough-length-32-bytes!!\n")
 	cfg, err = Load("", envOf(map[string]string{
 		"KHRZ_AUTH__JWT_SECRET": "file://" + filepath.ToSlash(envSecret),
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Auth.JWTSecret != "env-secret" {
+	if cfg.Auth.JWTSecret != "env-secret-with-enough-length-32-bytes!!" {
 		t.Errorf("jwt_secret из env file:// = %q", cfg.Auth.JWTSecret)
 	}
 
@@ -274,6 +275,18 @@ func TestLoadFileSecret(t *testing.T) {
 	bad := writeTemp(t, "missing.toml", "[auth]\njwt_secret = \"file:///nonexistent/dir/secret\"\n")
 	if _, err := Load(bad, envOf(nil)); err == nil || !strings.Contains(err.Error(), "file://-секрета") {
 		t.Errorf("ожидалась ошибка чтения file://-секрета, got %v", err)
+	}
+}
+
+// TestLoadJWTSecretLength — минимум 32 байта (аудит 2026-08-27):
+// HS256 с коротким ключом брутфорсится оффлайн; 32 — валидно.
+func TestLoadJWTSecretLength(t *testing.T) {
+	if _, err := Load("", envOf(map[string]string{"KHRZ_AUTH__JWT_SECRET": strings.Repeat("x", 16)})); err == nil ||
+		!strings.Contains(err.Error(), "openssl rand -base64 32") {
+		t.Errorf("16-байтный секрет прошёл валидацию: %v", err)
+	}
+	if _, err := Load("", withJWT(nil)); err != nil {
+		t.Errorf("32+ байт должны проходить: %v", err)
 	}
 }
 

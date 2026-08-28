@@ -477,6 +477,21 @@ func TestPublicRepoFileNotFound(t *testing.T) {
 	}
 }
 
+// TestPublicRepoFileInvalidKeyPath — мусорный путь клиента («..»)
+// отдаёт 400 invalid_key/«invalid storage path», а не 5xx-флод в
+// логах (аудит 2026-08-27).
+func TestPublicRepoFileInvalidKeyPath(t *testing.T) {
+	env := newRepoEnv(t)
+	createRepoViaAPI(t, env, "alice", 2)
+	for _, path := range []string{"/repo/alice/../../y", "/repo/alice/pool/../a.deb"} {
+		rec := httptest.NewRecorder()
+		env.public.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("GET %s = %d, хочу 400 (тело %s)", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestPublicRepoKey(t *testing.T) {
 	env := newRepoEnv(t)
 	createRepoViaAPI(t, env, "alice", 2)

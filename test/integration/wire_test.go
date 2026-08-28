@@ -80,7 +80,7 @@ func TestWireBootShutdown(t *testing.T) {
 		"[storage.fs]\n" +
 		"path = \"" + filepath.ToSlash(filepath.Join(dir, "store")) + "\"\n\n" +
 		"[auth]\n" +
-		"jwt_secret = \"integration-secret\"\n"
+		"jwt_secret = \"integration-secret-integration-secret-0123\"\n"
 	if err := os.WriteFile(confPath, []byte(tomlCfg), 0o600); err != nil {
 		t.Fatal(err)
 	}

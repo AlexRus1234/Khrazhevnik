@@ -113,7 +113,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     '[database]\n' +
     `dsn = "${toSlash(path.join(dir, 'khrazhevnik.db'))}"\n\n` +
     '[auth]\n' +
-    'jwt_secret = "e2e-secret"\n'
+    'jwt_secret = "e2e-secret-e2e-secret-e2e-secret-0123456789"\n'
   const confPath = path.join(dir, 'khrazhevnik.toml')
   await writeFile(confPath, toml, 'utf-8')
 
