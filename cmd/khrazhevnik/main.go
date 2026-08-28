@@ -24,6 +24,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -112,6 +113,7 @@ func run(ctx context.Context, configPath string) error {
 		Log:       log,
 		WaitTasks: app.WaitTasks,
 	}
+	warnAdminListen(log, cfg.Server.AdminListen)
 	log.Info("khrazhevnik запущен",
 		"version", Version,
 		"public", cfg.Server.PublicListen,
@@ -120,6 +122,27 @@ func run(ctx context.Context, configPath string) error {
 		"database", cfg.Database.Driver,
 	)
 	return srv.Run(ctx)
+}
+
+// warnAdminListen — админ-API на не-loopback адресе (дефолт :30202 —
+// все интерфейсы, аудит 2026-08-27): дефолт не меняем ради контейнерных
+// деплоев, но молчать не должны — оператор обязан знать, что админка
+// видна снаружи. Некорректный адрес молча пропускается: его отловит
+// fail-fast валидация конфига.
+func warnAdminListen(log *slog.Logger, addr string) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return
+	}
+	switch {
+	case host == "" || host == "0.0.0.0" || host == "::":
+		log.Warn("admin-API слушает на всех интерфейсах (дефолт) — убедись, что порт :30202 не торчит наружу", "admin_listen", addr)
+	case net.ParseIP(host) != nil && !net.ParseIP(host).IsLoopback():
+		log.Warn("admin-API слушает на не-loopback адресе — убедись, что доступ закрыт файрволом/прокси", "admin_listen", addr)
+	case net.ParseIP(host) == nil && host != "localhost":
+		// именованный хост: loopback только по имени localhost
+		log.Warn("admin-API слушает на именованном хосте — убедись, что это не внешний интерфейс", "admin_listen", addr)
+	}
 }
 
 // newLogger — slog в stderr; уровень из KHRZ_LOG_LEVEL, default info.

@@ -29,10 +29,24 @@ import (
 
 // Каскад graceful shutdown (docs/ARCHITECTURE.md §2): SIGTERM →
 // оба HTTP-слушателя параллельно (5с) → фоновые задачи (30с).
+//
+// Таймауты (аудит 2026-08-27, slowloris): админ — короткие потолки
+// на чтение/запись (JSON-API, стримов нет); публичный — потолка на
+// запись НЕТ (убил бы стриминг больших пакетов), вместо него —
+// write-deadline на соединение в стриминг-хендлерах (stream.go):
+// медленный читатель отваливается по дедлайну последней записи, а не
+// держит FD вечно. IdleTimeout в обоих гасит вечные keep-alive.
 const (
 	httpShutdownTimeout = 5 * time.Second
 	tasksWaitTimeout    = 30 * time.Second
-	readHeaderTimeout   = 10 * time.Second // slowloris-защита
+	readHeaderTimeout   = 10 * time.Second // slowloris-защита заголовков
+
+	adminReadTimeout  = 30 * time.Second
+	adminWriteTimeout = 30 * time.Second
+	adminIdleTimeout  = 120 * time.Second
+
+	publicReadTimeout = 60 * time.Second // тело upload'а пакета бывает большим
+	publicIdleTimeout = 120 * time.Second
 )
 
 // Server — пара слушателей (public/admin) с общим жизненным циклом.
@@ -75,8 +89,22 @@ func (s *Server) Run(ctx context.Context) error {
 	s.adminAddr = adminLn.Addr().String()
 	s.mu.Unlock()
 
-	publicSrv := &http.Server{Handler: s.PublicHandler, ReadHeaderTimeout: readHeaderTimeout}
-	adminSrv := &http.Server{Handler: s.AdminHandler, ReadHeaderTimeout: readHeaderTimeout}
+	publicSrv := &http.Server{
+		Handler:           s.PublicHandler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       publicReadTimeout,
+		IdleTimeout:       publicIdleTimeout,
+		// WriteTimeout сознательно не ставится: большой пакет на медленном
+		// канале легитимно стримится дольше любого потолка; медленного
+		// читателя вырубает per-write deadline (stream.go).
+	}
+	adminSrv := &http.Server{
+		Handler:           s.AdminHandler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       adminReadTimeout,
+		WriteTimeout:      adminWriteTimeout,
+		IdleTimeout:       adminIdleTimeout,
+	}
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- serveListener("public", publicSrv, publicLn) }()

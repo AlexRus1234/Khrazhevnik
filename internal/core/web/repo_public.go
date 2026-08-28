@@ -90,7 +90,9 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 		if obj.Meta.Size >= 0 {
 			w.Header().Set("Content-Length", formatInt(obj.Meta.Size))
 		}
-		_, _ = io.CopyBuffer(w, obj.Body, make([]byte, 32*1024))
+		// stallWriter: write-deadline на соединение (аудит 2026-08-27) —
+		// медленный читатель отваливается, а не держит FD и ридер Storage.
+		_, _ = io.CopyBuffer(newStallWriter(w), obj.Body, make([]byte, 32*1024))
 	}
 }
 

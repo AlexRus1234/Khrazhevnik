@@ -57,7 +57,9 @@ func handleProxy(d Deps) http.HandlerFunc {
 		if obj.Meta.Size >= 0 {
 			w.Header().Set("Content-Length", formatInt(obj.Meta.Size))
 		}
-		n, _ := io.CopyBuffer(w, obj.Body, make([]byte, 32*1024))
+		// stallWriter: медленный читатель отвалится по write-deadline,
+		// а не будет держать FD и tmp-объект вечно (аудит 2026-08-27).
+		n, _ := io.CopyBuffer(newStallWriter(w), obj.Body, make([]byte, 32*1024))
 		d.Cache.AddBytesToClients(n)
 	}
 }

@@ -49,6 +49,14 @@ ui, ecosystems, personal-repos).
 | 29202 | Публика: раздача пакетов (без auth) + `GET /healthz`. Переопределяется конфигом. |
 | 30202 | Админка: `/api/v1` (auth), `/metrics` (Prometheus, за auth), SPA `/ui`. Переопределяется конфигом. |
 
+HTTP-таймауты (аудит 2026-08-27): оба слушателя — ReadHeaderTimeout
+10s, IdleTimeout 120s. Админ — ReadTimeout/WriteTimeout 30s (JSON-API,
+стримов нет). Публичный — ReadTimeout 60s, WriteTimeout отсутствует
+(не убивать стриминг больших пакетов); медленного читателя вырубает
+per-write deadline 30s в стриминг-хендлерах (`web/stream.go`). Админ,
+слушающий не-loopback адрес (включая дефолт `:30202`), пишет warning
+в лог при старте.
+
 ## Конфигурация
 
 TOML-файл (флаг `-config`, по умолчанию `khrazhevnik.toml`; пустое
