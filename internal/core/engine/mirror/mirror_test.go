@@ -17,6 +17,7 @@
 package mirror
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -294,6 +295,61 @@ func TestSyncCancelStopsWorkers(t *testing.T) {
 	}
 	// отпустим горутины upstream, чтобы shutdown не висел
 	close(release)
+}
+
+// TestSyncStreamingLimiterBigObject — тело 3×burst проходит sync
+// без ошибок, полоса соблюдается в процессе скачивания (потоковый
+// лимитер, аудит 2026-08-27): burst байт уходит мгновенно, хвост
+// 2×burst растягивается на ≈2×burst/полосу.
+func TestSyncStreamingLimiterBigObject(t *testing.T) {
+	const bandwidth = 4096
+	body := bytes.Repeat([]byte("x"), 3*bandwidth)
+	files := map[string][]byte{"/pkg/big.deb": body}
+	repo := newMiniRepo(files)
+	t.Cleanup(repo.Close)
+	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	storage := testutil.NewFakeStorage(clock)
+	index := testutil.NewFakeObjectIndex()
+	remotes := testutil.NewFakeRemoteStore()
+	remote, err := remotes.CreateRemote(context.Background(), domain.Remote{
+		Name: "pkg", Ecosystem: "t", BaseURL: repo.URL(),
+		Mode: domain.ModeMirror, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eco := testutil.FakeEcosystem{
+		NameOf: "t", Base: repo.URL(), MutableTTL: time.Minute,
+		EnumeratePaths: []string{"/big.deb"},
+	}
+	cache := cacheengine.New(storage, index, repo.server.Client(), clock,
+		cacheengine.Config{StaleIfError: true}, metrics.NewCache())
+	jobs := testutil.NewFakeJobStore()
+	mir := New(Config{
+		Workers: 1, RetryMax: 1, MaxBandwidth: bandwidth,
+		ProgressInterval: 10 * time.Millisecond,
+	}, cache, storage, remotes, jobs, clock, map[string]port.Ecosystem{"t": eco})
+
+	start := time.Now()
+	if err := mir.Sync(context.Background(), remote, &recordingProgress{}); err != nil {
+		t.Fatalf("sync объекта 3×burst не должен падать: %v", err)
+	}
+	elapsed := time.Since(start)
+	// burst (4096) мгновенно, хвост 8192 байта по полосе 4096 Б/с ≈ 2с.
+	// Допуск: нижний — 1.2с (частичная оплата могла произойти до замера),
+	// верхний — 6с (медленный CI).
+	if elapsed < 1200*time.Millisecond {
+		t.Errorf("sync прошёл за %v — полоса не соблюдалась (ожидался ≥1.2с)", elapsed)
+	}
+	if elapsed > 6*time.Second {
+		t.Errorf("sync затянулся: %v (ожидалось ≈2с)", elapsed)
+	}
+	if got := repo.count("/pkg/big.deb"); got != 1 {
+		t.Errorf("upstream получил %d запросов, хочу 1 (ретраев быть не должно)", got)
+	}
+	if _, err := storage.Stat(context.Background(), "cache/t/pkg/big.deb"); err != nil {
+		t.Errorf("объект отсутствует после sync: %v", err)
+	}
 }
 
 func TestSyncUnsupportedEcosystem(t *testing.T) {

@@ -47,10 +47,10 @@ type Config struct {
 	// Workers — число горутин в worker pool параллельных prefetch'ей.
 	Workers int
 	// MaxBandwidth — лимит суммарной скорости скачивания, байт/сек;
-	// 0 — безлимит. Реализован как token-bucket по факту скачанных
-	// байт: после каждого prefetch воркер «платит» limiter'ом
-	// Downloaded байт, ожидая пополнения корзины. Ограничивает
-	// среднюю скорость; первый объект может вспыхнуть до burst=lim.
+	// 0 — безлимит. Потоковый token-bucket: байты оплачиваются
+	// limiter'ом по мере копирования в хранилище (куски ≤ burst),
+	// поэтому тело любого размера проходит, а средняя скорость
+	// держится на полосе (первый burst байт может вспыхнуть мгновенно).
 	MaxBandwidth int64
 	// RetryMax — число повторов одного пути при сбое (3 по умолчанию).
 	RetryMax int
@@ -94,6 +94,10 @@ type Engine struct {
 	clock   port.Clock
 	ecos    map[string]port.Ecosystem
 	cfg     Config
+	// limiter — общая корзина полосы на все sync движка; nil — безлимит.
+	// Потоковый: платёж идёт внутри копирования (cache.PrefetchThrottled),
+	// не пост-фактум — объекты крупнее burst больше не валят sync.
+	limiter *rate.Limiter
 }
 
 // New создаёт движок зеркала. ecoOf — карта экосистем по имени (та же,
@@ -115,9 +119,33 @@ func New(cfg Config, c *cacheengine.Engine, storage port.Storage, remotes port.R
 	if clock == nil {
 		clock = systemClock{}
 	}
+	var limiter *rate.Limiter
+	if cfg.MaxBandwidth > 0 {
+		limiter = rate.NewLimiter(rate.Limit(cfg.MaxBandwidth), int(cfg.MaxBandwidth))
+	}
 	return &Engine{
 		cache: c, storage: storage, remotes: remotes, jobs: jobs,
-		clock: clock, ecos: ecos, cfg: cfg,
+		clock: clock, ecos: ecos, cfg: cfg, limiter: limiter,
+	}
+}
+
+// throttle — оплата байт по мере копирования: куски ≤ burst (контракт
+// rate.Limiter.WaitN: n > burst мгновенно возвращает ошибку, поэтому
+// большие тела платят частями). nil — безлимит.
+func (e *Engine) throttle() cacheengine.Throttle {
+	if e.limiter == nil {
+		return nil
+	}
+	burst := int(e.cfg.MaxBandwidth)
+	return func(ctx context.Context, n int) error {
+		for n > 0 {
+			take := min(n, burst)
+			if err := e.limiter.WaitN(ctx, take); err != nil {
+				return err
+			}
+			n -= take
+		}
+		return nil
 	}
 }
 
@@ -209,14 +237,9 @@ func (e *Engine) download(ctx context.Context, eco port.Ecosystem, remote domain
 	out := make(chan pathResult)
 	var wg sync.WaitGroup
 
-	var limiter *rate.Limiter
-	if e.cfg.MaxBandwidth > 0 {
-		limiter = rate.NewLimiter(rate.Limit(e.cfg.MaxBandwidth), int(e.cfg.MaxBandwidth))
-	}
-
 	for range e.cfg.Workers {
 		wg.Add(1)
-		go e.worker(ctx, eco, limiter, &wg, in, out)
+		go e.worker(ctx, eco, &wg, in, out)
 	}
 	// feeder: правит пути в канал, выход по ctx.Done.
 	feedDone := make(chan struct{})
@@ -271,9 +294,9 @@ type pathResult struct {
 	err   error
 }
 
-// worker тянет пути из in, prefetch'ит с retry, платит limiter'ом
-// за скачанные байты, пишет результат в out.
-func (e *Engine) worker(ctx context.Context, eco port.Ecosystem, limiter *rate.Limiter, wg *sync.WaitGroup, in <-chan string, out chan<- pathResult) {
+// worker тянет пути из in, prefetch'ит с retry (полоса платится
+// потоково внутри копирования), пишет результат в out.
+func (e *Engine) worker(ctx context.Context, eco port.Ecosystem, wg *sync.WaitGroup, in <-chan string, out chan<- pathResult) {
 	defer wg.Done()
 	for path := range in {
 		if ctx.Err() != nil {
@@ -284,12 +307,6 @@ func (e *Engine) worker(ctx context.Context, eco port.Ecosystem, limiter *rate.L
 		if err != nil {
 			out <- pathResult{path: path, err: err}
 			continue
-		}
-		if limiter != nil && res.Downloaded > 0 {
-			if waitErr := limiter.WaitN(ctx, int(res.Downloaded)); waitErr != nil {
-				out <- pathResult{path: path, err: waitErr}
-				continue
-			}
 		}
 		out <- pathResult{path: path, bytes: res.Bytes}
 	}
@@ -303,7 +320,7 @@ func (e *Engine) prefetchWithRetry(ctx context.Context, eco port.Ecosystem, ecos
 		if ctx.Err() != nil {
 			return cacheengine.PrefetchResult{}, ctx.Err()
 		}
-		res, err := e.cache.Prefetch(ctx, eco, ecosystemPath)
+		res, err := e.cache.PrefetchThrottled(ctx, eco, ecosystemPath, e.throttle())
 		if err == nil {
 			return res, nil
 		}

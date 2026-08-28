@@ -167,8 +167,8 @@ func TestCopyBodyChecksumAlgos(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = engine.copyBody(w, strings.NewReader(body), -1,
-				port.Checksum{Algo: tc.algo, Hex: tc.hex()}, "http://up/obj")
+			_, err = engine.copyBody(context.Background(), w, strings.NewReader(body), -1,
+				port.Checksum{Algo: tc.algo, Hex: tc.hex()}, "http://up/obj", nil)
 			if err != nil {
 				_ = w.Abort(context.Background())
 				t.Fatalf("copyBody(%s) = %v, хочу nil", tc.algo, err)
@@ -194,8 +194,8 @@ func TestCopyBodyChecksumAlgos(t *testing.T) {
 	engine := New(storage, testutil.NewFakeObjectIndex(), nil, clock, Config{}, metrics.NewCache())
 	w, _ := storage.Put(context.Background(), "cache/t/obj")
 	defer func() { _ = w.Abort(context.Background()) }()
-	_, err := engine.copyBody(w, strings.NewReader(body), -1,
-		port.Checksum{Algo: "sha256", Hex: strings.Repeat("00", 32)}, "http://up/obj")
+	_, err := engine.copyBody(context.Background(), w, strings.NewReader(body), -1,
+		port.Checksum{Algo: "sha256", Hex: strings.Repeat("00", 32)}, "http://up/obj", nil)
 	var upErr *domain.UpstreamError
 	if !errors.As(err, &upErr) {
 		t.Fatalf("чужой дайджест = %v, хочу *domain.UpstreamError", err)

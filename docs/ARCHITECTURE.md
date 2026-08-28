@@ -184,8 +184,10 @@ type MetaFetcher interface {
 - resume по diff, не по курсору: каждый запуск пересчитывает
   (Storage.Stat отфильтровывает имеющееся), идемпотентно и дешевле
   очереди в БД; sync_jobs.cursor хранит прогресс `files=N;bytes=M`;
-- worker pool (mirror.workers горутин) с retry до 3 и bandwidth-лимитом
-  (`golang.org/x/time/rate` token-bucket по скачанным байтам);
+- worker pool (mirror.workers горутин) с retry до 3 и потоковым
+  bandwidth-лимитом (`golang.org/x/time/rate` token-bucket: байты
+  оплачиваются по мере копирования, куски ≤ burst — тело любого
+  размера проходит, пост-фактум-оплата валила объекты крупнее полосы);
 - отмена ctx гасит воркеры; доля ошибок >5% → sync failed;
 - планировщик: per-remote тикер (SyncInterval ± jitter через port.Rand),
   один на процесс; mode=proxy — только ручной sync через API.

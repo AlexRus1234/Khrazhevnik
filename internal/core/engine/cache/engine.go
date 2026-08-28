@@ -139,12 +139,27 @@ type PrefetchResult struct {
 	Downloaded int64
 }
 
+// Throttle — плата за байты по мере копирования в хранилище: wait
+// блокирует, пока n байт не «оплачены». Зеркало передаёт обёртку
+// rate.Limiter (полоса mirror.max_bandwidth), прокси-путь зовётся
+// без ограничителя (nil). Разбиение n до burst лимитера — забота
+// реализации wait: движок знает только «сколько байт ушло в Write».
+type Throttle func(ctx context.Context, n int) error
+
 // Prefetch скачивает объект в кеш, не открывая тело вызывающему —
 // зеркало греет кеш пакетами, клиентам байты отдаёт прокси-роутер.
 // HIT — объект уже в кеше, ничего не качает; MISS — скачивает;
 // STALE — отдал протухшую копию вместо ошибки upstream (как Fetch).
 // Метрики учитываются тем же путём, что и Fetch.
 func (e *Engine) Prefetch(ctx context.Context, eco port.Ecosystem, ecosystemPath string) (PrefetchResult, error) {
+	return e.PrefetchThrottled(ctx, eco, ecosystemPath, nil)
+}
+
+// PrefetchThrottled — Prefetch с потоковым ограничителем полосы:
+// байты оплачиваются wait'ом по мере копирования в хранилище (а не
+// пост-фактум), поэтому тело любого размера проходит, полоса
+// соблюдается в процессе скачивания.
+func (e *Engine) PrefetchThrottled(ctx context.Context, eco port.Ecosystem, ecosystemPath string, wait Throttle) (PrefetchResult, error) {
 	target, ok := eco.Resolve(ecosystemPath)
 	if !ok {
 		return PrefetchResult{}, &domain.NotFoundError{What: "путь", Key: ecosystemPath}
@@ -156,16 +171,17 @@ func (e *Engine) Prefetch(ctx context.Context, eco port.Ecosystem, ecosystemPath
 	if err := class.Validate(); err != nil {
 		return PrefetchResult{}, err
 	}
+	m := e.metrics.ForEcosystem(eco.Name())
 	if class.Kind == domain.KindImmutable {
-		return e.prefetchImmutable(ctx, target, class, e.metrics.ForEcosystem(eco.Name()))
+		return e.prefetchImmutable(ctx, target, class, m, wait)
 	}
-	return e.prefetchMutable(ctx, target, class, e.metrics.ForEcosystem(eco.Name()))
+	return e.prefetchMutable(ctx, target, class, m, wait)
 }
 
 // prefetchImmutable — Stat-only HIT-путь (тело не открывается); MISS
 // идёт через тот же singleflight, что и Fetch — параллельные Fetch и
 // Prefetch на один ключ не дёрнут upstream дважды.
-func (e *Engine) prefetchImmutable(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache) (PrefetchResult, error) {
+func (e *Engine) prefetchImmutable(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache, wait Throttle) (PrefetchResult, error) {
 	if err := e.negativeError(target.StorageKey); err != nil {
 		return PrefetchResult{}, err
 	}
@@ -178,7 +194,7 @@ func (e *Engine) prefetchImmutable(ctx context.Context, target port.Target, clas
 		if _, statErr := e.storage.Stat(ctx, target.StorageKey); statErr == nil {
 			return nil, nil
 		}
-		om, _, ferr := e.fetchOnce(ctx, target, class, nil)
+		om, _, ferr := e.fetchOnce(ctx, target, class, nil, wait)
 		if ferr != nil {
 			return nil, ferr
 		}
@@ -201,7 +217,7 @@ func (e *Engine) prefetchImmutable(ctx context.Context, target port.Target, clas
 // тем же путём, что и Fetch. HIT — индекс свеж и байты на месте.
 //
 //nolint:gocyclo // mutable-prefetch: ветки HIT/negative/revalidate/stale — одна атомарная операция
-func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache) (PrefetchResult, error) {
+func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache, wait Throttle) (PrefetchResult, error) {
 	indexed, indexErr := e.index.ObjectMeta(ctx, target.StorageKey)
 	if indexErr == nil && !indexed.Expired(e.clock.Now()) {
 		if meta, err := e.storage.Stat(ctx, storageKeyOf(indexed)); err == nil {
@@ -223,7 +239,7 @@ func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class 
 		old = &indexed
 	}
 	res, err, _ := e.flights.Do(target.StorageKey, func() (any, error) {
-		return e.revalidate(ctx, target, class, &old)
+		return e.revalidate(ctx, target, class, &old, wait)
 	})
 	if err != nil {
 		if _, _, ok := e.staleServe(ctx, err, old, m); ok {
@@ -308,7 +324,7 @@ func (e *Engine) fetchImmutable(ctx context.Context, target port.Target, class d
 		if _, statErr := e.storage.Stat(ctx, target.StorageKey); statErr == nil {
 			return nil, nil
 		}
-		_, _, err := e.fetchOnce(ctx, target, class, nil)
+		_, _, err := e.fetchOnce(ctx, target, class, nil, nil)
 		return nil, err
 	})
 	if err != nil {
@@ -351,7 +367,7 @@ func (e *Engine) fetchMutable(ctx context.Context, target port.Target, class dom
 		old = &indexed
 	}
 	res, err, _ := e.flights.Do(target.StorageKey, func() (any, error) {
-		return e.revalidate(ctx, target, class, &old)
+		return e.revalidate(ctx, target, class, &old, nil)
 	})
 	if err != nil {
 		if obj, stale, ok := e.staleServe(ctx, err, old, m); ok {
@@ -381,7 +397,9 @@ func (e *Engine) fetchMutable(ctx context.Context, target port.Target, class dom
 // revalidate — тело singleflight-полёта mutable-объекта: двойная
 // проверка индекса (участник прошлого полёта мог уже освежить),
 // conditional-запрос и запись результата. nil, nil — индекс свежий.
-func (e *Engine) revalidate(ctx context.Context, target port.Target, class domain.Class, old **domain.ObjectMeta) (any, error) {
+// wait (полоса зеркала) пробрасывается в копирование; прокси-путь
+// зовётся с nil — клиентский трафик не троттлится.
+func (e *Engine) revalidate(ctx context.Context, target port.Target, class domain.Class, old **domain.ObjectMeta, wait Throttle) (any, error) {
 	cur, curErr := e.index.ObjectMeta(ctx, target.StorageKey)
 	if curErr == nil {
 		if !cur.Expired(e.clock.Now()) {
@@ -391,7 +409,7 @@ func (e *Engine) revalidate(ctx context.Context, target port.Target, class domai
 	} else {
 		*old = nil
 	}
-	meta, rev, fetchErr := e.fetchOnce(ctx, target, class, *old)
+	meta, rev, fetchErr := e.fetchOnce(ctx, target, class, *old, wait)
 	if fetchErr != nil {
 		return nil, fetchErr
 	}
@@ -431,7 +449,7 @@ func (e *Engine) staleServe(ctx context.Context, cause error, old *domain.Object
 }
 
 //nolint:gocyclo // разбор статуса, bounded-стрим и транзакционный коммит — одна атомарная операция
-func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain.Class, old *domain.ObjectMeta) (domain.ObjectMeta, bool, error) {
+func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain.Class, old *domain.ObjectMeta, wait Throttle) (domain.ObjectMeta, bool, error) {
 	headers := map[string]string{}
 	if old != nil {
 		if old.ETag != "" {
@@ -495,7 +513,7 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 	if err != nil {
 		return domain.ObjectMeta{}, false, err
 	}
-	n, err := e.copyBody(w, resp.Body, resp.ContentLength, target.Checksum, target.UpstreamURL)
+	n, err := e.copyBody(ctx, w, resp.Body, resp.ContentLength, target.Checksum, target.UpstreamURL, wait)
 	if err != nil {
 		_ = w.Abort(context.Background())
 		var cm *checksumMismatch
@@ -536,6 +554,26 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 		e.rememberMeta(target.StorageKey, meta)
 	}
 	return meta, false, nil
+}
+
+// throttledWriter — writer-обёртка вокруг копирования: перед записью
+// куска ожидает разрешения лимитера. Куски приходят размером с буфер
+// io.Copy — разбиение до burst лимитера — забота wait'а (mirror),
+// который знает burst своей корзины.
+type throttledWriter struct {
+	dst  io.Writer
+	wait Throttle
+	ctx  context.Context
+}
+
+// Write реализует io.Writer: сначала полная оплата куска, затем запись.
+// Ошибка wait (отмена ctx) прерывает копирование — upstream-тело
+// выбрасывается вызывающим через Abort.
+func (t *throttledWriter) Write(p []byte) (int, error) {
+	if err := t.wait(t.ctx, len(p)); err != nil {
+		return 0, err
+	}
+	return t.dst.Write(p)
 }
 
 // checksumMismatch — тело не сошлось с чексуммой из индекса
@@ -598,18 +636,22 @@ func parseHTTPTime(v string) (time.Time, error) {
 // без Content-Length тоже ограничен), сверка с заявленной длиной и —
 // если индекс экосистемы знает хеш объекта — hashing-tee со сверкой
 // sha256/sha1/md5: объект с «чужими» байтами коммита не увидит
-// (Abort у вызывающего).
-func (e *Engine) copyBody(w port.Writer, body io.Reader, length int64, sum port.Checksum, url string) (int64, error) {
+// (Abort у вызывающего). wait (Throttle зеркала) оборачивает запись:
+// байты оплачиваются по мере копирования, до записи куска.
+func (e *Engine) copyBody(ctx context.Context, w port.Writer, body io.Reader, length int64, sum port.Checksum, url string, wait Throttle) (int64, error) {
 	src := body
 	if e.cfg.MaxObjectSize > 0 {
 		// +1 байт: чтобы отличить «ровно лимит» от «лимит превышен»
 		src = io.LimitReader(body, e.cfg.MaxObjectSize+1)
 	}
 	var dst io.Writer = w
+	if wait != nil {
+		dst = &throttledWriter{dst: dst, wait: wait, ctx: ctx}
+	}
 	var hasher hexHash
 	if h := checksumHasher(sum.Algo); h.Hash != nil {
 		hasher = h
-		dst = io.MultiWriter(w, h)
+		dst = io.MultiWriter(dst, h)
 	}
 	n, err := io.Copy(dst, src)
 	if err != nil {
