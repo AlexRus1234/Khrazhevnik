@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -559,6 +560,91 @@ func TestGenerateIndexesSignedSignerErrorFails(t *testing.T) {
 	if !errors.Is(err, errSignFail) {
 		t.Fatalf("ожидали errSignFail, got %v", err)
 	}
+}
+
+// TestGenerateIndexesAttrEscaping — ver с кавычкой из заголовка .rpm не
+// прорывает атрибут primary.xml: кавычка экранирована, весь документ
+// валиден для стандартного XML-парсера.
+func TestGenerateIndexesAttrEscaping(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	putRpm(t, storage, repo, "packages/f/foo-1.0x-1.x86_64.rpm", buildRPM("foo", `1.0"x`, "1", "x86_64", "f", 1, 1))
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	priGz := readStorage(t, storage, "repo/1/rpm-md/repodata/primary.xml.gz")
+	gz, err := gzip.NewReader(bytes.NewReader(priGz))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	primary, _ := io.ReadAll(gz)
+	pStr := string(primary)
+	if !strings.Contains(pStr, `ver="1.0&quot;x"`) {
+		t.Errorf("атрибут ver с кавычкой не экранирован:\n%s", pStr)
+	}
+	// Документ целиком обязан разбираться стандартным XML-парсером
+	// (голая кавычка в атрибуте дала быsyntax-ошибку).
+	dec := xml.NewDecoder(bytes.NewReader(primary))
+	for {
+		_, err := dec.Token()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				t.Fatalf("primary.xml не валиден: %v\n%s", err, pStr)
+			}
+			break
+		}
+	}
+}
+
+// TestGenerateIndexesHonestSize — размер в атрибуте size берётся из
+// фактических байт объекта, а не из Meta.Size хранилища: если метаданные
+// солгали, чексумма верна, а size — нет, и dnf падает на сверке.
+func TestGenerateIndexesHonestSize(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	rpm := buildRPM("foo", "1.0", "1", "x86_64", "f", 1, 1)
+	putRpm(t, storage, repo, "packages/f/foo-1.0-1.x86_64.rpm", rpm)
+
+	lying := &lyingMetaStorage{FakeStorage: storage}
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, lying, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	priGz := readStorage(t, storage, "repo/1/rpm-md/repodata/primary.xml.gz")
+	gz, err := gzip.NewReader(bytes.NewReader(priGz))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	primary, _ := io.ReadAll(gz)
+	want := fmt.Sprintf(`<size package="%d"`, len(rpm))
+	if !strings.Contains(string(primary), want) {
+		t.Errorf("primary.xml не содержит фактический размер %q:\n%s", want, primary)
+	}
+	if strings.Contains(string(primary), fmt.Sprintf(`<size package="%d"`, len(rpm)+lieDelta)) {
+		t.Errorf("primary.xml взял размер из Meta.Size:\n%s", primary)
+	}
+}
+
+// lieDelta — насколько lyingMetaStorage врёт в Meta.Size.
+const lieDelta = 999
+
+// lyingMetaStorage — FakeStorage с завышенным Meta.Size у Get (байты
+// тела честные). Проверяет, что генератор не доверяет метаданным.
+type lyingMetaStorage struct {
+	*testutil.FakeStorage
+}
+
+func (l *lyingMetaStorage) Get(ctx context.Context, key string) (port.Object, error) {
+	obj, err := l.FakeStorage.Get(ctx, key)
+	if err != nil {
+		return obj, err
+	}
+	obj.Size += lieDelta
+	return obj, nil
 }
 
 func TestSetSigner(t *testing.T) {

@@ -212,7 +212,8 @@ func appendPrimaryEntry(ctx context.Context, storage port.Storage, rpmKey, prefi
 	}
 	defer obj.Body.Close()
 	h := sha256.New()
-	tee := io.TeeReader(obj.Body, h)
+	cr := &countReader{r: obj.Body}
+	tee := io.TeeReader(cr, h)
 	hdr, err := ParseRPMHeader(tee)
 	if err != nil {
 		return err
@@ -225,20 +226,36 @@ func appendPrimaryEntry(ctx context.Context, storage port.Storage, rpmKey, prefi
 	}
 	sha := hex.EncodeToString(h.Sum(nil))
 	href := strings.TrimPrefix(rpmKey, prefix+"/")
-	writePrimaryPackage(buf, hdr, sha, href, obj.Meta.Size, obj.Meta.ModTime)
+	// Размер — фактические байты через tee, не obj.Meta.Size: если
+	// метаданные носителя солгали, чексумма верна, а size — нет, и
+	// клиентский dnf падает бы на сверке.
+	writePrimaryPackage(buf, hdr, sha, href, cr.n, obj.Meta.ModTime)
 	return nil
+}
+
+// countReader считает прочитанные байты: источник размера индексных
+// записей (фактическое тело объекта, не метаданные хранилища).
+type countReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // writePrimaryPackage пишет одну <package>-запись в buf. Минимальный
 // набор тегов, которые читают dnf/zypper: name, arch, version(epoch/
 // ver/rel), checksum (sha256 файла), summary, description, url, time
 // (file mtime + buildtime), size (package=size файла, installed=SIZE),
-// location href, rpm:license. Экранирование текста — xmlEscape.
+// location href, rpm:license. Текст — xmlEscape, атрибуты — escapeAttr.
 func writePrimaryPackage(buf *bytes.Buffer, h *RPMHeader, sha, href string, pkgSize int64, mtime time.Time) {
 	buf.WriteString("\t<package type=\"rpm\">\n")
 	fmt.Fprintf(buf, "\t\t<name>%s</name>\n", xmlEscape(h.Name))
 	fmt.Fprintf(buf, "\t\t<arch>%s</arch>\n", xmlEscape(h.Arch))
-	fmt.Fprintf(buf, "\t\t<version epoch=\"%d\" ver=\"%s\" rel=\"%s\"/>\n", h.Epoch, xmlEscape(h.Version), xmlEscape(h.Release))
+	fmt.Fprintf(buf, "\t\t<version epoch=\"%d\" ver=\"%s\" rel=\"%s\"/>\n", h.Epoch, escapeAttr(h.Version), escapeAttr(h.Release))
 	fmt.Fprintf(buf, "\t\t<checksum type=\"sha256\">%s</checksum>\n", sha)
 	fmt.Fprintf(buf, "\t\t<summary>%s</summary>\n", xmlEscape(h.Summary))
 	fmt.Fprintf(buf, "\t\t<description>%s</description>\n", xmlEscape(h.Description))
@@ -247,7 +264,7 @@ func writePrimaryPackage(buf *bytes.Buffer, h *RPMHeader, sha, href string, pkgS
 	}
 	fmt.Fprintf(buf, "\t\t<time file=\"%d\" build=\"%d\"/>\n", mtime.Unix(), h.BuildTime)
 	fmt.Fprintf(buf, "\t\t<size package=\"%d\" installed=\"%d\" archive=\"%d\"/>\n", pkgSize, h.Size, pkgSize)
-	fmt.Fprintf(buf, "\t\t<location href=\"%s\"/>\n", xmlEscape(href))
+	fmt.Fprintf(buf, "\t\t<location href=\"%s\"/>\n", escapeAttr(href))
 	buf.WriteString("\t\t<format>\n")
 	if h.License != "" {
 		fmt.Fprintf(buf, "\t\t\t<rpm:license>%s</rpm:license>\n", xmlEscape(h.License))
@@ -285,14 +302,21 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// xmlEscape экранирует текстовые узлы XML (&, <, >). Кавычки в
-// атрибутах экранируем отдельно (version ver/rel могут содержать «+»,
-// но не кавычки — пакеты с кавычкой в версии не существуют; защита
-// от unexpected — через xml.EscapeString для текста достаточно).
+// xmlEscape экранирует текстовые узлы XML (&, <, >); для атрибутов
+// используйте escapeAttr — текстовый эскейп не трогает кавычку.
 func xmlEscape(s string) string {
 	var buf bytes.Buffer
 	_ = xml.EscapeText(&buf, []byte(s))
 	return buf.String()
+}
+
+// escapeAttr экранирует значение XML-атрибута: xml.EscapeText оставляет
+// «"» как есть, а ver/rel приходят из заголовка .rpm — сборщик может
+// вписать туда кавычку (или что угодно ещё), и голая кавычка прорвала
+// бы атрибут primary.xml. Кавычка добавляется к &<>, которых текстовый
+// эскейп уже покрывает.
+func escapeAttr(s string) string {
+	return strings.ReplaceAll(xmlEscape(s), `"`, "&quot;")
 }
 
 // writeAtomic пишет байты в storage через Put+Commit; на ошибке Abort.

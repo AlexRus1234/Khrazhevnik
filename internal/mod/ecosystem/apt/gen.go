@@ -250,8 +250,9 @@ func collectDebs(ctx context.Context, storage port.Storage, poolPrefix string) (
 
 // appendPackagesEntry читает .deb одним проходом (control-stanza +
 // SHA256 всего файла) и дописывает запись Packages в buf. Обязательные
-// поля, которых нет в control: Filename (путь от корня репо), Size (из
-// Storage.Meta), SHA256 (посчитан по байтам .deb).
+// поля, которых нет в control: Filename (путь от корня репо), Size
+// (фактические байты через tee — метаданные носителя могут солгать),
+// SHA256 (посчитан по байтам .deb).
 func appendPackagesEntry(ctx context.Context, storage port.Storage, debKey string, buf *bytes.Buffer) error {
 	obj, err := storage.Get(ctx, debKey)
 	if err != nil {
@@ -259,7 +260,8 @@ func appendPackagesEntry(ctx context.Context, storage port.Storage, debKey strin
 	}
 	defer obj.Body.Close()
 	h := sha256.New()
-	tee := io.TeeReader(obj.Body, h)
+	cr := &countReader{r: obj.Body}
+	tee := io.TeeReader(cr, h)
 	stanza, err := readControl(tee)
 	if err != nil {
 		return err
@@ -277,11 +279,24 @@ func appendPackagesEntry(ctx context.Context, storage port.Storage, debKey strin
 		filename = debKey[idx+len("/apt/"):]
 	}
 	stanza.Set("Filename", filename)
-	stanza.Set("Size", strconv.FormatInt(obj.Meta.Size, 10))
+	stanza.Set("Size", strconv.FormatInt(cr.n, 10))
 	stanza.Set("SHA256", sha)
 	writeStanza(buf, stanza)
 	buf.WriteByte('\n')
 	return nil
+}
+
+// countReader считает прочитанные байты: источник размера индексных
+// записей (фактическое тело объекта, не метаданные хранилища).
+type countReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // writeStanza пишет deb822-запись в buf: «Field: value\n» для каждого
@@ -552,6 +567,12 @@ func (a *arReader) next() (arHeader, io.Reader, error) {
 	size, err := strconv.ParseInt(sizeStr, 10, 64)
 	if err != nil {
 		return arHeader{}, nil, fmt.Errorf("apt.deb: неверный размер члена %q: %w", hdr.Name, err)
+	}
+	if size < 0 {
+		// Отрицательный размер — синтаксическая ошибка заголовка, а не
+		// «пустой член»: arMemberReader с limit<0 молча отдал бы EOF и
+		// рассинхронизировал поток (следующий «заголовок» — мусор).
+		return arHeader{}, nil, fmt.Errorf("apt.deb: отрицательный размер члена %q: %d", hdr.Name, size)
 	}
 	hdr.Size = size
 	a.curSize = size

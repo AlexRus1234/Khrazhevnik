@@ -135,7 +135,7 @@ func TestListAfterRootRemoved(t *testing.T) {
 	}
 	// Пропавший корень — терминальная ошибка листинга, не «пусто»
 	// (иначе генераторы записали бы пустые индексы поверх валидных).
-	metas, err := collectList(st, ctx, "")
+	metas, err := collectList(ctx, st, "")
 	if err == nil {
 		t.Fatal("List без корня не вернул ошибку")
 	}
@@ -164,7 +164,7 @@ func TestListUnreadableDir(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
-	metas, err := collectList(st, ctx, "cache/")
+	metas, err := collectList(ctx, st, "cache/")
 	if err == nil {
 		t.Fatalf("List с недоступным подкаталогом не вернул ошибку: %v", metas)
 	}
@@ -267,7 +267,7 @@ func putCommit(t *testing.T, st *Storage, key, content string) {
 // collectList собирает List-обход: метаданные до первой ошибки и сама
 // ошибка (nil, если обход чистый). Заменяет прежний listKeys: контракт
 // List — терминальная ошибка отдельным значением.
-func collectList(st *Storage, ctx context.Context, prefix string) ([]port.Meta, error) {
+func collectList(ctx context.Context, st *Storage, prefix string) ([]port.Meta, error) {
 	var out []port.Meta
 	for m, err := range st.List(ctx, prefix) {
 		if err != nil {

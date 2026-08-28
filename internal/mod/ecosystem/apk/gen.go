@@ -170,7 +170,8 @@ func appendIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix 
 	}
 	defer obj.Body.Close()
 	h := sha1.New()
-	tee := io.TeeReader(obj.Body, h)
+	cr := &countReader{r: obj.Body}
+	tee := io.TeeReader(cr, h)
 	pi, err := readPkgInfoFromPackage(tee)
 	if err != nil {
 		return err
@@ -182,8 +183,23 @@ func appendIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix 
 	}
 	checksum := "Q1" + base64.StdEncoding.EncodeToString(h.Sum(nil))
 	filepath := strings.TrimPrefix(apkKey, prefix+"/")
-	writeAPKINDEXEntry(buf, pi, checksum, filepath, obj.Meta.Size)
+	// Размер — фактические байты через tee, не obj.Meta.Size: метаданные
+	// носителя могут солгать, и apk упадёт на сверке размера.
+	writeAPKINDEXEntry(buf, pi, checksum, filepath, cr.n)
 	return nil
+}
+
+// countReader считает прочитанные байты: источник размера индексных
+// записей (фактическое тело объекта, не метаданные хранилища).
+type countReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // writeAPKINDEXEntry пишет одну запись в APKINDEX-текст: K:V-строки,

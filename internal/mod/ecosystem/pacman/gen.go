@@ -189,8 +189,8 @@ func collectPkgTar(ctx context.Context, storage port.Storage, prefix string) ([]
 
 // buildDescEntry читает .pkg.tar.* одним проходом (.PKGINFO + SHA256
 // всего файла) и собирает desc-запись. %FILENAME% — basename .pkg.tar.*;
-// %CSIZE% — размер файла (Storage.Meta); %SHA256SUM% — sha256 файла;
-// %ISIZE% — size из .PKGINFO. Каталог в .db: <pkgname>-<pkgver>-<arch>.
+// %CSIZE% — фактический размер файла (счётчик tee); %SHA256SUM% — sha256
+// файла; %ISIZE% — size из .PKGINFO. Каталог в .db: <pkgname>-<pkgver>-<arch>.
 func buildDescEntry(ctx context.Context, storage port.Storage, pkgKey string) (descEntry, error) {
 	obj, err := storage.Get(ctx, pkgKey)
 	if err != nil {
@@ -198,7 +198,8 @@ func buildDescEntry(ctx context.Context, storage port.Storage, pkgKey string) (d
 	}
 	defer obj.Body.Close()
 	h := sha256.New()
-	tee := io.TeeReader(obj.Body, h)
+	cr := &countReader{r: obj.Body}
+	tee := io.TeeReader(cr, h)
 	pi, err := readPkgInfoFromPackage(tee)
 	if err != nil {
 		return descEntry{}, err
@@ -215,8 +216,23 @@ func buildDescEntry(ctx context.Context, storage port.Storage, pkgKey string) (d
 		filename = pkgKey[idx+1:]
 	}
 	dir := pi.Name + "-" + pi.Version + "-" + pi.Arch
-	desc := buildDescText(pi, filename, obj.Meta.Size, sha)
+	// Размер — фактические байты через tee, не obj.Meta.Size: метаданные
+	// носителя могут солгать, и pacman упадёт на сверке размера.
+	desc := buildDescText(pi, filename, cr.n, sha)
 	return descEntry{dir: dir, desc: desc}, nil
+}
+
+// countReader считает прочитанные байты: источник размера индексных
+// записей (фактическое тело объекта, не метаданные хранилища).
+type countReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // buildDescText собирает текст desc-файла в pacman-формате: поля

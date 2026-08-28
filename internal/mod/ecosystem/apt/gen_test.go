@@ -768,6 +768,60 @@ func TestGenerateIndexesSigned_SignerDetachErrorFails(t *testing.T) {
 	}
 }
 
+// TestArReaderNegativeSize — отрицательный размер члена ar —
+// синтаксическая ошибка заголовка, а не «пустой член»: молчаливый EOF
+// рассинхронизировал бы поток, и следующий «заголовок» читался из мусора.
+func TestArReaderNegativeSize(t *testing.T) {
+	var ar bytes.Buffer
+	ar.WriteString("!<arch>\n")
+	fmt.Fprintf(&ar, "%-16s%-12d%-6d%-6d%-8o%-10d`\n", "debian-binary/", 0, 0, 0, 0o100644, -5)
+	_, err := readControl(bytes.NewReader(ar.Bytes()))
+	if err == nil || !strings.Contains(err.Error(), "отрицательный размер") {
+		t.Fatalf("ожидали ошибку отрицательного размера члена, получили %v", err)
+	}
+}
+
+// lieDelta — насколько lyingMetaStorage врёт в Meta.Size.
+const lieDelta = 999
+
+// lyingMetaStorage — FakeStorage с завышенным Meta.Size у Get (байты
+// тела честные). Проверяет, что генератор не доверяет метаданным.
+type lyingMetaStorage struct {
+	*testutil.FakeStorage
+}
+
+func (l *lyingMetaStorage) Get(ctx context.Context, key string) (port.Object, error) {
+	obj, err := l.FakeStorage.Get(ctx, key)
+	if err != nil {
+		return obj, err
+	}
+	obj.Size += lieDelta
+	return obj, nil
+}
+
+// TestGenerateIndexesHonestSize — Size в Packages берётся из фактических
+// байт .deb (счётчик tee), а не из Meta.Size хранилища: если метаданные
+// солгали, чексумма верна, а size — нет, и apt падает на сверке.
+func TestGenerateIndexesHonestSize(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	debKey := putDeb(t, storage, repo, "pool/main/f/foo.deb", "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: f\n")
+	debBytes := readStorage(t, storage, debKey)
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, &lyingMetaStorage{FakeStorage: storage}, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	pkg := string(readStorage(t, storage, "repo/1/apt/dists/stable/main/binary-amd64/packages"))
+	if !strings.Contains(pkg, fmt.Sprintf("Size: %d\n", len(debBytes))) {
+		t.Errorf("Packages не содержит фактический Size %d:\n%s", len(debBytes), pkg)
+	}
+	if strings.Contains(pkg, fmt.Sprintf("Size: %d\n", len(debBytes)+lieDelta)) {
+		t.Errorf("Packages взял Size из Meta.Size:\n%s", pkg)
+	}
+}
+
 func TestSetSigner(t *testing.T) {
 	g := &Generator{}
 	if g.signer != nil {
