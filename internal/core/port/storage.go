@@ -58,11 +58,17 @@ type Writer interface {
 //     *domain.InvalidKeyError до всякого обращения к носителю);
 //   - отсутствующий объект — *domain.NotFoundError (Get/Stat/Delete);
 //   - Get возвращает ридер поверх зафиксированных байт; Put на
-//     существующий ключ перезаписывает его после Commit.
+//     существующий ключ перезаписывает его после Commit;
+//   - List отдаёт объекты с префиксом в лексическом порядке ключей;
+//     ошибка перечисления — терминальная: один (Meta{}, err) и обход
+//     прекращается. Пустая последовательность без ошибки означает
+//     «объектов нет», но никогда «не удалось перечислить» — потребители
+//     (генераторы индексов, квоты) обязаны fail-closed на err, иначе
+//     транзиентный сбой носителя «опустошает» репозиторий.
 type Storage interface {
 	Get(ctx context.Context, key string) (Object, error)
 	Stat(ctx context.Context, key string) (Meta, error)
 	Put(ctx context.Context, key string) (Writer, error)
 	Delete(ctx context.Context, key string) error
-	List(ctx context.Context, prefix string) iter.Seq[Meta]
+	List(ctx context.Context, prefix string) iter.Seq2[Meta, error]
 }

@@ -142,16 +142,21 @@ func (s *Storage) Delete(ctx context.Context, key string) error {
 
 // List лениво обходит объекты с префиксом prefix в лексическом порядке
 // WalkDir (детерминированный DFS); tmp-каталог служебный и не виден.
-func (s *Storage) List(ctx context.Context, prefix string) iter.Seq[port.Meta] {
-	return func(yield func(port.Meta) bool) {
+// Ошибка обхода (недоступный каталог, пропавший корень, отмена ctx) —
+// терминальная: один (Meta{}, err), обход прекращается — потребитель
+// не должен путать сбой носителя с «объектов нет».
+func (s *Storage) List(ctx context.Context, prefix string) iter.Seq2[port.Meta, error] {
+	return func(yield func(port.Meta, error) bool) {
 		if !validPrefix(prefix) {
 			return
 		}
 		_ = filepath.WalkDir(s.root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
-				return fs.SkipAll // обход невозможен — пустой результат
+				yield(port.Meta{}, fmt.Errorf("fs: обход %s: %w", path, err))
+				return fs.SkipAll
 			}
 			if ctx.Err() != nil {
+				yield(port.Meta{}, ctx.Err())
 				return fs.SkipAll
 			}
 			key, ok := s.keyOf(path)
@@ -171,9 +176,11 @@ func (s *Storage) List(ctx context.Context, prefix string) iter.Seq[port.Meta] {
 			if strings.HasPrefix(key, prefix) && d.Type().IsRegular() {
 				info, err := d.Info()
 				if err != nil {
-					return nil
+					// файл исчез между ReadDir и Info — листинг неполон
+					yield(port.Meta{}, fmt.Errorf("fs: метаданные %s: %w", path, err))
+					return fs.SkipAll
 				}
-				if !yield(metaFrom(key, info)) || ctx.Err() != nil {
+				if !yield(metaFrom(key, info), nil) || ctx.Err() != nil {
 					return fs.SkipAll
 				}
 			}

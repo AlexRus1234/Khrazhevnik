@@ -133,8 +133,43 @@ func TestListAfterRootRemoved(t *testing.T) {
 	if err := os.RemoveAll(st.root); err != nil {
 		t.Fatal(err)
 	}
-	if got := listKeys(ctx, st, ""); got != nil {
-		t.Fatalf("List без корня = %v", got)
+	// Пропавший корень — терминальная ошибка листинга, не «пусто»
+	// (иначе генераторы записали бы пустые индексы поверх валидных).
+	metas, err := collectList(st, ctx, "")
+	if err == nil {
+		t.Fatal("List без корня не вернул ошибку")
+	}
+	if len(metas) != 0 {
+		t.Fatalf("List без корня отдал метаданные: %v", metas)
+	}
+}
+
+// TestListUnreadableDir — недоступный подкаталог (chmod 000) даёт
+// терминальную ошибку, а не молчаливо-неполный листинг. POSIX-права:
+// на Windows chmod — no-op, кейс неприменим.
+func TestListUnreadableDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 000 на Windows — no-op")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("под root chmod 000 не запрещает доступ")
+	}
+	ctx := context.Background()
+	st := newTest(t)
+	putCommit(t, st, "cache/a/visible.deb", "v")
+	putCommit(t, st, "cache/b/hidden.deb", "v")
+	locked := filepath.Join(st.root, "cache", "b")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	metas, err := collectList(st, ctx, "cache/")
+	if err == nil {
+		t.Fatalf("List с недоступным подкаталогом не вернул ошибку: %v", metas)
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("ошибка листинга не Permission-обёртка: %v", err)
 	}
 }
 
@@ -229,12 +264,18 @@ func putCommit(t *testing.T, st *Storage, key, content string) {
 	}
 }
 
-func listKeys(ctx context.Context, st *Storage, prefix string) []string {
-	var out []string
-	for m := range st.List(ctx, prefix) {
-		out = append(out, m.Key)
+// collectList собирает List-обход: метаданные до первой ошибки и сама
+// ошибка (nil, если обход чистый). Заменяет прежний listKeys: контракт
+// List — терминальная ошибка отдельным значением.
+func collectList(st *Storage, ctx context.Context, prefix string) ([]port.Meta, error) {
+	var out []port.Meta
+	for m, err := range st.List(ctx, prefix) {
+		if err != nil {
+			return out, err
+		}
+		out = append(out, m)
 	}
-	return out
+	return out, nil
 }
 
 // compile-time: Storage реализует весь порт.

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"iter"
 	"slices"
 	"strconv"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	"khrazhevnik/internal/core/domain"
+	"khrazhevnik/internal/core/port"
 )
 
 // newStorage — хранилище с замороженными часами: детерминированный
@@ -131,9 +133,22 @@ func TestFakeStorageListPrefix(t *testing.T) {
 	if all != 3 {
 		t.Errorf("List(пусто) = %d объектов, хочу 3", all)
 	}
-	if n := len(slices.Collect(s.List(ctx, "zzz"))); n != 0 {
+	if n := countList(s.List(ctx, "zzz")); n != 0 {
 		t.Errorf("List(zzz) = %d объектов, хочу 0", n)
 	}
+}
+
+// countList считает пары (Meta, error) в List-обходе; Seq2 не берётся
+// slices.Collect — считаем вручную. Ошибка считается нарушением.
+func countList(seq iter.Seq2[port.Meta, error]) int {
+	n := 0
+	for _, err := range seq {
+		if err != nil {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 func TestFakeStorageListCanceledContext(t *testing.T) {
@@ -362,7 +377,7 @@ func TestFakeStorageConcurrentWriters(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	if n := len(slices.Collect(s.List(ctx, ""))); n != 16 {
+	if n := countList(s.List(ctx, "")); n != 16 {
 		t.Errorf("после гонки объектов %d, хочу 16", n)
 	}
 }

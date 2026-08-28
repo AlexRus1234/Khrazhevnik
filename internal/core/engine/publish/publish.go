@@ -128,9 +128,11 @@ func (e *Engine) Delete(ctx context.Context, repo domain.Repo, path string) erro
 }
 
 // List возвращает метаданные объектов репо (по префиксу repo/<id>/).
-// Порядок — лексический (как у Storage.List). Срез генерируется
-// полностью; для репо с тысячами объектов это десятки КБ — KISS v1.
-func (e *Engine) List(ctx context.Context, repo domain.Repo) iter.Seq[port.Meta] {
+// Порядок — лексический (как у Storage.List). Ошибка листинга —
+// терминальная: (Meta{}, err), после неё выдаётся только err. Срез
+// генерируется потребителем полностью; для репо с тысячами объектов
+// это десятки КБ — KISS v1.
+func (e *Engine) List(ctx context.Context, repo domain.Repo) iter.Seq2[port.Meta, error] {
 	prefix := "repo/" + strconv.FormatInt(repo.ID, 10) + "/"
 	return e.storage.List(ctx, prefix)
 }
@@ -194,17 +196,19 @@ func (e *Engine) keyFor(repo domain.Repo, path string) (string, error) {
 
 // checkQuota считает сумму размеров и число объектов репо через
 // Storage.List и сравнивает с Quota (ноль = без лимита). Если size+used
-// больше квоты — QuotaExceededError. KISS v1: List-обход на каждом upload;
-// для больших репо (s3 без List-обхода) — таблица repo_objects в сессии 17.
+// больше квоты — QuotaExceededError. Ошибка листинга — ошибка upload
+// (fail-closed): молчаливый «пустой» обход занизил бы used и пропустил
+// бы перелимит. KISS v1: List-обход на каждом upload; для больших репо
+// (s3 без List-обхода) — таблица repo_objects в сессии 17.
 func (e *Engine) checkQuota(ctx context.Context, repo domain.Repo, size int64) error {
 	if repo.Quota.MaxBytes == 0 && repo.Quota.MaxObjects == 0 {
 		return nil
 	}
 	var usedBytes, usedFiles int64
 	prefix := "repo/" + strconv.FormatInt(repo.ID, 10) + "/"
-	for meta := range e.storage.List(ctx, prefix) {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	for meta, err := range e.storage.List(ctx, prefix) {
+		if err != nil {
+			return fmt.Errorf("publish: листинг квоты repo %d: %w", repo.ID, err)
 		}
 		usedBytes += meta.Size
 		usedFiles++

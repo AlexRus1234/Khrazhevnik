@@ -231,12 +231,13 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 
 // collectDebs возвращает лексически отсортированный список ключей
 // .deb/.udeb/.ddeb в pool-префиксе. Storage.List отдаёт метаданные, мы
-// фильтруем по суффиксу.
+// фильтруем по суффиксу. Ошибка листинга — ошибка генерации: пустой
+// обход иначе записал бы ПУСТОЙ Packages поверх валидного.
 func collectDebs(ctx context.Context, storage port.Storage, poolPrefix string) ([]string, error) {
 	var out []string
-	for meta := range storage.List(ctx, poolPrefix) {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+	for meta, err := range storage.List(ctx, poolPrefix) {
+		if err != nil {
+			return nil, fmt.Errorf("листинг %s: %w", poolPrefix, err)
 		}
 		name := meta.Key
 		if strings.HasSuffix(name, ".deb") || strings.HasSuffix(name, ".udeb") || strings.HasSuffix(name, ".ddeb") {

@@ -142,13 +142,15 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 	return nil
 }
 
-// collectApks возвращает лексически отсортированный список .apk под prefix.
+// collectApks возвращает лексически отсортированный список .apk под
+// prefix. Ошибка листинга — ошибка генерации (иначе пустой обход записал
+// бы ПУСТОЙ APKINDEX поверх валидного).
 func collectApks(ctx context.Context, storage port.Storage, prefix string) ([]string, error) {
 	var out []string
 	listPrefix := prefix + "/"
-	for meta := range storage.List(ctx, listPrefix) {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+	for meta, err := range storage.List(ctx, listPrefix) {
+		if err != nil {
+			return nil, fmt.Errorf("листинг %s: %w", listPrefix, err)
 		}
 		if strings.HasSuffix(meta.Key, ".apk") {
 			out = append(out, meta.Key)

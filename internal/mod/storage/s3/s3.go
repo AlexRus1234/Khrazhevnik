@@ -171,9 +171,11 @@ func (s *Storage) Delete(ctx context.Context, key string) error {
 
 // List лениво обходит объекты с префиксом prefix; порядок —
 // лексикографический по ключу (S3 ListObjectsV2 отдаёт именно его).
-// ctx отменяет обход (minio iter уважает ctx).
-func (s *Storage) List(ctx context.Context, prefix string) iter.Seq[port.Meta] {
-	return func(yield func(port.Meta) bool) {
+// ctx отменяет обход (minio iter уважает ctx). Ошибка листинга —
+// терминальная: один (Meta{}, err), как у fs — потребитель отличает
+// сбой носителя от «объектов нет».
+func (s *Storage) List(ctx context.Context, prefix string) iter.Seq2[port.Meta, error] {
+	return func(yield func(port.Meta, error) bool) {
 		if !validPrefix(prefix) {
 			return
 		}
@@ -182,12 +184,14 @@ func (s *Storage) List(ctx context.Context, prefix string) iter.Seq[port.Meta] {
 			Recursive: true,
 		}) {
 			if info.Err != nil {
-				return // обход невозможен — пустой результат
-			}
-			if ctx.Err() != nil {
+				yield(port.Meta{}, fmt.Errorf("s3: листинг %s: %w", prefix, info.Err))
 				return
 			}
-			if !yield(metaFrom(info.Key, info)) || ctx.Err() != nil {
+			if ctx.Err() != nil {
+				yield(port.Meta{}, ctx.Err())
+				return
+			}
+			if !yield(metaFrom(info.Key, info), nil) || ctx.Err() != nil {
 				return
 			}
 		}

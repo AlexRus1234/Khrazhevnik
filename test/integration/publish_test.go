@@ -146,7 +146,7 @@ func (p publishSyncerTest) DeleteObject(ctx context.Context, repo domain.Repo, p
 	return p.engine.Delete(ctx, repo, path)
 }
 
-func (p publishSyncerTest) ListObjects(ctx context.Context, repo domain.Repo) iter.Seq[port.Meta] {
+func (p publishSyncerTest) ListObjects(ctx context.Context, repo domain.Repo) iter.Seq2[port.Meta, error] {
 	return p.engine.List(ctx, repo)
 }
 

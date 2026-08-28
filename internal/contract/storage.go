@@ -304,10 +304,17 @@ func put(t *testing.T, st port.Storage, key, content string) {
 	}
 }
 
-// keys собирает ключи из List.
+// keys собирает ключи из List. Терминальная ошибка листинга
+// сворачивает результат в nil — кейсы suite с невалидным префиксом/
+// отменённым ctx получают пустой обход, как и раньше; сам контракт
+// «ошибка ≠ пустой результат» проверяют драйвер-специфичные тесты
+// (fs: пропавший корень; s3: битый endpoint).
 func keys(ctx context.Context, st port.Storage, prefix string) []string {
 	var out []string
-	for m := range st.List(ctx, prefix) {
+	for m, err := range st.List(ctx, prefix) {
+		if err != nil {
+			return nil
+		}
 		out = append(out, m.Key)
 	}
 	return out

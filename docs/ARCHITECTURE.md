@@ -110,7 +110,7 @@ type Storage interface {
     Stat(ctx context.Context, key string) (Meta, error)
     Put(ctx context.Context, key string) (Writer, error) // Write/Commit/Abort
     Delete(ctx context.Context, key string) error
-    List(ctx context.Context, prefix string) iter.Seq[Meta]
+    List(ctx context.Context, prefix string) iter.Seq2[Meta, error] // терминальная ошибка: (Meta{}, err), обход стоп; пусто+nil = «объектов нет»
 }
 
 // port/ecosystem.go
@@ -200,7 +200,9 @@ type MetaFetcher interface {
   `force=true` — только админ, с аудит-записью;
 - квоты — по сумме `Storage.List("repo/<id>/")` на каждый upload
   (KISS v1: репо обычно единицы-десятки файлов; `repo_objects`-таблица
-  для чек-сумм — в сессии 17, когда s3 без List-обхода);
+  для чек-сумм — в сессии 17, когда s3 без List-обхода). Ошибка
+  листинга — fail-closed (upload отклоняется): молчаливый «пустой»
+  обход занизил бы used и пропустил бы перелимит;
 - стриминг прямо в `Storage.Put`: `Content-Length` обязателен
   (ограничение v1), сверка байт на лету; Abort при недокачке/перелимите
   чистит `tmp/`;

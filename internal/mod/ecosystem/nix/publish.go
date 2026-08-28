@@ -135,13 +135,15 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 }
 
 // collectNarinfos возвращает лексически отсортированный список ключей
-// <32hex>.narinfo в корне nix-репо (не под nar/).
+// <32hex>.narinfo в корне nix-репо (не под nar/). Ошибка листинга —
+// ошибка генерации: без неё переподписались бы только видные narinfo,
+// а сбой носителя выглядел бы как «переподписывать нечего».
 func collectNarinfos(ctx context.Context, storage port.Storage, prefix string) ([]string, error) {
 	var out []string
 	listPrefix := prefix + "/"
-	for meta := range storage.List(ctx, listPrefix) {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+	for meta, err := range storage.List(ctx, listPrefix) {
+		if err != nil {
+			return nil, fmt.Errorf("листинг %s: %w", listPrefix, err)
 		}
 		rel := strings.TrimPrefix(meta.Key, listPrefix)
 		// только корневые <32hex>.narinfo (без «/» в rel).

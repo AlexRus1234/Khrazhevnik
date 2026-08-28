@@ -90,7 +90,7 @@ func (p *publishStub) DeleteObject(_ context.Context, repo domain.Repo, path str
 	return p.storage.Delete(context.Background(), key)
 }
 
-func (p *publishStub) ListObjects(ctx context.Context, repo domain.Repo) iter.Seq[port.Meta] {
+func (p *publishStub) ListObjects(ctx context.Context, repo domain.Repo) iter.Seq2[port.Meta, error] {
 	return p.storage.List(ctx, "repo/"+itoaRepo(repo.ID)+"/")
 }
 

@@ -105,9 +105,11 @@ func (s *FakeStorage) Delete(ctx context.Context, key string) error {
 
 // List отдаёт метаданные объектов с префиксом prefix в лексическом
 // порядке ключей (детерминированность тестов). Префикс проверяется
-// мягко: чужие символы просто ничего не матчат.
-func (s *FakeStorage) List(ctx context.Context, prefix string) iter.Seq[port.Meta] {
-	return func(yield func(port.Meta) bool) {
+// мягко: чужие символы просто ничего не матчат. Ошибок не даёт
+// (in-memory map), но сигнатура — Seq2, как у боевых носителей: err
+// приходит от отмены ctx, потребители fail-closed отрабатывают его.
+func (s *FakeStorage) List(ctx context.Context, prefix string) iter.Seq2[port.Meta, error] {
+	return func(yield func(port.Meta, error) bool) {
 		s.mu.Lock()
 		keys := make([]string, 0, len(s.objects))
 		metas := make(map[string]port.Meta, len(s.objects))
@@ -120,10 +122,11 @@ func (s *FakeStorage) List(ctx context.Context, prefix string) iter.Seq[port.Met
 		s.mu.Unlock()
 		slices.Sort(keys)
 		if ctx.Err() != nil {
+			yield(port.Meta{}, ctx.Err())
 			return
 		}
 		for _, k := range keys {
-			if !yield(metas[k]) {
+			if !yield(metas[k], nil) {
 				return
 			}
 		}

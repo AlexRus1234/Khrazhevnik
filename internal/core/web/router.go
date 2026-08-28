@@ -92,7 +92,7 @@ type MirrorSync interface {
 type PublishAPI interface {
 	Upload(ctx context.Context, repo domain.Repo, path string, size int64, body io.Reader, force bool) error
 	DeleteObject(ctx context.Context, repo domain.Repo, path string) error
-	ListObjects(ctx context.Context, repo domain.Repo) iter.Seq[port.Meta]
+	ListObjects(ctx context.Context, repo domain.Repo) iter.Seq2[port.Meta, error]
 	Reindex(ctx context.Context, repoID int64) (taskID string, err error)
 }
 

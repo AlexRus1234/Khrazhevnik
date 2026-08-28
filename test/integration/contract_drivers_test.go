@@ -210,6 +210,31 @@ func TestStorageContractS3(t *testing.T) {
 	})
 }
 
+// TestStorageListBrokenS3Endpoint — контракт «ошибка листинга ≠ пустой
+// результат» на s3: битый endpoint (порт 1 — connection refused) → List
+// обязан выдать терминальную ошибку, а не молчаливо-пустой обход.
+// Внешних сервисов не требует, поэтому гоняется всегда.
+func TestStorageListBrokenS3Endpoint(t *testing.T) {
+	st, err := s3.New(config.S3Storage{
+		Endpoint: "127.0.0.1:1", Bucket: "nope", PathStyle: true,
+		AccessKeyID: "k", SecretAccessKey: "s",
+		SpoolDir: t.TempDir(),
+	}, testutil.RealRand())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawErr := false
+	for _, err := range st.List(context.Background(), "cache/") {
+		if err != nil {
+			sawErr = true
+			break
+		}
+	}
+	if !sawErr {
+		t.Fatal("List с битым endpoint не вернул терминальную ошибку")
+	}
+}
+
 // splitS3Endpoint — зеркально s3.splitEndpoint (не экспортируется):
 // «https://host» → (host, true); «http://host» → (host, false); bare → как есть.
 func splitS3Endpoint(endpoint string) (host string, secure, ok bool) {

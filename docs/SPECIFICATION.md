@@ -215,8 +215,11 @@ RBAC: admin — везде; владелец репо — upload/delete/reindex/
 
 Инвариант квоты: сумма `Storage.List("repo/<id>/")` считается при
 каждом upload (KISS v1: репо обычно единицы-десятки файлов); при
-превышении `quota.bytes`/`quota.files` — 413 `quota_exceeded`. Лимит
-одного объекта — `publish.max_object_size` (413 `too_large`).
+превышении `quota.bytes`/`quota.files` — 413 `quota_exceeded`. Ошибка
+листинга (терминальная `iter.Seq2`-ошибка Storage.List) — отказ upload
+(5xx), не «пустая квота»: сбой носителя не должен выглядеть как
+освободившееся место. Лимит одного объекта — `publish.max_object_size`
+(413 `too_large`).
 
 Стриминг: `Content-Length` обязателен (ограничение v1, в доках);
 несовпадение заявленного и фактического размера → abort + чистый

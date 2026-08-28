@@ -159,13 +159,14 @@ type descEntry struct {
 }
 
 // collectPkgTar возвращает лексически отсортированный список .pkg.tar.*
-// под prefix.
+// под prefix. Ошибка листинга — ошибка генерации (иначе пустой обход
+// записал бы ПУСТОЙ .db поверх валидного).
 func collectPkgTar(ctx context.Context, storage port.Storage, prefix string) ([]string, error) {
 	var out []string
 	listPrefix := prefix + "/"
-	for meta := range storage.List(ctx, listPrefix) {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+	for meta, err := range storage.List(ctx, listPrefix) {
+		if err != nil {
+			return nil, fmt.Errorf("листинг %s: %w", listPrefix, err)
 		}
 		name := meta.Key
 		for _, suf := range []string{".pkg.tar.zst", ".pkg.tar.xz", ".pkg.tar.gz"} {

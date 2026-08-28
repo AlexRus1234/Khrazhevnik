@@ -294,7 +294,8 @@ type objectOut struct {
 
 // handleListObjects — GET /api/v1/repos/{id}/objects: листинг ключей
 // и размеров. Делегирует publish.API.ListObjects (Storage.List под
-// префиксом repo/<id>/).
+// префиксом repo/<id>/). Ошибка листинга — 5xx (не пустой список:
+// клиент не должен путать сбой носителя с «объектов нет»).
 func handleListObjects(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Publish == nil {
@@ -311,7 +312,11 @@ func handleListObjects(d Deps) http.HandlerFunc {
 			return
 		}
 		out := make([]objectOut, 0)
-		for meta := range d.Publish.ListObjects(r.Context(), repo) {
+		for meta, err := range d.Publish.ListObjects(r.Context(), repo) {
+			if err != nil {
+				writeErr(w, err)
+				return
+			}
 			out = append(out, objectOut{Key: meta.Key, Size: meta.Size, ModTime: meta.ModTime})
 		}
 		writeJSON(w, http.StatusOK, out)

@@ -178,13 +178,15 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 
 // collectRpms возвращает лексически отсортированный список ключей .rpm
 // под prefix, исключая repodata/ (там живут индексы). Storage.List отдаёт
-// метаданные, фильтруем по суффиксу и префиксу repodata/.
+// метаданные, фильтруем по суффиксу и префиксу repodata/. Ошибка листинга
+// — ошибка генерации (иначе пустой обход записал бы ПУСТОЙ primary.xml
+// поверх валидного).
 func collectRpms(ctx context.Context, storage port.Storage, prefix string) ([]string, error) {
 	var out []string
 	listPrefix := prefix + "/"
-	for meta := range storage.List(ctx, listPrefix) {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+	for meta, err := range storage.List(ctx, listPrefix) {
+		if err != nil {
+			return nil, fmt.Errorf("листинг %s: %w", listPrefix, err)
 		}
 		name := meta.Key
 		// отсекаем ключи под repodata/ — это индексы, не пакеты.

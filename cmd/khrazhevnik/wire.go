@@ -297,9 +297,10 @@ func (p publishSyncer) DeleteObject(ctx context.Context, repo domain.Repo, path 
 	return p.engine.Delete(ctx, repo, path)
 }
 
-// ListObjects делегирует движку publish (iter.Seq пробрасывается как
-// есть — горутина Storage.List под каптом).
-func (p publishSyncer) ListObjects(ctx context.Context, repo domain.Repo) iter.Seq[port.Meta] {
+// ListObjects делегирует движку publish (iter.Seq2 пробрасывается как
+// есть — горутина Storage.List под капотом; ошибка листинга идёт в
+// хендлер отдельным значением, не «пустым списком»).
+func (p publishSyncer) ListObjects(ctx context.Context, repo domain.Repo) iter.Seq2[port.Meta, error] {
 	return p.engine.List(ctx, repo)
 }
 
