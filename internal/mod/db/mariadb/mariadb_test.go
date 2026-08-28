@@ -113,20 +113,67 @@ func TestMapRead(t *testing.T) {
 }
 
 func TestMapWrite(t *testing.T) {
-	var cf *domain.ConflictError
-	err := mapWrite(&mysql.MySQLError{Number: errDupEntry}, "пользователь", "alice")
-	if !errors.As(err, &cf) || cf.Reason != "" {
-		t.Fatalf("1062 → Conflict без причины, получено %v", err)
+	// Таблица паритета с postgres/sqlite (docs/func/ru/storage-db.md):
+	// один сценарий → один тип доменной ошибки на всех драйверах.
+	cases := []struct {
+		name  string
+		code  uint16
+		check func(*testing.T, error)
+	}{
+		{"dup", errDupEntry, func(t *testing.T, err error) {
+			var cf *domain.ConflictError
+			if !errors.As(err, &cf) || cf.Reason != "" {
+				t.Fatalf("1062 → Conflict без причины, получено %v", err)
+			}
+		}},
+		{"fk insert", errNoRefRow, wantFKConflict},
+		{"fk delete", errRowReferenced, wantFKConflict},
+		{"not null", errBadNull, func(t *testing.T, err error) {
+			var cf *domain.ConflictError
+			if !errors.As(err, &cf) || cf.Reason != "нарушение NOT NULL" {
+				t.Fatalf("1048 → Conflict NOT NULL, получено %v", err)
+			}
+		}},
+		{"check", errCheckViolated, func(t *testing.T, err error) {
+			var cf *domain.ConflictError
+			if !errors.As(err, &cf) || cf.Reason != "нарушение CHECK-ограничения" {
+				t.Fatalf("4025 → Conflict CHECK, получено %v", err)
+			}
+		}},
+		{"data too long", errDataTooLong, func(t *testing.T, err error) {
+			var ik *domain.InvalidKeyError
+			if !errors.As(err, &ik) {
+				t.Fatalf("1406 → InvalidKeyError, получено %v", err)
+			}
+		}},
+		{"wrong value", errWrongValue, func(t *testing.T, err error) {
+			var ve *domain.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("1366 → ValidationError, получено %v", err)
+			}
+		}},
+		{"неизвестный код", 1146, func(t *testing.T, err error) {
+			var myErr *mysql.MySQLError
+			if !errors.As(err, &myErr) {
+				t.Fatalf("неизвестный код должен проходить как есть, получено %v", err)
+			}
+		}},
 	}
-	err = mapWrite(&mysql.MySQLError{Number: errNoRefRow}, "репо", "x")
-	if !errors.As(err, &cf) || cf.Reason != "нарушение внешнего ключа" {
-		t.Fatalf("1452 → Conflict с FK-причиной, получено %v", err)
-	}
-	err = mapWrite(&mysql.MySQLError{Number: errRowReferenced}, "репо", "x")
-	if !errors.As(err, &cf) || cf.Reason != "нарушение внешнего ключа" {
-		t.Fatalf("1451 → Conflict с FK-причиной, получено %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.check(t, mapWrite(&mysql.MySQLError{Number: tc.code}, "объект", "k"))
+		})
 	}
 	if err := mapWrite(errors.New("иное"), "x", "y"); err == nil {
 		t.Fatal("иная ошибка не должна стать nil")
+	}
+}
+
+// wantFKConflict — ассерт FK-ветки: Conflict с причиной про ключи.
+func wantFKConflict(t *testing.T, err error) {
+	t.Helper()
+	var cf *domain.ConflictError
+	if !errors.As(err, &cf) || cf.Reason != "нарушение внешнего ключа" {
+		t.Fatalf("хочу Conflict с FK-причиной, получено %v", err)
 	}
 }

@@ -734,22 +734,40 @@ func mapRead(err error, what, key string) error {
 	return err
 }
 
-// mapWrite переводит ошибки записи: UNIQUE/PK — «уже существует»,
-// FK/прочие ограничения — конфликт с причиной.
+// mapWrite переводит ошибки записи в доменные, единообразно с
+// postgres/mariadb (таблица паритета — docs/func/ru/storage-db.md):
+// UNIQUE/PK — «уже существует», FK/NOT NULL/CHECK — конфликты с
+// причиной, прочие CONSTRAINT — общий конфликт целостности.
+// Разбор кода вынесен в mapWriteCode: sqlite.Error не конструируется
+// синтетически (поля не экспортированы), а коды в тестах нужны
+// таблично.
 func mapWrite(err error, what, key string) error {
 	var serr *sqlite.Error
 	if !errors.As(err, &serr) {
 		return err
 	}
-	switch serr.Code() {
+	if mapped := mapWriteCode(serr.Code(), what, key); mapped != nil {
+		return mapped
+	}
+	return err
+}
+
+// mapWriteCode маппит код sqlite в доменную ошибку; nil — код не
+// распознан (mapWrite вернёт исходную ошибку).
+func mapWriteCode(code int, what, key string) error {
+	switch code {
 	case sqlite3.SQLITE_CONSTRAINT_UNIQUE, sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY:
 		return &domain.ConflictError{What: what, Key: key}
 	case sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY:
 		return &domain.ConflictError{What: what, Key: key, Reason: "нарушение внешнего ключа"}
+	case sqlite3.SQLITE_CONSTRAINT_NOTNULL:
+		return &domain.ConflictError{What: what, Key: key, Reason: "нарушение NOT NULL"}
+	case sqlite3.SQLITE_CONSTRAINT_CHECK:
+		return &domain.ConflictError{What: what, Key: key, Reason: "нарушение CHECK-ограничения"}
 	case sqlite3.SQLITE_CONSTRAINT:
 		return &domain.ConflictError{What: what, Key: key, Reason: "нарушение ограничения целостности"}
 	}
-	return err
+	return nil
 }
 
 // joinScopes/splitScopes — сериализация scopes: разделитель «,»

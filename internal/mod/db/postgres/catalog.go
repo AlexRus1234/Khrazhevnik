@@ -736,9 +736,10 @@ func mapRead(err error, what, key string) error {
 	return err
 }
 
-// mapWrite переводит ошибки записи: SQLSTATE 23505 (unique) — «уже
-// существует», 23503 (FK) — конфликт с причиной, 23502 (not_null) и
-// прочие 23xxx — нарушение целостности.
+// mapWrite переводит ошибки записи в доменные, единообразно с
+// sqlite/mariadb (таблица паритета — docs/func/ru/storage-db.md):
+// SQLSTATE 23505 (unique) — «уже существует», 23503 (FK), 23502 (not
+// null), 23514 (check) — конфликты с причиной.
 func mapWrite(err error, what, key string) error {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
@@ -751,6 +752,8 @@ func mapWrite(err error, what, key string) error {
 		return &domain.ConflictError{What: what, Key: key, Reason: "нарушение внешнего ключа"}
 	case "23502":
 		return &domain.ConflictError{What: what, Key: key, Reason: "нарушение NOT NULL"}
+	case "23514":
+		return &domain.ConflictError{What: what, Key: key, Reason: "нарушение CHECK-ограничения"}
 	}
 	return err
 }

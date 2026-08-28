@@ -54,6 +54,10 @@ const (
 	errRowReferenced   uint16 = 1451 // ER_ROW_IS_REFERENCED_2: FK на DELETE
 	errLockDeadlock    uint16 = 1213 // ER_LOCK_DEADLOCK
 	errLockWaitTimeout uint16 = 1205 // ER_LOCK_WAIT_TIMEOUT
+	errBadNull         uint16 = 1048 // ER_BAD_NULL_ERROR: NOT NULL
+	errCheckViolated   uint16 = 4025 // ER_CHECK_CONSTRAINT_VIOLATED
+	errDataTooLong     uint16 = 1406 // ER_DATA_TOO_LONG: длиннее колонки
+	errWrongValue      uint16 = 1366 // ER_TRUNCATED_WRONG_VALUE: тип значения
 )
 
 // init регистрирует фабрику в compile-time реестре.

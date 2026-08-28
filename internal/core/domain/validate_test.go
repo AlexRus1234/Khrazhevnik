@@ -77,6 +77,19 @@ func TestValidateKey(t *testing.T) {
 	}
 }
 
+func TestValidateKeyLengthBoundary(t *testing.T) {
+	// Граница maxKeyLen = пределу VARCHAR(767) mariadb object_index:
+	// 767 байт проходят, 768 — InvalidKeyError ещё до записи в БД.
+	if err := ValidateKey(strings.Repeat("a", maxKeyLen)); err != nil {
+		t.Fatalf("ValidateKey(%d байт) = %v, хочу nil", maxKeyLen, err)
+	}
+	long := strings.Repeat("a", maxKeyLen+1)
+	var ik *InvalidKeyError
+	if err := ValidateKey(long); !errors.As(err, &ik) {
+		t.Fatalf("ValidateKey(%d байт) = %T, хочу *InvalidKeyError", len(long), err)
+	}
+}
+
 func TestValidateKeyJoinsReasons(t *testing.T) {
 	// Несколько нарушений сразу: ведущий слэш + «..» + чужой символ.
 	err := ValidateKey("/a../b?c")

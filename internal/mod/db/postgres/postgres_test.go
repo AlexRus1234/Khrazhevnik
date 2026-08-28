@@ -84,20 +84,32 @@ func TestMapRead(t *testing.T) {
 }
 
 func TestMapWrite(t *testing.T) {
-	var cf *domain.ConflictError
-	err := mapWrite(&pgconn.PgError{Code: "23505"}, "пользователь", "alice")
-	if !errors.As(err, &cf) || cf.Reason != "" {
-		t.Fatalf("23505 → Conflict без причины, получено %v", err)
+	// Таблица паритета с sqlite/mariadb (docs/func/ru/storage-db.md):
+	// один сценарий → один тип доменной ошибки на всех драйверах.
+	cases := []struct {
+		name string
+		code string
+		want string // ожидаемый Reason; "" — «уже существует» без причины
+	}{
+		{"unique", "23505", ""},
+		{"fk", "23503", "нарушение внешнего ключа"},
+		{"not null", "23502", "нарушение NOT NULL"},
+		{"check", "23514", "нарушение CHECK-ограничения"},
 	}
-	err = mapWrite(&pgconn.PgError{Code: "23503"}, "репо", "x")
-	if !errors.As(err, &cf) || cf.Reason != "нарушение внешнего ключа" {
-		t.Fatalf("23503 → Conflict с FK-причиной, получено %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cf *domain.ConflictError
+			err := mapWrite(&pgconn.PgError{Code: tc.code}, "объект", "k")
+			if !errors.As(err, &cf) || cf.Reason != tc.want {
+				t.Fatalf("%s → Conflict(%q), получено %v", tc.name, tc.want, err)
+			}
+		})
 	}
-	err = mapWrite(&pgconn.PgError{Code: "23502"}, "репо", "x")
-	if !errors.As(err, &cf) || cf.Reason != "нарушение NOT NULL" {
-		t.Fatalf("23502 → Conflict NOT NULL, получено %v", err)
+	// неизвестный SQLSTATE и посторонняя ошибка проходят как есть
+	pgErr := &pgconn.PgError{Code: "42601"}
+	if err := mapWrite(pgErr, "x", "y"); !errors.As(err, &pgErr) {
+		t.Fatalf("неизвестный код должен проходить как есть, получено %v", err)
 	}
-	// прочая ошибка проходит как есть
 	if err := mapWrite(errors.New("иное"), "x", "y"); err == nil {
 		t.Fatal("иная ошибка не должна стать nil")
 	}

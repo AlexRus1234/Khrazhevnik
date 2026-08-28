@@ -749,9 +749,11 @@ func mapRead(err error, what, key string) error {
 	return err
 }
 
-// mapWrite переводит ошибки записи: 1062 (DUP_ENTRY) — «уже
-// существует», 1452 (FK на INSERT) / 1451 (FK на DELETE) — конфликт
-// с причиной.
+// mapWrite переводит ошибки записи в доменные, единообразно с
+// sqlite/postgres (таблица паритета — docs/func/ru/storage-db.md):
+// 1062 (DUP_ENTRY) — «уже существует», 1452/1451 — FK, 1048 — NOT
+// NULL, 4025 — CHECK → Conflict; 1406 (длиннее колонки — на практике
+// `key` VARCHAR(767)) — InvalidKeyError; 1366 — ValidationError.
 func mapWrite(err error, what, key string) error {
 	var myErr *mysql.MySQLError
 	if !errors.As(err, &myErr) {
@@ -762,6 +764,14 @@ func mapWrite(err error, what, key string) error {
 		return &domain.ConflictError{What: what, Key: key}
 	case errNoRefRow, errRowReferenced:
 		return &domain.ConflictError{What: what, Key: key, Reason: "нарушение внешнего ключа"}
+	case errBadNull:
+		return &domain.ConflictError{What: what, Key: key, Reason: "нарушение NOT NULL"}
+	case errCheckViolated:
+		return &domain.ConflictError{What: what, Key: key, Reason: "нарушение CHECK-ограничения"}
+	case errDataTooLong:
+		return &domain.InvalidKeyError{Key: key, Reasons: []error{errors.New("длиннее лимита колонки")}}
+	case errWrongValue:
+		return &domain.ValidationError{What: what, Value: key, Reason: "значение не соответствует типу колонки"}
 	}
 	return err
 }

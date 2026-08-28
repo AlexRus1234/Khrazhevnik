@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	sqlite3 "modernc.org/sqlite/lib"
+
 	"khrazhevnik/internal/contract"
 	"khrazhevnik/internal/core/config"
 	"khrazhevnik/internal/core/domain"
@@ -183,5 +185,38 @@ func TestForeignKeysEnabled(t *testing.T) {
 	var cf *domain.ConflictError
 	if !errors.As(err, &cf) {
 		t.Fatalf("хочу ConflictError (FK), получено: %v", err)
+	}
+}
+
+// TestMapWriteCode — таблица паритета маппинга с postgres/mariadb
+// (docs/func/ru/storage-db.md). Код напрямую (а не синтетический
+// sqlite.Error — его поля не экспортированы).
+func TestMapWriteCode(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+		want string // ожидаемый Reason; "" — «уже существует» без причины
+	}{
+		{"unique", sqlite3.SQLITE_CONSTRAINT_UNIQUE, ""},
+		{"primary key", sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY, ""},
+		{"foreign key", sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY, "нарушение внешнего ключа"},
+		{"not null", sqlite3.SQLITE_CONSTRAINT_NOTNULL, "нарушение NOT NULL"},
+		{"check", sqlite3.SQLITE_CONSTRAINT_CHECK, "нарушение CHECK-ограничения"},
+		{"catch-all constraint", sqlite3.SQLITE_CONSTRAINT, "нарушение ограничения целостности"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cf *domain.ConflictError
+			err := mapWriteCode(tc.code, "объект", "k")
+			if !errors.As(err, &cf) || cf.Reason != tc.want {
+				t.Fatalf("%s → Conflict(%q), получено %v", tc.name, tc.want, err)
+			}
+		})
+	}
+	if err := mapWriteCode(sqlite3.SQLITE_BUSY, "x", "y"); err != nil {
+		t.Fatalf("нераспознанный код → nil (исходная ошибка вернётся из mapWrite), получено %v", err)
+	}
+	if err := mapWrite(errors.New("иное"), "x", "y"); err == nil {
+		t.Fatal("иная ошибка не должна стать nil")
 	}
 }

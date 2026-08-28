@@ -75,6 +75,25 @@ blank-import'ом в `cmd/khrazhevnik/wire.go` и выбираются TOML-ко
 только типы: `INTEGER PK` → `BIGSERIAL`/`BIGINT AUTO_INCREMENT`, эпоха —
 `BIGINT`).
 
+### Маппинг ошибок записи (паритет драйверов)
+
+Один сценарий нарушения целостности → одна доменная ошибка на всех
+драйверах (`mapWrite` в каждом адаптере; сессия 21):
+
+| Сценарий            | sqlite                   | postgres | mariadb   | Доменная ошибка                       |
+|---------------------|--------------------------|----------|-----------|---------------------------------------|
+| UNIQUE-конфликт     | `CONSTRAINT_UNIQUE`/`_PRIMARYKEY` | 23505 | 1062      | `ConflictError` («уже существует»)    |
+| Нарушение FK        | `CONSTRAINT_FOREIGNKEY`  | 23503    | 1452/1451 | `ConflictError` (внешний ключ)        |
+| NOT NULL            | `CONSTRAINT_NOTNULL`     | 23502    | 1048      | `ConflictError` (NOT NULL)            |
+| CHECK               | `CONSTRAINT_CHECK`       | 23514    | 4025      | `ConflictError` (CHECK)               |
+| Длиннее колонки     | — (TEXT без лимита)      | —        | 1406      | `InvalidKeyError` (лимит ключа 767)   |
+| Неверный тип значения | catch-all `CONSTRAINT` | —        | 1366      | `ValidationError`                     |
+
+Ключи длиннее 767 байт отбрасываются `domain.ValidateKey` ещё на входе —
+ровно предел `VARCHAR(767)` PK `object_index` у mariadb: честный
+400-й ответ вместо ошибки 1406 на записи. Прочие нераспознанные коды
+проходят наружу как есть (сырая ошибка драйвера).
+
 ## Рекомендации
 
 - **Homelab / один узел**: `fs` + `sqlite` (defaults). Один writable

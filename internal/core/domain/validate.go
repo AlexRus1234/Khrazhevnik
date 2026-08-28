@@ -28,9 +28,11 @@ import (
 )
 
 // Ограничения длин: защищают fs-хранилище от безумных путей и БД —
-// от мусора.
+// от мусора. maxKeyLen выровнен с самым строгим драйвером каталога
+// (mariadb: VARCHAR(767) PK object_index): ключ длиннее — честный
+// InvalidKeyError на входе, а не ошибка 1406 на записи.
 const (
-	maxKeyLen      = 1024
+	maxKeyLen      = 767
 	maxUsernameLen = 32
 	maxRepoNameLen = 64
 )
