@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -52,10 +53,12 @@ type Catalog struct {
 	Close    func() error
 }
 
-// CatalogSuite гоняет контрактный suite каталога (сессия 04 + новые
-// кейсы сессии 17: конкурентный upsert, keyset-пагинация на 100+
-// записей) по одному адаптеру. open возвращает свежий набор на каждый
-// вызов — изоляция под-тестов (чистая БД/каталог).
+// CatalogSuite гоняет контрактный suite каталога (сессия 04; кейсы
+// сессии 17: конкурентный upsert, keyset-пагинация на 100+ записей;
+// кейсы сессии 21: no-op UPDATE, revoke roundtrip, FK-удаление,
+// граница длины ключа 767, пустая страница аудита) по одному адаптеру.
+// open возвращает свежий набор на каждый вызов — изоляция под-тестов
+// (чистая БД/каталог).
 func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Helper()
 	newCat := func(t *testing.T) Catalog {
@@ -72,6 +75,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("jobs", func(t *testing.T) { jobSuite(t, newCat(t)) })
 	t.Run("audit", func(t *testing.T) { auditSuite(t, newCat(t)) })
 	t.Run("object_index", func(t *testing.T) { objectIndexSuite(t, newCat(t)) })
+	t.Run("noop_update", func(t *testing.T) { noopUpdateSuite(t, newCat(t)) })
 	t.Run("concurrent_upsert", func(t *testing.T) { concurrentUpsertSuite(t, newCat(t)) })
 	t.Run("keyset_pagination_100", func(t *testing.T) { keysetPaginationSuite(t, newCat(t)) })
 }
@@ -184,10 +188,29 @@ func tokenSuite(t *testing.T, c Catalog) {
 	if err := c.Tokens.TouchToken(ctx, 999, used); err != nil {
 		t.Fatalf("TouchToken отсутствующего токена: %v (молчаливое отсутствие — не ошибка)", err)
 	}
-	list, err := c.Tokens.TokensByUser(ctx, u.ID)
-	if err != nil || len(list) != 2 || list[0].ID > list[1].ID {
-		t.Fatalf("TokensByUser = %d токенов, %v", len(list), err)
+	// RevokeToken roundtrip: revoked_at виден в списке пользователя,
+	// повторный revoke идемпотентен, revoke отсутствующего — NotFound.
+	revoked := fixed.Add(3 * time.Minute)
+	if err := c.Tokens.RevokeToken(ctx, exp.ID, revoked); err != nil {
+		t.Fatalf("RevokeToken: %v", err)
 	}
+	list, err := c.Tokens.TokensByUser(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawRevoked := false
+	for _, tk := range list {
+		if tk.ID == exp.ID {
+			sawRevoked = tk.RevokedAt.Equal(revoked)
+		}
+	}
+	if len(list) != 2 || list[0].ID > list[1].ID || !sawRevoked {
+		t.Fatalf("TokensByUser после revoke = %d токентов, revoked_at отражён: %v", len(list), sawRevoked)
+	}
+	if err := c.Tokens.RevokeToken(ctx, exp.ID, revoked.Add(time.Minute)); err != nil {
+		t.Fatalf("повторный revoke должен быть идемпотентен: %v", err)
+	}
+	wantNotFound(t, c.Tokens.RevokeToken(ctx, 999, revoked))
 	if err := c.Tokens.DeleteToken(ctx, tok.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -209,6 +232,9 @@ func repoSuite(t *testing.T, c Catalog) {
 	wantConflict(t, err)
 	_, err = c.Repos.CreateRepo(ctx, domain.Repo{Name: "orphan", OwnerID: 999, CreatedAt: fixed})
 	wantConflict(t, err)
+	// FK-удаление: владелец с репозиторием не удаляется — Conflict на
+	// всех драйверах, а не сырая ошибка БД.
+	wantConflict(t, c.Users.DeleteUser(ctx, owner.ID))
 	got, err := c.Repos.Repo(ctx, r.ID)
 	if err != nil || got.Name != "myrepo" || got.Quota.MaxBytes != 1<<30 || got.Quota.MaxObjects != 100 {
 		t.Fatalf("Repo = %+v, %v", got, err)
@@ -369,6 +395,12 @@ func auditSuite(t *testing.T, c Catalog) {
 	if err != nil || len(tail) != 1 || tail[0].Object != "obj:4" {
 		t.Fatalf("хвост = %+v, %v", tail, err)
 	}
+	// afterID за концом журнала: пустая страница без ошибки, а не
+	// NotFound (keyset-пагинация не знает про «конец»).
+	beyond, err := c.Audit.AuditEntries(ctx, tail[0].ID+1000, 10)
+	if err != nil || len(beyond) != 0 {
+		t.Fatalf("страница за концом = %d записей, %v (хочу пустую без ошибки)", len(beyond), err)
+	}
 }
 
 func objectIndexSuite(t *testing.T, c Catalog) {
@@ -406,18 +438,100 @@ func objectIndexSuite(t *testing.T, c Catalog) {
 	}
 	_, err = c.ObjIndex.ObjectMeta(ctx, m.Key)
 	wantNotFound(t, err)
+	// Граница длины ключа: 767 байт — предел VARCHAR(767) PK mariadb
+	// object_index и ровно maxKeyLen домена; проходит на всех драйверах.
+	boundary := domain.ObjectMeta{
+		Key:        "cache/" + strings.Repeat("k", 761), // 6 + 761 = 767 байт
+		StorageKey: "cache-boundary-1", Size: 1, ETag: `"b"`,
+		ContentType: "application/octet-stream", LastModified: fixed,
+	}
+	if err := c.ObjIndex.PutObjectMeta(ctx, boundary); err != nil {
+		t.Fatalf("PutObjectMeta(ключ 767 байт): %v", err)
+	}
+	if _, err := c.ObjIndex.ObjectMeta(ctx, boundary.Key); err != nil {
+		t.Fatalf("ObjectMeta(ключ 767 байт): %v", err)
+	}
+}
+
+// noopUpdateSuite — пересохранение тех же значений: успех, а не ложный
+// NotFound. Регрессия mariadb changed-rows (сессия 21): без
+// clientFoundRows no-op UPDATE отдаёт 0 затронутых строк.
+func noopUpdateSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	u, err := c.Users.CreateUser(ctx, domain.User{
+		Username: "alice", PasswordHash: "h", Role: domain.RoleAdmin, TokenVersion: 1, CreatedAt: fixed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Users.UpdateUser(ctx, u); err != nil {
+		t.Fatalf("no-op UpdateUser: %v", err)
+	}
+	r, err := c.Repos.CreateRepo(ctx, domain.Repo{
+		Name: "myrepo", OwnerID: u.ID, Ecosystem: "apt",
+		Quota: domain.Quota{MaxBytes: 1 << 20, MaxObjects: 10}, CreatedAt: fixed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameRepo, err := c.Repos.Repo(ctx, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Repos.UpdateRepo(ctx, sameRepo); err != nil {
+		t.Fatalf("no-op UpdateRepo: %v", err)
+	}
+	rm, err := c.Remotes.CreateRemote(ctx, domain.Remote{
+		Name: "deb", Ecosystem: "apt", BaseURL: "https://up.example",
+		Mode: domain.ModeProxy, Enabled: true, SyncInterval: time.Hour,
+		Include: []string{"stable"}, CreatedAt: fixed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameRemote, err := c.Remotes.Remote(ctx, rm.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Remotes.UpdateRemote(ctx, sameRemote); err != nil {
+		t.Fatalf("no-op UpdateRemote: %v", err)
+	}
+	j, err := c.Jobs.CreateJob(ctx, domain.SyncJob{
+		RemoteID: rm.ID, State: domain.StatePending, Interval: time.Hour,
+		LastRunAt: fixed, Cursor: "etag:1", UpdatedAt: fixed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameJob, err := c.Jobs.Job(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Jobs.UpdateJob(ctx, sameJob); err != nil {
+		t.Fatalf("no-op UpdateJob: %v", err)
+	}
 }
 
 // concurrentUpsertSuite — N горутин делают upsert ObjectMeta по одному
-// ключу с одинаковым значением; все обязаны завершиться без паники, а
-// итоговая запись — быть валидной. -race ловит гонки адаптера.
+// ключу с РАЗНЫМИ значениями: все обязаны завершиться без паники, а
+// итоговая строка — быть ровно одной из записанных версий целиком
+// (последний победил), без порчи — смешения колонок разных версий.
+// -race ловит гонки адаптера.
 func concurrentUpsertSuite(t *testing.T, c Catalog) {
 	ctx := context.Background()
 	const writers = 16
-	m := domain.ObjectMeta{
-		Key: "cache/rpm-md/1/repodata/primary.xml.gz", StorageKey: "",
-		Size: 42, ETag: `"e"`, ContentType: "application/x-gzip",
-		LastModified: fixed, ExpiresAt: fixed.Add(5 * time.Minute),
+	base := domain.ObjectMeta{
+		Key:         "cache/rpm-md/1/repodata/primary.xml.gz",
+		ContentType: "application/x-gzip", LastModified: fixed,
+		ExpiresAt: fixed.Add(5 * time.Minute),
+	}
+	versions := make([]domain.ObjectMeta, writers)
+	for i := range versions {
+		v := base
+		v.Size = int64(42 + i)
+		v.ETag = fmt.Sprintf(`"e%d"`, i)
+		v.StorageKey = fmt.Sprintf("primary-v%d", i)
+		versions[i] = v
 	}
 	var wg sync.WaitGroup
 	errs := make(chan error, writers)
@@ -425,7 +539,7 @@ func concurrentUpsertSuite(t *testing.T, c Catalog) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := c.ObjIndex.PutObjectMeta(ctx, m); err != nil {
+			if err := c.ObjIndex.PutObjectMeta(ctx, versions[i]); err != nil {
 				errs <- err
 			}
 		}()
@@ -435,12 +549,19 @@ func concurrentUpsertSuite(t *testing.T, c Catalog) {
 	for err := range errs {
 		t.Fatalf("конкурентный upsert: %v", err)
 	}
-	got, err := c.ObjIndex.ObjectMeta(ctx, m.Key)
+	got, err := c.ObjIndex.ObjectMeta(ctx, base.Key)
 	if err != nil {
 		t.Fatalf("ObjectMeta после гонки: %v", err)
 	}
-	if got.ETag != `"e"` || got.Size != 42 {
-		t.Fatalf("итоговая запись после гонки: %+v", got)
+	intact := false
+	for _, v := range versions {
+		if got.ETag == v.ETag && got.Size == v.Size && got.StorageKey == v.StorageKey {
+			intact = true
+			break
+		}
+	}
+	if !intact {
+		t.Fatalf("итоговая запись после гонки — смешение версий: %+v", got)
 	}
 }
 
