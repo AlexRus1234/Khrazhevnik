@@ -155,12 +155,19 @@ func TestFakeStorageListCanceledContext(t *testing.T) {
 	s, _ := newStorage(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	count := 0
-	for range s.List(ctx, "") {
-		count++
+	// Контракт сессии 20 (fail-closed): отмена ctx — терминальная
+	// ошибка обхода, а не молчаливая пустота. Считаем объекты и ошибку
+	// раздельно: объектов быть не должно, ошибка — обязана.
+	objects, sawErr := 0, false
+	for _, err := range s.List(ctx, "") {
+		if err != nil {
+			sawErr = true
+			continue
+		}
+		objects++
 	}
-	if count != 0 {
-		t.Errorf("List с отменённым контекстом отдал %d объектов", count)
+	if objects != 0 || !sawErr {
+		t.Errorf("List с отменённым ctx: объектов %d, ошибка %v — хочу 0 объектов и терминальную ошибку", objects, sawErr)
 	}
 }
 
