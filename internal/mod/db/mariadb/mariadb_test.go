@@ -50,6 +50,44 @@ func TestObjectMetaUpsertSQL(t *testing.T) {
 	}
 }
 
+// TestOpenDSNClientFoundRows — DSN после openDSN обязан нести
+// clientFoundRows=true: иначе UPDATE отдаёт changed rows и no-op
+// UPDATE ложится в ложный NotFound (аудит 2026-08-27, сессия 21).
+func TestOpenDSNClientFoundRows(t *testing.T) {
+	dsn, err := openDSN("user:pass@tcp(127.0.0.1:3306)/khrz?parseTime=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ClientFoundRows {
+		t.Fatalf("DSN без clientFoundRows=true: %s", dsn)
+	}
+}
+
+// resultFake — sql.Result для requireAffected без БД; отражает
+// matched-семантику (clientFoundRows=true): RowsAffected — число
+// совпавших строк, а не изменённых.
+type resultFake struct{ affected int64 }
+
+func (resultFake) LastInsertId() (int64, error) { return 1, nil }
+
+func (r resultFake) RowsAffected() (int64, error) { return r.affected, nil }
+
+func TestRequireAffectedMatchedRows(t *testing.T) {
+	// no-op UPDATE: строка совпала, значения не изменились — matched=1,
+	// это успех, а не NotFound.
+	if err := requireAffected(resultFake{affected: 1}, "remote", "x"); err != nil {
+		t.Fatalf("no-op UPDATE (matched=1): %v", err)
+	}
+	var nf *domain.NotFoundError
+	if err := requireAffected(resultFake{affected: 0}, "remote", "x"); !errors.As(err, &nf) {
+		t.Fatalf("0 строк: хочу NotFoundError, получено %v", err)
+	}
+}
+
 func TestRetryable(t *testing.T) {
 	if !isRetryable(&mysql.MySQLError{Number: errLockDeadlock}) {
 		t.Error("1213 (deadlock) должен быть retryable")

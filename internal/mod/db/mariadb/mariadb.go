@@ -87,10 +87,11 @@ type Store struct {
 // открывает пул и поднимает миграции. DSN — стандартная mysql-строка
 // (user:pass@tcp(host:3306)/db?params…).
 func Open(cfg config.Database) (*Store, error) {
-	if _, err := mysql.ParseDSN(cfg.DSN); err != nil {
-		return nil, fmt.Errorf("mariadb: разбор DSN: %w", err)
+	dsn, err := openDSN(cfg.DSN)
+	if err != nil {
+		return nil, err
 	}
-	db, err := sql.Open("mysql", cfg.DSN)
+	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("mariadb: открытие каталога: %w", err)
 	}
@@ -105,6 +106,20 @@ func Open(cfg config.Database) (*Store, error) {
 		sleep:            time.Sleep,
 		upsertObjectMeta: objectMetaUpsertSQL(),
 	}, nil
+}
+
+// openDSN нормализует DSN с clientFoundRows=true: без этого флага
+// UPDATE отдаёт changed rows, и no-op UPDATE (пересохранение тех же
+// значений) выглядит как 0 затронутых строк — requireAffected
+// превращал бы его в ложный NotFound (404 в админке). С флагом
+// RowsAffected = matched — семантика sqlite/postgres.
+func openDSN(dsn string) (string, error) {
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return "", fmt.Errorf("mariadb: разбор DSN: %w", err)
+	}
+	cfg.ClientFoundRows = true
+	return cfg.FormatDSN(), nil
 }
 
 // Close освобождает пул соединений (graceful shutdown).
