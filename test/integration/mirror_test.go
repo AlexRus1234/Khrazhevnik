@@ -39,9 +39,9 @@ import (
 	_ "khrazhevnik/internal/mod/storage/fs"
 
 	"khrazhevnik/internal/core/config"
+	"khrazhevnik/internal/core/engine/auth"
 	cacheengine "khrazhevnik/internal/core/engine/cache"
 	mirrorengine "khrazhevnik/internal/core/engine/mirror"
-	"khrazhevnik/internal/core/engine/auth"
 	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/registry"
