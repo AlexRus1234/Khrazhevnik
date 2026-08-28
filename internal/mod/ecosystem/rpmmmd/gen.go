@@ -310,13 +310,15 @@ func xmlEscape(s string) string {
 	return buf.String()
 }
 
-// escapeAttr экранирует значение XML-атрибута: xml.EscapeText оставляет
-// «"» как есть, а ver/rel приходят из заголовка .rpm — сборщик может
-// вписать туда кавычку (или что угодно ещё), и голая кавычка прорвала
-// бы атрибут primary.xml. Кавычка добавляется к &<>, которых текстовый
-// эскейп уже покрывает.
+// escapeAttr экранирует значение XML-атрибута. Значения приходят из
+// заголовка .rpm — сборщик может вписать туда кавычку, и голая кавычка
+// прорвала бы атрибут primary.xml. xml.EscapeText покрывает &<> и сам
+// превращает «"» в &#34;; канонизируем оба варианта в именованный
+// &quot; (та же семантика, diff'ы индексов читаемее).
 func escapeAttr(s string) string {
-	return strings.ReplaceAll(xmlEscape(s), `"`, "&quot;")
+	escaped := xmlEscape(s)
+	escaped = strings.ReplaceAll(escaped, `"`, "&quot;")
+	return strings.ReplaceAll(escaped, "&#34;", "&quot;")
 }
 
 // writeAtomic пишет байты в storage через Put+Commit; на ошибке Abort.

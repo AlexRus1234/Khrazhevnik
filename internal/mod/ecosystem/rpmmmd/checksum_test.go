@@ -22,6 +22,8 @@
 package rpmmmd
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"strings"
 	"testing"
@@ -87,9 +89,11 @@ func TestResolveRepodataChecksumsAfterEnumerate(t *testing.T) {
 		t.Fatalf("без sync чексуммы быть не должно: %+v", target.Checksum)
 	}
 
+	// primary в repomd — .xml.gz (как у настоящих репозиториев):
+	// Enumerate тянет его по location-href и сам распаковывает gzip.
 	meta := fakeMeta{files: map[string][]byte{
 		"/rpm/fedora/repodata/repomd.xml":  []byte(testRepomdChecksums),
-		"/rpm/fedora/repodata/primary.xml": []byte(testPrimaryOne),
+		"/rpm/fedora/repodata/primary.xml.gz": gzBytes(t, testPrimaryOne),
 	}}
 	if _, err := a.Enumerate(context.Background(), remote, meta); err != nil {
 		t.Fatalf("Enumerate: %v", err)
@@ -147,4 +151,18 @@ func TestParseRepomdChecksumType(t *testing.T) {
 	if els != 1 {
 		t.Fatalf("primary-элементов = %d, хочу 1", els)
 	}
+}
+
+// gzBytes — gzip-упаковка fixture (Enumarate тянет primary как .gz).
+func gzBytes(t *testing.T, s string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write([]byte(s)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }

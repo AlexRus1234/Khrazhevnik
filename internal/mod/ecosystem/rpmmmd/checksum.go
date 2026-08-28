@@ -63,9 +63,15 @@ func (c *checksumIndex) lookup(id int64, upstreamPath string) (port.Checksum, bo
 }
 
 // hexChecksum валидирует пару «алгоритм/hex» из индекса: мусорный hex
-// не должен превращаться в вечный checksum mismatch у каждого запроса.
-// Не-hex или пустое значение — «чексуммы нет» (честная деградация).
+// и неизвестный движку кеша алгоритм не должны попадать в Target —
+// верифицировать их нечем (список зеркалит engine.checksumHasher:
+// sha256/sha1/md5), запись лишь путала бы метрики.
 func hexChecksum(algo, hex string) (port.Checksum, bool) {
+	switch strings.ToLower(strings.TrimSpace(algo)) {
+	case "sha256", "sha-256", "sha1", "sha-1", "md5":
+	default:
+		return port.Checksum{}, false
+	}
 	hex = strings.ToLower(strings.TrimSpace(hex))
 	if hex == "" {
 		return port.Checksum{}, false
