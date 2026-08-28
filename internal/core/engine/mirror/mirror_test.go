@@ -460,6 +460,67 @@ func TestSyncCancelWritesFinalJobState(t *testing.T) {
 	}
 }
 
+// TestSyncStaleStormIsNotFailure — массовый stale при сбойном upstream
+// и прогретом кеше: sync успешен, stale-пути считаются отдельно и не
+// растят ErrorThreshold (аудит 2026-08-27).
+func TestSyncStaleStormIsNotFailure(t *testing.T) {
+	// remote.Name = "idx": upstream-путь /idx/a.db попадает в mutable-
+	// ветку Classify фейка — stale-serve работает только для mutable.
+	files := map[string][]byte{"/idx/a.db": []byte("meta-1")}
+	repo := newMiniRepo(files)
+	t.Cleanup(repo.Close)
+	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	storage := testutil.NewFakeStorage(clock)
+	index := testutil.NewFakeObjectIndex()
+	remotes := testutil.NewFakeRemoteStore()
+	remote, err := remotes.CreateRemote(context.Background(), domain.Remote{
+		Name: "idx", Ecosystem: "t", BaseURL: repo.URL(),
+		Mode: domain.ModeMirror, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eco := testutil.FakeEcosystem{
+		NameOf: "t", Base: repo.URL(),
+		MutableTTL:     50 * time.Millisecond,
+		EnumeratePaths: []string{"/a.db"},
+	}
+	cache := cacheengine.New(storage, index, repo.server.Client(), clock,
+		cacheengine.Config{StaleIfError: true, NegativeTTL5xx: 30 * time.Second}, metrics.NewCache())
+	jobs := testutil.NewFakeJobStore()
+	mir := New(Config{Workers: 1, RetryMax: 2, ProgressInterval: 10 * time.Millisecond},
+		cache, storage, remotes, jobs, clock, map[string]port.Ecosystem{"t": eco})
+
+	// прогрев: метаданные скачаны, кеш годен
+	if err := mir.Sync(context.Background(), remote, &recordingProgress{}); err != nil {
+		t.Fatalf("первый sync (прогрев): %v", err)
+	}
+	// upstream падает, TTL истекает: ревалидация получает 500,
+	// но stale-копия в кеше есть
+	repo.setFail("/idx/a.db", true)
+	clock.Advance(31 * time.Second)
+
+	p2 := &recordingProgress{}
+	if err := mir.Sync(context.Background(), remote, p2); err != nil {
+		t.Fatalf("stale-шторм не должен ронять sync: %v\nлоги:\n%s", err, strings.Join(p2.logs, "\n"))
+	}
+	joined := strings.Join(p2.logs, "\n")
+	if !strings.Contains(joined, "stale 1") {
+		t.Errorf("лог не содержит счётчик stale:\n%s", joined)
+	}
+	job, jerr := jobs.Job(context.Background(), jobIDForRemote(&mirrorEnv{jobs: jobs}, remote.ID))
+	if jerr != nil {
+		t.Fatalf("Job: %v", jerr)
+	}
+	if job.State != domain.StateSucceeded {
+		t.Errorf("sync_jobs.state = %q, хочу succeeded", job.State)
+	}
+	// ровно один поход upstream во втором sync: stale не ретрится
+	if got := repo.count("/idx/a.db"); got != 2 {
+		t.Errorf("upstream получил %d запросов, хочу 2 (прогрев + ревалидация)", got)
+	}
+}
+
 func TestSyncUnsupportedEcosystem(t *testing.T) {
 	// экосистема без Enumerate (FakeEcosystem без EnumeratePaths) —
 	// Sync падает с UnsupportedError, sync_jobs → failed.

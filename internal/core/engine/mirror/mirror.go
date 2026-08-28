@@ -208,8 +208,8 @@ func (e *Engine) Sync(ctx context.Context, remote domain.Remote, p Progress) err
 	// Фаза 3: worker pool prefetch.
 	p.Update("download", remote.Name, 0, int64(len(toSync)))
 	res := e.download(ctx, eco, remote, toSync, p)
-	p.Log(fmt.Sprintf("download: скачано %d, ошибок %d, %s",
-		res.done, res.failed, humanBytes(res.bytes)))
+	p.Log(fmt.Sprintf("download: скачано %d, ошибок %d, stale %d, %s",
+		res.done, res.failed, res.stale, humanBytes(res.bytes)))
 
 	if res.failed > 0 && float64(res.failed)/float64(len(toSync)) > e.cfg.ErrorThreshold {
 		err := fmt.Errorf("sync: %d из %d путей упали (>%.0f%%)", res.failed, len(toSync), e.cfg.ErrorThreshold*100)
@@ -227,6 +227,7 @@ func (e *Engine) Sync(ctx context.Context, remote domain.Remote, p Progress) err
 type downloadResult struct {
 	done   int
 	failed int
+	stale  int
 	bytes  int64
 	errors []string
 }
@@ -269,10 +270,17 @@ func (e *Engine) download(ctx context.Context, eco port.Ecosystem, remote domain
 	totals := int64(len(toSync))
 	for pr := range out {
 		processed.Add(1)
-		if pr.err != nil {
+		switch {
+		case pr.err != nil:
 			res.failed++
 			res.errors = append(res.errors, pr.path+": "+pr.err.Error())
-		} else {
+		case pr.stale:
+			// объект отдан из кеша при сбойном upstream — деградация,
+			// не сбой: в failed не попадает и ErrorThreshold не растит
+			res.stale++
+			res.done++
+			res.bytes += pr.bytes
+		default:
 			res.done++
 			res.bytes += pr.bytes
 		}
@@ -291,6 +299,7 @@ func (e *Engine) download(ctx context.Context, eco port.Ecosystem, remote domain
 type pathResult struct {
 	path  string
 	bytes int64
+	stale bool
 	err   error
 }
 
@@ -305,6 +314,13 @@ func (e *Engine) worker(ctx context.Context, eco port.Ecosystem, wg *sync.WaitGr
 		}
 		res, err := e.prefetchWithRetry(ctx, eco, path)
 		if err != nil {
+			var stale *domain.StaleError
+			if errors.As(err, &stale) {
+				// stale ≠ failure: объект отдан из кеша — это деградация
+				// при сбойном upstream, ретраить нечего и не нужно
+				out <- pathResult{path: path, bytes: res.Bytes, stale: true}
+				continue
+			}
 			out <- pathResult{path: path, err: err}
 			continue
 		}
@@ -313,7 +329,8 @@ func (e *Engine) worker(ctx context.Context, eco port.Ecosystem, wg *sync.WaitGr
 }
 
 // prefetchWithRetry повторяет prefetch до RetryMax раз; NotFound
-// не ретрится (upstream удалил объект — это не сбой сети).
+// не ретрится (upstream удалил объект — это не сбой сети), StaleError
+// не ретрится (объект отдан из кеша — результат уже получен).
 func (e *Engine) prefetchWithRetry(ctx context.Context, eco port.Ecosystem, ecosystemPath string) (cacheengine.PrefetchResult, error) {
 	var lastErr error
 	for attempt := 0; attempt <= e.cfg.RetryMax; attempt++ {
@@ -323,6 +340,10 @@ func (e *Engine) prefetchWithRetry(ctx context.Context, eco port.Ecosystem, ecos
 		res, err := e.cache.PrefetchThrottled(ctx, eco, ecosystemPath, e.throttle())
 		if err == nil {
 			return res, nil
+		}
+		var stale *domain.StaleError
+		if errors.As(err, &stale) {
+			return res, err
 		}
 		var nf *domain.NotFoundError
 		if errors.As(err, &nf) {
