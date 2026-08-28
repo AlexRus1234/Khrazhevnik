@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -821,5 +822,54 @@ func TestGenerateIndexesListingErrorKeepsOldIndexes(t *testing.T) {
 	after := readStorage(t, storage, packagesKey)
 	if !bytes.Equal(before, after) {
 		t.Fatal("ошибка листинга перезаписала валидный Packages (не fail-closed)")
+	}
+}
+
+// putDebZstd складывает .deb с zstd control.tar (buildDebZstd) под
+// префиксом repo/<id>/apt. Возвращает ключ.
+func putDebZstd(t *testing.T, storage *testutil.FakeStorage, repo domain.Repo, name, control string) string {
+	t.Helper()
+	deb := buildDebZstd(t, control)
+	key := port.RepoPrefix(repo) + "/" + name
+	w, err := storage.Put(context.Background(), key)
+	if err != nil {
+		t.Fatalf("storage.Put %s: %v", key, err)
+	}
+	if _, err := w.Write(deb); err != nil {
+		t.Fatalf("w.Write %s: %v", key, err)
+	}
+	if err := w.Commit(context.Background()); err != nil {
+		t.Fatalf("w.Commit %s: %v", key, err)
+	}
+	return key
+}
+
+// TestGenerateIndexesZstdControlNoGoroutineLeak — N .deb с zstd
+// control.tar: после GenerateIndexes число горутин возвращается к
+// базовому. decompressControl обязан отдавать ReadCloser, readControl —
+// закрывать: klauspost/compress держит worker-горутины декодера до
+// Close, без него — монотонная утечка на каждом .deb каждой регенерации.
+func TestGenerateIndexesZstdControlNoGoroutineLeak(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	control := "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: f\n"
+	for i := range 8 {
+		putDebZstd(t, storage, repo, fmt.Sprintf("pool/main/f/foo%d.deb", i), control)
+	}
+
+	base := runtime.NumGoroutine()
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	// Шум рантайма (GC, финализаторы, тестовый фреймворк) допускаем:
+	// ждём до 2с возврата к базе с допуском ±2 горутины.
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > base+2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := runtime.NumGoroutine(); n > base+2 {
+		t.Fatalf("горутины утекли: база %d, после GenerateIndexes %d", base, n)
 	}
 }

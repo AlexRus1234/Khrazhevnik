@@ -415,6 +415,10 @@ func readControl(r io.Reader) (*Stanza, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Close обязателен на любом исходе: zstd-декодер держит
+		// worker-горутины до Close — без него монотонная утечка на
+		// каждый .deb с zstd control.tar (дефолт современного dpkg).
+		defer dr.Close()
 		return readControlTar(dr)
 	}
 }
@@ -454,11 +458,13 @@ func readControlTar(r io.Reader) (*Stanza, error) {
 }
 
 // decompressControl распознаёт формат по сигнатуре и возвращает
-// распакованный поток. Поддерживаются gzip (1f 8b) и zstd (28 b5 2f fd);
-// xz не поддерживается — в whitelist нет xz-либы (мини-читатель
-// достаточно покрывает .deb с gz/zstd-компрессией, что генерируют
-// dpkg-deb и наши фикстуры).
-func decompressControl(r io.Reader) (io.Reader, error) {
+// распакованный поток как ReadCloser: gzip-ридер закрывает поток сам,
+// zstd оборачивается (Decoder.Close останавливает worker-горутины),
+// несжатый tar — NopCloser. Поддерживаются gzip (1f 8b) и zstd
+// (28 b5 2f fd); xz не поддерживается — в whitelist нет xz-либы
+// (мини-читатель достаточно покрывает .deb с gz/zstd-компрессией, что
+// генерируют dpkg-deb и наши фикстуры). Вызывающий обязан Close.
+func decompressControl(r io.Reader) (io.ReadCloser, error) {
 	br := bufio.NewReader(r)
 	peek, err := br.Peek(4)
 	if err != nil && err != io.EOF {
@@ -476,12 +482,18 @@ func decompressControl(r io.Reader) (io.Reader, error) {
 		if gzErr != nil {
 			return nil, fmt.Errorf("apt.deb: zstd: %w", gzErr)
 		}
-		return zr, nil
+		return zstdReadCloser{zr}, nil
 	}
 	// Несжатый tar — редкость, но поддержим (контроль-секция
 	// маленькая, peek достаточен).
-	return br, nil
+	return io.NopCloser(br), nil
 }
+
+// zstdReadCloser адаптирует *zstd.Decoder к io.ReadCloser: Close у
+// декодера безвозвратный и без error, контракт io.Closer требует error.
+type zstdReadCloser struct{ *zstd.Decoder }
+
+func (z zstdReadCloser) Close() error { z.Decoder.Close(); return nil }
 
 // newArReader создаёт читатель ar-архива поверх r. ar-формат: 8-байтный
 // маг «!<arch>\n», затем 60-байтные заголовки членов + контент,
