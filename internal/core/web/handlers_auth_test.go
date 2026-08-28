@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,6 +154,53 @@ func TestAuthHandlersEndToEnd(t *testing.T) {
 	}
 	if callJSON(h, http.MethodPost, "/api/v1/auth/logout", "10.0.0.3:1", "", session).Code != 401 {
 		t.Fatal("logged out session accepted")
+	}
+}
+
+// TestSetupAtomicBootstrap — 20 параллельных POST /setup в
+// bootstrap-окне: ровно один 201, остальные 403 setup_already_done,
+// в таблице один пользователь (аудит 2026-08-27). RemoteAddr у каждой
+// горутины свой — тестируем атомарность, а не rate limiter.
+func TestSetupAtomicBootstrap(t *testing.T) {
+	a, _ := handlerAuth(t)
+	h := BuildAdminRouter(Deps{Auth: a})
+	setup := `{"username":"admin","password":"password"}`
+
+	const writers = 20
+	codes := make(chan int, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r := httptest.NewRequest(http.MethodPost, "/api/v1/setup", strings.NewReader(setup))
+			r.RemoteAddr = "10.1." + strconv.Itoa(i/256) + "." + strconv.Itoa(i%256+1) + ":1234"
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			codes <- w.Code
+		}(i)
+	}
+	wg.Wait()
+	close(codes)
+	created := 0
+	for code := range codes {
+		switch code {
+		case http.StatusCreated:
+			created++
+		case http.StatusForbidden:
+		default:
+			t.Fatalf("неожиданный статус /setup в гонке: %d", code)
+		}
+	}
+	if created != 1 {
+		t.Fatalf("создано админов %d, хочу ровно 1", created)
+	}
+	all, err := a.Users(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("в таблице %d пользователей, хочу 1", len(all))
 	}
 }
 

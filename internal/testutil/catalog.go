@@ -61,6 +61,23 @@ func (s *FakeUserStore) CreateUser(_ context.Context, u domain.User) (domain.Use
 	return u, nil
 }
 
+// EnsureFirstUser атомарно создаёт первого пользователя; created=false —
+// хранилище уже непуста (параллельный победитель).
+func (s *FakeUserStore) EnsureFirstUser(_ context.Context, u domain.User) (domain.User, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.byID) > 0 {
+		return domain.User{}, false, nil
+	}
+	if u.ID == 0 {
+		s.nextID++
+		u.ID = s.nextID
+	}
+	s.byID[u.ID] = u
+	s.byName[u.Username] = u.ID
+	return u, true, nil
+}
+
 // User возвращает пользователя по ID.
 func (s *FakeUserStore) User(_ context.Context, id int64) (domain.User, error) {
 	s.mu.Lock()

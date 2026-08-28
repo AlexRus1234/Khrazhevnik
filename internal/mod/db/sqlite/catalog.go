@@ -43,6 +43,11 @@ const auditDefaultLimit = 100
 const (
 	sqlUserInsert = `INSERT INTO users (username, password_hash, role, token_version, created_at)
 		VALUES (?, ?, ?, ?, ?) RETURNING id`
+	// sqlUserInsertFirst — атомарный bootstrap первого пользователя:
+	// INSERT выполняется только на пустой таблице; RETURNING на
+	// пропущенной вставке не даёт строк → ErrNoRows → created=false.
+	sqlUserInsertFirst = `INSERT INTO users (username, password_hash, role, token_version, created_at)
+		SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users) RETURNING id`
 	sqlUserSelect = `SELECT id, username, password_hash, role, token_version, created_at FROM users`
 	sqlUserByID   = sqlUserSelect + ` WHERE id = ?`
 	sqlUserByName = sqlUserSelect + ` WHERE username = ?`
@@ -127,6 +132,29 @@ func (s *Store) CreateUser(ctx context.Context, u domain.User) (domain.User, err
 	}
 	u.ID = id
 	return u, nil
+}
+
+// EnsureFirstUser атомарно создаёт первого пользователя; created=false —
+// таблица уже непуста (параллельный победитель). ErrNoRows от
+// RETURNING на пропущенной INSERT — не ошибка чтения.
+func (s *Store) EnsureFirstUser(ctx context.Context, u domain.User) (domain.User, bool, error) {
+	id, err := call(ctx, s, func() (int64, error) {
+		var id int64
+		err := s.db.QueryRowContext(ctx, sqlUserInsertFirst,
+			u.Username, u.PasswordHash, string(u.Role), u.TokenVersion, dbtalk.Now(u.CreatedAt)).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return id, err
+	})
+	if err != nil {
+		return domain.User{}, false, mapWrite(err, "пользователь", u.Username)
+	}
+	if id == 0 {
+		return domain.User{}, false, nil
+	}
+	u.ID = id
+	return u, true, nil
 }
 
 // User возвращает пользователя по ID.

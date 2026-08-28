@@ -103,19 +103,50 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, rol
 	if err := domain.ValidateUsername(username); err != nil {
 		return domain.User{}, err
 	}
-	if len([]byte(password)) > maxBcryptPassword {
-		return domain.User{}, &domain.TooLargeError{Size: int64(len([]byte(password))), Limit: maxBcryptPassword}
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := s.hashPassword(password)
 	if err != nil {
-		// bcrypt has a hard 72-byte limit; never create an account after a hash failure.
-		return domain.User{}, &domain.TooLargeError{Size: int64(len([]byte(password))), Limit: maxBcryptPassword}
+		return domain.User{}, err
 	}
 	u, err := s.cfg.Users.CreateUser(ctx, domain.User{Username: username, PasswordHash: string(hash), Role: role, TokenVersion: 1, CreatedAt: s.cfg.Clock.Now()})
 	if err == nil {
 		s.audit(ctx, username, "user.create", "user:"+username, domain.AuditOK, "")
 	}
 	return u, err
+}
+
+// EnsureFirstAdmin atomically creates the first admin: a single
+// INSERT ... WHERE NOT EXISTS in the store settles the bootstrap race
+// (audit 2026-08-27: separate HasUsers+CreateUser let two parallel
+// /setup calls create two admins). created=false — someone else won.
+func (s *Service) EnsureFirstAdmin(ctx context.Context, username, password string) (domain.User, bool, error) {
+	if err := domain.ValidateUsername(username); err != nil {
+		return domain.User{}, false, err
+	}
+	hash, err := s.hashPassword(password)
+	if err != nil {
+		return domain.User{}, false, err
+	}
+	u, created, err := s.cfg.Users.EnsureFirstUser(ctx, domain.User{
+		Username: username, PasswordHash: string(hash),
+		Role: domain.RoleAdmin, TokenVersion: 1, CreatedAt: s.cfg.Clock.Now(),
+	})
+	if err == nil && created {
+		s.audit(ctx, username, "setup", "user:"+username, domain.AuditOK, "")
+	}
+	return u, created, err
+}
+
+// hashPassword validates the bcrypt size limit and hashes the value.
+func (s *Service) hashPassword(password string) ([]byte, error) {
+	if len([]byte(password)) > maxBcryptPassword {
+		return nil, &domain.TooLargeError{Size: int64(len([]byte(password))), Limit: maxBcryptPassword}
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		// bcrypt has a hard 72-byte limit; never create an account after a hash failure.
+		return nil, &domain.TooLargeError{Size: int64(len([]byte(password))), Limit: maxBcryptPassword}
+	}
+	return hash, nil
 }
 
 // VerifyPassword returns a user only after a password comparison.

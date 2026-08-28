@@ -69,6 +69,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 		return c
 	}
 	t.Run("users", func(t *testing.T) { userSuite(t, newCat(t)) })
+	t.Run("first_user_atomic", func(t *testing.T) { firstUserAtomicSuite(t, newCat(t)) })
 	t.Run("tokens", func(t *testing.T) { tokenSuite(t, newCat(t)) })
 	t.Run("repos", func(t *testing.T) { repoSuite(t, newCat(t)) })
 	t.Run("remotes", func(t *testing.T) { remoteSuite(t, newCat(t)) })
@@ -131,6 +132,65 @@ func userSuite(t *testing.T, c Catalog) {
 	has, err = c.Users.HasUsers(ctx)
 	if err != nil || !has {
 		t.Fatalf("HasUsers = %v, %v", has, err)
+	}
+}
+
+// firstUserAtomicSuite — атомарность bootstrap первого пользователя
+// (аудит 2026-08-27): 20 параллельных EnsureFirstUser на пустой таблице
+// завершает ровно один победитель; таблица содержит ровно одного
+// пользователя — победителя. UNIQUE(username) тут ни при чём: имена
+// у писателей разные, механизм — пустота таблицы.
+func firstUserAtomicSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	const writers = 20
+	type outcome struct {
+		username string
+		created  bool
+	}
+	outcomes := make(chan outcome, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			name := fmt.Sprintf("racer-%02d", i)
+			u, created, err := c.Users.EnsureFirstUser(ctx, domain.User{
+				Username: name, PasswordHash: "h", Role: domain.RoleAdmin,
+				TokenVersion: 1, CreatedAt: fixed,
+			})
+			if err != nil {
+				t.Errorf("EnsureFirstUser(%s): %v", name, err)
+				return
+			}
+			if created && u.ID == 0 {
+				t.Errorf("EnsureFirstUser(%s): создан без ID", name)
+			}
+			outcomes <- outcome{username: name, created: created}
+		}()
+	}
+	wg.Wait()
+	close(outcomes)
+	var winners []string
+	for o := range outcomes {
+		if o.created {
+			winners = append(winners, o.username)
+		}
+	}
+	if len(winners) != 1 {
+		t.Fatalf("победителей bootstrap-гонки %d, хочу ровно 1: %v", len(winners), winners)
+	}
+	all, err := c.Users.Users(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Username != winners[0] {
+		t.Fatalf("после гонки в таблице %+v, хочу единственного %q", all, winners[0])
+	}
+	// Повторный вызов на непустой таблице — created=false без ошибки.
+	if _, created, err := c.Users.EnsureFirstUser(ctx, domain.User{
+		Username: "late-comer", PasswordHash: "h", CreatedAt: fixed,
+	}); err != nil || created {
+		t.Fatalf("EnsureFirstUser на непустой таблице = created %v, err %v; хочу false, nil", created, err)
 	}
 }
 

@@ -151,7 +151,7 @@ enabled = true
 
 | Метод | Путь                       | Auth        | Код | Назначение                          |
 |-------|----------------------------|-------------|-----|-------------------------------------|
-| POST  | `/api/v1/setup`            | — (пустая БД), `X-Setup-Token` | 201/403 | Первый админ |
+| POST  | `/api/v1/setup`            | — (пустая БД), `X-Setup-Token`; rate-limit 10/min | 201/403 | Первый админ. Атомарно: `INSERT ... WHERE NOT EXISTS` (EnsureFirstUser) — параллельные вызовы создают ровно одного админа, проигравшие — 403 `setup_already_done` |
 | POST  | `/api/v1/auth/login`       | —           | 200/401 | Выдача JWT; rate-limit 10/min      |
 | POST  | `/api/v1/auth/logout`      | session     | 204 | Отзыв JWT в процессе                |
 

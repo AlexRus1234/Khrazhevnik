@@ -33,6 +33,12 @@ import (
 // *domain.ConflictError.
 type UserStore interface {
 	CreateUser(ctx context.Context, u domain.User) (domain.User, error)
+	// EnsureFirstUser атомарно создаёт пользователя только на пустой
+	// таблице (один стейтмент INSERT ... SELECT ... WHERE NOT EXISTS).
+	// Второй результат — создан ли пользователь; параллельные вызовы в
+	// bootstrap-окне завершает ровно один победитель (аудит 2026-08-27:
+	// HasUsers→CreateUser — гонка на двух админов).
+	EnsureFirstUser(ctx context.Context, u domain.User) (domain.User, bool, error)
 	User(ctx context.Context, id int64) (domain.User, error)
 	UserByUsername(ctx context.Context, username string) (domain.User, error)
 	Users(ctx context.Context) ([]domain.User, error)

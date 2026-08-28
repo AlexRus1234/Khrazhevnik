@@ -28,10 +28,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -296,6 +299,76 @@ func TestAdminMetricsLive(t *testing.T) {
 		t.Fatalf("сервер: %v", err)
 	}
 }
+
+// TestAdminSetupAtomicLive — 20 параллельных POST /setup на пустой
+// базе: ровно один 201, остальные 403, один пользователь (аудит
+// 2026-08-27, интеграционный аналог firstUserAtomicSuite). Источники —
+// разные loopback-адреса 127.x: /setup под login-rate-limit, одна
+// корзина превратила бы гонку в тест лимитера.
+func TestAdminSetupAtomicLive(t *testing.T) {
+	srv, catalog, _ := adminIntegrationEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- srv.Run(ctx) }()
+	_, adminAddr := srv.Addrs()
+	waitHealthy(t, "http://"+adminAddr+"/healthz")
+
+	const writers = 20
+	codes := make(chan int, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			client := &http.Client{Transport: &http.Transport{
+				DialContext: (&net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP("127.0.0." + itoaInt(1+i%250))}}).DialContext,
+			}}
+			req, _ := http.NewRequest(http.MethodPost,
+				"http://"+adminAddr+"/api/v1/setup",
+				strings.NewReader(`{"username":"racer","password":"password"}`))
+			resp, err := client.Do(req)
+			if err != nil {
+				codes <- -1
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			codes <- resp.StatusCode
+		}(i)
+	}
+	wg.Wait()
+	close(codes)
+	created := 0
+	for code := range codes {
+		switch code {
+		case http.StatusCreated:
+			created++
+		case http.StatusForbidden, -1:
+			// -1 — локальный dial-сбой экзотического loopback (не каскадит)
+		default:
+			t.Errorf("неожиданный статус /setup в гонке: %d", code)
+		}
+	}
+	if created != 1 {
+		t.Fatalf("создано админов %d, хочу ровно 1", created)
+	}
+	users, err := catalog.Users.Users(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("в таблице %d пользователей, хочу 1", len(users))
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("сервер: %v", err)
+	}
+}
+
+// itoaInt — локальная обёртка strconv.Itoa.
+func itoaInt(n int) string { return strconv.Itoa(n) }
 
 // post — HTTP POST с bearer, проверяет статус.
 func post(t *testing.T, url, body, bearer string, want int) []byte {

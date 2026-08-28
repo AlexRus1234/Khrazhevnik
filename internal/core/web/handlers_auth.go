@@ -33,21 +33,14 @@ type credentials struct {
 	Password string `json:"password"`
 }
 
-// handleSetup — POST /api/v1/setup: первый админ, только при пустой
-// таблице users (+опциональный X-Setup-Token).
+// handleSetup — POST /api/v1/setup: первый админ. Атомарность —
+// EnsureFirstAdmin (один INSERT ... WHERE NOT EXISTS): параллельные
+// вызовы в bootstrap-окне завершает ровно один победитель, остальные —
+// 403 setup_already_done (аудит 2026-08-27). Опциональный X-Setup-Token.
 func handleSetup(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Auth == nil {
 			writeErrCode(w, http.StatusNotFound, "not_found")
-			return
-		}
-		has, err := d.Auth.HasUsers(r.Context())
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		if has {
-			writeErrCode(w, http.StatusForbidden, "setup_already_done")
 			return
 		}
 		if d.SetupToken != "" {
@@ -61,9 +54,13 @@ func handleSetup(d Deps) http.HandlerFunc {
 		if !decodeJSON(w, r, &in) {
 			return
 		}
-		u, err := d.Auth.CreateUser(r.Context(), in.Username, in.Password, "admin")
+		u, created, err := d.Auth.EnsureFirstAdmin(r.Context(), in.Username, in.Password)
 		if err != nil {
 			writeErr(w, err)
+			return
+		}
+		if !created {
+			writeErrCode(w, http.StatusForbidden, "setup_already_done")
 			return
 		}
 		*r = *r.WithContext(WithAuditAction(r.Context(), "setup"))

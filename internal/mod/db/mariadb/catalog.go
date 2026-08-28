@@ -48,6 +48,15 @@ const auditDefaultLimit = 100
 const (
 	sqlUserInsert = `INSERT INTO users (username, password_hash, role, token_version, created_at)
 		VALUES (?, ?, ?, ?, ?)`
+	// sqlUserInsertFirst — атомарный bootstrap первого пользователя.
+	// MariaDB без RETURNING: факт вставки — по RowsAffected (0 —
+	// таблица уже непуста), ID — LastInsertId обычного INSERT.
+	// FROM DUAL обязателен: MariaDB не допускает WHERE у SELECT без FROM.
+	// Конкуренты под RR сводятся к дедлоку на gap-локе пустой таблицы —
+	// его гасит retry обёртки call (1213), проигравший переоценивает
+	// NOT EXISTS и получает RowsAffected=0.
+	sqlUserInsertFirst = `INSERT INTO users (username, password_hash, role, token_version, created_at)
+		SELECT ?, ?, ?, ?, ? FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM users)`
 	sqlUserSelect = `SELECT id, username, password_hash, role, token_version, created_at FROM users`
 	sqlUserByID   = sqlUserSelect + ` WHERE id = ?`
 	sqlUserByName = sqlUserSelect + ` WHERE username = ?`
@@ -136,6 +145,31 @@ func (s *Store) CreateUser(ctx context.Context, u domain.User) (domain.User, err
 	}
 	u.ID = id
 	return u, nil
+}
+
+// EnsureFirstUser атомарно создаёт первого пользователя; created=false —
+// таблица уже непуста (параллельный победитель, RowsAffected=0).
+func (s *Store) EnsureFirstUser(ctx context.Context, u domain.User) (domain.User, bool, error) {
+	res, err := call(ctx, s, func() (sql.Result, error) {
+		return s.db.ExecContext(ctx, sqlUserInsertFirst,
+			u.Username, u.PasswordHash, string(u.Role), u.TokenVersion, dbtalk.Now(u.CreatedAt))
+	})
+	if err != nil {
+		return domain.User{}, false, mapWrite(err, "пользователь", u.Username)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return domain.User{}, false, fmt.Errorf("mariadb: строки пользователя: %w", err)
+	}
+	if affected == 0 {
+		return domain.User{}, false, nil
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return domain.User{}, false, fmt.Errorf("mariadb: id пользователя: %w", err)
+	}
+	u.ID = id
+	return u, true, nil
 }
 
 // User возвращает пользователя по ID.
