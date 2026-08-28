@@ -234,7 +234,7 @@ func (e *Engine) prefetchImmutable(ctx context.Context, target port.Target, clas
 func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache, wait Throttle) (PrefetchResult, error) {
 	indexed, indexErr := e.index.ObjectMeta(ctx, target.StorageKey)
 	if indexErr == nil && !indexed.Expired(e.clock.Now()) {
-		if meta, err := e.storage.Stat(ctx, storageKeyOf(indexed)); err == nil {
+		if meta, err := e.storage.Stat(ctx, indexed.BytesKey()); err == nil {
 			m.Hits.Add(1)
 			return PrefetchResult{Status: statusHit, Bytes: meta.Size}, nil
 		}
@@ -267,7 +267,7 @@ func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class 
 		if curErr != nil {
 			return PrefetchResult{}, curErr
 		}
-		meta, err := e.storage.Stat(ctx, storageKeyOf(cur))
+		meta, err := e.storage.Stat(ctx, cur.BytesKey())
 		if err != nil {
 			return PrefetchResult{}, err
 		}
@@ -278,7 +278,7 @@ func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class 
 	if !ok {
 		return PrefetchResult{}, fmt.Errorf("кеш: prefetch: неожиданный тип результата полёта %T", res)
 	}
-	meta, err := e.storage.Stat(ctx, storageKeyOf(r.meta))
+	meta, err := e.storage.Stat(ctx, r.meta.BytesKey())
 	if err != nil {
 		return PrefetchResult{}, err
 	}
@@ -288,15 +288,6 @@ func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class 
 		return PrefetchResult{Status: statusHit, Bytes: meta.Size}, nil
 	}
 	return PrefetchResult{Status: statusMiss, Bytes: meta.Size, Downloaded: meta.Size}, nil
-}
-
-// storageKeyOf достаёт ключ байтов из индексной записи: StorageKey
-// (версионные mutable) или сам Key (записи до версионирования).
-func storageKeyOf(m domain.ObjectMeta) string {
-	if m.StorageKey == "" {
-		return m.Key
-	}
-	return m.StorageKey
 }
 
 // AddBytesToClients records bytes copied by the HTTP delivery layer.

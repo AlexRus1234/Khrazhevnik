@@ -222,7 +222,7 @@ func TestSchedulerStopRemoteInterruptsSync(t *testing.T) {
 	cache := cacheengine.New(storage, index, srv.Client(), clock,
 		cacheengine.Config{StaleIfError: true}, metrics.NewCache())
 	mir := New(Config{Workers: 1, RetryMax: 0, ProgressInterval: 10 * time.Millisecond},
-		cache, storage, remotes, testutil.NewFakeJobStore(), clock,
+		cache, storage, index, remotes, testutil.NewFakeJobStore(), clock,
 		map[string]port.Ecosystem{"t": eco})
 	sched := NewScheduler(mir, remotes,
 		testutil.FixedRand("44444444-4444-4444-8444-444444444444"), clock, 0)

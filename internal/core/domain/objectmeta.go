@@ -43,3 +43,15 @@ type ObjectMeta struct {
 func (m ObjectMeta) Expired(at time.Time) bool {
 	return !m.ExpiresAt.IsZero() && !m.ExpiresAt.After(at)
 }
+
+// BytesKey возвращает ключ, под которым лежат байты объекта:
+// версионный StorageKey mutable-записей или сам Key (записи до
+// версионирования). Потребители диффа зеркала обязаны проверять
+// наличие байт по нему, а не по логическому Key — Stat логического
+// ключа mutable всегда NotFound и гонял бы перекачку каждый sync.
+func (m ObjectMeta) BytesKey() string {
+	if m.StorageKey == "" {
+		return m.Key
+	}
+	return m.StorageKey
+}

@@ -182,7 +182,7 @@ func newMirrorEnv(t *testing.T) *mirrorEnv {
 	cache := cacheengine.New(storage, index, repo.server.Client(), clock,
 		cacheengine.Config{StaleIfError: true, NegativeTTL404: 5 * time.Minute, NegativeTTL5xx: 30 * time.Second}, m)
 	jobs := testutil.NewFakeJobStore()
-	mir := New(Config{Workers: 2, RetryMax: 2, ProgressInterval: 10 * time.Millisecond}, cache, storage, remotes, jobs, clock,
+	mir := New(Config{Workers: 2, RetryMax: 2, ProgressInterval: 10 * time.Millisecond}, cache, storage, index, remotes, jobs, clock,
 		map[string]port.Ecosystem{"t": eco})
 	return &mirrorEnv{
 		mirror: mir, cache: cache, storage: storage, jobs: jobs, remotes: remotes,
@@ -328,7 +328,7 @@ func TestSyncStreamingLimiterBigObject(t *testing.T) {
 	mir := New(Config{
 		Workers: 1, RetryMax: 1, MaxBandwidth: bandwidth,
 		ProgressInterval: 10 * time.Millisecond,
-	}, cache, storage, remotes, jobs, clock, map[string]port.Ecosystem{"t": eco})
+	}, cache, storage, index, remotes, jobs, clock, map[string]port.Ecosystem{"t": eco})
 
 	start := time.Now()
 	if err := mir.Sync(context.Background(), remote, &recordingProgress{}); err != nil {
@@ -439,7 +439,7 @@ func TestSyncCancelWritesFinalJobState(t *testing.T) {
 		cacheengine.Config{StaleIfError: true}, metrics.NewCache())
 	jobs := testutil.NewFakeJobStore()
 	mir := New(Config{Workers: 1, RetryMax: 0, ProgressInterval: 10 * time.Millisecond},
-		cache, storage, remotes, jobs, clock, map[string]port.Ecosystem{"t": eco})
+		cache, storage, index, remotes, jobs, clock, map[string]port.Ecosystem{"t": eco})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -489,7 +489,7 @@ func TestSyncStaleStormIsNotFailure(t *testing.T) {
 		cacheengine.Config{StaleIfError: true, NegativeTTL5xx: 30 * time.Second}, metrics.NewCache())
 	jobs := testutil.NewFakeJobStore()
 	mir := New(Config{Workers: 1, RetryMax: 2, ProgressInterval: 10 * time.Millisecond},
-		cache, storage, remotes, jobs, clock, map[string]port.Ecosystem{"t": eco})
+		cache, storage, index, remotes, jobs, clock, map[string]port.Ecosystem{"t": eco})
 
 	// прогрев: метаданные скачаны, кеш годен
 	if err := mir.Sync(context.Background(), remote, &recordingProgress{}); err != nil {
@@ -521,6 +521,99 @@ func TestSyncStaleStormIsNotFailure(t *testing.T) {
 	}
 }
 
+// TestSyncSkipsFreshMutable — mutable, свежий по TTL и полный по байтам
+// (индекс → BytesKey), не перекачивается каждый sync: diff по индексу.
+func TestSyncSkipsFreshMutable(t *testing.T) {
+	// remote.Name = "idx": upstream-путь /idx/a.db попадает в mutable-
+	// ветку Classify фейка
+	files := map[string][]byte{"/idx/a.db": []byte("meta-1")}
+	repo := newMiniRepo(files)
+	t.Cleanup(repo.Close)
+	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	storage := testutil.NewFakeStorage(clock)
+	index := testutil.NewFakeObjectIndex()
+	remotes := testutil.NewFakeRemoteStore()
+	remote, err := remotes.CreateRemote(context.Background(), domain.Remote{
+		Name: "idx", Ecosystem: "t", BaseURL: repo.URL(),
+		Mode: domain.ModeMirror, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eco := testutil.FakeEcosystem{
+		NameOf: "t", Base: repo.URL(),
+		MutableTTL:     time.Minute,
+		EnumeratePaths: []string{"/a.db"},
+	}
+	cache := cacheengine.New(storage, index, repo.server.Client(), clock,
+		cacheengine.Config{StaleIfError: true}, metrics.NewCache())
+	mir := New(Config{Workers: 1},
+		cache, storage, index, remotes, testutil.NewFakeJobStore(), clock,
+		map[string]port.Ecosystem{"t": eco})
+
+	if err := mir.Sync(context.Background(), remote, &recordingProgress{}); err != nil {
+		t.Fatalf("первый sync: %v", err)
+	}
+	p2 := &recordingProgress{}
+	if err := mir.Sync(context.Background(), remote, p2); err != nil {
+		t.Fatalf("второй sync: %v", err)
+	}
+	// свежий mutable пропущен: upstream не дёрган
+	if got := repo.count("/idx/a.db"); got != 1 {
+		t.Errorf("upstream получил %d запросов, хочу 1 (свежий mutable не перекачивается)", got)
+	}
+	joined := strings.Join(p2.logs, "\n")
+	if !strings.Contains(joined, "нечего скачивать") {
+		t.Errorf("второй sync должен пропустить всё:\n%s", joined)
+	}
+}
+
+// TestSyncSkipsGarbagePaths — мусорные пути enumerate (не маппятся /
+// не классифицируются) не молча теряются: счётчик skipped в логе задачи.
+func TestSyncSkipsGarbagePaths(t *testing.T) {
+	env := newMirrorEnv(t)
+	// у фейка живой путь только /a.deb; второй — мусор (не Resolve'ится
+	// в классифицируемый путь)
+	eco := env.eco.(testutil.FakeEcosystem)
+	eco.EnumeratePaths = []string{"/a.deb", ""}
+	env.mirror.ecos["t"] = eco
+
+	p := &recordingProgress{}
+	if err := env.mirror.Sync(context.Background(), env.remote, p); err != nil {
+		t.Fatalf("sync с мусорным путём не должен падать: %v\nлоги:\n%s", err, strings.Join(p.logs, "\n"))
+	}
+	joined := strings.Join(p.logs, "\n")
+	if !strings.Contains(joined, "1 пропущено") {
+		t.Errorf("лог не содержит счётчик пропущенных:\n%s", joined)
+	}
+	if !strings.Contains(joined, "1 к скачиванию") {
+		t.Errorf("лог должен показать 1 путь к скачиванию:\n%s", joined)
+	}
+}
+
+// TestTopErrors — агрегат причин: сортировка по частоте, потолок n.
+func TestTopErrors(t *testing.T) {
+	errs := []string{
+		"/a: 500", "/a: 500", "/a: 500",
+		"/b: timeout", "/b: timeout",
+		"/c: 404",
+	}
+	got := topErrors(errs, 2)
+	if len(got) != 2 {
+		t.Fatalf("topErrors(…, 2) = %v, хочу 2 строки", got)
+	}
+	if !strings.HasPrefix(got[0], "3x /a: 500") {
+		t.Errorf("первая строка = %q, хочу 3x /a: 500", got[0])
+	}
+	if !strings.HasPrefix(got[1], "2x /b: timeout") {
+		t.Errorf("вторая строка = %q, хочу 2x /b: timeout", got[1])
+	}
+	// потолок не срезает меньший список
+	if got := topErrors([]string{"x"}, 10); len(got) != 1 || got[0] != "1x x" {
+		t.Errorf("topErrors одиночной ошибки = %v", got)
+	}
+}
+
 func TestSyncUnsupportedEcosystem(t *testing.T) {
 	// экосистема без Enumerate (FakeEcosystem без EnumeratePaths) —
 	// Sync падает с UnsupportedError, sync_jobs → failed.
@@ -538,7 +631,7 @@ func TestSyncUnsupportedEcosystem(t *testing.T) {
 	})
 	jobs := testutil.NewFakeJobStore()
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: time.Minute}
-	mir := New(Config{Workers: 1}, cache, storage, remotes, jobs, clock,
+	mir := New(Config{Workers: 1}, cache, storage, index, remotes, jobs, clock,
 		map[string]port.Ecosystem{"t": eco})
 	err := mir.Sync(context.Background(), remote, &recordingProgress{})
 	var uns *domain.UnsupportedError

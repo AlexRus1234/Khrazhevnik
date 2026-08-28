@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -89,6 +90,7 @@ type Progress interface {
 type Engine struct {
 	cache   *cacheengine.Engine
 	storage port.Storage
+	index   port.ObjectIndex
 	remotes port.RemoteStore
 	jobs    port.JobStore
 	clock   port.Clock
@@ -103,7 +105,9 @@ type Engine struct {
 // New создаёт движок зеркала. ecoOf — карта экосистем по имени (та же,
 // что у прокси-роутера); remote.Ecosystem ищется в ней. nil-карта —
 // sync любого remote падает с NotFound (деградированный режим).
-func New(cfg Config, c *cacheengine.Engine, storage port.Storage, remotes port.RemoteStore, jobs port.JobStore, clock port.Clock, ecos map[string]port.Ecosystem) *Engine {
+// index — ObjectIndex кеша: diff сравнивает mutable-пути по индексной
+// записи (байты лежат под версионированными ключами).
+func New(cfg Config, c *cacheengine.Engine, storage port.Storage, index port.ObjectIndex, remotes port.RemoteStore, jobs port.JobStore, clock port.Clock, ecos map[string]port.Ecosystem) *Engine {
 	if cfg.Workers < 1 {
 		cfg.Workers = 1
 	}
@@ -124,7 +128,7 @@ func New(cfg Config, c *cacheengine.Engine, storage port.Storage, remotes port.R
 		limiter = rate.NewLimiter(rate.Limit(cfg.MaxBandwidth), int(cfg.MaxBandwidth))
 	}
 	return &Engine{
-		cache: c, storage: storage, remotes: remotes, jobs: jobs,
+		cache: c, storage: storage, index: index, remotes: remotes, jobs: jobs,
 		clock: clock, ecos: ecos, cfg: cfg, limiter: limiter,
 	}
 }
@@ -190,15 +194,15 @@ func (e *Engine) Sync(ctx context.Context, remote domain.Remote, p Progress) err
 	}
 	p.Log(fmt.Sprintf("enumerate: %d путей", len(paths)))
 
-	// Фаза 2: diff — отфильтровать уже скачанные (Storage.Stat).
+	// Фаза 2: diff — отфильтровать уже скачанные (индекс + Stat).
 	p.Update("diff", fmt.Sprintf("%s: %d путей", remote.Name, len(paths)), 0, int64(len(paths)))
-	toSync, err := e.diff(ctx, eco, remote, paths)
+	dr, err := e.diff(ctx, eco, remote, paths)
 	if err != nil {
 		_ = e.failJob(job, err)
 		return fmt.Errorf("mirror: diff: %w", err)
 	}
-	p.Log(fmt.Sprintf("diff: %d к скачиванию", len(toSync)))
-	if len(toSync) == 0 {
+	p.Log(fmt.Sprintf("diff: %d к скачиванию, %d пропущено", len(dr.toSync), dr.skipped))
+	if len(dr.toSync) == 0 {
 		_ = e.succeedJob(job, 0, 0)
 		p.Update("done", remote.Name, 0, 0)
 		p.Log("sync завершён: нечего скачивать")
@@ -206,19 +210,26 @@ func (e *Engine) Sync(ctx context.Context, remote domain.Remote, p Progress) err
 	}
 
 	// Фаза 3: worker pool prefetch.
-	p.Update("download", remote.Name, 0, int64(len(toSync)))
-	res := e.download(ctx, eco, remote, toSync, p)
+	p.Update("download", remote.Name, 0, int64(len(dr.toSync)))
+	res := e.download(ctx, eco, remote, dr.toSync, p)
 	p.Log(fmt.Sprintf("download: скачано %d, ошибок %d, stale %d, %s",
 		res.done, res.failed, res.stale, humanBytes(res.bytes)))
+	if len(res.errors) > 0 {
+		// топ-10 причин — в лог задачи: без агрегата причины путей
+		// терялись (res.errors собирался, но не читался)
+		for _, line := range topErrors(res.errors, 10) {
+			p.Log("ошибка: " + line)
+		}
+	}
 
-	if res.failed > 0 && float64(res.failed)/float64(len(toSync)) > e.cfg.ErrorThreshold {
-		err := fmt.Errorf("sync: %d из %d путей упали (>%.0f%%)", res.failed, len(toSync), e.cfg.ErrorThreshold*100)
+	if res.failed > 0 && float64(res.failed)/float64(len(dr.toSync)) > e.cfg.ErrorThreshold {
+		err := fmt.Errorf("sync: %d из %d путей упали (>%.0f%%)", res.failed, len(dr.toSync), e.cfg.ErrorThreshold*100)
 		_ = e.failJob(job, err)
 		p.Log("sync завершён ошибкой: " + err.Error())
 		return err
 	}
 	_ = e.succeedJob(job, res.done, res.bytes)
-	p.Update("done", remote.Name, int64(res.done), int64(len(toSync)))
+	p.Update("done", remote.Name, int64(res.done), int64(len(dr.toSync)))
 	p.Log("sync завершён успешно")
 	return nil
 }
@@ -354,26 +365,92 @@ func (e *Engine) prefetchWithRetry(ctx context.Context, eco port.Ecosystem, ecos
 	return cacheengine.PrefetchResult{}, lastErr
 }
 
-// diff фильтрует пути, уже присутствующие в storage (Stat). Возвращает
-// ecosystem-пути для prefetch (с ведущим /<prefix>/<remote><upstream>).
-func (e *Engine) diff(ctx context.Context, eco port.Ecosystem, remote domain.Remote, upstreamPaths []string) ([]string, error) {
-	var toSync []string
+// diffResult — итог diff: пути к скачиванию и мусорные пути enumerate
+// (не маппятся и не классифицируются — молча терять их нельзя, счётчик
+// попадает в лог задачи).
+type diffResult struct {
+	toSync  []string
+	skipped int
+}
+
+// diff фильтрует пути, уже присутствующие в кеше. Immutable — по Stat
+// логического ключа; mutable — по индексу: байты лежат под
+// версионированными ключами, поэтому Stat логического ключа считал их
+// отсутствующими и перекачивал каждый sync. Свежий по TTL mutable
+// пропускается; протухший идёт в prefetch — тот ревалидируется
+// conditional-запросом (304 бесплатен) и даёт stale при сбойном
+// upstream. Ошибка индекса (кроме NotFound) — fail-closed: транзиентный
+// сбой БД не должен «опустошать» diff.
+func (e *Engine) diff(ctx context.Context, eco port.Ecosystem, remote domain.Remote, upstreamPaths []string) (diffResult, error) {
+	var out diffResult
 	for _, up := range upstreamPaths {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return diffResult{}, ctx.Err()
 		}
 		ecoPath := "/" + eco.URLPrefix() + "/" + remote.Name + up
 		target, ok := eco.Resolve(ecoPath)
 		if !ok {
-			// путь не маппится — пропускаем, enumerate отдал мусор
+			out.skipped++
 			continue
 		}
-		if _, err := e.storage.Stat(ctx, target.StorageKey); err == nil {
+		class, err := eco.Classify(target.UpstreamPath)
+		if err != nil {
+			// enumerate отдал путь, который экосистема не понимает
+			out.skipped++
 			continue
 		}
-		toSync = append(toSync, ecoPath)
+		present := false
+		if class.Kind == domain.KindMutable {
+			meta, mErr := e.index.ObjectMeta(ctx, target.StorageKey)
+			switch {
+			case mErr == nil:
+				_, sErr := e.storage.Stat(ctx, meta.BytesKey())
+				present = sErr == nil && !meta.Expired(e.clock.Now())
+			case isNotFound(mErr):
+				// нет записи — качать
+			default:
+				return diffResult{}, mErr
+			}
+		} else if _, err := e.storage.Stat(ctx, target.StorageKey); err == nil {
+			present = true
+		}
+		if present {
+			continue
+		}
+		out.toSync = append(out.toSync, ecoPath)
 	}
-	return toSync, nil
+	return out, nil
+}
+
+// topErrors — агрегат причин ошибок: до n самых частых сообщений с
+// числом повторов (детерминированный порядок: частота, затем текст).
+func topErrors(errs []string, n int) []string {
+	counts := make(map[string]int, len(errs))
+	for _, e := range errs {
+		counts[e]++
+	}
+	type row struct {
+		msg string
+		n   int
+	}
+	rows := make([]row, 0, len(counts))
+	for msg, c := range counts {
+		rows = append(rows, row{msg, c})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].n != rows[j].n {
+			return rows[i].n > rows[j].n
+		}
+		return rows[i].msg < rows[j].msg
+	})
+	if len(rows) > n {
+		rows = rows[:n]
+	}
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = fmt.Sprintf("%dx %s", r.n, r.msg)
+	}
+	return out
 }
 
 // metaFetcher — port.MetaFetcher поверх cache.Engine: биндит экосистему,

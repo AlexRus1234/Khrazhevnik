@@ -154,7 +154,7 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		MaxBandwidth:   cfg.Mirror.MaxBandwidth.Bytes,
 		RetryMax:       mirrorengine.DefaultRetryMax,
 		ErrorThreshold: mirrorengine.DefaultErrorThreshold,
-	}, cacheEngine, storage, catalog.Remotes, catalog.Jobs, systemClock{}, ecosystems)
+	}, cacheEngine, storage, catalog.ObjIndex, catalog.Remotes, catalog.Jobs, systemClock{}, ecosystems)
 	// recovery sync_jobs: записи, зависшие в running после рестарта
 	// процесса, помечаются failed — живых воркеров для них больше нет.
 	// Сбой каталога не блокирует старт: retry произойдёт на следующем

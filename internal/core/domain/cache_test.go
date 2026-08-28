@@ -79,3 +79,19 @@ func TestObjectMetaExpired(t *testing.T) {
 		}
 	}
 }
+
+func TestObjectMetaBytesKey(t *testing.T) {
+	tests := []struct {
+		m    ObjectMeta
+		want string
+	}{
+		{ObjectMeta{Key: "k", StorageKey: "k-v1"}, "k-v1"}, // версионная запись
+		{ObjectMeta{Key: "k"}, "k"},                        // до версионирования
+		{ObjectMeta{}, ""},                                 // пустая запись — пустой ключ
+	}
+	for _, tc := range tests {
+		if got := tc.m.BytesKey(); got != tc.want {
+			t.Errorf("BytesKey(%+v) = %q, хочу %q", tc.m, got, tc.want)
+		}
+	}
+}
