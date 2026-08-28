@@ -16,9 +16,10 @@
 
 // Package mariadb — каталог на внешнем mariadb (go-sql-driver/mysql),
 // goose-миграции из embedded FS при старте. Плейсхолдеры — позиционные
-// «?» (как sqlite), upsert — INSERT … AS new ON DUPLICATE KEY UPDATE
-// col=new.col (alias-синтаксис MariaDB ≥10.3), INSERT возвращает id
-// через LastInsertId (RETURNING у драйвера не читается надёжно).
+// «?» (как sqlite), upsert — ON DUPLICATE KEY UPDATE col=VALUES(col)
+// (row-alias «AS new» — синтаксис MySQL 8.0.19+, MariaDB его не знает;
+// ci-mariadb:11 дал Error 1064), INSERT возвращает id через
+// LastInsertId (RETURNING у драйвера не читается надёжно).
 // Реализации срезов порта каталога — в catalog.go.
 package mariadb
 

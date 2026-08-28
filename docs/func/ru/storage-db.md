@@ -65,9 +65,9 @@ blank-import'ом в `cmd/khrazhevnik/wire.go` и выбираются TOML-ко
   (`postgres://user:pass@host/db?…`).
 - **mariadb**: внешний сервер (MariaDB ≥ 10.3 / MySQL — не-цель v1),
   InnoDB для FK enforcement, retry на дедлок/lock_wait_timeout
-  (1213/1205). Позиционные плейсхолдеры `?`, upsert — `INSERT … AS new
-  ON DUPLICATE KEY UPDATE col=new.col` (alias-синтаксис, MariaDB ≥10.3;
-  VALUES(col) устарел в MariaDB 11), id через `LastInsertId`. DSN —
+  (1213/1205). Позиционные плейсхолдеры `?`, upsert — `ON DUPLICATE
+  KEY UPDATE col=VALUES(col)` (row-alias `AS new` — синтаксис MySQL
+  8.0.19+, MariaDB его не поддерживает), id через `LastInsertId`. DSN —
   стандартная mysql-строка (`user:pass@tcp(host:3306)/db?params…`);
   `clientFoundRows=true` выставляется принудительно — UPDATE отдаёт
   matched rows, как у sqlite/postgres.

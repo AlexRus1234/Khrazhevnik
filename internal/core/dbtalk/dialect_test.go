@@ -116,9 +116,9 @@ func TestUpsertMariaDB(t *testing.T) {
 		[]string{"key", "etag", "size", "content_type", "last_modified", "expires_at"})
 	want := "INSERT INTO object_index (key, etag, size, content_type, last_modified, expires_at) " +
 		"VALUES (?, ?, ?, ?, ?, ?) " +
-		"AS new ON DUPLICATE KEY UPDATE key = new.key, etag = new.etag, " +
-		"size = new.size, content_type = new.content_type, " +
-		"last_modified = new.last_modified, expires_at = new.expires_at"
+		"ON DUPLICATE KEY UPDATE key = VALUES(key), etag = VALUES(etag), " +
+		"size = VALUES(size), content_type = VALUES(content_type), " +
+		"last_modified = VALUES(last_modified), expires_at = VALUES(expires_at)"
 	if got != want {
 		t.Fatalf("Upsert =\n%s\nхочу\n%s", got, want)
 	}
