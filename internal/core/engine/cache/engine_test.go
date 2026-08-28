@@ -365,7 +365,8 @@ func TestMutableLifecycle(t *testing.T) {
 	}
 
 	// запись индекса действительно освежена: без нового истечения HIT
-	meta, err := env.index.ObjectMeta(context.Background(), "cache/t/idx/packages")
+	// (ключ — case-чувствительный, как путь upstream, сессия 19)
+	meta, err := env.index.ObjectMeta(context.Background(), "cache/t/idx/Packages")
 	if err != nil || !meta.ExpiresAt.After(env.clock.Now()) {
 		t.Fatalf("после 304 expires не продлён: %+v, %v", meta, err)
 	}

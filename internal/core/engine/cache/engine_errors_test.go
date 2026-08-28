@@ -142,7 +142,8 @@ func TestMutableBytesMissing(t *testing.T) {
 		if _, _, err := fetch(t, env.engine, env.eco, "/t/idx/Packages"); err != nil {
 			t.Fatal(err)
 		}
-		meta, err := env.index.ObjectMeta(context.Background(), "cache/t/idx/packages")
+		// Ключ — case-чувствительный (сессия 19): регистр как в пути.
+		meta, err := env.index.ObjectMeta(context.Background(), "cache/t/idx/Packages")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -162,7 +163,7 @@ func TestMutableBytesMissing(t *testing.T) {
 			t.Fatal(err)
 		}
 		env.clock.Advance(41 * time.Second)
-		if err := env.engine.storage.Delete(context.Background(), "cache/t/idx/packages-v"+versionSuffix(env, 1)); err != nil {
+		if err := env.engine.storage.Delete(context.Background(), "cache/t/idx/Packages-v"+versionSuffix(env, 1)); err != nil {
 			t.Fatal(err)
 		}
 
@@ -179,7 +180,7 @@ func TestMutableBytesMissing(t *testing.T) {
 		}
 		env.clock.Advance(41 * time.Second)
 		env.up.set(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) })
-		if err := env.engine.storage.Delete(context.Background(), "cache/t/idx/packages-v"+versionSuffix(env, 1)); err != nil {
+		if err := env.engine.storage.Delete(context.Background(), "cache/t/idx/Packages-v"+versionSuffix(env, 1)); err != nil {
 			t.Fatal(err)
 		}
 
