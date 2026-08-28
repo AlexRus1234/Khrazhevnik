@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"slices"
 	"strings"
 	"testing"
@@ -775,5 +776,50 @@ func TestSetSigner(t *testing.T) {
 	g.SetSigner(s)
 	if g.signer != s {
 		t.Error("SetSigner не сохранил signer")
+	}
+}
+
+// errListFail — синтетический сбой листинга (недоступный каталог fs /
+// битый s3-endpoint; сами носители отдают его через Storage.List).
+var errListFail = errors.New("synthetic listing failure")
+
+// failingListStorage — FakeStorage с отказом List: Get/Put честные,
+// перечисление падает. Проверяет fail-closed генератора изолированно
+// от носителя.
+type failingListStorage struct {
+	*testutil.FakeStorage
+	err error
+}
+
+func (f *failingListStorage) List(_ context.Context, _ string) iter.Seq2[port.Meta, error] {
+	return func(yield func(port.Meta, error) bool) {
+		yield(port.Meta{}, f.err)
+	}
+}
+
+// TestGenerateIndexesListingErrorKeepsOldIndexes — при ошибке листинга
+// генерация падает, прежний индекс остаётся байт-в-байт (fail-closed:
+// транзиентный сбой носителя не «опустошает» репо).
+func TestGenerateIndexesListingErrorKeepsOldIndexes(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	putDeb(t, storage, repo, "pool/main/f/foo.deb", "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: f\n")
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("первая генерация: %v", err)
+	}
+	const packagesKey = "repo/1/apt/dists/stable/main/binary-amd64/packages"
+	before := readStorage(t, storage, packagesKey)
+
+	broken := &failingListStorage{FakeStorage: storage, err: errListFail}
+	err := g.GenerateIndexes(context.Background(), repo, broken, nil)
+	if err == nil || !errors.Is(err, errListFail) {
+		t.Fatalf("ожидали errListFail из листинга, получено %v", err)
+	}
+	after := readStorage(t, storage, packagesKey)
+	if !bytes.Equal(before, after) {
+		t.Fatal("ошибка листинга перезаписала валидный Packages (не fail-closed)")
 	}
 }

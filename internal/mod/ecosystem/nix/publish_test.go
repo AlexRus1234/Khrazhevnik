@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"slices"
 	"strings"
 	"testing"
@@ -348,5 +349,48 @@ func TestSetNarSigner(t *testing.T) {
 	g.SetNarSigner(s)
 	if g.nar == nil {
 		t.Error("SetNarSigner не сохранил nar signer")
+	}
+}
+
+// errListFail — синтетический сбой листинга носителя (см. Storage.List
+// контракт: терминальная ошибка вместо пустого обхода).
+var errListFail = errors.New("synthetic listing failure")
+
+// failingListStorage — FakeStorage с отказом List: Get/Put честные,
+// перечисление падает. Проверяет fail-closed генератора изолированно
+// от носителя.
+type failingListStorage struct {
+	*testutil.FakeStorage
+	err error
+}
+
+func (f *failingListStorage) List(_ context.Context, _ string) iter.Seq2[port.Meta, error] {
+	return func(yield func(port.Meta, error) bool) {
+		yield(port.Meta{}, f.err)
+	}
+}
+
+// TestGenerateIndexes_ListingErrorFails — ошибка листинга не выглядит
+// как «переподписывать нечего»: генерация падает, narinfo не тронуты.
+func TestGenerateIndexes_ListingErrorFails(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	key := putNarinfo(t, storage, repo, narHash32, string(narinfoForTest("up:old:p:s==")))
+
+	broken := &failingListStorage{FakeStorage: storage, err: errListFail}
+	g := &Generator{nar: newFakeNarSigner()}
+	err := g.GenerateIndexes(context.Background(), repo, broken, nil)
+	if err == nil || !errors.Is(err, errListFail) {
+		t.Fatalf("ожидали errListFail из листинга, получено %v", err)
+	}
+	obj, err := storage.Get(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer obj.Body.Close()
+	body, _ := io.ReadAll(obj.Body)
+	if !bytes.Contains(body, []byte("Sig: up:old:p:s==")) {
+		t.Fatal("сбой листинга изменил narinfo")
 	}
 }

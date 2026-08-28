@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"slices"
 	"strings"
 	"testing"
@@ -506,5 +507,50 @@ func TestSetSigner(t *testing.T) {
 	g.SetSigner(s)
 	if g.signer == nil {
 		t.Error("SetSigner не сохранил signer")
+	}
+}
+
+// errListFail — синтетический сбой листинга носителя (см. Storage.List
+// контракт: терминальная ошибка вместо пустого обхода).
+var errListFail = errors.New("synthetic listing failure")
+
+// failingListStorage — FakeStorage с отказом List: Get/Put честные,
+// перечисление падает. Проверяет fail-closed генератора изолированно
+// от носителя.
+type failingListStorage struct {
+	*testutil.FakeStorage
+	err error
+}
+
+func (f *failingListStorage) List(_ context.Context, _ string) iter.Seq2[port.Meta, error] {
+	return func(yield func(port.Meta, error) bool) {
+		yield(port.Meta{}, f.err)
+	}
+}
+
+// TestGenerateIndexesListingErrorKeepsOldIndexes — при ошибке листинга
+// генерация падает, прежний APKINDEX остаётся байт-в-байт (fail-closed:
+// транзиентный сбой носителя не «опустошает» репо).
+func TestGenerateIndexesListingErrorKeepsOldIndexes(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	putApk(t, storage, repo, "x86_64/foo.apk", pkginfoText)
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("первая генерация: %v", err)
+	}
+	const indexKey = "repo/1/apk/apkindex.tar.gz"
+	before := readStorage(t, storage, indexKey)
+
+	broken := &failingListStorage{FakeStorage: storage, err: errListFail}
+	err := g.GenerateIndexes(context.Background(), repo, broken, nil)
+	if err == nil || !errors.Is(err, errListFail) {
+		t.Fatalf("ожидали errListFail из листинга, получено %v", err)
+	}
+	after := readStorage(t, storage, indexKey)
+	if !bytes.Equal(before, after) {
+		t.Fatal("ошибка листинга перезаписала валидный APKINDEX (не fail-closed)")
 	}
 }
