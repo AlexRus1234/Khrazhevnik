@@ -46,8 +46,11 @@ Server = http://<хражевник>:29202/pacman/arch/$repo/os/$arch
 
 ## Личное репо
 
-Upload `.pkg.tar.{zst,xz,gz}` где угодно под корнем репо; `.db`,
-`.files`, `.sig` — генерируются, upload туда запрещён. Reindex создаёт
+Upload `.pkg.tar.zst` где угодно под корнем репо; `.db`,
+`.files`, `.sig` — генерируются, upload туда запрещён. Legacy
+`.pkg.tar.xz`/`.gz` не принимаются (400): в whitelist зависимостей нет
+xz/gz-декодера — переупакуйте (`zstd` поверх распакованного tar).
+Reindex создаёт
 `<repo-name>.db` (tar.zst с desc-записями) + detached-подпись
 `<repo-name>.db.sig` ключом инстанса. Клиент:
 
@@ -71,6 +74,7 @@ Server = http://<хражевник>:29202/repo/<name>
 | Путь upstream                       | Класс    | TTL      |
 |-------------------------------------|----------|----------|
 | `*.pkg.tar.zst|.xz|.gz` (+`.sig`)   | immutable| навсегда |
+
 | `{repo}.db`, `{repo}.files` (+`.sig`, legacy `.tar.*`) | mutable | 5m |
 | `keys/*` (публичные ключи)          | mutable  | 1h       |
 | прочее                              | mutable  | 1m       |

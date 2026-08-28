@@ -102,8 +102,10 @@ case-чувствителен и сохраняется, `cache/apt/<id>/pool/Fo
 
 ## pacman (Arch)
 
-- **Upload:** `.pkg.tar.{zst,xz,gz}` где угодно под корнем репо; `.db`,
-  `.files`, `.sig` — генерируются, upload туда запрещён.
+- **Upload:** `.pkg.tar.zst` где угодно под корнем репо; `.db`,
+  `.files`, `.sig` — генерируются, upload туда запрещён. Legacy
+  `.pkg.tar.xz`/`.gz` не принимаются (400): нет xz/gz-декодера в
+  whitelist зависимостей — переупакуйте в zst.
 - **Индексы (reindex):** `<repo.Name>.db` (tar.zst с
   `<name>-<ver>-<arch>/desc`-записями) + `<repo.Name>.db.sig` (detached,
   ключом инстанса OpenPGP).

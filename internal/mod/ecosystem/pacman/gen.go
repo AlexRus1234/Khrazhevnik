@@ -15,13 +15,15 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // Генератор pacman-индексов личного репозитория (port.RepoAdapter):
-// обходит repo/<id>/pacman/**/*.pkg.tar.{zst,xz,gz}, читает .PKGINFO
+// обходит repo/<id>/pacman/**/*.pkg.tar.zst, читает .PKGINFO
 // каждого (pkginfo.go) и считает SHA256, собирает <repo.Name>.db
 // (tar.zst с <name>-<ver>-<arch>/desc-записями) + <repo.Name>.db.sig
 // (подпись Signer'ом из сессии 15). Атомарность v1 — перезапись ключей
 // после полной генерации staging в памяти (окно рассинхрона ~секунды;
 // полный atomic-swap — сессия 17). Подпись .db.sig — detached через
-// port.Signer.
+// port.Signer. Legacy .xz/.gz-пакеты не принимаются: в whitelist
+// зависимостей нет xz/gz-декодера — ValidateObjectPath отвергает их
+// честной ValidationError, а не падением на регенерации.
 //
 // Ключи в storage — lowercase (domain.ValidateKey): <repo.Name>.db,
 // <repo.Name>.db.sig. pacman fetch'ит <repo>.db (имя remote = имя репо);
@@ -69,15 +71,22 @@ func (g *Generator) SetSigner(s port.Signer) { g.signer = s }
 // Name — имя экосистемы, совпадает с Adapter.Name.
 func (g *Generator) Name() string { return Name }
 
-// ValidateObjectPath принимает .pkg.tar.{zst,xz,gz} где угодно под корнем
-// репо; .db/.files/.sig — генерируются, клиенту туда соваться нельзя.
+// ValidateObjectPath принимает только .pkg.tar.zst где угодно под
+// корнем репо; .db/.files/.sig — генерируются, клиенту туда соваться
+// нельзя. Legacy .pkg.tar.xz/.gz отвергаются с внятной причиной: парсер
+// .PKGINFO читает пакет только через zstd (xz/gz-декодера нет в
+// whitelist зависимостей), и один загруженный legacy-пакет иначе валил
+// бы GenerateIndexes целиком — индексы протухали для всего репо.
 func (g *Generator) ValidateObjectPath(p string) error {
-	for _, suf := range []string{".pkg.tar.zst", ".pkg.tar.xz", ".pkg.tar.gz"} {
+	if strings.HasSuffix(p, ".pkg.tar.zst") {
+		return nil
+	}
+	for _, suf := range []string{".pkg.tar.xz", ".pkg.tar.gz"} {
 		if strings.HasSuffix(p, suf) {
-			return nil
+			return &domain.ValidationError{What: "путь pacman-репо", Value: p, Reason: "xz/gz не поддерживается: нет декодера в whitelist зависимостей (переупакуйте в .pkg.tar.zst)"}
 		}
 	}
-	return &domain.ValidationError{What: "путь pacman-репо", Value: p, Reason: "неизвестное расширение (ожидалось .pkg.tar.{zst,xz,gz})"}
+	return &domain.ValidationError{What: "путь pacman-репо", Value: p, Reason: "неизвестное расширение (ожидалось .pkg.tar.zst)"}
 }
 
 // GenerateIndexes обходит .pkg.tar.*, читает .PKGINFO, собирает .db
@@ -93,13 +102,13 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 	}
 	prefix := port.RepoPrefix(repo)
 
-	// Фаза 1: enumerate .pkg.tar.* под prefix.
+	// Фаза 1: enumerate .pkg.tar.zst под prefix.
 	p.Update("enumerate", repo.Name, 0, 0)
 	pkgKeys, err := collectPkgTar(ctx, storage, prefix)
 	if err != nil {
 		return fmt.Errorf("pacman.gen: enumerate: %w", err)
 	}
-	p.Log(fmt.Sprintf("pacman.gen: найдено %d .pkg.tar.* в %s", len(pkgKeys), prefix))
+	p.Log(fmt.Sprintf("pacman.gen: найдено %d .pkg.tar.zst в %s", len(pkgKeys), prefix))
 
 	// Фаза 2: чтение .PKGINFO + SHA256 каждого пакета, сборка desc-записей.
 	p.Update("pkginfo", repo.Name, 0, int64(len(pkgKeys)))
@@ -158,9 +167,11 @@ type descEntry struct {
 	desc string
 }
 
-// collectPkgTar возвращает лексически отсортированный список .pkg.tar.*
-// под prefix. Ошибка листинга — ошибка генерации (иначе пустой обход
-// записал бы ПУСТОЙ .db поверх валидного).
+// collectPkgTar возвращает лексически отсортированный список
+// .pkg.tar.zst под prefix. Фильтр — только .zst: upload-ветка больше
+// его не пропускает (см. ValidateObjectPath), но старые объекты могли
+// осесть в хранилище до ужесточения — генератор их молча пропускает,
+// вместо того чтобы падать на недекодируемом пакете.
 func collectPkgTar(ctx context.Context, storage port.Storage, prefix string) ([]string, error) {
 	var out []string
 	listPrefix := prefix + "/"
@@ -168,12 +179,8 @@ func collectPkgTar(ctx context.Context, storage port.Storage, prefix string) ([]
 		if err != nil {
 			return nil, fmt.Errorf("листинг %s: %w", listPrefix, err)
 		}
-		name := meta.Key
-		for _, suf := range []string{".pkg.tar.zst", ".pkg.tar.xz", ".pkg.tar.gz"} {
-			if strings.HasSuffix(name, suf) {
-				out = append(out, name)
-				break
-			}
+		if strings.HasSuffix(meta.Key, ".pkg.tar.zst") {
+			out = append(out, meta.Key)
 		}
 	}
 	sort.Strings(out)

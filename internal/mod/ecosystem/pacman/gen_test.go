@@ -234,8 +234,8 @@ func TestValidateObjectPath(t *testing.T) {
 		want bool
 	}{
 		{"foo-1.0-1-x86_64.pkg.tar.zst", true},
-		{"foo-1.0-1-x86_64.pkg.tar.xz", true},
-		{"foo-1.0-1-any.pkg.tar.gz", true},
+		{"foo-1.0-1-x86_64.pkg.tar.xz", false},
+		{"foo-1.0-1-any.pkg.tar.gz", false},
 		{"alice.db", false},
 		{"alice.db.sig", false},
 		{"foo.txt", false},
@@ -247,6 +247,28 @@ func TestValidateObjectPath(t *testing.T) {
 		if got != c.want {
 			t.Errorf("ValidateObjectPath(%q) = %v, want ok=%v", c.path, err, c.want)
 		}
+	}
+}
+
+// TestValidateObjectPathLegacyReason — legacy .xz/.gz отвергаются
+// ValidationError с внятной причиной (маппится в 400): клиент должен
+// понять, что пакет надо переупаковать, а не гадать, почему «неизвестное
+// расширение». Один загруженный legacy-пакет без этого фильтра валил бы
+// GenerateIndexes целиком (парсер читает .PKGINFO только через zstd).
+func TestValidateObjectPathLegacyReason(t *testing.T) {
+	g := &Generator{}
+	for _, p := range []string{"foo-1.0-1-x86_64.pkg.tar.xz", "foo-1.0-1-any.pkg.tar.gz"} {
+		var ve *domain.ValidationError
+		err := g.ValidateObjectPath(p)
+		if !errors.As(err, &ve) {
+			t.Fatalf("ValidateObjectPath(%q): хочу ValidationError, получено %v", p, err)
+		}
+		if !strings.Contains(ve.Reason, "xz/gz не поддерживается") {
+			t.Errorf("ValidateObjectPath(%q): причина без «xz/gz»: %q", p, ve.Reason)
+		}
+	}
+	if err := g.ValidateObjectPath("foo-1.0-1-x86_64.pkg.tar.zst"); err != nil {
+		t.Errorf("валидный .pkg.tar.zst отклонён: %v", err)
 	}
 }
 
