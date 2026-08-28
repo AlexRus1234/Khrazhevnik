@@ -41,7 +41,7 @@ func TestPrefetchThrottledPaysAsItCopies(t *testing.T) {
 		mu.Unlock()
 		return nil
 	}
-	res, err := env.engine.PrefetchThrottled(context.Background(), env.eco, "/pkg/a.deb", wait)
+	res, err := env.engine.PrefetchThrottled(context.Background(), env.eco, "/t/pkg/a.deb", wait)
 	if err != nil {
 		t.Fatalf("PrefetchThrottled: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestPrefetchThrottledPaysAsItCopies(t *testing.T) {
 	mu.Lock()
 	waited = 0
 	mu.Unlock()
-	res, err = env.engine.PrefetchThrottled(context.Background(), env.eco, "/pkg/a.deb", wait)
+	res, err = env.engine.PrefetchThrottled(context.Background(), env.eco, "/t/pkg/a.deb", wait)
 	if err != nil {
 		t.Fatalf("повторный PrefetchThrottled: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestPrefetchThrottledWaitErrorAborts(t *testing.T) {
 	env := newTestEnv(t, defaultConfig(), fixedHandler(body, "application/octet-stream"))
 
 	wait := func(_ context.Context, _ int) error { return context.Canceled }
-	if _, err := env.engine.PrefetchThrottled(context.Background(), env.eco, "/pkg/a.deb", wait); err == nil {
+	if _, err := env.engine.PrefetchThrottled(context.Background(), env.eco, "/t/pkg/a.deb", wait); err == nil {
 		t.Fatal("ошибка wait должна прервать prefetch с ошибкой")
 	}
 	if _, err := env.storage.Stat(context.Background(), "cache/t/pkg/a.deb"); err == nil {
