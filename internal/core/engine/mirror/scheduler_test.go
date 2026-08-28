@@ -18,10 +18,19 @@ package mirror
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"khrazhevnik/internal/core/domain"
+	cacheengine "khrazhevnik/internal/core/engine/cache"
+	"khrazhevnik/internal/core/metrics"
+	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/testutil"
 )
 
@@ -50,16 +59,16 @@ func TestSchedulerStartsRunnersForMirrorRemotes(t *testing.T) {
 	})
 
 	sched := NewScheduler(nil, remotes, testutil.FixedRand("44444444-4444-4444-8444-444444444444"), clock, time.Minute)
-	if err := sched.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	// сверка напрямую (без горутины): детерминированно
+	sched.reconcile()
 	sched.mu.Lock()
 	got := len(sched.runners)
+	_, ok := sched.runners[mirror.ID]
 	sched.mu.Unlock()
 	if got != 1 {
 		t.Fatalf("runners = %d, хочу 1 (только mirror+enabled+interval)", got)
 	}
-	if _, ok := sched.runners[mirror.ID]; !ok {
+	if !ok {
 		t.Errorf("runner для mirror не запущен")
 	}
 	// остановим и убедимся, что wg сошёлся
@@ -67,6 +76,194 @@ func TestSchedulerStartsRunnersForMirrorRemotes(t *testing.T) {
 	defer cancel()
 	if err := sched.Stop(ctx); err != nil {
 		t.Fatalf("Stop: %v", err)
+	}
+}
+
+// TestSchedulerReconcilePicksUpNewRemote — remote, включённый после
+// старта планировщика (admin-CRUD → Notify), начинает синхронизироваться
+// без рестарта процесса.
+func TestSchedulerReconcilePicksUpNewRemote(t *testing.T) {
+	env := newMirrorEnv(t)
+	sched := NewScheduler(env.mirror, env.remotes,
+		testutil.FixedRand("44444444-4444-4444-8444-444444444444"), env.clock, 0)
+	sched.tick = 20 * time.Millisecond
+	sched.Start(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	defer func() { _ = sched.Stop(context.Background()) }()
+
+	// на старте интервал нулевой → планировщик remote не берёт;
+	// «админ» задаёт интервал и будит reconcile
+	remote := env.remote
+	remote.SyncInterval = 20 * time.Millisecond
+	if err := env.remotes.UpdateRemote(ctx, remote); err != nil {
+		t.Fatal(err)
+	}
+	sched.Notify()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if env.repo.count("/pkg/a.deb") >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := env.repo.count("/pkg/a.deb"); got == 0 {
+		t.Fatal("remote, добавленный после старта, не синхронизировался")
+	}
+}
+
+// failRemoteOnce — обёртка RemoteStore: первый вызов Remote(id) отдаёт
+// ошибку БД (инжект транзиентного сбоя), дальше — прозрачно.
+type failRemoteOnce struct {
+	port.RemoteStore
+	mu   sync.Mutex
+	fail bool
+}
+
+func (s *failRemoteOnce) Remote(ctx context.Context, id int64) (domain.Remote, error) {
+	s.mu.Lock()
+	if s.fail {
+		s.fail = false
+		s.mu.Unlock()
+		return domain.Remote{}, errors.New("db down (инжект)")
+	}
+	s.mu.Unlock()
+	return s.RemoteStore.Remote(ctx, id)
+}
+
+// TestSchedulerRestartsDeadRunner — runner, умерший от транзиентной
+// ошибки БД, перезапускается на ближайшем тике reconcile: remote не
+// теряется.
+func TestSchedulerRestartsDeadRunner(t *testing.T) {
+	env := newMirrorEnv(t)
+	remote := env.remote
+	remote.SyncInterval = 30 * time.Millisecond
+	if err := env.remotes.UpdateRemote(context.Background(), remote); err != nil {
+		t.Fatal(err)
+	}
+	fr := &failRemoteOnce{RemoteStore: env.remotes, fail: true}
+	sched := NewScheduler(env.mirror, fr,
+		testutil.FixedRand("44444444-4444-4444-8444-444444444444"), env.clock, 0)
+	sched.tick = 20 * time.Millisecond
+	sched.Start(context.Background())
+	defer func() { _ = sched.Stop(context.Background()) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if env.repo.count("/pkg/a.deb") >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := env.repo.count("/pkg/a.deb"); got == 0 {
+		t.Fatal("умерший runner не перезапущен — sync не состоялся")
+	}
+	sched.mu.Lock()
+	alive := len(sched.runners)
+	sched.mu.Unlock()
+	if alive == 0 {
+		t.Error("runner не жив после перезапуска")
+	}
+}
+
+// TestSchedulerStopIdempotent — повторный Stop не паникует и не висит.
+func TestSchedulerStopIdempotent(t *testing.T) {
+	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	remotes := testutil.NewFakeRemoteStore()
+	remotes.CreateRemote(context.Background(), domain.Remote{
+		Name: "m", Ecosystem: "apt", BaseURL: "http://x", Mode: domain.ModeMirror,
+		Enabled: true, SyncInterval: time.Hour,
+	})
+	sched := NewScheduler(nil, remotes,
+		testutil.FixedRand("44444444-4444-4444-8444-444444444444"), clock, time.Minute)
+	sched.Start(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := sched.Stop(ctx); err != nil {
+		t.Fatalf("первый Stop: %v", err)
+	}
+	if err := sched.Stop(ctx); err != nil {
+		t.Fatalf("повторный Stop: %v", err)
+	}
+}
+
+// TestSchedulerStopRemoteInterruptsSync — стоп remote во время идущего
+// sync прерывает sync (AfterFunc-связка stopCh с ctx) и дожидается
+// горутины: runner'ов в карте нет, значит sync вернулся.
+func TestSchedulerStopRemoteInterruptsSync(t *testing.T) {
+	release := make(chan struct{})
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".deb") {
+			hits.Add(1)
+			<-release
+		}
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	storage := testutil.NewFakeStorage(clock)
+	index := testutil.NewFakeObjectIndex()
+	remotes := testutil.NewFakeRemoteStore()
+	remote, err := remotes.CreateRemote(context.Background(), domain.Remote{
+		Name: "pkg", Ecosystem: "t", BaseURL: srv.URL, Mode: domain.ModeMirror,
+		Enabled: true, SyncInterval: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eco := testutil.FakeEcosystem{
+		NameOf: "t", Base: srv.URL, MutableTTL: time.Minute,
+		EnumeratePaths: []string{"/a.deb"},
+	}
+	cache := cacheengine.New(storage, index, srv.Client(), clock,
+		cacheengine.Config{StaleIfError: true}, metrics.NewCache())
+	mir := New(Config{Workers: 1, RetryMax: 0, ProgressInterval: 10 * time.Millisecond},
+		cache, storage, remotes, testutil.NewFakeJobStore(), clock,
+		map[string]port.Ecosystem{"t": eco})
+	sched := NewScheduler(mir, remotes,
+		testutil.FixedRand("44444444-4444-4444-8444-444444444444"), clock, 0)
+	sched.tick = 20 * time.Millisecond
+	sched.Start(context.Background())
+	defer func() { _ = sched.Stop(context.Background()) }()
+
+	// ждём, пока sync встанет на блокирующем upstream
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if hits.Load() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if hits.Load() == 0 {
+		t.Fatal("sync не дошёл до upstream")
+	}
+
+	// выключаем remote → reconcile стопает runner с идущим sync
+	remote.Enabled = false
+	if err := remotes.UpdateRemote(context.Background(), remote); err != nil {
+		t.Fatal(err)
+	}
+	sched.Notify()
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		sched.mu.Lock()
+		n := len(sched.runners)
+		sched.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	sched.mu.Lock()
+	n := len(sched.runners)
+	sched.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("runners = %d после выключения remote — sync не прерван/не дожат", n)
 	}
 }
 

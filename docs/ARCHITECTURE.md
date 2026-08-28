@@ -189,8 +189,13 @@ type MetaFetcher interface {
   оплачиваются по мере копирования, куски ≤ burst — тело любого
   размера проходит, пост-фактум-оплата валила объекты крупнее полосы);
 - отмена ctx гасит воркеры; доля ошибок >5% → sync failed;
-- планировщик: per-remote тикер (SyncInterval ± jitter через port.Rand),
-  один на процесс; mode=proxy — только ручной sync через API.
+- планировщик: reconcile-цикл (тик 30s + notify от admin-CRUD remotes
+  и ручного sync) сверяет живых runner'ов с БД — старт недостающих,
+  стоп исчезнувших/выключенных, перезапуск умерших с backoff; ошибка
+  БД не убивает цикл; первый тик runner'а — SyncInterval ± jitter через
+  port.Rand; один планировщик на процесс; mode=proxy — только ручной
+  sync через API; стоп remote гасит идущий sync (AfterFunc-связка),
+  повторный Stop безопасен (sync.Once).
 
 Инварианты движка publish (сессия 14):
 

@@ -175,10 +175,10 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, systemClock{}, publishAdapters)
 	publishAPI := publishSyncer{engine: publishEngine, repos: catalog.Repos, tasks: tasks}
 	scheduler := mirrorengine.NewScheduler(mirrorEngine, catalog.Remotes, uuidRand{}, systemClock{}, cfg.Mirror.IntervalJitter.Duration)
-	if err := scheduler.Start(context.Background()); err != nil {
-		log.Error("mirror scheduler: старт не удался, авто-sync отключён", "err", err)
-		scheduler = nil
-	}
+	// reconcile-цикл переживает транзиентные сбои БД (ретрай на тике),
+	// ошибки — в лог; старт не может «отключить» авто-sync.
+	scheduler.ErrorHook = func(err error) { log.Error("mirror scheduler", "err", err) }
+	scheduler.Start(context.Background())
 	var metricsHandler http.Handler
 	if cfg.Metrics.Enabled {
 		metricsHandler = metrics.NewHandler(cacheEngine.Metrics(), prometheus.NewRegistry()).MetricsHandler()
@@ -407,6 +407,15 @@ func (a *App) WaitTasks(ctx context.Context) error {
 		return nil
 	}
 	return a.Tasks.WaitAll(ctx)
+}
+
+// NotifyRemotesChanged — хук для web.Deps: будит reconcile-цикл
+// планировщика после admin-мутаций remotes. nil-Scheduler (деградация)
+// — no-op.
+func (a *App) NotifyRemotesChanged() {
+	if a.Scheduler != nil {
+		a.Scheduler.Notify()
+	}
 }
 
 // outboundHTTPClient — Doer для запросов upstream: таймауты только на

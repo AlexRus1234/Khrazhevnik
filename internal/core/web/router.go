@@ -60,6 +60,11 @@ type Deps struct {
 	Audit   port.AuditLog
 	// TaskRegistry — общая инфраструктура фоновых задач (sync, publish).
 	Tasks *TaskRegistry
+	// OnRemotesChanged — хук планировщика зеркал: будит reconcile после
+	// мутаций remotes (CRUD) и ручного sync, чтобы добавленный/включённый
+	// remote синхронизировался без рестарта процесса. nil — тесты без
+	// планировщика.
+	OnRemotesChanged func()
 	// Mirror — движок синхронизации зеркал (сессия 11); nil в
 	// деградированном режиме — handleSyncRemote отдаёт 503.
 	Mirror MirrorSync

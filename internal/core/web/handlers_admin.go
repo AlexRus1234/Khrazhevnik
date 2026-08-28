@@ -100,6 +100,7 @@ func handleCreateRemote(d Deps) http.HandlerFunc {
 		}
 		// Аудит: action по умолчанию «create.remotes», object — имя.
 		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.create"))
+		d.notifyRemotesChanged()
 		writeJSON(w, http.StatusCreated, remoteOutFrom(rem))
 	}
 }
@@ -142,6 +143,7 @@ func handleUpdateRemote(d Deps) http.HandlerFunc {
 			return
 		}
 		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.update"))
+		d.notifyRemotesChanged()
 		writeJSON(w, http.StatusOK, remoteOutFrom(updated))
 	}
 }
@@ -158,6 +160,7 @@ func handleDeleteRemote(d Deps) http.HandlerFunc {
 			return
 		}
 		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.delete"))
+		d.notifyRemotesChanged()
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -187,7 +190,17 @@ func handleSyncRemote(d Deps) http.HandlerFunc {
 			return
 		}
 		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.sync"))
+		d.notifyRemotesChanged()
 		writeJSON(w, http.StatusAccepted, map[string]string{"task_id": taskID})
+	}
+}
+
+// notifyRemotesChanged дёргает планировщик зеркал (если собран):
+// reconcile увидит новый/изменённый/удалённый remote на ближайшем
+// цикле, не дожидаясь тика.
+func (d Deps) notifyRemotesChanged() {
+	if d.OnRemotesChanged != nil {
+		d.OnRemotesChanged()
 	}
 }
 
