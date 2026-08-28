@@ -65,23 +65,55 @@ func (e *Engine) startJob(ctx context.Context, remote domain.Remote) (domain.Syn
 	return created, nil
 }
 
-// succeedJob фиксирует успешное завершение.
-func (e *Engine) succeedJob(ctx context.Context, job domain.SyncJob, files int, bytes int64) error {
+// interruptedReason — курсор sync-задач, помеченных recovery'ем после
+// рестарта процесса: живых воркеров для них нет.
+const interruptedReason = "interrupted by restart"
+
+// RecoverInterruptedJobs — стартовый recovery: все sync_jobs в running
+// без живой задачи переводятся в failed (один запрос к каталогу).
+// Крах процесса посреди sync оставлял запись running навсегда — после
+// рестарта ни один воркер её не завершит. Вызывается из wire до старта
+// планировщика.
+func (e *Engine) RecoverInterruptedJobs(ctx context.Context) error {
+	jobs, err := e.jobs.Jobs(ctx)
+	if err != nil {
+		return err
+	}
+	for _, j := range jobs {
+		if j.State != domain.StateRunning {
+			continue
+		}
+		j.State = domain.StateFailed
+		j.Cursor = "error:" + interruptedReason
+		j.UpdatedAt = e.clock.Now()
+		if err := e.jobs.UpdateJob(ctx, j); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// succeedJob фиксирует успешное завершение. Финальный UpdateJob —
+// всегда с context.Background(): при отмене sync (shutdown, стоп
+// remote) статус всё равно обязан попасть в БД, иначе sync_job
+// навсегда зависает в running.
+func (e *Engine) succeedJob(job domain.SyncJob, files int, bytes int64) error {
 	job.State = domain.StateSucceeded
 	job.Cursor = encodeCursor(files, bytes)
 	job.UpdatedAt = e.clock.Now()
-	return e.jobs.UpdateJob(ctx, job)
+	return e.jobs.UpdateJob(context.Background(), job)
 }
 
 // failJob фиксирует завершение с ошибкой; cursor не трогаем (при resume
-// по diff он не нужен, но сохраняем старый для аудита).
-func (e *Engine) failJob(ctx context.Context, job domain.SyncJob, cause error) error {
+// по diff он не нужен, но сохраняем старый для аудита). Финальный
+// UpdateJob — с context.Background(): см. succeedJob.
+func (e *Engine) failJob(job domain.SyncJob, cause error) error {
 	job.State = domain.StateFailed
 	job.UpdatedAt = e.clock.Now()
 	if cause != nil {
 		job.Cursor = "error:" + truncateForCursor(cause.Error())
 	}
-	return e.jobs.UpdateJob(ctx, job)
+	return e.jobs.UpdateJob(context.Background(), job)
 }
 
 // touchJob — батч-обновление прогресса (files_done/bytes_done в cursor)

@@ -352,6 +352,114 @@ func TestSyncStreamingLimiterBigObject(t *testing.T) {
 	}
 }
 
+// TestRecoverInterruptedJobs — рестарт процесса с sync_job в running:
+// recovery помечает её failed с причиной «interrupted by restart»,
+// прочие состояния не трогает.
+func TestRecoverInterruptedJobs(t *testing.T) {
+	env := newMirrorEnv(t)
+	jobs := env.jobs
+	running, err := jobs.CreateJob(context.Background(), domain.SyncJob{
+		RemoteID: 1, State: domain.StateRunning, Cursor: "files=3;bytes=100",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	succeeded, err := jobs.CreateJob(context.Background(), domain.SyncJob{
+		RemoteID: 2, State: domain.StateSucceeded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := jobs.CreateJob(context.Background(), domain.SyncJob{
+		RemoteID: 3, State: domain.StatePending,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.mirror.RecoverInterruptedJobs(context.Background()); err != nil {
+		t.Fatalf("RecoverInterruptedJobs: %v", err)
+	}
+
+	j1, err := jobs.Job(context.Background(), running.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j1.State != domain.StateFailed {
+		t.Errorf("running → %q, хочу failed", j1.State)
+	}
+	if !strings.Contains(j1.Cursor, interruptedReason) {
+		t.Errorf("cursor = %q, хочу причину %q", j1.Cursor, interruptedReason)
+	}
+	j2, err := jobs.Job(context.Background(), succeeded.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j2.State != domain.StateSucceeded {
+		t.Errorf("succeeded → %q, восстановление не должно трогать", j2.State)
+	}
+	j3, err := jobs.Job(context.Background(), pending.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j3.State != domain.StatePending {
+		t.Errorf("pending → %q, восстановление не должно трогать", j3.State)
+	}
+}
+
+// TestSyncCancelWritesFinalJobState — отмена sync (shutdown, стоп
+// remote) всё равно записывает финальный статус в sync_jobs: финальный
+// UpdateJob идёт с context.Background(), а не с отменённым ctx.
+func TestSyncCancelWritesFinalJobState(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".deb") {
+			<-release
+		}
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	storage := testutil.NewFakeStorage(clock)
+	index := testutil.NewFakeObjectIndex()
+	remotes := testutil.NewFakeRemoteStore()
+	remote, err := remotes.CreateRemote(context.Background(), domain.Remote{
+		Name: "pkg", Ecosystem: "t", BaseURL: srv.URL, Mode: domain.ModeMirror, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eco := testutil.FakeEcosystem{
+		NameOf: "t", Base: srv.URL, MutableTTL: time.Minute,
+		EnumeratePaths: []string{"/a.deb"},
+	}
+	cache := cacheengine.New(storage, index, srv.Client(), clock,
+		cacheengine.Config{StaleIfError: true}, metrics.NewCache())
+	jobs := testutil.NewFakeJobStore()
+	mir := New(Config{Workers: 1, RetryMax: 0, ProgressInterval: 10 * time.Millisecond},
+		cache, storage, remotes, jobs, clock, map[string]port.Ecosystem{"t": eco})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- mir.Sync(ctx, remote, &recordingProgress{}) }()
+	// дождаться download-фазы (upstream блокирует), затем отменить
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("отменённый sync должен вернуть ошибку")
+	}
+
+	jobsList, jerr := jobs.Jobs(context.Background())
+	if jerr != nil || len(jobsList) == 0 {
+		t.Fatalf("sync_jobs не записан: %v", jerr)
+	}
+	if jobsList[0].State != domain.StateFailed {
+		t.Errorf("sync_jobs.state = %q, хочу failed (финальный статус после отмены)", jobsList[0].State)
+	}
+}
+
 func TestSyncUnsupportedEcosystem(t *testing.T) {
 	// экосистема без Enumerate (FakeEcosystem без EnumeratePaths) —
 	// Sync падает с UnsupportedError, sync_jobs → failed.

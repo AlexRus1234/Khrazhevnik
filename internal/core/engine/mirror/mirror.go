@@ -182,10 +182,10 @@ func (e *Engine) Sync(ctx context.Context, remote domain.Remote, p Progress) err
 		var uns *domain.UnsupportedError
 		if errors.As(err, &uns) {
 			p.Log(fmt.Sprintf("enumerate не поддерживается: %v", err))
-			_ = e.failJob(ctx, job, err)
+			_ = e.failJob(job, err)
 			return err
 		}
-		_ = e.failJob(ctx, job, err)
+		_ = e.failJob(job, err)
 		return fmt.Errorf("mirror: enumerate: %w", err)
 	}
 	p.Log(fmt.Sprintf("enumerate: %d путей", len(paths)))
@@ -194,12 +194,12 @@ func (e *Engine) Sync(ctx context.Context, remote domain.Remote, p Progress) err
 	p.Update("diff", fmt.Sprintf("%s: %d путей", remote.Name, len(paths)), 0, int64(len(paths)))
 	toSync, err := e.diff(ctx, eco, remote, paths)
 	if err != nil {
-		_ = e.failJob(ctx, job, err)
+		_ = e.failJob(job, err)
 		return fmt.Errorf("mirror: diff: %w", err)
 	}
 	p.Log(fmt.Sprintf("diff: %d к скачиванию", len(toSync)))
 	if len(toSync) == 0 {
-		_ = e.succeedJob(ctx, job, 0, 0)
+		_ = e.succeedJob(job, 0, 0)
 		p.Update("done", remote.Name, 0, 0)
 		p.Log("sync завершён: нечего скачивать")
 		return nil
@@ -213,11 +213,11 @@ func (e *Engine) Sync(ctx context.Context, remote domain.Remote, p Progress) err
 
 	if res.failed > 0 && float64(res.failed)/float64(len(toSync)) > e.cfg.ErrorThreshold {
 		err := fmt.Errorf("sync: %d из %d путей упали (>%.0f%%)", res.failed, len(toSync), e.cfg.ErrorThreshold*100)
-		_ = e.failJob(ctx, job, err)
+		_ = e.failJob(job, err)
 		p.Log("sync завершён ошибкой: " + err.Error())
 		return err
 	}
-	_ = e.succeedJob(ctx, job, res.done, res.bytes)
+	_ = e.succeedJob(job, res.done, res.bytes)
 	p.Update("done", remote.Name, int64(res.done), int64(len(toSync)))
 	p.Log("sync завершён успешно")
 	return nil
