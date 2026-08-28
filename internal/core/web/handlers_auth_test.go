@@ -163,3 +163,31 @@ func usersByID(t *testing.T, a *auth.Service, id int64) []domain.User {
 	}
 	return []domain.User{u}
 }
+
+// TestAuthBodyLimit — JSON-тело сверх 1 MiB: 413 payload_too_large,
+// а не OOM/400. Анонимные /setup и /auth/login — главные OOM-векторы
+// аудита 2026-08-27, оба обязаны упираться в MaxBytesReader.
+func TestAuthBodyLimit(t *testing.T) {
+	huge := `{"username":"` + strings.Repeat("a", 2<<20) + `"}`
+	a, users := handlerAuth(t)
+	h := BuildAdminRouter(Deps{Auth: a})
+	for _, path := range []string{"/api/v1/setup", "/api/v1/auth/login"} {
+		w := callJSON(h, http.MethodPost, path, "10.0.0.1:1", huge, "")
+		if w.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("%s c телом 2MiB = %d, хочу 413 (тело %s)", path, w.Code, w.Body.String())
+		}
+		var e struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || e.Error != "payload_too_large" {
+			t.Fatalf("%s: код ошибки = %q (%v), хочу payload_too_large", path, e.Error, err)
+		}
+	}
+	// Лимит не создал пользователей и не жрёт тело дальше.
+	if has, _ := a.HasUsers(context.Background()); has {
+		t.Error("oversized /setup создал пользователя")
+	}
+	if _, err := users.UserByUsername(context.Background(), "a"); err == nil {
+		t.Error("oversized /auth/login что-то записал")
+	}
+}

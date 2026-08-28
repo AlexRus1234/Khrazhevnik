@@ -97,11 +97,25 @@ func statusFor(err error) (int, string) {
 	return http.StatusInternalServerError, "internal"
 }
 
+// maxJSONBody — потолок JSON-тела админ-API. Все декодируемые тела —
+// учётные данные и настройки (килобайты); 1 MiB закрывает OOM-вектор
+// «одна строка в десятки ГБ на анонимном /setup или /auth/login»
+// (аудит 2026-08-27): память не аллоцируется сверх лимита, соединение
+// закрывается сервером.
+const maxJSONBody = 1 << 20
+
 // decodeJSON парсит тело запроса в v. Пустое тело — BadRequest с кодом
 // invalid_json (кроме случаев, где пустое тело валидно — там хендлер
-// обходится без decodeJSON).
+// обходится без decodeJSON). Превышение maxJSONBody — 413
+// payload_too_large: клиентская ошибка, а не OOM сервера.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeErrCode(w, http.StatusRequestEntityTooLarge, "payload_too_large")
+			return false
+		}
 		writeErrCode(w, http.StatusBadRequest, "invalid_json")
 		return false
 	}

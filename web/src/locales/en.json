@@ -181,6 +181,7 @@
   "errors.forbidden": "insufficient permissions",
   "errors.validation_error": "invalid form data",
   "errors.too_large": "object exceeds the upload limit",
+  "errors.payload_too_large": "request body exceeds 1 MiB",
   "errors.quota_exceeded": "repository quota exceeded",
   "errors.stale": "data is stale, refresh",
   "errors.task_duplicate": "task already running",
