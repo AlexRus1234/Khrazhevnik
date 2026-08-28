@@ -277,6 +277,9 @@ in-memory, не персистится; персистентное состоя�
 (`sync_jobs`: state, last_run_at, cursor с прогрессом `files=N;bytes=M`)
 пишут сами воркеры зеркал (сессия 11): одна sync_job на remote,
 `cursor` кодирует прогресс, `state` ∈ pending|running|succeeded|failed.
+Записи, зависшие в running после рестарта процесса, при старте
+помечаются failed с причиной «interrupted by restart» (recovery,
+сессия 23) — живых воркеров для них больше нет.
 
 ### Учётные записи и токены
 
