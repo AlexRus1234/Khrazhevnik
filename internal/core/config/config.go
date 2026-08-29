@@ -435,14 +435,22 @@ func (c Config) validateDatabase() []error {
 
 // normalizeEcosystemKeys приводит ключи [ecosystem.*] к каноническим
 // именам с дефисом: rpm_md → rpm-md (дефис в TOML-ключах без кавычек
-// разрешён, а вот в именах env — нет).
+// разрешён, а вот в именах env — нет). Столкновение вариантов
+// (дефолт создал rpm-md, TOML описал rpm_md): побеждает
+// underscore-вариант — явная запись из файла перекрывает дефолтную;
+// исход детерминирован, а не зависит от порядка итерации map
+// (CI-регрессия сессии 26).
 func normalizeEcosystemKeys(c *Config) {
 	if c.Ecosystem == nil {
 		return
 	}
 	normalized := make(map[string]Ecosystem, len(c.Ecosystem))
 	for k, v := range c.Ecosystem {
-		normalized[strings.ReplaceAll(k, "_", "-")] = v
+		key := strings.ReplaceAll(k, "_", "-")
+		if _, exists := normalized[key]; exists && key == k {
+			continue
+		}
+		normalized[key] = v
 	}
 	c.Ecosystem = normalized
 }

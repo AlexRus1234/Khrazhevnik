@@ -249,9 +249,11 @@ enabled = true
 }
 
 func TestLoadFileSecret(t *testing.T) {
-	// файл-секрет с переводами строк и пробелами по краям
+	// файл-секрет с переводами строк и пробелами по краям.
+	// Секрет — только внутри секции [auth]: топ-левел jwt_secret не
+	// поле Config, строгий TOML его отвергает.
 	secretFile := writeTemp(t, "jwt.txt", "  s3cr3t-value-with-enough-length-32-bytes!!\n\n")
-	tomlPath := writeTemp(t, "conf.toml", "jwt_secret = \"file://"+filepath.ToSlash(secretFile)+"\"\n[auth]\njwt_secret = \"file://"+filepath.ToSlash(secretFile)+"\"\n")
+	tomlPath := writeTemp(t, "conf.toml", "[auth]\njwt_secret = \"file://"+filepath.ToSlash(secretFile)+"\"\n")
 
 	cfg, err := Load(tomlPath, envOf(nil))
 	if err != nil {
