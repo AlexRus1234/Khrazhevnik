@@ -111,8 +111,10 @@ func (a *Adapter) URLPrefix() string { return Name }
 // false — путь не принадлежит apk или remote неизвестен/выключен.
 // Кеш remotes обновляется по TTL 30с: перезапуск не нужен для вновь
 // добавленных upstream'ов. UpstreamURL/UpstreamPath сохраняют оригинальный
-// регистр (byte-exact к upstream); StorageKey лоуэркейсит путь — доменный
-// ключ допускает только [a-z0-9/._-]. Checksum заполняется SHA1 из поля
+// регистр (byte-exact к upstream); StorageKey лоуэркейсит путь
+// сознательно: домен допускает регистр с сессии 19 (case-чувствительность
+// закрыта отдельно в apt), но apk-пути lowercase по конвенции
+// формата, case-риск upstream признан низким. Checksum заполняется SHA1 из поля
 // C: APKINDEX (если Enumerate уже разбирал индекс); без sync — честная
 // деградация к Content-Length.
 func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {

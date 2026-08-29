@@ -119,8 +119,10 @@ func (a *Adapter) URLPrefix() string { return URLPrefix }
 // false — путь не принадлежит rpm-md или remote неизвестен/выключен.
 // Кеш remotes обновляется по TTL 30с: перезапуск не нужен для вновь
 // добавленных upstream'ов. UpstreamURL/UpstreamPath сохраняют оригинальный
-// регистр (byte-exact к upstream); StorageKey лоуэркейсит путь — доменный
-// ключ допускает только [a-z0-9/._-]. Checksum заполняется чексуммой из
+// регистр (byte-exact к upstream); StorageKey лоуэркейсит путь
+// сознательно: домен допускает регистр с сессии 19 (case-чувствительность
+// закрыта отдельно в apt), но repodata-пути lowercase по конвенции
+// формата, case-риск upstream признан низким. Checksum заполняется чексуммой из
 // repomd.xml (если Enumerate уже разбирал его): движок кеша сверяет
 // скачанные repodata с корневым индексом; без sync — честная деградация
 // к Content-Length.

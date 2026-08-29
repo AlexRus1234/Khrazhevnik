@@ -136,6 +136,7 @@ env или `file://`.
 |------------------|---------|----------------------------------|--------------------------------|
 | `workers`        | `4`     | `KHRZ_MIRROR__WORKERS`           | Параллельных sync-задач        |
 | `interval_jitter`| `10m`   | `KHRZ_MIRROR__INTERVAL_JITTER`   | Разброс плановых sync          |
+| `max_bandwidth`  | `0`     | `KHRZ_MIRROR__MAX_BANDWIDTH`     | Суммарная скорость скачивания всех sync-воркеров, байт/с (строка вида `10MiB`); `0` = безлимит |
 
 ## `[publish]`
 

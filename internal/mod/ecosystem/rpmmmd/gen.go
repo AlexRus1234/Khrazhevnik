@@ -22,8 +22,9 @@
 // генерации staging в памяти (окно рассинхрона ~секунды; полный atomic-swap
 // — сессия 17). Подпись repomd.xml.asc — detached через port.Signer.
 //
-// Ключи в storage — lowercase (domain.ValidateKey пускает только
-// [a-z0-9/._-]): repodata/primary.xml.gz, repodata/repomd.xml,
+// Ключи в storage — lowercase (репо-пути лоуэркейсятся сознательно:
+// repodata-пути lowercase по конвенции rpm-md, сам домен допускает
+// регистр с сессии 19): repodata/primary.xml.gz, repodata/repomd.xml,
 // repodata/repomd.xml.asc. dnf/zypper просят repomd.xml (lowercase
 // клиентских путей нет — dnf кодирует baseurl+«/repodata/repomd.xml»),
 // публичный роутер :29202 лоуэркейсит запрос перед lookup'ом.

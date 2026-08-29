@@ -381,8 +381,9 @@ func (r *TaskRegistry) Get(id string) (*Task, bool) {
 	return t, ok
 }
 
-// Snapshots отдаёт снимки всех задач, активные первыми (по времени
-// старта), затем завершённые — стабильный порядок для поллинга списком.
+// Snapshots отдаёт снимки всех задач в порядке старта: стабильная
+// сортировка по startedAt (при равенстве — по ID), без группировки
+// активные/завершённые — ровный порядок для поллинга списком.
 func (r *TaskRegistry) Snapshots() []TaskSnapshot {
 	r.mu.Lock()
 	tasks := make([]*Task, 0, len(r.tasks))
