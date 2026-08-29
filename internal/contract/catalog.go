@@ -480,7 +480,7 @@ func auditLimitCapSuite(t *testing.T, c Catalog) {
 	)
 	for i := 0; i < totalRecs; i++ {
 		if err := c.Audit.Record(ctx, domain.AuditEntry{
-			At: fixed.Add(time.Duration(i) * time.Second),
+			At:    fixed.Add(time.Duration(i) * time.Second),
 			Actor: "ci", Action: "cap.op", Object: strconv.Itoa(i), Result: domain.AuditOK, Detail: "",
 		}); err != nil {
 			t.Fatal(err)
