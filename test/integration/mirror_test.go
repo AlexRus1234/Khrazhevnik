@@ -190,13 +190,22 @@ func TestMirrorSchedulerPicksUpRemoteViaAPI(t *testing.T) {
 		t.Fatal("remote, добавленный через admin-API, не синхронизировался")
 	}
 
-	// sync_jobs получен финальный статус
-	jobs, jerr := catalog.Jobs.Jobs(context.Background())
-	if jerr != nil || len(jobs) == 0 {
-		t.Fatalf("sync_jobs пуст: %v", jerr)
+	// hits инкрементятся посреди скачивания — финальный статус пишется
+	// после завершения sync; поллим как publish-тесты
+	deadline = time.Now().Add(5 * time.Second)
+	state := ""
+	for time.Now().Before(deadline) {
+		jobs, jerr := catalog.Jobs.Jobs(context.Background())
+		if jerr == nil && len(jobs) > 0 {
+			state = string(jobs[0].State)
+			if state == "succeeded" || state == "failed" {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if jobs[0].State != "succeeded" {
-		t.Errorf("sync_jobs.state = %q, хочу succeeded", jobs[0].State)
+	if state != "succeeded" {
+		t.Fatalf("sync_jobs.state = %q, хочу succeeded", state)
 	}
 	// первый тик не должен задвоить скачивание (diff пуст на второй)
 	time.Sleep(50 * time.Millisecond)
