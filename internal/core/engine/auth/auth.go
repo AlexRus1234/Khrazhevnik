@@ -149,14 +149,36 @@ func (s *Service) hashPassword(password string) ([]byte, error) {
 	return hash, nil
 }
 
+// authStoreError классифицирует ошибку catalog-store'а на пути
+// аутентификации: отсутствие записи — штатное «не найдено» (Forbidden
+// с нейтральной причиной, не раскрывающей, что именно не найдено),
+// прочие сбои — недоступность каталога (503). Проглатывание
+// транзиентной ошибки БД превращало сбой каталога в «неверные
+// учётные данные» — мониторинг слеп, brute-force-детекторы
+// дезинформированы (аудит 2026-08-27).
+func authStoreError(err error, what, forbiddenReason string) error {
+	var nf *domain.NotFoundError
+	if errors.As(err, &nf) {
+		return &domain.ForbiddenError{Reason: forbiddenReason}
+	}
+	return &domain.UnavailableError{What: what, Reason: "сбой каталога", Err: err}
+}
+
 // VerifyPassword returns a user only after a password comparison.
 func (s *Service) VerifyPassword(ctx context.Context, username, password string) (domain.User, error) {
 	u, err := s.cfg.Users.UserByUsername(ctx, username)
-	hash := dummyPasswordHash
-	if err == nil {
-		hash = u.PasswordHash
+	if err != nil {
+		var nf *domain.NotFoundError
+		if !errors.As(err, &nf) {
+			return domain.User{}, &domain.UnavailableError{What: "каталог", Reason: "чтение пользователя", Err: err}
+		}
+		// Несуществующий пользователь — полная стоимость bcrypt-сравнения
+		// против фиксированного dummy-хэша: перечисление пользователей по
+		// таймингу ответа не должно работать.
+		_ = bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(password))
+		return domain.User{}, &domain.ForbiddenError{Reason: "неверные учётные данные"}
 	}
-	if len([]byte(password)) > maxBcryptPassword || bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil || err != nil {
+	if len([]byte(password)) > maxBcryptPassword || bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
 		return domain.User{}, &domain.ForbiddenError{Reason: "неверные учётные данные"}
 	}
 	return u, nil
@@ -166,7 +188,14 @@ func (s *Service) VerifyPassword(ctx context.Context, username, password string)
 func (s *Service) Login(ctx context.Context, username, password string) (string, error) {
 	u, err := s.VerifyPassword(ctx, username, password)
 	if err != nil {
-		s.audit(ctx, username, "auth.login", "user:"+username, domain.AuditError, "invalid_credentials")
+		// Причина в аудите различает «не подошли» и «каталог недоступен»:
+		// второе — не попытка подбора, в rate-статистику не смешивается.
+		detail := "invalid_credentials"
+		var unavail *domain.UnavailableError
+		if errors.As(err, &unavail) {
+			detail = "catalog_unavailable"
+		}
+		s.audit(ctx, username, "auth.login", "user:"+username, domain.AuditError, detail)
 		return "", err
 	}
 	token, err := s.IssueSession(ctx, u)
@@ -217,7 +246,12 @@ func (s *Service) ValidateSession(ctx context.Context, raw string) (Session, err
 		return Session{}, &domain.ForbiddenError{Reason: "недействительная сессия"}
 	}
 	u, err := s.cfg.Users.User(ctx, id)
-	if err != nil || int64(ver) != u.TokenVersion {
+	if err != nil {
+		// Транзиентный сбой каталога — 503-домен, а не «недействительная
+		// сессия»: валидный токен не должен отклоняться молча.
+		return Session{}, authStoreError(err, "каталог", "недействительная сессия")
+	}
+	if int64(ver) != u.TokenVersion {
 		return Session{}, &domain.ForbiddenError{Reason: "недействительная сессия"}
 	}
 	jti, _ := c["jti"].(string)
@@ -291,14 +325,14 @@ func (s *Service) VerifyAPIToken(ctx context.Context, raw string) (domain.APITok
 	}
 	t, err := s.cfg.Tokens.TokenBySHA256(ctx, domain.HashToken(parts[1]+parts[2]))
 	if err != nil {
-		return domain.APIToken{}, domain.User{}, &domain.ForbiddenError{Reason: "недействительный API-токен"}
+		return domain.APIToken{}, domain.User{}, authStoreError(err, "каталог", "недействительный API-токен")
 	}
 	if subtle.ConstantTimeCompare([]byte(t.SHA256), []byte(domain.HashToken(parts[1]+parts[2]))) != 1 || !t.RevokedAt.IsZero() || (!t.ExpiresAt.IsZero() && !s.cfg.Clock.Now().Before(t.ExpiresAt)) {
 		return domain.APIToken{}, domain.User{}, &domain.ForbiddenError{Reason: "недействительный API-токен"}
 	}
 	u, err := s.cfg.Users.User(ctx, t.UserID)
 	if err != nil {
-		return domain.APIToken{}, domain.User{}, &domain.ForbiddenError{Reason: "недействительный API-токен"}
+		return domain.APIToken{}, domain.User{}, authStoreError(err, "каталог", "недействительный API-токен")
 	}
 	if err := s.cfg.Tokens.TouchToken(ctx, t.ID, s.cfg.Clock.Now()); err != nil {
 		return domain.APIToken{}, domain.User{}, err

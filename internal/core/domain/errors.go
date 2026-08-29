@@ -109,6 +109,35 @@ func (e *ForbiddenError) Is(target error) bool {
 	return ok
 }
 
+// UnavailableError — зависимый сервис (каталог БД, хранилище) недоступен:
+// операция не выполнена, но клиент не виноват и должен получить 5xx,
+// а не 4xx (аудит 2026-08-27: сбой БД на пути аутентификации
+// маскировался под «неверные учётные данные» — 403 дезинформировал
+// и мониторинг, и brute-force-детекторы).
+type UnavailableError struct {
+	What   string // «каталог», «проверка API-токена», ...
+	Reason string // человекочитаемая причина
+	Err    error  // обёрнутая причина (может быть nil)
+}
+
+// Error реализует интерфейс error.
+func (e *UnavailableError) Error() string {
+	if e.Err == nil {
+		return fmt.Sprintf("недоступно: %s: %s", e.What, e.Reason)
+	}
+	return fmt.Sprintf("недоступно: %s: %s: %v", e.What, e.Reason, e.Err)
+}
+
+// Is поддерживает errors.Is(err, &UnavailableError{}).
+func (e *UnavailableError) Is(target error) bool {
+	_, ok := target.(*UnavailableError)
+	return ok
+}
+
+// Unwrap возвращает обёрнутую причину: errors.Is добирается до неё
+// сквозь типизированную обёртку.
+func (e *UnavailableError) Unwrap() error { return e.Err }
+
 // TooLargeError — объект больше лимита одного файла/загрузки.
 // Отличается от квоты: квота — про сумму, это — про один объект.
 type TooLargeError struct {

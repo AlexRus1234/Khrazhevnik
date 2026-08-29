@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,18 @@ import (
 	"khrazhevnik/internal/core/engine/auth"
 	"khrazhevnik/internal/core/port"
 )
+
+// authReject — единый отлуп auth-middleware: сбой каталога — 503
+// (валидная учётка не должна маскироваться под 401 при сбое БД),
+// всё остальное — 401.
+func authReject(w http.ResponseWriter, err error) {
+	var unavail *domain.UnavailableError
+	if errors.As(err, &unavail) {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
+}
 
 type userKey struct{}
 type tokenKey struct{}
@@ -65,7 +78,7 @@ func RequireSession(a *auth.Service) func(http.Handler) http.Handler {
 			}
 			session, err := a.ValidateSession(r.Context(), raw)
 			if err != nil {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				authReject(w, err)
 				return
 			}
 			ctx := context.WithValue(r.Context(), userKey{}, session.User)
@@ -86,7 +99,7 @@ func RequireAPIToken(a *auth.Service) func(http.Handler) http.Handler {
 			}
 			token, user, err := a.VerifyAPIToken(r.Context(), raw)
 			if err != nil {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				authReject(w, err)
 				return
 			}
 			ctx := context.WithValue(r.Context(), userKey{}, user)

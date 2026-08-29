@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -216,6 +217,43 @@ func usersByID(t *testing.T, a *auth.Service, id int64) []domain.User {
 // TestAuthBodyLimit — JSON-тело сверх 1 MiB: 413 payload_too_large,
 // а не OOM/400. Анонимные /setup и /auth/login — главные OOM-векторы
 // аудита 2026-08-27, оба обязаны упираться в MaxBytesReader.
+// TestLoginCatalogFailureNotUnauthorized — сбой каталога при логине —
+// 503 unavailable, а не 401 invalid_credentials: 403/401 при сбое БД
+// дезинформировал бы мониторинг и brute-force-детекторы
+// (аудит 2026-08-27).
+func TestLoginCatalogFailureNotUnauthorized(t *testing.T) {
+	users := &failingUserStore{FakeUserStore: testutil.NewFakeUserStore(), err: errors.New("db down")}
+	a, err := auth.New(auth.Config{Users: users, Tokens: &handlerTokens{}, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("33333333-3333-4333-8333-333333333333"), JWTSecret: "secret", SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := BuildAdminRouter(Deps{Auth: a})
+	w := callJSON(h, http.MethodPost, "/api/v1/auth/login", "10.0.0.1:1", `{"username":"x","password":"y"}`, "")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("логин при сбое каталога = %d (%s), хочу 503", w.Code, w.Body.String())
+	}
+	var e struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil || e.Error != "unavailable" {
+		t.Fatalf("код ошибки = %q (%v), хочу unavailable", e.Error, err)
+	}
+}
+
+// failingUserStore подменяет только чтение пользователя по имени:
+// остальное — поведение фейка.
+type failingUserStore struct {
+	*testutil.FakeUserStore
+	err error
+}
+
+func (s *failingUserStore) UserByUsername(ctx context.Context, username string) (domain.User, error) {
+	if s.err != nil {
+		return domain.User{}, s.err
+	}
+	return s.FakeUserStore.UserByUsername(ctx, username)
+}
+
 func TestAuthBodyLimit(t *testing.T) {
 	huge := `{"username":"` + strings.Repeat("a", 2<<20) + `"}`
 	a, users := handlerAuth(t)

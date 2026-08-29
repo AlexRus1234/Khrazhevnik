@@ -147,6 +147,7 @@ func TestStatusForMapping(t *testing.T) {
 		{&domain.NotFoundError{What: "x", Key: "y"}, http.StatusNotFound, "not_found"},
 		{&domain.ConflictError{What: "x", Key: "y"}, http.StatusConflict, "conflict"},
 		{&domain.ForbiddenError{Reason: "z"}, http.StatusForbidden, "forbidden"},
+		{&domain.UnavailableError{What: "x", Reason: "z"}, http.StatusServiceUnavailable, "unavailable"},
 		{&domain.ValidationError{What: "x"}, http.StatusBadRequest, "validation_error"},
 		{&domain.TooLargeError{Size: 100, Limit: 50}, http.StatusRequestEntityTooLarge, "too_large"},
 		{&domain.StaleError{Have: "a", Want: "b"}, http.StatusConflict, "stale"},

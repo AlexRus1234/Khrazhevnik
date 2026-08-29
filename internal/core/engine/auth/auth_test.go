@@ -18,6 +18,7 @@ type tokenFake struct {
 	next      int64
 	values    map[int64]domain.APIToken
 	createErr error
+	byHashErr error
 	touchErr  error
 	revokeErr error
 	lastTouch time.Time
@@ -33,6 +34,9 @@ func (f *tokenFake) CreateToken(_ context.Context, t domain.APIToken) (domain.AP
 	return t, nil
 }
 func (f *tokenFake) TokenBySHA256(_ context.Context, h string) (domain.APIToken, error) {
+	if f.byHashErr != nil {
+		return domain.APIToken{}, f.byHashErr
+	}
 	for _, t := range f.values {
 		if t.SHA256 == h {
 			return t, nil
@@ -66,7 +70,7 @@ func (f *tokenFake) TouchToken(_ context.Context, _ int64, at time.Time) error {
 
 type errorUserStore struct {
 	*testutil.FakeUserStore
-	hasErr, usersErr, userErr, deleteErr, updateErr error
+	hasErr, usersErr, userErr, byNameErr, deleteErr, updateErr error
 }
 
 func (s *errorUserStore) HasUsers(context.Context) (bool, error) {
@@ -74,6 +78,12 @@ func (s *errorUserStore) HasUsers(context.Context) (bool, error) {
 		return false, s.hasErr
 	}
 	return s.FakeUserStore.HasUsers(context.Background())
+}
+func (s *errorUserStore) UserByUsername(ctx context.Context, username string) (domain.User, error) {
+	if s.byNameErr != nil {
+		return domain.User{}, s.byNameErr
+	}
+	return s.FakeUserStore.UserByUsername(ctx, username)
 }
 func (s *errorUserStore) Users(context.Context) ([]domain.User, error) {
 	if s.usersErr != nil {
@@ -258,6 +268,63 @@ func TestLoginAndIssueFailures(t *testing.T) {
 func TestNewRejectsIncompleteConfig(t *testing.T) {
 	if _, err := New(Config{}); err == nil {
 		t.Fatal("incomplete auth config accepted")
+	}
+}
+
+// Транзиентный сбой каталога на пути аутентификации — UnavailableError
+// (web мапит в 503), отсутствие записи — по-прежнему Forbidden.
+// Проглатывание ошибки БД превращало любой сбой в «неверные учётные
+// данные» (аудит 2026-08-27).
+func TestStoreFailuresSurfaceAsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	users := testutil.NewFakeUserStore()
+	tf := &tokenFake{values: map[int64]domain.APIToken{}}
+	a, err := New(Config{Users: users, Tokens: tf, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := a.CreateUser(ctx, "alice", "correct", domain.RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := a.IssueSession(ctx, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := a.IssueAPIToken(ctx, admin, "ci", nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bad := &errorUserStore{FakeUserStore: users, byNameErr: errors.New("db down")}
+	a.cfg.Users = bad
+	_, err = a.VerifyPassword(ctx, "alice", "correct")
+	if !errors.Is(err, &domain.UnavailableError{}) {
+		t.Fatalf("транзиентный сбой: %v, хочу UnavailableError", err)
+	}
+	if errors.Is(err, &domain.ForbiddenError{}) {
+		t.Fatal("сбой каталога маскируется под неверные учётные данные")
+	}
+	if _, err := a.VerifyPassword(ctx, "ghost", "x"); !errors.Is(err, &domain.ForbiddenError{}) {
+		t.Fatalf("несуществующий пользователь: %v, хочу ForbiddenError", err)
+	}
+	bad.byNameErr = nil
+	bad.userErr = errors.New("db down")
+	if _, err := a.ValidateSession(ctx, session); !errors.Is(err, &domain.UnavailableError{}) {
+		t.Fatalf("ValidateSession при сбое каталога: %v, хочу UnavailableError", err)
+	}
+	_, _, err = a.VerifyAPIToken(ctx, raw)
+	if !errors.Is(err, &domain.UnavailableError{}) {
+		t.Fatalf("VerifyAPIToken при сбое каталога: %v, хочу UnavailableError", err)
+	}
+	bad.userErr = nil
+	tf.byHashErr = errors.New("db down")
+	if _, _, err := a.VerifyAPIToken(ctx, raw); !errors.Is(err, &domain.UnavailableError{}) {
+		t.Fatalf("VerifyAPIToken при сбое поиска токена: %v, хочу UnavailableError", err)
+	}
+	tf.byHashErr = nil
+	if _, _, err := a.VerifyAPIToken(ctx, raw); err != nil {
+		t.Fatalf("после устранения сбоя токен должен пройти: %v", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,7 +13,10 @@ import (
 	"khrazhevnik/internal/testutil"
 )
 
-type middlewareTokens struct{ token domain.APIToken }
+type middlewareTokens struct {
+	token   domain.APIToken
+	hashErr error
+}
 
 func (s *middlewareTokens) CreateToken(_ context.Context, t domain.APIToken) (domain.APIToken, error) {
 	t.ID = 1
@@ -20,6 +24,9 @@ func (s *middlewareTokens) CreateToken(_ context.Context, t domain.APIToken) (do
 	return t, nil
 }
 func (s *middlewareTokens) TokenBySHA256(_ context.Context, h string) (domain.APIToken, error) {
+	if s.hashErr != nil {
+		return domain.APIToken{}, s.hashErr
+	}
 	if s.token.SHA256 == h {
 		return s.token, nil
 	}
@@ -65,6 +72,48 @@ func middlewareRequest(raw string) *http.Request {
 		r.Header.Set("Authorization", "Bearer "+raw)
 	}
 	return r
+}
+
+// failingUserStore — чтение пользователя всегда падает транзиентной
+// ошибкой (не NotFound): остальное — поведение фейка.
+type failingUserStore struct {
+	*testutil.FakeUserStore
+	err error
+}
+
+func (s *failingUserStore) User(context.Context, int64) (domain.User, error) {
+	return domain.User{}, s.err
+}
+func (s *failingUserStore) UserByUsername(context.Context, string) (domain.User, error) {
+	return domain.User{}, s.err
+}
+
+// TestAuthMiddlewareCatalogFailure — сбой каталога при валидном
+// предъявленном токене — 503, а не 401 (аудит 2026-08-27: сбой БД
+// не должен выглядеть как «неверные учётные данные»).
+func TestAuthMiddlewareCatalogFailure(t *testing.T) {
+	users := &failingUserStore{FakeUserStore: testutil.NewFakeUserStore(), err: errors.New("db down")}
+	tokens := &middlewareTokens{hashErr: errors.New("db down")}
+	a, err := auth.New(auth.Config{Users: users, Tokens: tokens, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("22222222-2222-4222-8222-222222222222"), JWTSecret: "secret", SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := domain.User{ID: 1, Username: "admin", Role: domain.RoleAdmin, TokenVersion: 1}
+	jwtRaw, err := a.IssueSession(context.Background(), admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	w := httptest.NewRecorder()
+	RequireSession(a)(next).ServeHTTP(w, middlewareRequest(jwtRaw))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("session при сбое каталога = %d, хочу 503", w.Code)
+	}
+	w = httptest.NewRecorder()
+	RequireAPIToken(a)(next).ServeHTTP(w, middlewareRequest("khz_dead_beef"))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("api-token при сбое каталога = %d, хочу 503", w.Code)
+	}
 }
 
 func TestAuthMiddlewareUnauthorizedAndAdmin(t *testing.T) {

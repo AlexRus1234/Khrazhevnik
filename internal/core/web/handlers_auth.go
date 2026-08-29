@@ -23,7 +23,10 @@ package web
 
 import (
 	"crypto/subtle"
+	"errors"
 	"net/http"
+
+	"khrazhevnik/internal/core/domain"
 
 	authmw "khrazhevnik/internal/core/web/middleware"
 )
@@ -79,7 +82,13 @@ func handleLogin(d Deps, limiter *authmw.LoginRateLimit) http.HandlerFunc {
 		}
 		token, err := d.Auth.Login(r.Context(), in.Username, in.Password)
 		if err != nil {
-			writeErrCode(w, http.StatusUnauthorized, "invalid_credentials")
+			var forb *domain.ForbiddenError
+			if errors.As(err, &forb) {
+				writeErrCode(w, http.StatusUnauthorized, "invalid_credentials")
+				return
+			}
+			// сбой каталога — 503, остальное — 500 через статусFor
+			writeErr(w, err)
 			return
 		}
 		limiter.ResetRequest(r)
