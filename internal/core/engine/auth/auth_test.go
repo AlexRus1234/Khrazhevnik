@@ -452,16 +452,17 @@ func TestRevocationPersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("сбой проверки отзыва: %v, хочу UnavailableError", err)
 	}
 
-	// Ошибка вставки отзыва возвращается (logout не должен врать 204),
-	// но сессия гасится в процессе.
+	// Ошибка вставки отзыва — Unavailable (logout не должен врать 204
+	// и не должен отвечать сырым 500: сессия 30), но сессия гасится
+	// в процессе.
 	a3 := build(testutil.FixedRand("33333333-3333-4333-8333-333333333333"))
 	tok3, err := a3.IssueSession(ctx, admin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a3.cfg.Revocations = &failingRevocations{err: errors.New("db down")}
-	if err := a3.RevokeSession(ctx, "33333333-3333-4333-8333-333333333333"); err == nil {
-		t.Fatal("ошибка персистентного отзыва потеряна")
+	if err := a3.RevokeSession(ctx, "33333333-3333-4333-8333-333333333333"); !errors.Is(err, &domain.UnavailableError{}) {
+		t.Fatalf("ошибка персистентного отзыва: %v, хочу UnavailableError", err)
 	}
 	if _, err := a3.ValidateSession(ctx, tok3); !errors.Is(err, &domain.ForbiddenError{}) {
 		t.Fatalf("сессия не отозвана в процессе после сбоя вставки: %v", err)

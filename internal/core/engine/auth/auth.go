@@ -356,9 +356,13 @@ func (s *Service) ValidateSession(ctx context.Context, raw string) (Session, err
 
 // RevokeSession revokes one JWT until its natural expiration: the
 // revocation is persisted (logout survives a process restart) and kept
-// in memory as a fast-path. A failed insert is returned — logout that
+// in memory as a fast-path. A failed insert is an error — logout that
 // would not survive a restart must not answer 204; in-process the
-// session is revoked regardless.
+// session is revoked regardless (rememberRevoked happens before the
+// return). A store failure maps to UnavailableError: logout answers
+// 503 like every other auth path over a degraded catalog, not a raw
+// 500 (сессия 30); доменная ошибка остаётся видна statusFor через
+// errors.As сквозь обёртку.
 func (s *Service) RevokeSession(ctx context.Context, jti string) error {
 	if jti == "" {
 		return nil
@@ -367,7 +371,10 @@ func (s *Service) RevokeSession(ctx context.Context, jti string) error {
 	until := now.Add(s.cfg.SessionTTL)
 	err := s.cfg.Revocations.InsertRevocation(ctx, jti, now, until)
 	s.rememberRevoked(jti, until)
-	return err
+	if err != nil {
+		return &domain.UnavailableError{What: "каталог", Reason: "запись отзыва сессии", Err: err}
+	}
+	return nil
 }
 
 // rememberRevoked добавляет jti в in-memory fast-path: просроченные

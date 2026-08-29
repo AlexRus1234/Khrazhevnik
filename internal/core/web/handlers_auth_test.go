@@ -254,6 +254,71 @@ func (s *failingUserStore) UserByUsername(ctx context.Context, username string) 
 	return s.FakeUserStore.UserByUsername(ctx, username)
 }
 
+// failingRevocations деградирует только вставку отзыва: остальное —
+// поведение фейка.
+type failingRevocations struct {
+	*testutil.FakeRevocations
+	err error
+}
+
+func (f *failingRevocations) InsertRevocation(ctx context.Context, jti string, now, expiresAt time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	return f.FakeRevocations.InsertRevocation(ctx, jti, now, expiresAt)
+}
+
+// TestLogoutDBFailureUnavailable — сбой БД при вставке отзыва: logout —
+// 503 unavailable (та же 503-политика, что у остальных auth-путей,
+// сессии 25 и 30), не сырой 500. In-process отзыв при этом применён
+// (rememberRevoked до return): повторный запрос с тем же JWT на ЭТОМ
+// инстансе уже 401. Контроль: исправный каталог — 204.
+func TestLogoutDBFailureUnavailable(t *testing.T) {
+	revocations := &failingRevocations{FakeRevocations: testutil.NewFakeRevocations()}
+	// Два UUID: у каждой IssueSession свой jti — контрольная сессия не
+	// наследует отзыв первой (FixedRand раздаёт список по кругу).
+	a, err := auth.New(auth.Config{Users: testutil.NewFakeUserStore(), Tokens: &handlerTokens{}, Revocations: revocations, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"), JWTSecret: "secret", SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := BuildAdminRouter(Deps{Auth: a})
+	if w := callJSON(h, http.MethodPost, "/api/v1/setup", "10.0.0.1:1", `{"username":"admin","password":"password"}`, ""); w.Code != 201 {
+		t.Fatalf("setup = %d %s", w.Code, w.Body.String())
+	}
+	login := callJSON(h, http.MethodPost, "/api/v1/auth/login", "10.0.0.1:1", `{"username":"admin","password":"password"}`, "")
+	if login.Code != 200 {
+		t.Fatalf("login = %d %s", login.Code, login.Body.String())
+	}
+	session := responseMap(t, login)["token"].(string)
+
+	revocations.err = errors.New("db down")
+	logout := callJSON(h, http.MethodPost, "/api/v1/auth/logout", "10.0.0.1:2", "", session)
+	if logout.Code != http.StatusServiceUnavailable {
+		t.Fatalf("logout при сбое БД = %d (%s), хочу 503", logout.Code, logout.Body.String())
+	}
+	var e struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(logout.Body.Bytes(), &e); err != nil || e.Error != "unavailable" {
+		t.Fatalf("код ошибки = %q (%v), хочу unavailable", e.Error, err)
+	}
+	// In-process отзыв пережил ошибку записи.
+	if callJSON(h, http.MethodPost, "/api/v1/auth/logout", "10.0.0.1:2", "", session).Code != 401 {
+		t.Fatal("сессия после сбойного logout осталась валидной")
+	}
+
+	// Контроль: исправная вставка — 204.
+	revocations.err = nil
+	relogin := callJSON(h, http.MethodPost, "/api/v1/auth/login", "10.0.0.1:3", `{"username":"admin","password":"password"}`, "")
+	if relogin.Code != 200 {
+		t.Fatalf("повторный login = %d %s", relogin.Code, relogin.Body.String())
+	}
+	fresh := responseMap(t, relogin)["token"].(string)
+	if w := callJSON(h, http.MethodPost, "/api/v1/auth/logout", "10.0.0.1:3", "", fresh); w.Code != 204 {
+		t.Fatalf("logout при исправном каталоге = %d (%s), хочу 204", w.Code, w.Body.String())
+	}
+}
+
 func TestAuthBodyLimit(t *testing.T) {
 	huge := `{"username":"` + strings.Repeat("a", 2<<20) + `"}`
 	a, users := handlerAuth(t)
