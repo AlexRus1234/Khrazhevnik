@@ -31,6 +31,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -48,6 +50,11 @@ const (
 // maxTaskLogs — размер кольцевого буфера лога задачи: последние 50 строк
 // (docs/SPECIFICATION.md §REST API, требование сессии 09).
 const maxTaskLogs = 50
+
+// maxTaskHistory — потолок истории задач в реестре: старейшие
+// завершённые выпадают из Snapshots, бегущие не трогаются (аудит
+// 2026-08-27: задачи никогда не чистились — медленный рост памяти).
+const maxTaskHistory = 1000
 
 // minLogInterval — минимальный интервал между автоматическими строками
 // лога из Update: поток прогресса не заливает буфер, оператор видит
@@ -75,17 +82,20 @@ type Progress interface {
 // TaskSnapshot — неизменяемый снимок задачи для JSON-ответа поллинга
 // (GET /api/v1/tasks, GET /api/v1/tasks/{id}).
 type TaskSnapshot struct {
-	ID         string    `json:"id"`
-	Kind       string    `json:"kind"`
-	Label      string    `json:"label"`
-	State      string    `json:"state"`
-	Phase      string    `json:"phase"`
-	Current    string    `json:"current"`
-	Processed  int64     `json:"processed"`
-	Total      int64     `json:"total"`
-	Percent    float64   `json:"percent"`
-	SpeedBps   float64   `json:"speed_bps"`
-	Logs       []string  `json:"logs"`
+	ID        string   `json:"id"`
+	Kind      string   `json:"kind"`
+	Label     string   `json:"label"`
+	State     string   `json:"state"`
+	Phase     string   `json:"phase"`
+	Current   string   `json:"current"`
+	Processed int64    `json:"processed"`
+	Total     int64    `json:"total"`
+	Percent   float64  `json:"percent"`
+	SpeedBps  float64  `json:"speed_bps"`
+	Logs      []string `json:"logs"`
+	// Error — текст ошибки задачи (errText). РЕШЕНИЕ (сессия 25, аудит
+	// 2026-08-27): отдаём как есть — оба эндпоинта задач admin-only, а
+	// оператору нужна причина без выуживания её из логов сервера.
 	Error      string    `json:"error,omitempty"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
@@ -287,11 +297,36 @@ func (r *TaskRegistry) Start(kind, label string, fn func(ctx context.Context, p 
 		startedAt: r.clock.Now(),
 	}
 	r.tasks[task.ID] = task
+	r.evictHistoryLocked()
 	r.active[key] = task
 	r.mu.Unlock()
 
 	r.launch(task, fn)
 	return task.ID, nil
+}
+
+// evictHistoryLocked держит историю задач в пределах maxTaskHistory:
+// старейшая завершённая выпадает (running трогать нельзя — на них
+// смотрят поллеры и active-индекс). Вызывается под r.mu после вставки.
+func (r *TaskRegistry) evictHistoryLocked() {
+	for len(r.tasks) > maxTaskHistory {
+		var oldest *Task
+		for _, t := range r.tasks {
+			if t.State() == taskRunning {
+				continue
+			}
+			if oldest == nil || t.startedAt.Before(oldest.startedAt) ||
+				(t.startedAt.Equal(oldest.startedAt) && t.ID < oldest.ID) {
+				oldest = t
+			}
+		}
+		if oldest == nil {
+			// все задачи бегущие — потолок временно превышен, чистить
+			// нечего (workers ограничен, это не утечка)
+			return
+		}
+		delete(r.tasks, oldest.ID)
+	}
 }
 
 // launch запускает fn в фоновой горутине с производным ctx и
@@ -309,7 +344,7 @@ func (r *TaskRegistry) launch(task *Task, fn func(ctx context.Context, p Progres
 			r.mu.Unlock()
 		}()
 		p := &taskProgress{task: task, clock: r.clock}
-		err := fn(ctx, p)
+		err := r.runTask(task, p, fn, ctx)
 		if err == nil {
 			task.finishSuccess(r.clock.Now())
 			return
@@ -320,6 +355,22 @@ func (r *TaskRegistry) launch(task *Task, fn func(ctx context.Context, p Progres
 		}
 		task.finishError(err, r.clock.Now())
 	}()
+}
+
+// runTask изолирует panic функции задачи: паника фоновой задачи — это
+// failed-задача с причиной "panic", а не смерть процесса (аудит
+// 2026-08-27: recover отсутствовал во всём прод-коде — одна паника в
+// генерации индексов укладывала сервер).
+func (r *TaskRegistry) runTask(task *Task, p Progress, fn func(ctx context.Context, p Progress) error, ctx context.Context) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Default().Error("фоновой задачи: паника",
+				"kind", task.Kind, "label", task.Label, "task_id", task.ID,
+				"panic", rec, "stack", string(debug.Stack()))
+			err = fmt.Errorf("panic: %v", rec)
+		}
+	}()
+	return fn(ctx, p)
 }
 
 // Get возвращает задачу по идентификатору.

@@ -319,7 +319,10 @@ type pathResult struct {
 }
 
 // worker тянет пути из in, prefetch'ит с retry (полоса платится
-// потоково внутри копирования), пишет результат в out.
+// потоково внутри копирования), пишет результат в out. Паника
+// prefetch'а изолируется: путь считается ошибкой sync, воркер и
+// процесс живут (аудит 2026-08-27: recover отсутствовал — паника в
+// адаптере экосистемы роняла весь сервер).
 func (e *Engine) worker(ctx context.Context, eco port.Ecosystem, wg *sync.WaitGroup, in <-chan string, out chan<- pathResult) {
 	defer wg.Done()
 	for path := range in {
@@ -327,7 +330,7 @@ func (e *Engine) worker(ctx context.Context, eco port.Ecosystem, wg *sync.WaitGr
 			out <- pathResult{path: path, err: ctx.Err()}
 			return
 		}
-		res, err := e.prefetchWithRetry(ctx, eco, path)
+		res, err := e.prefetchSafe(ctx, eco, path)
 		if err != nil {
 			var stale *domain.StaleError
 			if errors.As(err, &stale) {
@@ -342,6 +345,25 @@ func (e *Engine) worker(ctx context.Context, eco port.Ecosystem, wg *sync.WaitGr
 		out <- pathResult{path: path, bytes: res.Bytes}
 	}
 }
+
+// prefetchSafe оборачивает prefetchWithRetry в recover: паника
+// превращается в ошибку пути (учитывается в failed/пороге sync).
+func (e *Engine) prefetchSafe(ctx context.Context, eco port.Ecosystem, ecosystemPath string) (res cacheengine.PrefetchResult, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = &panicError{rec: rec}
+		}
+	}()
+	return e.prefetchWithRetry(ctx, eco, ecosystemPath)
+}
+
+// panicError — паника внутри фоновой операции, превращённая в ошибку.
+// Отдельный тип: планировщик отличает её от обычного сбоя sync (тот
+// уже записан в sync_jobs движком) и репортит в ErrorHook.
+type panicError struct{ rec any }
+
+// Error реализует интерфейс error.
+func (e *panicError) Error() string { return fmt.Sprintf("panic: %v", e.rec) }
 
 // prefetchWithRetry повторяет prefetch до RetryMax раз; NotFound
 // не ретрится (upstream удалил объект — это не сбой сети), StaleError

@@ -19,6 +19,7 @@ package web
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -391,6 +392,44 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b[i:])
+}
+
+// Паника внутри задачи — StateFailed с "panic" в причине, реестр и
+// процесс живут (аудит 2026-08-27: паника фоновой задачи роняла сервер).
+func TestTaskRegistryPanicRecovery(t *testing.T) {
+	r, _ := newTestRegistry(t, 2)
+	id, err := r.Start("reindex", "boom", func(context.Context, Progress) error {
+		panic("бум в генерации индексов")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := awaitState(t, r, id, taskFailed)
+	if !contains(snap.Error, "panic") || !contains(snap.Error, "бум") {
+		t.Errorf("error = %q, хочу упоминание panic и причины", snap.Error)
+	}
+	// Реестр жив: следующая задача выполняется нормально.
+	id2, err := r.Start("reindex", "ok", func(context.Context, Progress) error { return nil })
+	if err != nil {
+		t.Fatalf("Start после паники: %v", err)
+	}
+	awaitState(t, r, id2, taskSucceeded)
+}
+
+// История ограничена: 2000 задач → Snapshots не больше 1000, старейшие
+// завершённые выпадают (аудит 2026-08-27: задачи никогда не чистились).
+func TestTaskRegistryHistoryBounded(t *testing.T) {
+	r, _ := newTestRegistry(t, 2)
+	for i := range 2000 {
+		id, err := r.Start("sync", "b"+string(rune('a'+i%26))+strconv.Itoa(i), func(context.Context, Progress) error { return nil })
+		if err != nil {
+			t.Fatalf("Start %d: %v", i, err)
+		}
+		awaitState(t, r, id, taskSucceeded)
+	}
+	if snaps := r.Snapshots(); len(snaps) > maxTaskHistory {
+		t.Fatalf("снимков = %d, потолок %d", len(snaps), maxTaskHistory)
+	}
 }
 
 func TestNewTaskRegistryDefaults(t *testing.T) {

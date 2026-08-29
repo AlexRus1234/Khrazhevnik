@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"khrazhevnik/internal/core/domain"
+	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/testutil"
 )
@@ -95,6 +96,40 @@ func TestDeleteInBackgroundBoundedAndDrained(t *testing.T) {
 	}
 	if s.inflight.Load() != 0 {
 		t.Errorf("удаления не дошли до конца: %d в полёте", s.inflight.Load())
+	}
+}
+
+// panickyDeleteStorage — Delete паникует: recover движка обязан
+// изолировать сбой драйвера, не оставив счётчики несбалансированными
+// (иначе DrainBackgroundDeletes зависал бы на shutdown навечно).
+type panickyDeleteStorage struct {
+	port.Storage
+}
+
+func (s *panickyDeleteStorage) Delete(context.Context, string) error {
+	panic("storage взорвался")
+}
+
+// TestDeleteInBackgroundPanicRecovered — паника storage.Delete
+// изолируется: счётчики сбалансированы (Drain возвращает nil), паника
+// посчитана в метрике, процесс жив.
+func TestDeleteInBackgroundPanicRecovered(t *testing.T) {
+	clock := testutil.NewManualClock(testStart)
+	m := metrics.NewCache()
+	e := New(&panickyDeleteStorage{Storage: testutil.NewFakeStorage(clock)}, testutil.NewFakeObjectIndex(), nil, clock, Config{}, m)
+	e.deleteInBackground(&domain.ObjectMeta{Key: "cache/t/boom"})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := e.DrainBackgroundDeletes(ctx); err != nil {
+		t.Fatalf("Drain после паники удаления: %v", err)
+	}
+	if got := m.BackgroundPanics.Load(); got != 1 {
+		t.Fatalf("счётчик фоновых паник = %d, хочу 1", got)
+	}
+	// очередь жива: следующее удаление (штатное) проходит
+	e.deleteInBackground(&domain.ObjectMeta{Key: "cache/t/ok"})
+	if err := e.DrainBackgroundDeletes(ctx); err != nil {
+		t.Fatalf("Drain штатного удаления после паники: %v", err)
 	}
 }
 

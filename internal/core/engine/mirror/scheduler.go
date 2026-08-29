@@ -27,6 +27,8 @@ package mirror
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -317,9 +319,28 @@ func (rn *runner) tick() bool {
 	// связка stopCtx с ctx: стоп remote гасит идущий sync
 	stop := context.AfterFunc(rn.stopCtx, cancel)
 	defer stop()
-	_ = rn.sched.engine.Sync(ctx, r, noopProgress{})
+	// Паника sync изолируется: runner живёт (пересинк по интервалу),
+	// причина уходит в ErrorHook (аудит 2026-08-27: тело runner'а —
+	// фоновая горутина, паника роняла весь процесс). Обычные ошибки
+	// sync уже записаны в sync_jobs движком.
+	if err := rn.safeSync(ctx, r); err != nil {
+		var pe *panicError
+		if errors.As(err, &pe) {
+			rn.sched.reportError(fmt.Errorf("sync %s: %w", r.Name, err))
+		}
+	}
 	rn.sched.runnerHealthy(rn.remote.ID)
 	return true
+}
+
+// safeSync запускает Sync, превращая панику в ошибку.
+func (rn *runner) safeSync(ctx context.Context, r domain.Remote) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = &panicError{rec: rec}
+		}
+	}()
+	return rn.sched.engine.Sync(ctx, r, noopProgress{})
 }
 
 // nextInterval возвращает SyncInterval ± jitter (джиттер ∈ [0, jitter],

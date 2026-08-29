@@ -30,6 +30,8 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"log/slog"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -741,7 +743,21 @@ func (e *Engine) deleteInBackground(old *domain.ObjectMeta) {
 	e.delMu.Unlock()
 	go func() {
 		e.delSem <- struct{}{}
-		_ = e.storage.Delete(context.Background(), key)
+		e.deleteOnce(key)
+	}()
+}
+
+// deleteOnce выполняет одно удаление с гарантией счётчиков: паника
+// storage.Delete изолируется (лог + метрика); без recover delPending
+// оставался бы навечно несбалансированным и DrainBackgroundDeletes
+// зависал на shutdown (аудит 2026-08-27).
+func (e *Engine) deleteOnce(key string) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			e.metrics.BackgroundPanics.Add(1)
+			slog.Default().Error("фоновое удаление: паника",
+				"key", key, "panic", rec, "stack", string(debug.Stack()))
+		}
 		<-e.delSem
 		e.delMu.Lock()
 		e.delPending--
@@ -750,6 +766,7 @@ func (e *Engine) deleteInBackground(old *domain.ObjectMeta) {
 		}
 		e.delMu.Unlock()
 	}()
+	_ = e.storage.Delete(context.Background(), key)
 }
 
 // DrainBackgroundDeletes ждёт завершения всех фоновых удалений или

@@ -16,8 +16,12 @@ type Cache struct {
 	UpstreamErrors    atomic.Int64
 	BytesFromUpstream atomic.Int64
 	BytesToClients    atomic.Int64
-	mu                sync.Mutex
-	Ecosystems        map[string]*Cache
+	// BackgroundPanics — паники фоновых операций кеша (удаление прошлых
+	// версий), изолированные recover'ом (сессия 25); рост = баг в
+	// storage-драйвере, а не смерть процесса.
+	BackgroundPanics atomic.Int64
+	mu               sync.Mutex
+	Ecosystems       map[string]*Cache
 }
 
 // NewCache создаёт независимый набор счётчиков.

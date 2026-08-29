@@ -43,6 +43,7 @@ type Handler struct {
 	// Коллекторы-счётчики создаются один раз при New; Collect
 	// перезаливает значения из atomic-счётчиков Cache.
 	hits, misses, stale, negative, upstreamErrors    *prometheus.Desc
+	backgroundPanics                                 *prometheus.Desc
 	bytesFromUpstream, bytesToClients                *prometheus.Desc
 	ecoHits, ecoMisses, ecoStale, ecoNegative        *prometheus.Desc
 	ecoUpstreamErrors, ecoBytesFromUp, ecoBytesToCli *prometheus.Desc
@@ -77,6 +78,7 @@ func NewHandler(cache *Cache, registry *prometheus.Registry) *Handler {
 		upstreamErrors:    prometheus.NewDesc("khrazhevnik_cache_upstream_errors_total", "Upstream request failures.", nil, nil),
 		bytesFromUpstream: prometheus.NewDesc("khrazhevnik_cache_bytes_from_upstream_total", "Bytes pulled from upstream.", nil, nil),
 		bytesToClients:    prometheus.NewDesc("khrazhevnik_cache_bytes_to_clients_total", "Bytes streamed to clients.", nil, nil),
+		backgroundPanics:  prometheus.NewDesc("khrazhevnik_cache_background_panics_total", "Panics recovered from cache background operations.", nil, nil),
 		ecoHits:           prometheus.NewDesc("khrazhevnik_cache_ecosystem_hits_total", "Cache hits per ecosystem.", []string{"ecosystem"}, nil),
 		ecoMisses:         prometheus.NewDesc("khrazhevnik_cache_ecosystem_misses_total", "Cache misses per ecosystem.", []string{"ecosystem"}, nil),
 		ecoStale:          prometheus.NewDesc("khrazhevnik_cache_ecosystem_stale_served_total", "Stale served per ecosystem.", []string{"ecosystem"}, nil),
@@ -111,6 +113,7 @@ func (h *Handler) Describe(ch chan<- *prometheus.Desc) {
 	ch <- h.upstreamErrors
 	ch <- h.bytesFromUpstream
 	ch <- h.bytesToClients
+	ch <- h.backgroundPanics
 	ch <- h.ecoHits
 	ch <- h.ecoMisses
 	ch <- h.ecoStale
@@ -130,6 +133,7 @@ func (h *Handler) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(h.upstreamErrors, prometheus.CounterValue, float64(h.cache.UpstreamErrors.Load()))
 	ch <- prometheus.MustNewConstMetric(h.bytesFromUpstream, prometheus.CounterValue, float64(h.cache.BytesFromUpstream.Load()))
 	ch <- prometheus.MustNewConstMetric(h.bytesToClients, prometheus.CounterValue, float64(h.cache.BytesToClients.Load()))
+	ch <- prometheus.MustNewConstMetric(h.backgroundPanics, prometheus.CounterValue, float64(h.cache.BackgroundPanics.Load()))
 	h.cache.EachEcosystem(func(name string, m *Cache) {
 		ch <- prometheus.MustNewConstMetric(h.ecoHits, prometheus.CounterValue, float64(m.Hits.Load()), name)
 		ch <- prometheus.MustNewConstMetric(h.ecoMisses, prometheus.CounterValue, float64(m.Misses.Load()), name)

@@ -190,6 +190,35 @@ func newMirrorEnv(t *testing.T) *mirrorEnv {
 	}
 }
 
+// panicEco — экосистема с паникующим Classify: изоляция паники
+// адаптера воркером (аудит 2026-08-27: паника роняла весь процесс).
+type panicEco struct{ port.Ecosystem }
+
+func (p panicEco) Classify(string) (domain.Class, error) { panic("classify взорвался") }
+
+// TestWorkerPanicRecovered — паника prefetch-пути превращается воркером
+// в ошибку пути (sync → failed по порогу), воркер и процесс живы.
+func TestWorkerPanicRecovered(t *testing.T) {
+	env := newMirrorEnv(t)
+	eco := panicEco{Ecosystem: env.mirror.ecos["t"]}
+	in := make(chan string, 1)
+	out := make(chan pathResult, 1)
+	in <- "/t/pkg/a.deb"
+	close(in)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	env.mirror.worker(context.Background(), eco, &wg, in, out)
+	wg.Wait()
+	res := <-out
+	var pe *panicError
+	if res.err == nil || !errors.As(res.err, &pe) {
+		t.Fatalf("паника не изолирована воркером: %v", res.err)
+	}
+	if !strings.Contains(res.err.Error(), "classify взорвался") {
+		t.Errorf("причина потери: %q", res.err.Error())
+	}
+}
+
 func TestSyncFullThenEmptyDiff(t *testing.T) {
 	env := newMirrorEnv(t)
 	p := &recordingProgress{}
