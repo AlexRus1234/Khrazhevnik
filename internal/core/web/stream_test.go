@@ -164,9 +164,12 @@ func TestUploadSlowStreamSurvivesReadTimeout(t *testing.T) {
 }
 
 // TestUploadSlowStreamBreaksWithoutStallReader — контроль: без
-// stallReader тот же поток рвётся ReadTimeout'ом сервера, клиент видит
-// обрыв соединения посреди тела. Доказывает, что тест выше проверяет
-// именно продление дедлайна, а не бездействие таймаутов.
+// stallReader тот же поток рвётся ReadTimeout'ом сервера, и до 200
+// после полного чтения дело не доходит: клиент видит либо ошибку
+// транспорта, либо ранний 5xx от хендлера-заглушки (его io.Copy упал
+// по дедлайну; сервер умеет отвечать, не дочитав тело). Доказывает,
+// что тест выше проверяет именно продление дедлайна, а не бездействие
+// таймаутов.
 func TestUploadSlowStreamBreaksWithoutStallReader(t *testing.T) {
 	srv := slowUploadServer(t, false)
 	req, err := http.NewRequest(http.MethodPut, srv.URL, newDripReader(1<<20, 16, 100*time.Millisecond))
@@ -174,8 +177,12 @@ func TestUploadSlowStreamBreaksWithoutStallReader(t *testing.T) {
 		t.Fatalf("NewRequest: %v", err)
 	}
 	resp, err := srv.Client().Do(req)
-	if err == nil {
-		_ = resp.Body.Close()
-		t.Fatalf("upload прошёл (статус %d), а должен был оборваться по ReadTimeout", resp.StatusCode)
+	if err != nil {
+		return // обрыв на уровне соединения — ожидаемо
+	}
+	code := resp.StatusCode
+	_ = resp.Body.Close()
+	if code == http.StatusOK {
+		t.Fatal("upload прошёл (200), а должен был оборваться по ReadTimeout")
 	}
 }
