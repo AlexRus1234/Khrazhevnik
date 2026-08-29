@@ -80,6 +80,11 @@ case-чувствителен и сохраняется, `cache/apt/<id>/pool/Fo
 - **Клиент:** `deb [signed-by=/path/to/key.asc] http://<хражевник>:29202/repo/alice stable main`,
   где `key.asc` = `GET /repo/alice/key.asc`.
 - **Публичный ключ:** `GET /repo/<name>/key.asc` (armored OpenPGP).
+- **By-hash retention:** копии индексов `by-hash/sha256/<hash>` живут
+  два поколения Release (текущее + предыдущее): клиент, скачавший
+  Release до reindex, докачивает по старым хешам без 404. Поколения
+  старее двух удаляются при reindex; хранить глубже — по усмотрению
+  оператора (ручная чистка ключей `dists/…/by-hash/sha256/*`).
 
 ## rpm-md (dnf / Zypper)
 

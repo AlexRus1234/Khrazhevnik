@@ -38,6 +38,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -70,6 +71,13 @@ const (
 	repoComponent  = "main"
 	repoArch       = "amd64"
 	repoDateFormat = "Mon, 02 Jan 2006 15:04:05 MST"
+
+	// byHashMarker — имя marker-объекта в каталоге by-hash: JSON-массив
+	// хешей текущего поколения индексов. На следующем reindex эти хеши
+	// становятся «предыдущим поколением» и удерживаются GC. Имя не
+	// матчится с by-hash/<algo>/<hash> (точка вместо algo) — пересечений
+	// с индексными копиями нет.
+	byHashMarker = ".retained"
 )
 
 // Pool-суффиксы, которые apt-репо принимает на upload (ValidateObjectPath).
@@ -214,8 +222,10 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 	if err := writeByHash(ctx, storage, indexDir, packagesGz); err != nil {
 		return fmt.Errorf("apt.gen: by-hash packages.gz: %w", err)
 	}
-	// GC: копии прошлых регенераций (устаревшие sha256) удаляются —
-	// без этого by-hash накапливался бы на каждый reindex (аудит).
+	// GC: держим два поколения by-hash (текущее + предыдущее — retention
+	// для клиентов, скачавших Release прошлой генерации), более старые
+	// копии удаляются — без этого by-hash накапливался бы на каждый
+	// reindex (аудит).
 	if err := gcByHash(ctx, storage, indexDir, packagesBytes, packagesGz); err != nil {
 		return err
 	}
@@ -436,24 +446,46 @@ func writeByHash(ctx context.Context, storage port.Storage, indexDir string, con
 	return writeAtomic(ctx, storage, key, content)
 }
 
-// gcByHash удаляет by-hash-копии, не соответствующие текущим индексам:
-// клиенты, начавшие качать по старому хешу, не валидны для нового
-// состава Packages, а копии без GC накапливались бы на каждой
-// регенерации (аудит). Новые копии уже записаны к этому моменту, поэтому
-// окно «ключ есть в Release, by-hash ещё нет» отсутствует; удаляем
-// только лишнее. Перечисление — List-контракт сессии 20 (ошибка носителя
-// — ошибка генерации, fail-closed).
+// gcByHash удаляет by-hash-копии, не входящие в retention-набор: хеши
+// текущей генерации ∪ хеши предыдущей (marker .retained в каталоге
+// by-hash). Предыдущее поколение удерживается сознательно — практика
+// Debian-зеркал/aptly: клиент скачал Release до reindex и докачивает
+// индексы по старым хешам; немедленное удаление давало бы 404 и падение
+// apt update (Acquire::Retries по умолчанию 0). Хеш живёт ровно два
+// поколения: marker после GC перезаписывается хешами ТОЛЬКО текущей
+// генерации — запись всего удержанного разрастала бы retention
+// монотонно, и хеши не удалялись бы никогда. Marker пишется атомарно,
+// как индексы, и в Release-манифест не попадает (buildRelease работает
+// по байтам индексов и storage не читает). Перечисление — List-контракт
+// сессии 20 (ошибка носителя — ошибка генерации, fail-closed).
 func gcByHash(ctx context.Context, storage port.Storage, indexDir string, current ...[]byte) error {
-	keep := make(map[string]struct{}, len(current))
+	hashes := make([]string, 0, len(current))
 	for _, c := range current {
 		sum := sha256.Sum256(c)
-		keep[hex.EncodeToString(sum[:])] = struct{}{}
+		hashes = append(hashes, hex.EncodeToString(sum[:]))
 	}
 	prefix := indexDir + "/by-hash/"
+	markerKey := prefix + byHashMarker
+	prev, err := readRetainedHashes(ctx, storage, markerKey)
+	if err != nil {
+		return err
+	}
+	keep := make(map[string]struct{}, len(hashes)+len(prev))
+	for _, h := range hashes {
+		keep[h] = struct{}{}
+	}
+	for h := range prev {
+		keep[h] = struct{}{}
+	}
 	var stale []string
 	for meta, err := range storage.List(ctx, prefix) {
 		if err != nil {
 			return fmt.Errorf("apt.gen: by-hash gc: листинг %s: %w", prefix, err)
+		}
+		// Marker — служебный объект retention, не индексная копия:
+		// иначе GC удалял бы его как «не по формату».
+		if strings.HasSuffix(meta.Key, "/"+byHashMarker) {
+			continue
 		}
 		rel := strings.TrimPrefix(meta.Key, prefix)
 		hash, ok := strings.CutPrefix(rel, "sha256/")
@@ -472,7 +504,48 @@ func gcByHash(ctx context.Context, storage port.Storage, indexDir string, curren
 			return fmt.Errorf("apt.gen: by-hash gc: удаление %s: %w", key, err)
 		}
 	}
+	// Marker = хеши текущего поколения (сортировка — детерминированный
+	// байтовый состав объекта).
+	sort.Strings(hashes)
+	payload, err := json.Marshal(hashes)
+	if err != nil {
+		return fmt.Errorf("apt.gen: by-hash gc: marker %s: %w", markerKey, err)
+	}
+	if err := writeAtomic(ctx, storage, markerKey, payload); err != nil {
+		return fmt.Errorf("apt.gen: by-hash gc: marker %s: %w", markerKey, err)
+	}
 	return nil
+}
+
+// readRetainedHashes читает retention-набор предыдущего поколения из
+// marker-объекта (JSON-массив hex-хешей). Отсутствие, битый или чужой
+// JSON — пустой набор: деградация до retention одной текущей генерации,
+// а не ошибка генерации (вспомогательный объект не должен ронять
+// reindex). Ошибка носителя (не NotFound) — ошибка: fail-closed, как у
+// List.
+func readRetainedHashes(ctx context.Context, storage port.Storage, markerKey string) (map[string]struct{}, error) {
+	obj, err := storage.Get(ctx, markerKey)
+	if err != nil {
+		var nf *domain.NotFoundError
+		if errors.As(err, &nf) {
+			return map[string]struct{}{}, nil
+		}
+		return nil, fmt.Errorf("apt.gen: by-hash gc: marker %s: %w", markerKey, err)
+	}
+	defer obj.Body.Close()
+	data, err := io.ReadAll(obj.Body)
+	if err != nil {
+		return nil, fmt.Errorf("apt.gen: by-hash gc: marker %s: %w", markerKey, err)
+	}
+	var hashes []string
+	if err := json.Unmarshal(data, &hashes); err != nil {
+		return map[string]struct{}{}, nil
+	}
+	out := make(map[string]struct{}, len(hashes))
+	for _, h := range hashes {
+		out[h] = struct{}{}
+	}
+	return out, nil
 }
 
 // gzipBytes возвращает gzip-сжатую копию content (один writer, flush на

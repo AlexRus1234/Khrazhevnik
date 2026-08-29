@@ -24,6 +24,7 @@ import (
 	"crypto"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -513,67 +514,241 @@ func TestGenerateIndexesArchFilter(t *testing.T) {
 	}
 }
 
-// TestGenerateIndexesByHashGC — by-hash копии прошлых регенераций
-// удаляются: остаётся ровно по одной копии на текущие Packages и
-// Packages.gz, устаревшие sha256-ключи исчезают (аудит, накопление GC).
+// TestGenerateIndexesByHashGC — retention двух поколений: после 2-й
+// генерации хеши 1-й ещё доступны (GC не удалил — клиент с Release
+// прошлой генерации докачивает без 404); после 3-й — хеши 1-й удалены,
+// хеши 2-й доступны. Проверка через storage.Stat по полным ключам.
 func TestGenerateIndexesByHashGC(t *testing.T) {
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
 	byHashPrefix := "repo/1/apt/dists/stable/main/binary-amd64/by-hash/sha256/"
+	markerKey := "repo/1/apt/dists/stable/main/binary-amd64/by-hash/.retained"
+	debKey := port.RepoPrefix(repo) + "/pool/main/f/foo.deb"
 
-	putDeb(t, storage, repo, "pool/main/f/foo.deb", "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: v1\n")
 	g := &Generator{}
+	// currentByHash — by-hash ключи → контент для текущего состояния
+	// индексов (Packages и Packages.gz).
+	currentByHash := func() map[string][]byte {
+		t.Helper()
+		pkg := readStorage(t, storage, "repo/1/apt/dists/stable/main/binary-amd64/packages")
+		pkgGz := readStorage(t, storage, "repo/1/apt/dists/stable/main/binary-amd64/packages.gz")
+		out := make(map[string][]byte, 2)
+		for _, content := range [][]byte{pkg, pkgGz} {
+			sum := sha256.Sum256(content)
+			out[byHashPrefix+hex.EncodeToString(sum[:])] = content
+		}
+		return out
+	}
+	exists := func(key string) bool {
+		t.Helper()
+		_, err := storage.Stat(context.Background(), key)
+		if err == nil {
+			return true
+		}
+		var nf *domain.NotFoundError
+		if errors.As(err, &nf) {
+			return false
+		}
+		t.Fatalf("Stat %s: %v", key, err)
+		return false
+	}
+	checkAlive := func(want map[string][]byte, label string) {
+		t.Helper()
+		for key, content := range want {
+			if !exists(key) {
+				t.Errorf("%s: by-hash %s удалён", label, key)
+				continue
+			}
+			if got := readStorage(t, storage, key); !bytes.Equal(got, content) {
+				t.Errorf("%s: by-hash %s: контент не совпадает", label, key)
+			}
+		}
+	}
+
+	// Поколение 1.
+	putDeb(t, storage, repo, "pool/main/f/foo.deb", "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: v1\n")
 	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
 		t.Fatalf("первая генерация: %v", err)
 	}
-	count := func() int {
-		t.Helper()
-		n := 0
-		for range storage.List(context.Background(), byHashPrefix) {
-			n++
-		}
-		return n
+	gen1 := currentByHash()
+	if len(gen1) != 2 {
+		t.Fatalf("после первой генерации by-hash = %d записей, хочу 2", len(gen1))
 	}
-	if n := count(); n != 2 {
-		t.Fatalf("после первой генерации by-hash = %d записей, хочу 2", n)
-	}
+	checkAlive(gen1, "после 1-й")
+	// Marker после 1-й генерации: JSON-массив хешей поколения 1.
+	checkMarker(t, storage, markerKey, gen1)
 
-	// Обновляем пакет тем же путём (перезапись через Put+Commit) —
-	// содержимое Packages меняется, старые by-hash становятся мусором.
-	v2, _ := buildDeb(t, "Package: foo\nVersion: 2.0\nArchitecture: amd64\nDescription: v2\n")
-	key := port.RepoPrefix(repo) + "/pool/main/f/foo.deb"
-	w, err := storage.Put(context.Background(), key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.Write(v2); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Commit(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	// Поколение 2: другой состав — хеши поколения 1 удержаны.
+	overwriteDeb(t, storage, debKey, "Package: foo\nVersion: 2.0\nArchitecture: amd64\nDescription: v2\n")
 	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
 		t.Fatalf("вторая генерация: %v", err)
 	}
+	gen2 := currentByHash()
+	checkAlive(gen1, "после 2-й (хеши 1-го поколения)")
+	checkAlive(gen2, "после 2-й (текущие)")
+	checkMarker(t, storage, markerKey, gen2)
 
-	// Ровно 2 записи, и обе соответствуют текущим индексам.
-	pkg := readStorage(t, storage, "repo/1/apt/dists/stable/main/binary-amd64/packages")
-	pkgGz := readStorage(t, storage, "repo/1/apt/dists/stable/main/binary-amd64/packages.gz")
-	wantKeys := map[string]bool{}
-	for _, content := range [][]byte{pkg, pkgGz} {
-		sum := sha256.Sum256(content)
-		wantKeys[byHashPrefix+hex.EncodeToString(sum[:])] = true
+	// Поколение 3: хеши поколения 1 удалены, поколения 2 удержаны.
+	overwriteDeb(t, storage, debKey, "Package: foo\nVersion: 3.0\nArchitecture: amd64\nDescription: v3\n")
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("третья генерация: %v", err)
 	}
-	got := 0
-	for meta := range storage.List(context.Background(), byHashPrefix) {
-		got++
-		if !wantKeys[meta.Key] {
-			t.Errorf("by-hash осталась устаревшая копия %s", meta.Key)
+	gen3 := currentByHash()
+	for key := range gen1 {
+		if exists(key) {
+			t.Errorf("после 3-й генерации хеш 1-го поколения %s не удалён", key)
 		}
 	}
-	if got != 2 {
-		t.Fatalf("после GC by-hash = %d записей, хочу 2", got)
+	checkAlive(gen2, "после 3-й (хеши 2-го поколения)")
+	checkAlive(gen3, "после 3-й (текущие)")
+	checkMarker(t, storage, markerKey, gen3)
+
+	// Ровно два поколения в by-hash: 2×(Packages, Packages.gz) + marker.
+	n := 0
+	for range storage.List(context.Background(), byHashPrefix) {
+		n++
+	}
+	if n != 4 {
+		t.Errorf("после 3-й генерации by-hash/sha256 = %d записей, хочу 4", n)
+	}
+}
+
+// checkMarker сверяет marker .retained с JSON-массивом хешей ожидаемого
+// поколения (ключи by-hash → контент).
+func checkMarker(t *testing.T, storage *testutil.FakeStorage, markerKey string, gen map[string][]byte) {
+	t.Helper()
+	raw := readStorage(t, storage, markerKey)
+	var got []string
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("marker .retained не JSON-массив строк: %v (%q)", err, raw)
+	}
+	want := make([]string, 0, len(gen))
+	for key := range gen {
+		want = append(want, key[strings.LastIndexByte(key, '/')+1:])
+	}
+	slices.Sort(want)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("marker .retained = %v, хочу %v", got, want)
+	}
+}
+
+// overwriteDeb перезаписывает .deb по готовому ключу новым составом
+// (Put+Commit): содержимое Packages меняется, старые by-hash уходят в
+// предыдущее поколение.
+func overwriteDeb(t *testing.T, storage *testutil.FakeStorage, key, control string) {
+	t.Helper()
+	deb, _ := buildDeb(t, control)
+	w, err := storage.Put(context.Background(), key)
+	if err != nil {
+		t.Fatalf("storage.Put %s: %v", key, err)
+	}
+	if _, err := w.Write(deb); err != nil {
+		t.Fatalf("w.Write %s: %v", key, err)
+	}
+	if err := w.Commit(context.Background()); err != nil {
+		t.Fatalf("w.Commit %s: %v", key, err)
+	}
+}
+
+// TestGenerateIndexesByHashBrokenMarker — отсутствующий/битый/чужой
+// JSON в marker .retained не валит генерацию: retention деградирует до
+// одной текущей генерации (старые by-hash удаляются), marker
+// перезаписывается валидным набором.
+func TestGenerateIndexesByHashBrokenMarker(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	byHashPrefix := "repo/1/apt/dists/stable/main/binary-amd64/by-hash/sha256/"
+	markerKey := "repo/1/apt/dists/stable/main/binary-amd64/by-hash/.retained"
+	debKey := port.RepoPrefix(repo) + "/pool/main/f/foo.deb"
+
+	g := &Generator{}
+	currentByHash := func() map[string][]byte {
+		t.Helper()
+		pkg := readStorage(t, storage, "repo/1/apt/dists/stable/main/binary-amd64/packages")
+		pkgGz := readStorage(t, storage, "repo/1/apt/dists/stable/main/binary-amd64/packages.gz")
+		out := make(map[string][]byte, 2)
+		for _, content := range [][]byte{pkg, pkgGz} {
+			sum := sha256.Sum256(content)
+			out[byHashPrefix+hex.EncodeToString(sum[:])] = content
+		}
+		return out
+	}
+	putMarker := func(junk string) {
+		t.Helper()
+		w, err := storage.Put(context.Background(), markerKey)
+		if err != nil {
+			t.Fatalf("storage.Put marker: %v", err)
+		}
+		if _, err := w.Write([]byte(junk)); err != nil {
+			t.Fatalf("w.Write marker: %v", err)
+		}
+		if err := w.Commit(context.Background()); err != nil {
+			t.Fatalf("w.Commit marker: %v", err)
+		}
+	}
+
+	putDeb(t, storage, repo, "pool/main/f/foo.deb", "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: v1\n")
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("первая генерация: %v", err)
+	}
+	gen1 := currentByHash()
+
+	// Битый marker (мусорные байты): генерация успешна, хеши поколения 1
+	// удалены (retention = только текущее поколение).
+	putMarker("\x00\xff garbage not json")
+	overwriteDeb(t, storage, debKey, "Package: foo\nVersion: 2.0\nArchitecture: amd64\nDescription: v2\n")
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("вторая генерация с битым marker: %v", err)
+	}
+	for key := range gen1 {
+		if _, err := storage.Stat(context.Background(), key); err == nil {
+			t.Errorf("битый marker: хеш предыдущего поколения %s не удалён", key)
+		}
+	}
+	gen2 := currentByHash()
+	for key := range gen2 {
+		if _, err := storage.Stat(context.Background(), key); err != nil {
+			t.Errorf("битый marker: текущий by-hash %s отсутствует: %v", key, err)
+		}
+	}
+
+	// Чужой JSON (объект вместо массива) — та же деградация.
+	putMarker(`{"retained":[]}`)
+	overwriteDeb(t, storage, debKey, "Package: foo\nVersion: 3.0\nArchitecture: amd64\nDescription: v3\n")
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("третья генерация с чужим JSON: %v", err)
+	}
+	for key := range gen2 {
+		if _, err := storage.Stat(context.Background(), key); err == nil {
+			t.Errorf("чужой JSON: хеш предыдущего поколения %s не удалён", key)
+		}
+	}
+	// Marker восстановлен валидным набором текущего поколения.
+	checkMarker(t, storage, markerKey, currentByHash())
+}
+
+// TestGenerateIndexesByHashMarkerNotInRelease — Release содержит ровно
+// две SHA256-строки (Packages и Packages.gz); служебный marker .retained
+// в манифест не попадает.
+func TestGenerateIndexesByHashMarkerNotInRelease(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	putDeb(t, storage, repo, "pool/main/f/foo.deb", "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: v1\n")
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	release := string(readStorage(t, storage, "repo/1/apt/dists/stable/release"))
+	if n := strings.Count(release, "main/binary-amd64/"); n != 2 {
+		t.Errorf("SHA256-строк в Release = %d, хочу 2:\n%s", n, release)
+	}
+	if strings.Contains(release, ".retained") {
+		t.Errorf("marker .retained попал в Release:\n%s", release)
 	}
 }
 
