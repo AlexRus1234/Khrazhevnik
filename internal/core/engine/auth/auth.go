@@ -382,7 +382,9 @@ func (s *Service) rememberRevoked(jti string, until time.Time) {
 			delete(s.revoked, j)
 		}
 	}
-	if len(s.revoked) >= maxRevokedMemory {
+	// Вытеснение циклом: после вставки карта не превышает потолок
+	// (проверка до вставки резервирует слот).
+	for len(s.revoked) >= maxRevokedMemory {
 		for j := range s.revoked {
 			delete(s.revoked, j)
 			break

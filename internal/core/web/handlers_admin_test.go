@@ -51,7 +51,7 @@ func newAdminEnv(t *testing.T) *adminEnv {
 	tokens := &handlerTokens{}
 	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
 	a, err := auth.New(auth.Config{
-		Users: users, Tokens: tokens, Audit: nil,
+		Users: users, Tokens: tokens, Audit: nil, Revocations: testutil.NewFakeRevocations(),
 		Clock: clock, Rand: testutil.FixedRand("44444444-4444-4444-8444-444444444444"),
 		JWTSecret: "secret", SessionTTL: time.Hour,
 	})

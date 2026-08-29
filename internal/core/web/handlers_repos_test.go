@@ -120,7 +120,7 @@ func newRepoEnv(t *testing.T) *repoEnv {
 	tokens := &handlerTokens{}
 	clock := testutil.NewManualClock(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC))
 	a, err := auth.New(auth.Config{
-		Users: users, Tokens: tokens, Audit: nil,
+		Users: users, Tokens: tokens, Audit: nil, Revocations: testutil.NewFakeRevocations(),
 		Clock: clock, Rand: testutil.FixedRand("55555555-5555-4555-8555-555555555555"),
 		JWTSecret: "secret", SessionTTL: time.Hour,
 	})

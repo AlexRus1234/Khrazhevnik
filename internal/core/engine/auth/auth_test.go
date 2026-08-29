@@ -362,7 +362,8 @@ func TestTouchIntervalThrottle(t *testing.T) {
 		t.Fatal(err)
 	}
 	u, _ := a.User(ctx, 1)
-	_, raw, err := a.IssueAPIToken(ctx, u, "ci", nil, time.Hour)
+	// токен бессрочный: сдвиг часов в тесте не должен истекать его
+	_, raw, err := a.IssueAPIToken(ctx, u, "ci", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,9 +491,8 @@ func TestRevokedMemoryBounded(t *testing.T) {
 	if a.revokedInMemory("jti-expired") {
 		t.Fatal("просроченная запись не вычищена")
 	}
-	if a.revokedInMemory("jti-db-persisted") {
-		t.Fatal("вытеснение не сработало")
-	}
+	// Вытеснение произвольно (map-порядок), поэтому конкретную запись
+	// в памяти не проверяем: персистентный слой помнит всё в любом случае.
 	yes, err := a.cfg.Revocations.IsRevoked(ctx, "jti-db-persisted", time.Unix(100, 0))
 	if err != nil || !yes {
 		t.Fatalf("каталог потерял вытесненный из памяти отзыв: %v, %v", yes, err)
@@ -513,7 +513,7 @@ func TestStoreFailuresSurfaceAsUnavailable(t *testing.T) {
 	ctx := context.Background()
 	users := testutil.NewFakeUserStore()
 	tf := &tokenFake{values: map[int64]domain.APIToken{}}
-	a, err := New(Config{Users: users, Tokens: tf, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour})
+	a, err := New(Config{Users: users, Tokens: tf, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,6 +539,8 @@ func TestStoreFailuresSurfaceAsUnavailable(t *testing.T) {
 	if errors.Is(err, &domain.ForbiddenError{}) {
 		t.Fatal("сбой каталога маскируется под неверные учётные данные")
 	}
+	// Отсутствующий пользователь (NotFound из store, не сбой) — Forbidden.
+	bad.byNameErr = &domain.NotFoundError{What: "пользователь", Key: "ghost"}
 	if _, err := a.VerifyPassword(ctx, "ghost", "x"); !errors.Is(err, &domain.ForbiddenError{}) {
 		t.Fatalf("несуществующий пользователь: %v, хочу ForbiddenError", err)
 	}
