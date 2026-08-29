@@ -121,6 +121,10 @@ func New(cfg Config, c *cacheengine.Engine, storage port.Storage, index port.Obj
 		cfg.ProgressInterval = defaultProgressInterval
 	}
 	if clock == nil {
+		// Обоснование фолбэка (аудит item 21): продакшн-wire всегда
+		// передаёт часы явно; системная реализация остаётся для
+		// вызовов без wire (unit-тесты со значением по умолчанию),
+		// чтобы нулевые зависимости не паниковали в рантайме.
 		clock = systemClock{}
 	}
 	var limiter *rate.Limiter

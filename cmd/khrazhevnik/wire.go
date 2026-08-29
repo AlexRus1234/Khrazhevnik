@@ -178,7 +178,7 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	// RepoAdapter'ы через port.SignerInjector (v1 — только apt).
 	signer := wireSigner(cfg, log)
 	narSigner := wireNarSigner(cfg, log)
-	publishAdapters := wireRepoAdapters(signer, narSigner)
+	publishAdapters := wireRepoAdapters(signer, narSigner, systemClock{})
 	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, systemClock{}, publishAdapters)
 	publishAPI := publishSyncer{engine: publishEngine, repos: catalog.Repos, tasks: tasks}
 	scheduler := mirrorengine.NewScheduler(mirrorEngine, catalog.Remotes, uuidRand{}, systemClock{}, cfg.Mirror.IntervalJitter.Duration)
@@ -214,11 +214,13 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 // rpm-md/pacman/apk/nix (сессия 16); прочие возвращают ошибку при
 // lookup (registry.RepoAdapter) и пропускаются. signer (если не nil)
 // внедряется в адаптеры, реализующие port.SignerInjector (v1 — apt:
-// InRelease + Release.gpg; rpm-md/pacman/apk: detached индекс-sig).
+// InRelease + Release.gpg; rpm-md/pacman/apk: detached индекс-sig);
+// clock внедряется в адаптеры с метками времени в индексах
+// (port.ClockInjector — apt Release/rpm-md repomd, сессия 24).
 // narSigner (если не nil) внедряется в адаптеры, реализующие
 // port.NarSignerInjector (v1 — nix: переподпись narinfo). Возвращает
 // карту name → RepoAdapter для движка publish.
-func wireRepoAdapters(signer port.Signer, narSigner port.NarSigner) map[string]port.RepoAdapter {
+func wireRepoAdapters(signer port.Signer, narSigner port.NarSigner, clock port.Clock) map[string]port.RepoAdapter {
 	out := map[string]port.RepoAdapter{}
 	for _, name := range registry.Ecosystems() {
 		factory, err := registry.RepoAdapter(name)
@@ -232,6 +234,11 @@ func wireRepoAdapters(signer port.Signer, narSigner port.NarSigner) map[string]p
 		if signer != nil {
 			if inj, ok := adapter.(port.SignerInjector); ok {
 				inj.SetSigner(signer)
+			}
+		}
+		if clock != nil {
+			if inj, ok := adapter.(port.ClockInjector); ok {
+				inj.SetClock(clock)
 			}
 		}
 		if narSigner != nil {
@@ -275,7 +282,7 @@ func wireSigner(cfg config.Config, log *slog.Logger) port.Signer {
 		log.Error("signing: модуль openpgp не слинкован — репозитории без подписи", "err", err)
 		return nil
 	}
-	signer, err := factory(cfg.Signing)
+	signer, err := factory(cfg.Signing, systemClock{})
 	if err != nil {
 		log.Error("signing: инициализация подписчика не удалась — репозитории без подписи", "err", err, "keys_dir", cfg.Signing.KeysDir)
 		return nil

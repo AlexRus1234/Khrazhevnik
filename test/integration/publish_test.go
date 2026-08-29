@@ -112,7 +112,7 @@ func publishIntegrationEnv(t *testing.T, signer port.Signer) (*web.Server, strin
 	}
 	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, http.DefaultClient, clock, cacheengine.Config{}, metrics.NewCache())
 	tasks := web.NewTaskRegistry(2, clock)
-	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, clock, wireRepoAdaptersForTest(signer))
+	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, clock, wireRepoAdaptersForTest(signer, clock))
 	publishAPI := publishSyncerTest{engine: publishEngine, repos: catalog.Repos, tasks: tasks}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := &web.Server{
@@ -172,8 +172,9 @@ func (pp publishProgressTest) Update(phase, current string, processed, total int
 func (pp publishProgressTest) Log(line string) { pp.p.Log(line) }
 
 // wireRepoAdaptersForTest — копия wireRepoAdapters из cmd/wire.go.
-// signer (если не nil) внедряется в адаптеры через port.SignerInjector.
-func wireRepoAdaptersForTest(signer port.Signer) map[string]port.RepoAdapter {
+// signer (если не nil) внедряется в адаптеры через port.SignerInjector,
+// clock — через port.ClockInjector (Date в Release).
+func wireRepoAdaptersForTest(signer port.Signer, clock port.Clock) map[string]port.RepoAdapter {
 	out := map[string]port.RepoAdapter{}
 	for _, name := range registry.Ecosystems() {
 		factory, err := registry.RepoAdapter(name)
@@ -187,6 +188,11 @@ func wireRepoAdaptersForTest(signer port.Signer) map[string]port.RepoAdapter {
 		if signer != nil {
 			if inj, ok := adapter.(port.SignerInjector); ok {
 				inj.SetSigner(signer)
+			}
+		}
+		if clock != nil {
+			if inj, ok := adapter.(port.ClockInjector); ok {
+				inj.SetClock(clock)
 			}
 		}
 		out[name] = adapter
@@ -376,7 +382,7 @@ func openpgpSignerForTest(t *testing.T) port.Signer {
 	if err != nil {
 		t.Fatalf("registry.Signer openpgp: %v (blank-import забыли?)", err)
 	}
-	signer, err := factory(config.Signing{KeysDir: keysDir})
+	signer, err := factory(config.Signing{KeysDir: keysDir}, testutil.NewManualClock(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)))
 	if err != nil {
 		t.Fatalf("openpgp factory: %v", err)
 	}

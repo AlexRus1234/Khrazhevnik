@@ -92,9 +92,12 @@ func init() {
 
 // Generator реализует port.RepoAdapter для apt-репо. Внедряемый через
 // port.SignerInjector подписчик включает эмиссию InRelease + Release.gpg
-// после Release; nil = репо не подписывается (сессия 15).
+// после Release; nil = репо не подписывается (сессия 15). Clock —
+// источник времени для Date в Release (port.ClockInjector, wire);
+// nil — фолбэк systemClock (тесты без wire).
 type Generator struct {
 	signer port.Signer
+	clock  port.Clock
 }
 
 // SetSigner внедряет подписчик метаданных: после Release генератор
@@ -102,6 +105,25 @@ type Generator struct {
 // nil — репо не подписывается (обратная совместимость, тесты без
 // ключа). Вызывается из wire (type-assert к port.SignerInjector).
 func (g *Generator) SetSigner(s port.Signer) { g.signer = s }
+
+// SetClock внедряет источник времени для Date в Release. Вызывается
+// из wire (type-assert к port.ClockInjector).
+func (g *Generator) SetClock(c port.Clock) { g.clock = c }
+
+// now — время генерации: внедрённый Clock, без него systemClock
+// (нулевое значение Generator в тестах остаётся рабочим).
+func (g *Generator) now() time.Time {
+	if g.clock != nil {
+		return g.clock.Now()
+	}
+	return systemClock{}.Now()
+}
+
+// systemClock — port.Clock поверх time.Now (фолбэк как в движках;
+// тесты подменяют через SetClock/testutil).
+type systemClock struct{}
+
+func (systemClock) Now() time.Time { return time.Now() }
 
 // Name — имя экосистемы, совпадает с Adapter.Name.
 func (g *Generator) Name() string { return Name }
@@ -193,7 +215,7 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 		return fmt.Errorf("apt.gen: by-hash packages.gz: %w", err)
 	}
 	p.Update("write", repo.Name, 3, 4)
-	release := buildRelease(repo, packagesBytes, packagesGz)
+	release := buildRelease(g.now(), packagesBytes, packagesGz)
 	if err := writeAtomic(ctx, storage, prefix+"/dists/"+repoDist+"/release", release); err != nil {
 		return fmt.Errorf("apt.gen: release: %w", err)
 	}
@@ -348,15 +370,15 @@ func writeStanza(buf *bytes.Buffer, s *Stanza) {
 
 // buildRelease собирает Release-stanza: Date/Suite/Components/
 // Architectures + SHA256-блок для Packages и Packages.gz (по строке
-// на файл: hash size path). Date — текущее время генерации (UTC,
-// формат apt). Пути в SHA256-блоке — канонические apt (с заглавной
-// P): apt-get читает Release и запрашивает файлы по этим путям;
-// публичный роутер :29202 лоуэркейсит запрос при lookup'е в Storage.
-func buildRelease(_ domain.Repo, packages, packagesGz []byte) []byte {
-	now := time.Now().UTC()
+// на файл: hash size path). Date — время генерации (UTC, формат apt,
+// приходит из Clock вызывающего). Пути в SHA256-блоке — канонические
+// apt (с заглавной P): apt-get читает Release и запрашивает файлы по
+// этим путям; публичный роутер :29202 лоуэркейсит запрос при lookup'е
+// в Storage.
+func buildRelease(now time.Time, packages, packagesGz []byte) []byte {
 	var b bytes.Buffer
 	b.Grow(2048)
-	fmt.Fprintf(&b, "Date: %s\n", now.Format(repoDateFormat))
+	fmt.Fprintf(&b, "Date: %s\n", now.UTC().Format(repoDateFormat))
 	fmt.Fprintf(&b, "Suite: %s\n", suite)
 	fmt.Fprintf(&b, "Components: %s\n", repoComponent)
 	fmt.Fprintf(&b, "Architectures: %s\n", repoArch)

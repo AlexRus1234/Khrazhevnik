@@ -26,16 +26,19 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	gp "github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/clearsign"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
+
+	"khrazhevnik/internal/testutil"
 )
 
 // newSigner — хелпер: Signer в свежем t.TempDir().
 func newSigner(t *testing.T, passphrase []byte) *Signer {
 	t.Helper()
-	s, err := New(t.TempDir(), passphrase)
+	s, err := New(t.TempDir(), passphrase, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -63,7 +66,7 @@ func keyring(t *testing.T, s *Signer) gp.EntityList {
 
 func TestNew_GeneratesKeyFiles(t *testing.T) {
 	dir := t.TempDir()
-	s, err := New(dir, nil)
+	s, err := New(dir, nil, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -90,12 +93,12 @@ func TestNew_GeneratesKeyFiles(t *testing.T) {
 
 func TestNew_ReloadSameFingerprint(t *testing.T) {
 	dir := t.TempDir()
-	s1, err := New(dir, nil)
+	s1, err := New(dir, nil, nil)
 	if err != nil {
 		t.Fatalf("New #1: %v", err)
 	}
 	fp1 := s1.Fingerprint()
-	s2, err := New(dir, nil)
+	s2, err := New(dir, nil, nil)
 	if err != nil {
 		t.Fatalf("New #2: %v", err)
 	}
@@ -108,7 +111,7 @@ func TestNew_ReloadSameFingerprint(t *testing.T) {
 }
 
 func TestNew_EmptyKeysDir(t *testing.T) {
-	if _, err := New("", nil); err == nil {
+	if _, err := New("", nil, nil); err == nil {
 		t.Fatal("ожидалась ошибка при пустом keys_dir")
 	}
 }
@@ -120,7 +123,7 @@ func TestNew_KeysDirIsFileFails(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(file, nil); err == nil {
+	if _, err := New(file, nil, nil); err == nil {
 		t.Fatal("ожидалась ошибка MkdirAll поверх файла")
 	}
 }
@@ -155,6 +158,38 @@ func TestSign_CleartextRoundtrip(t *testing.T) {
 		t.Errorf("VerifySignature: %v", err)
 	} else if signer == nil {
 		t.Error("signer nil после verify")
+	}
+}
+
+// TestSignDetached_ClockTimestamp — метка времени подписи берётся из
+// внедрённого Clock (packet.Config.Now), а не из time.Now: правило
+// «время только через port.Clock» (аудит, item 21).
+func TestSignDetached_ClockTimestamp(t *testing.T) {
+	moment := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	dir := t.TempDir()
+	s, err := New(dir, nil, testutil.FixedClock(moment))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sigR, err := s.SignDetached(context.Background(), strings.NewReader("Release: clock\n"))
+	if err != nil {
+		t.Fatalf("SignDetached: %v", err)
+	}
+	sigBytes, err := io.ReadAll(sigR)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	pr := packet.NewReader(bytes.NewReader(sigBytes))
+	pkt, err := pr.Next()
+	if err != nil {
+		t.Fatalf("packet.Next: %v", err)
+	}
+	sig, ok := pkt.(*packet.Signature)
+	if !ok {
+		t.Fatalf("ожидали packet.Signature, получили %T", pkt)
+	}
+	if !sig.CreationTime.Equal(moment) {
+		t.Errorf("CreationTime = %v, хочу %v (из Clock)", sig.CreationTime, moment)
 	}
 }
 
@@ -225,13 +260,13 @@ func TestSignDetached_TamperInvalid(t *testing.T) {
 func TestPassphrase_EncryptedKeyRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	pass := []byte("correct horse battery staple")
-	s1, err := New(dir, pass)
+	s1, err := New(dir, pass, nil)
 	if err != nil {
 		t.Fatalf("New с passphrase: %v", err)
 	}
 	// private.asc на диске зашифрован — перезагрузка с правильной
 	// passphrase должна дать тот же ключ и рабочую подпись.
-	s2, err := New(dir, pass)
+	s2, err := New(dir, pass, nil)
 	if err != nil {
 		t.Fatalf("reload с passphrase: %v", err)
 	}
@@ -254,10 +289,10 @@ func TestPassphrase_EncryptedKeyRoundtrip(t *testing.T) {
 
 func TestPassphrase_WrongFails(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := New(dir, []byte("right-pass")); err != nil {
+	if _, err := New(dir, []byte("right-pass"), nil); err != nil {
 		t.Fatalf("New #1: %v", err)
 	}
-	_, err := New(dir, []byte("wrong-pass"))
+	_, err := New(dir, []byte("wrong-pass"), nil)
 	if err == nil {
 		t.Fatal("ожидалась ошибка при неверной passphrase")
 	}
@@ -268,10 +303,10 @@ func TestPassphrase_WrongFails(t *testing.T) {
 
 func TestPassphrase_EncryptedButEmptyFails(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := New(dir, []byte("secret")); err != nil {
+	if _, err := New(dir, []byte("secret"), nil); err != nil {
 		t.Fatalf("New с passphrase: %v", err)
 	}
-	_, err := New(dir, nil)
+	_, err := New(dir, nil, nil)
 	if err == nil {
 		t.Fatal("ожидалась ошибка: зашифрован, а passphrase пуста")
 	}
@@ -279,11 +314,11 @@ func TestPassphrase_EncryptedButEmptyFails(t *testing.T) {
 
 func TestPassphrase_EmptyOnUnencryptedOK(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := New(dir, nil); err != nil {
+	if _, err := New(dir, nil, nil); err != nil {
 		t.Fatalf("New без passphrase: %v", err)
 	}
 	// reload без passphrase на незашифрованном ключе — норма.
-	if _, err := New(dir, nil); err != nil {
+	if _, err := New(dir, nil, nil); err != nil {
 		t.Fatalf("reload без passphrase: %v", err)
 	}
 }
@@ -310,7 +345,7 @@ func TestLoad_CorruptFileFails(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, privateKeyFile), []byte("not a key"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := New(dir, nil)
+	_, err := New(dir, nil, nil)
 	if err == nil {
 		t.Fatal("ожидалась ошибка для битого private.asc")
 	}
@@ -405,7 +440,7 @@ func TestNew_PublicAscIsDirFails(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, publicKeyFile), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(dir, nil); err == nil {
+	if _, err := New(dir, nil, nil); err == nil {
 		t.Fatal("ожидалась ошибка New когда public.asc — каталог")
 	}
 }

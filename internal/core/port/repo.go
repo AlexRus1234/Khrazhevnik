@@ -67,6 +67,16 @@ type SignerInjector interface {
 	SetSigner(s Signer)
 }
 
+// ClockInjector — опциональная способность RepoAdapter'а принять
+// port.Clock (время генерации индексов: Date в apt Release, revision/
+// timestamp в rpm-md repomd). Правило проекта — время только через
+// port.Clock: time.Now в генераторах делает Date недетерминированной
+// в тестах и уводит мимо единой точки. wire (cmd) внедряет часы так же,
+// как Signer (SignerInjector); адаптеры без меток времени не реализуют.
+type ClockInjector interface {
+	SetClock(c Clock)
+}
+
 // RepoPrefix возвращает корневой префикс ключей личного репозитория в
 // едином namespace Storage: repo/<repo-id>/<ecosystem>. Слеши — от
 // функции, вызывающий дописывает только путь внутри репо (без ведущего

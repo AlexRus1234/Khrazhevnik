@@ -66,9 +66,12 @@ func init() {
 
 // Generator реализует port.RepoAdapter для rpm-md-репо. Внедряемый
 // через port.SignerInjector подписчик включает эмиссию repomd.xml.asc
-// после repomd.xml; nil = репо не подписывается (сессия 15).
+// после repomd.xml; nil = репо не подписывается (сессия 15). Clock —
+// источник времени для revision/timestamp в repomd.xml
+// (port.ClockInjector, wire); nil — фолбэк systemClock (тесты без wire).
 type Generator struct {
 	signer port.Signer
+	clock  port.Clock
 }
 
 // SetSigner внедряет подписчик метаданных: после repomd.xml генератор
@@ -76,6 +79,25 @@ type Generator struct {
 // nil — репо не подписывается. Вызывается из wire (type-assert к
 // port.SignerInjector).
 func (g *Generator) SetSigner(s port.Signer) { g.signer = s }
+
+// SetClock внедряет источник времени для revision/timestamp repomd.
+// Вызывается из wire (type-assert к port.ClockInjector).
+func (g *Generator) SetClock(c port.Clock) { g.clock = c }
+
+// now — время генерации: внедрённый Clock, без него systemClock
+// (нулевое значение Generator в тестах остаётся рабочим).
+func (g *Generator) now() time.Time {
+	if g.clock != nil {
+		return g.clock.Now()
+	}
+	return systemClock{}.Now()
+}
+
+// systemClock — port.Clock поверх time.Now (фолбэк как в движках;
+// тесты подменяют через SetClock/testutil).
+type systemClock struct{}
+
+func (systemClock) Now() time.Time { return time.Now() }
 
 // Name — имя экосистемы, совпадает с Adapter.Name.
 func (g *Generator) Name() string { return Name }
@@ -146,7 +168,7 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 		return fmt.Errorf("rpm-md.gen: primary.xml.gz: %w", err)
 	}
 	p.Update("write", repo.Name, 1, 2)
-	repomd := buildRepomd(primaryBytes, primaryGz)
+	repomd := buildRepomd(g.now().UTC(), primaryBytes, primaryGz)
 	if err := writeAtomic(ctx, storage, repodataPrefix+"/repomd.xml", repomd); err != nil {
 		return fmt.Errorf("rpm-md.gen: repomd.xml: %w", err)
 	}
@@ -297,9 +319,9 @@ func writePrimaryPackage(buf *bytes.Buffer, h *RPMHeader, sha, href string, pkgS
 // buildRepomd собирает repomd.xml: revision (timestamp), один data
 // type="primary" с checksum/open-checksum (sha256), size/open-size,
 // location href, timestamp. checksum — sha256 сжатого primary.xml.gz;
-// open-checksum — sha256 несжатого primary.xml.
-func buildRepomd(primary, primaryGz []byte) []byte {
-	now := time.Now().UTC()
+// open-checksum — sha256 несжатого primary.xml. now — время генерации
+// (Clock вызывающего).
+func buildRepomd(now time.Time, primary, primaryGz []byte) []byte {
 	var b bytes.Buffer
 	b.Grow(2048)
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")

@@ -60,6 +60,10 @@ type Engine struct {
 // nil adapters → движок работает без генератора (reindex → Unsupported).
 func New(cfg Config, storage port.Storage, repos port.RepoStore, clock port.Clock, adapters map[string]port.RepoAdapter) *Engine {
 	if clock == nil {
+		// Обоснование фолбэка (аудит item 21): продакшн-wire всегда
+		// передаёт часы явно; системная реализация остаётся для
+		// вызовов без wire (unit-тесты со значением по умолчанию),
+		// чтобы нулевые зависимости не паниковали в рантайме.
 		clock = systemClock{}
 	}
 	if adapters == nil {

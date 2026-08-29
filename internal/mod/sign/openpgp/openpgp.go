@@ -65,20 +65,27 @@ const (
 // (NewEntity), но он не используется для подписи метаданных — лишний,
 // однако выкидывать его из ключа нельзя без ручной сборки пакетов;
 // оставляем как есть (apt игнорирует encryption-сабки при проверке
-// подписи Release).
-func signerConfig() *packet.Config {
-	return &packet.Config{
+// подписи Release). clock (если не nil) становится источником меток
+// времени подписей (packet.Config.Now) — правило «время только через
+// port.Clock»; иначе go-crypto берёт time.Now (тесты без часов).
+func signerConfig(clock port.Clock) *packet.Config {
+	cfg := &packet.Config{
 		Algorithm:     packet.PubKeyAlgoEd25519,
 		DefaultHash:   crypto.SHA256,
 		DefaultCipher: packet.CipherAES256,
 	}
+	if clock != nil {
+		cfg.Time = clock.Now
+	}
+	return cfg
 }
 
 func init() {
 	// Compile-time регистрация фабрики подписчика в реестре: wire
-	// (cmd) находит по имени «openpgp» и вызывает с cfg.Signing.
-	registry.RegisterSigner(signerName, func(cfg config.Signing) (port.Signer, error) {
-		return New(cfg.KeysDir, []byte(cfg.Passphrase))
+	// (cmd) находит по имени «openpgp» и вызывает с cfg.Signing и
+	// системными часами.
+	registry.RegisterSigner(signerName, func(cfg config.Signing, clock port.Clock) (port.Signer, error) {
+		return New(cfg.KeysDir, []byte(cfg.Passphrase), clock)
 	})
 }
 
@@ -102,15 +109,16 @@ var _ port.Signer = (*Signer)(nil)
 // экспорт private.asc (0600) + public.asc (0600), опциональное
 // шифрование приватного ключа passphrase. Повторный старт: загрузка
 // private.asc, расшифровка passphrase (если зашифрован) — неверная
-// passphrase падает здесь. keysDir создаётся с 0700.
-func New(keysDir string, passphrase []byte) (*Signer, error) {
+// passphrase падает здесь. keysDir создаётся с 0700. clock — источник
+// меток времени подписей и сабков (nil → системное время пакета).
+func New(keysDir string, passphrase []byte, clock port.Clock) (*Signer, error) {
 	if keysDir == "" {
 		return nil, errors.New("openpgp: пустой keys_dir")
 	}
 	if err := os.MkdirAll(keysDir, 0o700); err != nil {
 		return nil, fmt.Errorf("openpgp: keys_dir %s: %w", keysDir, err)
 	}
-	cfg := signerConfig()
+	cfg := signerConfig(clock)
 	privPath := filepath.Join(keysDir, privateKeyFile)
 
 	entity, fresh, err := loadOrGenerate(privPath, passphrase, cfg)
