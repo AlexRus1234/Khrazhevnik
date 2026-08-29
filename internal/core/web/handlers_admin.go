@@ -54,7 +54,8 @@ func remoteOutFrom(r domain.Remote) remoteOut {
 	}
 	return remoteOut{
 		ID: r.ID, Name: r.Name, Ecosystem: r.Ecosystem, BaseURL: r.BaseURL,
-		Mode: r.Mode, Enabled: r.Enabled, Include: include, CreatedAt: r.CreatedAt,
+		Mode: r.Mode, Enabled: r.Enabled, Include: include,
+		SyncInterval: r.SyncInterval, CreatedAt: r.CreatedAt,
 	}
 }
 
@@ -92,7 +93,8 @@ func handleCreateRemote(d Deps) http.HandlerFunc {
 		rem, err := d.Remotes.CreateRemote(r.Context(), domain.Remote{
 			Name: in.Name, Ecosystem: in.Ecosystem, BaseURL: in.BaseURL,
 			Mode: domain.RemoteMode(in.Mode), Enabled: enabled, Include: in.Include,
-			CreatedAt: d.clock().Now(),
+			SyncInterval: in.SyncInterval,
+			CreatedAt:    d.clock().Now(),
 		})
 		if err != nil {
 			writeErr(w, err)
@@ -136,7 +138,8 @@ func handleUpdateRemote(d Deps) http.HandlerFunc {
 		updated := domain.Remote{
 			ID: existing.ID, Name: in.Name, Ecosystem: in.Ecosystem,
 			BaseURL: in.BaseURL, Mode: domain.RemoteMode(in.Mode),
-			Enabled: enabled, Include: in.Include, CreatedAt: existing.CreatedAt,
+			Enabled: enabled, Include: in.Include, SyncInterval: in.SyncInterval,
+			CreatedAt: existing.CreatedAt,
 		}
 		if err := d.Remotes.UpdateRemote(r.Context(), updated); err != nil {
 			writeErr(w, err)
