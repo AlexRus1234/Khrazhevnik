@@ -96,7 +96,7 @@ func adminIntegrationEnv(t *testing.T) (*web.Server, *registry.CatalogSet, *web.
 	}
 	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
 	authService, err := auth.New(auth.Config{
-		Users: catalog.Users, Tokens: catalog.Tokens, Audit: catalog.Audit,
+		Users: catalog.Users, Tokens: catalog.Tokens, Audit: catalog.Audit, Revocations: catalog.Revocations,
 		Clock: clock, Rand: testutil.FixedRand("55555555-5555-4555-8555-555555555555"),
 		JWTSecret: cfg.Auth.JWTSecret, SessionTTL: time.Hour,
 	})

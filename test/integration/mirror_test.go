@@ -127,7 +127,7 @@ func TestMirrorSchedulerPicksUpRemoteViaAPI(t *testing.T) {
 	}
 	clock := testutil.NewManualClock(time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC))
 	authService, err := auth.New(auth.Config{
-		Users: catalog.Users, Tokens: catalog.Tokens, Audit: catalog.Audit,
+		Users: catalog.Users, Tokens: catalog.Tokens, Audit: catalog.Audit, Revocations: catalog.Revocations,
 		Clock: clock, Rand: testutil.FixedRand("77777777-7777-4777-8777-777777777777"),
 		JWTSecret: cfg.Auth.JWTSecret, SessionTTL: time.Hour,
 	})

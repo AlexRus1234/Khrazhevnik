@@ -103,7 +103,7 @@ func publishIntegrationEnv(t *testing.T, signer port.Signer) (*web.Server, strin
 	}
 	clock := testutil.NewManualClock(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC))
 	authService, err := auth.New(auth.Config{
-		Users: catalog.Users, Tokens: catalog.Tokens, Audit: catalog.Audit,
+		Users: catalog.Users, Tokens: catalog.Tokens, Audit: catalog.Audit, Revocations: catalog.Revocations,
 		Clock: clock, Rand: testutil.FixedRand("66666666-6666-4666-8666-666666666666"),
 		JWTSecret: cfg.Auth.JWTSecret, SessionTTL: time.Hour,
 	})
