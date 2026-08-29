@@ -85,11 +85,18 @@ type Database struct {
 	DSN    string `toml:"dsn"`
 }
 
-// Auth — JWT-секрет, TTL сессий админки, токен первого запуска.
+// Auth — JWT-секрет, TTL сессий админки, параметры bcrypt, токен
+// первого запуска.
 type Auth struct {
 	JWTSecret  string   `toml:"jwt_secret"`
 	SessionTTL Duration `toml:"session_ttl"`
 	SetupToken string   `toml:"setup_token"`
+	// BcryptCost — стоимость хеширования паролей; выше — медленнее
+	// перебор, но и логин дороже (диапазон 4–15).
+	BcryptCost int `toml:"bcrypt_cost"`
+	// TouchInterval — минимальный интервал записи last_used API-токена:
+	// авторизация каждого запроса не пишет в БД чаще интервала.
+	TouchInterval Duration `toml:"touch_interval"`
 }
 
 // Cache — параметры pull-through кеша (движок — сессия 06).
@@ -161,6 +168,8 @@ const (
 	defaultFSPath       = "/var/lib/khrazhevnik/store"
 	defaultSQLiteDSN    = "/var/lib/khrazhevnik/khrazhevnik.db"
 	defaultSessionTTL   = 8 * time.Hour
+	defaultBcryptCost   = 12
+	defaultTouchMark    = time.Minute
 	defaultMutableTTL   = 5 * time.Minute
 	defaultMaxObject    = int64(20 << 30)
 	defaultNegTTL404    = 5 * time.Minute
@@ -184,7 +193,7 @@ func defaultConfig() Config {
 			Driver: DriverSQLite,
 			DSN:    defaultSQLiteDSN,
 		},
-		Auth: Auth{SessionTTL: Duration{defaultSessionTTL}},
+		Auth: Auth{SessionTTL: Duration{defaultSessionTTL}, BcryptCost: defaultBcryptCost, TouchInterval: Duration{defaultTouchMark}},
 		Cache: Cache{
 			MutableTTL:     Duration{defaultMutableTTL},
 			StaleIfError:   true,
@@ -249,6 +258,14 @@ func Load(path string, envGetter func(string) string) (Config, error) {
 // размер хеша SHA-256.
 const minJWTSecretLen = 32
 
+// Границы стоимости bcrypt (работают и как валидация конфига, и как
+// guard в auth.New): ниже 4 перебор слишком дешёв, выше 15 — логин
+// на минуты.
+const (
+	minBcryptCost = 4
+	maxBcryptCost = 15
+)
+
 // validate собирает все проблемы конфигурации сразу (fail-fast).
 func (c Config) validate() []error {
 	var problems []error
@@ -266,9 +283,7 @@ func (c Config) validate() []error {
 			"конфигурация: auth.jwt_secret: нужно не меньше %d байт, задано %d — короткий секрет брутфорсится оффлайн (сгенерируйте: openssl rand -base64 32)",
 			minJWTSecretLen, len(c.Auth.JWTSecret)))
 	}
-	if c.Auth.SessionTTL.Duration <= 0 {
-		problems = append(problems, positiveField("auth.session_ttl"))
-	}
+	problems = append(problems, c.validateAuthParams()...)
 	if c.Cache.MutableTTL.Duration <= 0 {
 		problems = append(problems, positiveField("cache.mutable_ttl"))
 	}
@@ -295,6 +310,24 @@ func (c Config) validate() []error {
 	}
 	if c.Signing.KeysDir == "" {
 		problems = append(problems, emptyField("signing.keys_dir"))
+	}
+	return problems
+}
+
+// validateAuthParams — положительность auth-дюраций и диапазон
+// bcrypt_cost (отдельно, чтобы validate не разрастался по гocyclo).
+func (c Config) validateAuthParams() []error {
+	var problems []error
+	if c.Auth.SessionTTL.Duration <= 0 {
+		problems = append(problems, positiveField("auth.session_ttl"))
+	}
+	if c.Auth.BcryptCost < minBcryptCost || c.Auth.BcryptCost > maxBcryptCost {
+		problems = append(problems, fmt.Errorf(
+			"конфигурация: auth.bcrypt_cost: нужно значение от %d до %d, задано %d",
+			minBcryptCost, maxBcryptCost, c.Auth.BcryptCost))
+	}
+	if c.Auth.TouchInterval.Duration <= 0 {
+		problems = append(problems, positiveField("auth.touch_interval"))
 	}
 	return problems
 }

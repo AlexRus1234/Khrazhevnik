@@ -68,6 +68,8 @@ func TestLoadDefaults(t *testing.T) {
 		{"database.dsn", cfg.Database.DSN, "/var/lib/khrazhevnik/khrazhevnik.db"},
 		{"auth.jwt_secret", cfg.Auth.JWTSecret, "topsecret-topsecret-topsecret-0123456789"},
 		{"auth.session_ttl", cfg.Auth.SessionTTL.Duration, 8 * time.Hour},
+		{"auth.bcrypt_cost", cfg.Auth.BcryptCost, 12},
+		{"auth.touch_interval", cfg.Auth.TouchInterval.Duration, time.Minute},
 		{"cache.mutable_ttl", cfg.Cache.MutableTTL.Duration, 5 * time.Minute},
 		{"cache.stale_if_error", cfg.Cache.StaleIfError, true},
 		{"cache.max_object_size", cfg.Cache.MaxObjectSize.Bytes, int64(20 << 30)},
@@ -373,6 +375,26 @@ keys_dir = ""
 	// поля секций неизвестных драйверов не каскадируют
 	if got := strings.Count(msg, "\n"); got != 7 {
 		t.Errorf("проблем собрано %d, хочу 7:\n%s", got+1, msg)
+	}
+}
+
+// TestLoadAuthCostAndTouchInterval — auth.bcrypt_cost вне диапазона и
+// touch_interval <= 0 — ошибки валидации (сессия 25).
+func TestLoadAuthCostAndTouchInterval(t *testing.T) {
+	path := writeTemp(t, "conf.toml", `
+[auth]
+bcrypt_cost = 99
+touch_interval = "0s"
+`)
+	_, err := Load(path, withJWT(nil))
+	if err == nil {
+		t.Fatal("ожидалась ошибка валидации")
+	}
+	msg := err.Error()
+	for _, want := range []string{"auth.bcrypt_cost", "auth.touch_interval"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("в ошибке валидации нет %q:\n%s", want, msg)
+		}
 	}
 }
 

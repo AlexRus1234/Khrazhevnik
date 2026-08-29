@@ -107,11 +107,13 @@ Secret=s3-key,env=KHRZ_STORAGE__S3__SECRET_ACCESS_KEY
 
 ## `[auth]`
 
-| Ключ          | Default | Env                            | Назначение                       |
-|---------------|---------|--------------------------------|----------------------------------|
-| `jwt_secret`  | —       | `KHRZ_AUTH__JWT_SECRET`        | **обязателен** (env/файл)        |
-| `session_ttl` | `8h`    | `KHRZ_AUTH__SESSION_TTL`       | TTL JWT-сессии админки           |
-| `setup_token` | —       | `KHRZ_AUTH__SETUP_TOKEN`       | Опц. защита одноразового `/setup`|
+| Ключ            | Default | Env                            | Назначение                       |
+|-----------------|---------|--------------------------------|----------------------------------|
+| `jwt_secret`    | —       | `KHRZ_AUTH__JWT_SECRET`        | **обязателен** (env/файл)        |
+| `session_ttl`   | `8h`    | `KHRZ_AUTH__SESSION_TTL`       | TTL JWT-сессии админки           |
+| `setup_token`   | —       | `KHRZ_AUTH__SETUP_TOKEN`       | Опц. защита одноразового `/setup`|
+| `bcrypt_cost`   | `12`    | `KHRZ_AUTH__BCRYPT_COST`       | Стоимость bcrypt паролей (4–15)  |
+| `touch_interval`| `1m`    | `KHRZ_AUTH__TOUCH_INTERVAL`    | Мин. интервал записи last_used токена |
 
 `jwt_secret` непуст и не короче **32 байт** — fail-fast валидация
 падает на старте иначе (короткий секрет HS256 брутфорсится оффлайн;

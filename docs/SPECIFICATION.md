@@ -89,6 +89,8 @@ dsn = "/var/lib/khrazhevnik/khrazhevnik.db"
 jwt_secret = ""                  # НЕ в файле проде: env/file
 session_ttl = "8h"
 setup_token = ""
+bcrypt_cost = 12                 # стоимость bcrypt паролей (4–15)
+touch_interval = "1m"            # мин. интервал записи last_used API-токена
 
 [cache]
 mutable_ttl = "5m" ; stale_if_error = true
@@ -138,8 +140,8 @@ enabled = true
   непуст (env обязателен) и не короче 32 байт (HS256 с коротким ключом
   брутфорсится оффлайн; генерация — `openssl rand -base64 32`),
   `http.trusted_proxies` — валидные CIDR'ы, драйверы из допустимых,
-  duration/порты валидны, для выбранного драйвера обязательны его поля
-  (у s3 — endpoint/region/bucket/ключи).
+  `auth.bcrypt_cost` ∈ [4, 15], duration/порты валидны, для выбранного
+  драйвера обязательны его поля (у s3 — endpoint/region/bucket/ключи).
 - Уровень логов — env `KHRZ_LOG_LEVEL` (`debug|info|warn|error`,
   default `info`), читается при старте.
 

@@ -27,13 +27,28 @@ import (
 )
 
 const maxBcryptPassword = 72
-const dummyPasswordHash = "$2a$10$7EqJtq98hPqEX7fNZaFWoO5u4ZJ4Y2Y5xq0XG4Y2DqjF4s8wWqT6W"
+
+// Границы стоимости bcrypt (параллельны валидации конфига): ниже 4
+// перебор слишком дешёв, выше 15 — логин на минуты.
+const (
+	minBcryptCost = 4
+	maxBcryptCost = 15
+)
+
+// dummyPassword — фиксированная строка для dummy-хэша пути
+// несуществующего пользователя; заведомо короче 72 байт.
+const dummyPassword = "khrazhevnik-dummy-password"
 
 // maxRevokedMemory — потолок in-memory fast-path отзывов: сессии
 // короткоживущие (SessionTTL), персистентный слой — источник истины,
 // карта не должна расти безгранично (аудит 2026-08-27: чистилась
 // только лениво и не имела потолка).
 const maxRevokedMemory = 10000
+
+// maxTouchMemory — потолок карты «токен → последнее touch»: токены
+// удаляются, а ключи оставались бы навсегда; переполнение — полный
+// сброс (потеря троттлинга до следующего touch — не уязвимость).
+const maxTouchMemory = 10000
 
 // Config wires authentication to persistence and deterministic system ports.
 type Config struct {
@@ -47,6 +62,15 @@ type Config struct {
 	Rand        port.Rand
 	JWTSecret   string
 	SessionTTL  time.Duration
+	// BcryptCost — стоимость хеширования паролей (4–15); 0 —
+	// bcrypt.DefaultCost (прямой вызов без конфига).
+	BcryptCost int
+	// TouchInterval — минимальный интервал записи last_used API-токена;
+	// 0 — писать на каждый запрос.
+	TouchInterval time.Duration
+	// ErrorHook — репортёр проглоченных ошибок (touch last_used):
+	// ошибка возвращаться некому, молчать нельзя.
+	ErrorHook func(error)
 }
 
 // Service is the authentication application service.
@@ -54,6 +78,13 @@ type Service struct {
 	cfg       Config
 	revokedMu sync.Mutex
 	revoked   map[string]time.Time
+	touchMu   sync.Mutex
+	lastTouch map[int64]time.Time
+	// dummyOnce/dummyHash — ленивый валидный bcrypt-хэш фиксированной
+	// строки с той же стоимостью, что боевые хэши (тайминг-паритет
+	// пути несуществующего пользователя).
+	dummyOnce sync.Once
+	dummyHash []byte
 }
 
 // New creates an authentication service.
@@ -61,7 +92,13 @@ func New(cfg Config) (*Service, error) {
 	if cfg.Users == nil || cfg.Tokens == nil || cfg.Revocations == nil || cfg.Clock == nil || cfg.Rand == nil || cfg.JWTSecret == "" || cfg.SessionTTL <= 0 {
 		return nil, errors.New("auth: неполная конфигурация")
 	}
-	return &Service{cfg: cfg, revoked: make(map[string]time.Time)}, nil
+	if cfg.BcryptCost == 0 {
+		cfg.BcryptCost = bcrypt.DefaultCost
+	}
+	if cfg.BcryptCost < minBcryptCost || cfg.BcryptCost > maxBcryptCost {
+		return nil, fmt.Errorf("auth: bcrypt cost %d вне диапазона %d–%d", cfg.BcryptCost, minBcryptCost, maxBcryptCost)
+	}
+	return &Service{cfg: cfg, revoked: make(map[string]time.Time), lastTouch: make(map[int64]time.Time)}, nil
 }
 
 // Session is the trusted result of JWT validation, with role loaded from DB.
@@ -145,17 +182,41 @@ func (s *Service) EnsureFirstAdmin(ctx context.Context, username, password strin
 	return u, created, err
 }
 
-// hashPassword validates the bcrypt size limit and hashes the value.
+// hashPassword validates the bcrypt size limit and hashes the value
+// with the configured cost.
 func (s *Service) hashPassword(password string) ([]byte, error) {
 	if len([]byte(password)) > maxBcryptPassword {
 		return nil, &domain.TooLargeError{Size: int64(len([]byte(password))), Limit: maxBcryptPassword}
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), s.cfg.BcryptCost)
 	if err != nil {
 		// bcrypt has a hard 72-byte limit; never create an account after a hash failure.
 		return nil, &domain.TooLargeError{Size: int64(len([]byte(password))), Limit: maxBcryptPassword}
 	}
 	return hash, nil
+}
+
+// dummyHashBytes генерирует при первом использовании валидный
+// bcrypt-хэш фиксированной строки с той же стоимостью, что боевые
+// хэши: путь несуществующего пользователя совпадает по времени с
+// путём реального (тайминг-паритет). Хардкод константы ненадёжен —
+// валидность строки ничем не проверялась (аудит 2026-08-27). nil —
+// только если Generate невозможен (для фиксированной строки — никогда).
+func (s *Service) dummyHashBytes() []byte {
+	s.dummyOnce.Do(func() {
+		if h, err := bcrypt.GenerateFromPassword([]byte(dummyPassword), s.cfg.BcryptCost); err == nil {
+			s.dummyHash = h
+		}
+	})
+	return s.dummyHash
+}
+
+// reportError — проглоченные ошибки (touch last_used): возвращать их
+// некому, но молча терять нельзя — уходит в ErrorHook (лог в wire).
+func (s *Service) reportError(err error) {
+	if err != nil && s.cfg.ErrorHook != nil {
+		s.cfg.ErrorHook(err)
+	}
 }
 
 // authStoreError классифицирует ошибку catalog-store'а на пути
@@ -182,13 +243,22 @@ func (s *Service) VerifyPassword(ctx context.Context, username, password string)
 			return domain.User{}, &domain.UnavailableError{What: "каталог", Reason: "чтение пользователя", Err: err}
 		}
 		// Несуществующий пользователь — полная стоимость bcrypt-сравнения
-		// против фиксированного dummy-хэша: перечисление пользователей по
-		// таймингу ответа не должно работать.
-		_ = bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(password))
+		// против валидного dummy-хэша (той же стоимости, что боевые):
+		// перечисление пользователей по таймингу ответа не работает.
+		if h := s.dummyHashBytes(); h != nil {
+			_ = bcrypt.CompareHashAndPassword(h, []byte(password))
+		}
 		return domain.User{}, &domain.ForbiddenError{Reason: "неверные учётные данные"}
 	}
-	if len([]byte(password)) > maxBcryptPassword || bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
+	// Сравнение идёт ДО проверки длины: bcrypt семантически обрезает
+	// пароль до 72 байт, и короткое замыкание по длине создавало бы
+	// тайминг-оракул длины пароля. Прошедший сравнение длинный пароль
+	// отклоняется явной ошибкой (аудит 2026-08-27).
+	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
 		return domain.User{}, &domain.ForbiddenError{Reason: "неверные учётные данные"}
+	}
+	if len([]byte(password)) > maxBcryptPassword {
+		return domain.User{}, &domain.TooLargeError{Size: int64(len([]byte(password))), Limit: maxBcryptPassword}
 	}
 	return u, nil
 }
@@ -391,10 +461,38 @@ func (s *Service) VerifyAPIToken(ctx context.Context, raw string) (domain.APITok
 	if err != nil {
 		return domain.APIToken{}, domain.User{}, authStoreError(err, "каталог", "недействительный API-токен")
 	}
+	if s.touchThrottled(t.ID) {
+		return t, u, nil
+	}
 	if err := s.cfg.Tokens.TouchToken(ctx, t.ID, s.cfg.Clock.Now()); err != nil {
-		return domain.APIToken{}, domain.User{}, err
+		// last_used — косметика: транзиентный сбой записи не отменяет
+		// валидность токена (аудит 2026-08-27: отказ аутентификации из-за
+		// косметической записи). Ошибка — в ErrorHook, токен валиден.
+		s.reportError(fmt.Errorf("auth: touch token %d: %w", t.ID, err))
+		return t, u, nil
+	}
+	if s.cfg.TouchInterval > 0 {
+		s.touchMu.Lock()
+		if len(s.lastTouch) >= maxTouchMemory {
+			s.lastTouch = make(map[int64]time.Time)
+		}
+		s.lastTouch[t.ID] = s.cfg.Clock.Now()
+		s.touchMu.Unlock()
 	}
 	return t, u, nil
+}
+
+// touchThrottled сообщает, что last_used для токена уже писалось недавно
+// (писать чаще auth.touch_interval незачем — это запись на каждый
+// запрос ради статистики).
+func (s *Service) touchThrottled(id int64) bool {
+	if s.cfg.TouchInterval <= 0 {
+		return false
+	}
+	s.touchMu.Lock()
+	defer s.touchMu.Unlock()
+	last, ok := s.lastTouch[id]
+	return ok && s.cfg.Clock.Now().Sub(last) < s.cfg.TouchInterval
 }
 
 func (s *Service) audit(ctx context.Context, actor, action, object, result, detail string) {

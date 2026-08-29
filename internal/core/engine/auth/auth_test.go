@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -265,6 +266,125 @@ func TestLoginAndIssueFailures(t *testing.T) {
 	}
 }
 
+// Стоимость bcrypt — из конфига: cost=4 — логин работает, cost=99 —
+// конфиг невалиден (движок не доверяет конфигу и сам проверяет
+// диапазон).
+func TestBcryptCostConfig(t *testing.T) {
+	ctx := context.Background()
+	users := testutil.NewFakeUserStore()
+	tf := &tokenFake{values: map[int64]domain.APIToken{}}
+	cfg := Config{Users: users, Tokens: tf, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.cfg.BcryptCost = 4
+	if _, err := a.CreateUser(ctx, "alice", "correct", domain.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Login(ctx, "alice", "correct"); err != nil {
+		t.Fatalf("логин при cost=4: %v", err)
+	}
+	bad := cfg
+	bad.BcryptCost = 99
+	if _, err := New(bad); err == nil {
+		t.Fatal("cost=99 принят")
+	}
+}
+
+// Пароль длиннее 72 байт: сравнение идёт по bcrypt-обрезке, затем
+// явное отклонение — короткое замыкание по длине (тайминг-оракул
+// длины) убрано (аудит 2026-08-27).
+func TestLongPasswordRejectedAfterCompare(t *testing.T) {
+	ctx := context.Background()
+	a, _ := newTestAuth(t)
+	if _, err := a.CreateUser(ctx, "trunc", strings.Repeat("x", 72), domain.RoleUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.VerifyPassword(ctx, "trunc", strings.Repeat("x", 80)); !errors.Is(err, &domain.TooLargeError{}) {
+		t.Fatalf("длинный пароль с верной 72-байтной обрезкой: %v, хочу TooLargeError", err)
+	}
+	if _, err := a.VerifyPassword(ctx, "trunc", strings.Repeat("y", 80)); !errors.Is(err, &domain.ForbiddenError{}) {
+		t.Fatalf("длинный неверный пароль: %v, хочу ForbiddenError", err)
+	}
+}
+
+// Тайминг-паритет: путь несуществующего пользователя (dummy-хэш) стоит
+// как путь реального. Порог мягкий (CI-шум), прогон пропускается в
+// -short (аудит 2026-08-27).
+func TestDummyHashTimingParity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("timing-тест — не для -short")
+	}
+	ctx := context.Background()
+	users := testutil.NewFakeUserStore()
+	a, err := New(Config{Users: users, Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, BcryptCost: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.CreateUser(ctx, "alice", "correct", domain.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	// прогрев sync.Once dummy-хэша: сам тест меряет только сравнения
+	if _, err := a.VerifyPassword(ctx, "ghost", "x"); err == nil {
+		t.Fatal("несуществующий пользователь принят")
+	}
+	bench := func(username string) time.Duration {
+		best := time.Duration(1 << 62)
+		for range 7 {
+			start := time.Now()
+			if _, err := a.VerifyPassword(ctx, username, "wrong-password"); err == nil {
+				t.Fatalf("%s прошёл без ошибки", username)
+			}
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+	dummy, real := bench("ghost"), bench("alice")
+	if dummy < real/2 {
+		t.Fatalf("тайминг-оракул: путь dummy %v вдвое дешевле пути real %v", dummy, real)
+	}
+}
+
+// Троттлинг last_used: в пределах touch_interval запись не повторяется,
+// за границей интервала — пишется снова.
+func TestTouchIntervalThrottle(t *testing.T) {
+	ctx := context.Background()
+	users := testutil.NewFakeUserStore()
+	tf := &tokenFake{values: map[int64]domain.APIToken{}}
+	a, err := New(Config{Users: users, Tokens: tf, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, TouchInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.CreateUser(ctx, "alice", "correct", domain.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := a.User(ctx, 1)
+	_, raw, err := a.IssueAPIToken(ctx, u, "ci", nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.VerifyAPIToken(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	first := tf.lastTouch
+	if _, _, err := a.VerifyAPIToken(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	if !tf.lastTouch.Equal(first) {
+		t.Fatal("touch не затроттлен в интервале")
+	}
+	a.cfg.Clock = testutil.FixedClock(time.Unix(100, 0).Add(2 * time.Hour))
+	if _, _, err := a.VerifyAPIToken(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	if tf.lastTouch.Equal(first) {
+		t.Fatal("touch не записан после интервала")
+	}
+}
+
 // failingRevocations — сбой персистентного слоя отзывов поверх фейка.
 type failingRevocations struct {
 	*testutil.FakeRevocations
@@ -516,8 +636,13 @@ func TestAPITokenExpiryInvalidTouchAndScopeErrors(t *testing.T) {
 		t.Fatal("bad token accepted")
 	}
 	tf.touchErr = errors.New("touch")
-	if _, _, err := a.VerifyAPIToken(context.Background(), raw); err == nil {
-		t.Fatal("touch failure lost")
+	hooked := 0
+	a.cfg.ErrorHook = func(error) { hooked++ }
+	if _, _, err := a.VerifyAPIToken(context.Background(), raw); err != nil {
+		t.Fatalf("сбой косметической записи last_used не должен валить токен: %v", err)
+	}
+	if hooked == 0 {
+		t.Fatal("сбой touch проглочен молча (нет ErrorHook)")
 	}
 	tf.touchErr = nil
 	if err := tf.RevokeToken(context.Background(), token.ID, time.Unix(2, 0)); err != nil {
