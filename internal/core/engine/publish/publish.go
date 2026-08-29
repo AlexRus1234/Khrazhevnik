@@ -23,10 +23,12 @@ package publish
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"strconv"
+	"sync"
 	"time"
 
 	"khrazhevnik/internal/core/domain"
@@ -39,14 +41,19 @@ type Config struct {
 	MaxObjectSize int64
 }
 
-// Engine — движок личных репозиториев. Потокобезопасный: состояние
-// только в storage/repos, без in-memory кешей.
+// Engine — движок личных репозиториев. Потокобезопасный: состояние —
+// в storage/repos и в per-key in-flight-карте upload'ов (см.
+// acquireInFlight); прочих in-memory кешей нет.
 type Engine struct {
 	storage  port.Storage
 	repos    port.RepoStore
 	clock    port.Clock
 	adapters map[string]port.RepoAdapter
 	cfg      Config
+	// inFlight — ключи, upload которых идёт прямо сейчас. Закрытое
+	// состояние движка, защищено inFlightMu (не package-level var).
+	inFlightMu sync.Mutex
+	inFlight   map[string]struct{}
 }
 
 // New создаёт движок. nil clock → системная реализация (как у mirror);
@@ -61,7 +68,7 @@ func New(cfg Config, storage port.Storage, repos port.RepoStore, clock port.Cloc
 	if cfg.MaxObjectSize < 0 {
 		cfg.MaxObjectSize = 0
 	}
-	return &Engine{storage: storage, repos: repos, clock: clock, adapters: adapters, cfg: cfg}
+	return &Engine{storage: storage, repos: repos, clock: clock, adapters: adapters, cfg: cfg, inFlight: map[string]struct{}{}}
 }
 
 // Upload стримит объект в репозиторий. path — путь внутри репо
@@ -71,9 +78,12 @@ func New(cfg Config, storage port.Storage, repos port.RepoStore, clock port.Cloc
 // вызывает; движок не знает роли — это контракт вызова).
 //
 // Проверки (по порядку): domain.ValidateKey → adapter.ValidateObjectPath
-// → MaxObjectSize → квота (Storage.List репо-префикса) → существующий
-// ключ (409 conflict, кроме force). Запись — транзакционная: недокачка
-// или перелимит → Abort, tmp чист.
+// → MaxObjectSize → per-key in-flight (параллельный upload того же
+// ключа — 409) → существующий ключ (409 conflict, кроме force) → квота
+// (Storage.List репо-префикса; при force-перезаписи старый размер
+// вычитается). Запись — транзакционная: недокачка или перелимит →
+// Abort, tmp чист. Квота перепроверяется по фактическому размеру тела
+// ПОСЛЕ загрузки в tmp, ДО Commit.
 func (e *Engine) Upload(ctx context.Context, repo domain.Repo, path string, size int64, body io.Reader, force bool) error {
 	adapter, err := e.adapter(repo)
 	if err != nil {
@@ -89,13 +99,22 @@ func (e *Engine) Upload(ctx context.Context, repo domain.Repo, path string, size
 	if e.cfg.MaxObjectSize > 0 && size > e.cfg.MaxObjectSize {
 		return &domain.TooLargeError{Size: size, Limit: e.cfg.MaxObjectSize}
 	}
-	if err := e.checkQuota(ctx, repo, size); err != nil {
+	// Сериализация per-key: без неё два параллельных upload одного
+	// ключа оба проходили бы «объекта нет» и оба коммитили (TOCTOU
+	// Stat→Put) — тихая взаимная перезапись вместо ConflictError.
+	if err := e.acquireInFlight(key); err != nil {
 		return err
 	}
-	if !force {
-		if _, err := e.storage.Stat(ctx, key); err == nil {
-			return &domain.ConflictError{What: "объект", Key: key, Reason: "уже загружен; force=true перезапишет (только админ)"}
-		}
+	defer e.releaseInFlight(key)
+	oldSize, exists, err := e.statExisting(ctx, key)
+	if err != nil {
+		return err
+	}
+	if exists && !force {
+		return &domain.ConflictError{What: "объект", Key: key, Reason: "уже загружен; force=true перезапишет (только админ)"}
+	}
+	if err := e.checkQuota(ctx, repo, size, exists, oldSize); err != nil {
+		return err
 	}
 	w, err := e.storage.Put(ctx, key)
 	if err != nil {
@@ -106,11 +125,18 @@ func (e *Engine) Upload(ctx context.Context, repo domain.Repo, path string, size
 		_ = w.Abort(context.Background())
 		return err
 	}
+	// Повторная проверка квоты по фактическому размеру (заявленный
+	// Content-Length мог солгать): сужает гонку двух upload РАЗНЫХ
+	// ключей до окна tmp→Commit (v1-граница: строгая квота требует
+	// учёта в БД — не-цель).
+	if err := e.checkQuota(ctx, repo, n, exists, oldSize); err != nil {
+		_ = w.Abort(context.Background())
+		return err
+	}
 	if err := w.Commit(ctx); err != nil {
 		_ = w.Abort(context.Background())
 		return err
 	}
-	_ = n
 	return nil
 }
 
@@ -194,13 +220,56 @@ func (e *Engine) keyFor(repo domain.Repo, path string) (string, error) {
 	return key, nil
 }
 
+// statExisting выясняет, существует ли ключ, и возвращает его размер
+// (квоте нужен вычет при force-перезаписи). Ошибка носителя — fail-
+// closed: она не должна выглядеть как «объекта нет», иначе проверка
+// конфликта и подсчёт квоты солгали бы одновременно.
+func (e *Engine) statExisting(ctx context.Context, key string) (int64, bool, error) {
+	meta, err := e.storage.Stat(ctx, key)
+	if err != nil {
+		var nf *domain.NotFoundError
+		if errors.As(err, &nf) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("publish: stat %s: %w", key, err)
+	}
+	return meta.Size, true, nil
+}
+
+// acquireInFlight помечает ключ «загрузка идёт»: второй параллельный
+// upload того же ключа получает ConflictError (перожидание сделало бы
+// горутину заложником чужого клиента — при обрыве он всё равно узнает
+// 409 и повторит). Граница между инстансами — документирована: v1
+// рассчитан на один инстанс (строго — учёт в БД, не-цель).
+func (e *Engine) acquireInFlight(key string) error {
+	e.inFlightMu.Lock()
+	defer e.inFlightMu.Unlock()
+	if _, busy := e.inFlight[key]; busy {
+		return &domain.ConflictError{What: "upload", Key: key, Reason: "загрузка этого ключа уже идёт; повторите после её завершения"}
+	}
+	e.inFlight[key] = struct{}{}
+	return nil
+}
+
+// releaseInFlight снимает метку per-key in-flight (defer в Upload).
+func (e *Engine) releaseInFlight(key string) {
+	e.inFlightMu.Lock()
+	defer e.inFlightMu.Unlock()
+	delete(e.inFlight, key)
+}
+
 // checkQuota считает сумму размеров и число объектов репо через
-// Storage.List и сравнивает с Quota (ноль = без лимита). Если size+used
-// больше квоты — QuotaExceededError. Ошибка листинга — ошибка upload
-// (fail-closed): молчаливый «пустой» обход занизил бы used и пропустил
-// бы перелимит. KISS v1: List-обход на каждом upload; для больших репо
-// (s3 без List-обхода) — таблица repo_objects в сессии 17.
-func (e *Engine) checkQuota(ctx context.Context, repo domain.Repo, size int64) error {
+// Storage.List и сравнивает с Quota (ноль = без лимита). size —
+// заявленный (до копирования) или фактический (повторная проверка
+// перед Commit) размер нового объекта. При force-перезаписи
+// (replacing=true) старый размер объекта вычитается из usedBytes, а
+// число объектов не растёт: без вычета старый размер складывался бы с
+// новым — двойной счёт и ложный отказ. Ошибка листинга или stat —
+// ошибка upload (fail-closed): молчаливый «пустой» обход занизил бы
+// used и пропустил бы перелимит. KISS v1: List-обход на каждой из двух
+// проверок; для больших репо (s3 без List-обхода) — таблица
+// repo_objects в сессии 17.
+func (e *Engine) checkQuota(ctx context.Context, repo domain.Repo, size int64, replacing bool, oldSize int64) error {
 	if repo.Quota.MaxBytes == 0 && repo.Quota.MaxObjects == 0 {
 		return nil
 	}
@@ -213,11 +282,16 @@ func (e *Engine) checkQuota(ctx context.Context, repo domain.Repo, size int64) e
 		usedBytes += meta.Size
 		usedFiles++
 	}
-	if repo.Quota.MaxBytes > 0 && usedBytes+size > repo.Quota.MaxBytes {
-		return &domain.QuotaExceededError{RepoID: repo.ID, Used: usedBytes + size, Limit: repo.Quota.MaxBytes}
+	byteDelta, objDelta := size, int64(1)
+	if replacing {
+		byteDelta = size - oldSize
+		objDelta = 0
 	}
-	if repo.Quota.MaxObjects > 0 && usedFiles+1 > repo.Quota.MaxObjects {
-		return &domain.QuotaExceededError{RepoID: repo.ID, Used: usedFiles + 1, Limit: repo.Quota.MaxObjects}
+	if repo.Quota.MaxBytes > 0 && usedBytes+byteDelta > repo.Quota.MaxBytes {
+		return &domain.QuotaExceededError{RepoID: repo.ID, Used: usedBytes + byteDelta, Limit: repo.Quota.MaxBytes}
+	}
+	if repo.Quota.MaxObjects > 0 && usedFiles+objDelta > repo.Quota.MaxObjects {
+		return &domain.QuotaExceededError{RepoID: repo.ID, Used: usedFiles + objDelta, Limit: repo.Quota.MaxObjects}
 	}
 	return nil
 }

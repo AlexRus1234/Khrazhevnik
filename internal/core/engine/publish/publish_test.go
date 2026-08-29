@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -374,5 +375,225 @@ func TestNewDefaults(t *testing.T) {
 	}
 	if e.cfg.MaxObjectSize != 0 {
 		t.Errorf("MaxObjectSize<0 должен стать 0, got %d", e.cfg.MaxObjectSize)
+	}
+	if e.inFlight == nil {
+		t.Errorf("inFlight должен быть инициализирован")
+	}
+}
+
+// TestUploadForceRefundsOldSize — force-перезапись вычитает старый
+// размер из usedBytes: без вычета старый размер складывался бы с новым
+// (двойной счёт) и честный upload получал бы ложный отказ по квоте.
+func TestUploadForceRefundsOldSize(t *testing.T) {
+	e, _, repos, _ := newTestEngine(t, 0)
+	r := makeRepo(t, repos, "alice", 1, "apt", domain.Quota{MaxBytes: 10})
+	big := []byte("12345678") // 8 байт
+	if err := e.Upload(context.Background(), r, "pool/main/a/a.deb", 8, bytes.NewReader(big), false); err != nil {
+		t.Fatalf("первый Upload: %v", err)
+	}
+	small := []byte("ab") // перезапись: used 8 → 2
+	if err := e.Upload(context.Background(), r, "pool/main/a/a.deb", 2, bytes.NewReader(small), true); err != nil {
+		t.Fatalf("force-перезапись: %v", err)
+	}
+	// 2 + 7 = 9 ≤ 10; без вычета было бы 8 + 7 = 15 > 10.
+	seven := []byte("1234567")
+	if err := e.Upload(context.Background(), r, "pool/main/a/b.deb", 7, bytes.NewReader(seven), false); err != nil {
+		t.Fatalf("квота не вычла старый размер при force-перезаписи: %v", err)
+	}
+}
+
+// TestUploadForceKeepsObjectCount — force-перезапись не добавляет
+// объект: квота по числу объектов не должна отказывать замене.
+func TestUploadForceKeepsObjectCount(t *testing.T) {
+	e, _, repos, _ := newTestEngine(t, 0)
+	r := makeRepo(t, repos, "alice", 1, "apt", domain.Quota{MaxObjects: 1})
+	if err := e.Upload(context.Background(), r, "pool/main/a/a.deb", 2, bytes.NewReader([]byte("v1")), false); err != nil {
+		t.Fatalf("первый Upload: %v", err)
+	}
+	if err := e.Upload(context.Background(), r, "pool/main/a/a.deb", 2, bytes.NewReader([]byte("v2")), true); err != nil {
+		t.Fatalf("force-перезапись не должна расти по объектам: %v", err)
+	}
+}
+
+// TestUploadQuotaRecheckedAfterBody — гонка с другим ключом: между
+// первой проверкой квоты и Commit другой upload успел занять байты.
+// Повторная проверка по фактическому размеру ПОСЛЕ загрузки тела, ДО
+// Commit, отказывает и вычищает tmp (окно гонки сужено до tmp→Commit).
+func TestUploadQuotaRecheckedAfterBody(t *testing.T) {
+	e, storage, repos, _ := newTestEngine(t, 0)
+	r := makeRepo(t, repos, "alice", 1, "apt", domain.Quota{MaxBytes: 10})
+
+	blocking := &blockedReader{entered: make(chan struct{}), release: make(chan struct{}), payload: []byte("aaaaaa")}
+	done := make(chan error, 1)
+	go func() {
+		// a: заявлено и по факту 6 — первая проверка 0+6 ≤ 10 проходит.
+		done <- e.Upload(context.Background(), r, "pool/main/a/a.deb", 6, blocking, false)
+	}()
+	select {
+	case <-blocking.entered:
+	case <-time.After(5 * time.Second):
+		close(blocking.release)
+		t.Fatal("первый upload не дошёл до копирования тела")
+	}
+	// Пока тело a висит, b успевает закоммитить 6 байт.
+	if err := e.Upload(context.Background(), r, "pool/main/a/b.deb", 6, bytes.NewReader([]byte("bbbbbb")), false); err != nil {
+		t.Fatalf("конкурирующий upload: %v", err)
+	}
+	close(blocking.release)
+	// Повторная проверка: 6+6 = 12 > 10 → QuotaExceededError, a aborted.
+	err := <-done
+	var q *domain.QuotaExceededError
+	if !errors.As(err, &q) {
+		t.Fatalf("ожидали QuotaExceededError после фактического размера, получили %v", err)
+	}
+	if _, gerr := storage.Get(context.Background(), "repo/"+strconv.FormatInt(r.ID, 10)+"/apt/pool/main/a/a.deb"); gerr == nil {
+		t.Fatalf("объект закоммичен, хотя повторная квота отказала")
+	}
+}
+
+// TestUploadQuotaOverwriteFitsAfterRealBody — force-перезапись, где
+// повторная проверка тоже должна учитывать вычет (иначе отменила бы
+// честную замену).
+func TestUploadQuotaOverwriteFitsAfterRealBody(t *testing.T) {
+	e, _, repos, _ := newTestEngine(t, 0)
+	r := makeRepo(t, repos, "alice", 1, "apt", domain.Quota{MaxBytes: 10})
+	if err := e.Upload(context.Background(), r, "pool/main/a/a.deb", 8, bytes.NewReader([]byte("12345678")), false); err != nil {
+		t.Fatalf("первый Upload: %v", err)
+	}
+	// Заявлено 2, по факту 2: 8-8+2 = 2 ≤ 10 — замена проходит.
+	if err := e.Upload(context.Background(), r, "pool/main/a/a.deb", 2, bytes.NewReader([]byte("ab")), true); err != nil {
+		t.Fatalf("повторная проверка не вычла старый размер: %v", err)
+	}
+}
+
+// blockedReader блокирует первый Read до закрытия release (симуляция
+// медленного клиента) и сигнализирует о входе в Read через entered —
+// момент, когда первый upload уже внутри per-key in-flight.
+type blockedReader struct {
+	entered chan struct{}
+	release chan struct{}
+	payload []byte
+	once    sync.Once
+	read    bool
+}
+
+func (b *blockedReader) Read(p []byte) (int, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	if b.read {
+		return 0, io.EOF
+	}
+	b.read = true
+	return copy(p, b.payload), nil
+}
+
+// TestUploadParallelSameKeyConflict — два параллельных upload одного
+// ключа: второй получает ConflictError, а не тихую перезапись (TOCTOU
+// Stat→Put сериализован per-key in-flight).
+func TestUploadParallelSameKeyConflict(t *testing.T) {
+	e, _, repos, _ := newTestEngine(t, 0)
+	r := makeRepo(t, repos, "alice", 1, "apt", domain.Quota{})
+	path := "pool/main/a/a.deb"
+
+	blocking := &blockedReader{entered: make(chan struct{}), release: make(chan struct{}), payload: []byte("data")}
+	done := make(chan error, 1)
+	go func() {
+		done <- e.Upload(context.Background(), r, path, 4, blocking, false)
+	}()
+
+	// Ждём, пока первый upload войдёт в копирование тела — это после
+	// acquireInFlight, значит слот занят.
+	select {
+	case <-blocking.entered:
+	case <-time.After(5 * time.Second):
+		close(blocking.release)
+		t.Fatal("первый upload не дошёл до копирования тела")
+	}
+
+	err := e.Upload(context.Background(), r, path, 4, bytes.NewReader([]byte("zzzz")), false)
+	close(blocking.release)
+	if err2 := <-done; err2 != nil {
+		t.Fatalf("первый upload: %v", err2)
+	}
+	var conf *domain.ConflictError
+	if !errors.As(err, &conf) {
+		t.Fatalf("параллельный upload того же ключа: ожидали ConflictError, получили %v", err)
+	}
+}
+
+// TestUploadParallelSameKeyConflictWithForce — in-flight действует и
+// для force: два одновременных force-upload не должны перезаписывать
+// друг друга молча.
+func TestUploadParallelSameKeyConflictWithForce(t *testing.T) {
+	e, _, repos, _ := newTestEngine(t, 0)
+	r := makeRepo(t, repos, "alice", 1, "apt", domain.Quota{})
+	path := "pool/main/a/a.deb"
+
+	blocking := &blockedReader{entered: make(chan struct{}), release: make(chan struct{}), payload: []byte("data")}
+	done := make(chan error, 1)
+	go func() {
+		done <- e.Upload(context.Background(), r, path, 4, blocking, true)
+	}()
+	select {
+	case <-blocking.entered:
+	case <-time.After(5 * time.Second):
+		close(blocking.release)
+		t.Fatal("первый upload не дошёл до копирования тела")
+	}
+
+	err := e.Upload(context.Background(), r, path, 4, bytes.NewReader([]byte("zzzz")), true)
+	close(blocking.release)
+	if err2 := <-done; err2 != nil {
+		t.Fatalf("первый upload: %v", err2)
+	}
+	var conf *domain.ConflictError
+	if !errors.As(err, &conf) {
+		t.Fatalf("параллельный force-upload: ожидали ConflictError, получили %v", err)
+	}
+}
+
+// TestAcquireInFlight — прямой контракт карты: повторное занятие →
+// ConflictError, после release — снова свободен.
+func TestAcquireInFlight(t *testing.T) {
+	e := New(Config{}, nil, nil, nil, nil)
+	key := "repo/1/apt/pool/x.deb"
+	if err := e.acquireInFlight(key); err != nil {
+		t.Fatalf("первый acquire: %v", err)
+	}
+	err := e.acquireInFlight(key)
+	var conf *domain.ConflictError
+	if !errors.As(err, &conf) {
+		t.Fatalf("второй acquire: ожидали ConflictError, получили %v", err)
+	}
+	e.releaseInFlight(key)
+	if err := e.acquireInFlight(key); err != nil {
+		t.Fatalf("acquire после release: %v", err)
+	}
+}
+
+// errStatFail — синтетический сбой носителя на Stat.
+var errStatFail = errors.New("synthetic stat failure")
+
+// failingStatStorage — FakeStorage с отказом Stat (Get/Put/List
+// честные): ошибка носителя не должна выглядеть как «объекта нет».
+type failingStatStorage struct {
+	*testutil.FakeStorage
+}
+
+func (f *failingStatStorage) Stat(context.Context, string) (port.Meta, error) {
+	return port.Meta{}, errStatFail
+}
+
+// TestUploadStatErrorFailClosed — сбой Stat → ошибка upload, а не
+// молчаливая запись поверх возможно существующего объекта.
+func TestUploadStatErrorFailClosed(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := &failingStatStorage{FakeStorage: testutil.NewFakeStorage(testutil.FixedClock(moment))}
+	repos := testutil.NewFakeRepoStore()
+	e := New(Config{}, storage, repos, testutil.FixedClock(moment), map[string]port.RepoAdapter{"apt": &fakeRepoAdapter{name: "apt"}})
+	r := makeRepo(t, repos, "alice", 1, "apt", domain.Quota{})
+	err := e.Upload(context.Background(), r, "pool/main/a/a.deb", 1, bytes.NewReader([]byte("x")), false)
+	if !errors.Is(err, errStatFail) {
+		t.Fatalf("ожидали errStatFail (fail-closed), получили %v", err)
 	}
 }
