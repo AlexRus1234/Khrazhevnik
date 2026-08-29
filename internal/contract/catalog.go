@@ -57,7 +57,8 @@ type Catalog struct {
 // CatalogSuite гоняет контрактный suite каталога (сессия 04; кейсы
 // сессии 17: конкурентный upsert, keyset-пагинация на 100+ записей;
 // кейсы сессии 21: no-op UPDATE, revoke roundtrip, FK-удаление,
-// граница длины ключа 767, пустая страница аудита) по одному адаптеру.
+// граница длины ключа 767, пустая страница аудита; кейсы сессии 26:
+// cap limit аудита) по одному адаптеру.
 // open возвращает свежий набор на каждый вызов — изоляция под-тестов
 // (чистая БД/каталог).
 func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
@@ -76,6 +77,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("remotes", func(t *testing.T) { remoteSuite(t, newCat(t)) })
 	t.Run("jobs", func(t *testing.T) { jobSuite(t, newCat(t)) })
 	t.Run("audit", func(t *testing.T) { auditSuite(t, newCat(t)) })
+	t.Run("audit_limit_cap", func(t *testing.T) { auditLimitCapSuite(t, newCat(t)) })
 	t.Run("object_index", func(t *testing.T) { objectIndexSuite(t, newCat(t)) })
 	t.Run("revocations", func(t *testing.T) { revocationsSuite(t, newCat(t)) })
 	t.Run("noop_update", func(t *testing.T) { noopUpdateSuite(t, newCat(t)) })
@@ -462,6 +464,42 @@ func auditSuite(t *testing.T, c Catalog) {
 	beyond, err := c.Audit.AuditEntries(ctx, tail[0].ID+1000, 10)
 	if err != nil || len(beyond) != 0 {
 		t.Fatalf("страница за концом = %d записей, %v (хочу пустую без ошибки)", len(beyond), err)
+	}
+}
+
+// auditLimitCapSuite — client limit не протаскивается в SQL как есть:
+// AuditEntries(…, 1e9) обязана вернуть страницу не больше 1000
+// (верхняя граница драйверов). Число 1000 — контракт адаптеров,
+// здесь зафиксировано независимо от них. 1001 запись — на одну выше
+// границы, чтобы cap реально сработал, а не прошёл по недобору.
+func auditLimitCapSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	const (
+		capLimit  = 1000
+		totalRecs = capLimit + 1
+	)
+	for i := 0; i < totalRecs; i++ {
+		if err := c.Audit.Record(ctx, domain.AuditEntry{
+			At: fixed.Add(time.Duration(i) * time.Second),
+			Actor: "ci", Action: "cap.op", Object: strconv.Itoa(i), Result: domain.AuditOK, Detail: "",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := c.Audit.AuditEntries(ctx, 0, 1_000_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != capLimit {
+		t.Fatalf("limit=1e9 вернул %d записей, хочу ровно %d (cap)", len(page), capLimit)
+	}
+	// Продолжение за cap читается следующей страницей (keyset).
+	rest, err := c.Audit.AuditEntries(ctx, page[len(page)-1].ID, 1_000_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != totalRecs-capLimit {
+		t.Fatalf("хвост после cap = %d записей, хочу %d", len(rest), totalRecs-capLimit)
 	}
 }
 

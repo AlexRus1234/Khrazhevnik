@@ -39,6 +39,13 @@ import (
 // auditDefaultLimit — разумный дефолт страницы аудита (limit <= 0).
 const auditDefaultLimit = 100
 
+// auditMaxLimit — верхняя граница страницы аудита: клиентский limit
+// не протаскивается в SQL как есть (limit=1e9 читал бы таблицу одним
+// запросом). Cap в Go, а не MIN(limit, 1000) в SQL, потому что
+// MariaDB допускает в LIMIT только литералы и плейсхолдеры —
+// выражений нет; капим одинаково во всех драйверах.
+const auditMaxLimit = 1000
+
 // Пользователи. HasUsers — защита POST /api/v1/setup.
 const (
 	sqlUserInsert = `INSERT INTO users (username, password_hash, role, token_version, created_at)
@@ -668,10 +675,14 @@ func (s *Store) Record(ctx context.Context, e domain.AuditEntry) error {
 }
 
 // AuditEntries — страница записей с ID строго больше afterID по
-// возрастанию ID (keyset-пагинация).
+// возрастанию ID (keyset-пагинация); limit капится сверху
+// (auditMaxLimit).
 func (s *Store) AuditEntries(ctx context.Context, afterID int64, limit int) ([]domain.AuditEntry, error) {
 	if limit <= 0 {
 		limit = auditDefaultLimit
+	}
+	if limit > auditMaxLimit {
+		limit = auditMaxLimit
 	}
 	es, err := call(ctx, s, func() ([]domain.AuditEntry, error) {
 		rows, err := s.db.QueryContext(ctx, sqlAuditPage, afterID, limit)
