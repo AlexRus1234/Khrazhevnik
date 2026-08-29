@@ -167,6 +167,82 @@ func TestSchedulerRestartsDeadRunner(t *testing.T) {
 	}
 }
 
+// TestSchedulerForgetsRemovedRemoteState — удаление remote забывает и
+// backoff-состояние умерших runner'ов: после reconcile карты deaths/
+// lastDeath пусты (иначе записи жили вечно по две на каждый удалённый
+// ID), а пересозданный remote с тем же ID стартует с чистым backoff,
+// не с накопленным.
+func TestSchedulerForgetsRemovedRemoteState(t *testing.T) {
+	clock := testutil.NewManualClock(time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC))
+	remotes := testutil.NewFakeRemoteStore()
+	a, err := remotes.CreateRemote(context.Background(), domain.Remote{
+		Name: "a", Ecosystem: "apt", BaseURL: "http://x", Mode: domain.ModeMirror,
+		Enabled: true, SyncInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := remotes.CreateRemote(context.Background(), domain.Remote{
+		Name: "b", Ecosystem: "apt", BaseURL: "http://x", Mode: domain.ModeMirror,
+		Enabled: true, SyncInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := NewScheduler(nil, remotes,
+		testutil.FixedRand("44444444-4444-4444-8444-444444444444"), clock, 0)
+	// сверка напрямую (без горутины): детерминированно
+	sched.reconcile()
+	// инжект смертей runner'ов: у a — две, у b — одна
+	sched.runnerDied(a.ID, errors.New("смерть 1 (инжект)"))
+	sched.runnerDied(a.ID, errors.New("смерть 2 (инжект)"))
+	sched.runnerDied(b.ID, errors.New("смерть (инжект)"))
+	sched.mu.Lock()
+	if sched.deaths[a.ID] != 2 || sched.deaths[b.ID] != 1 {
+		sched.mu.Unlock()
+		t.Fatal("смерти runner'ов не зафиксированы")
+	}
+	sched.mu.Unlock()
+
+	// удаляем оба remote: reconcile обязан забыть и runner'ов, и
+	// backoff-состояние
+	for _, id := range []int64{a.ID, b.ID} {
+		if err := remotes.DeleteRemote(context.Background(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sched.reconcile()
+	sched.mu.Lock()
+	deaths, last := len(sched.deaths), len(sched.lastDeath)
+	sched.mu.Unlock()
+	if deaths != 0 || last != 0 {
+		t.Fatalf("после reconcile: deaths=%d, lastDeath=%d — хочу пусто", deaths, last)
+	}
+
+	// пересоздание remote с тем же ID: чистый backoff — runner
+	// стартует на ближайшем reconcile (ручные часы стоят: унаследованный
+	// backoff не истёк бы никогда)
+	reborn, err := remotes.CreateRemote(context.Background(), domain.Remote{
+		ID: a.ID, Name: "a", Ecosystem: "apt", BaseURL: "http://x", Mode: domain.ModeMirror,
+		Enabled: true, SyncInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched.reconcile()
+	sched.mu.Lock()
+	_, alive := sched.runners[reborn.ID]
+	sched.mu.Unlock()
+	if !alive {
+		t.Error("пересозданный remote не стартовал — backoff не забыт")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := sched.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
 // TestSchedulerStopIdempotent — повторный Stop не паникует и не висит.
 func TestSchedulerStopIdempotent(t *testing.T) {
 	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))

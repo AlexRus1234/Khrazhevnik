@@ -151,6 +151,22 @@ func (s *Scheduler) reconcile() {
 			delete(s.runners, id)
 		}
 	}
+	// Забвение backoff-состояния исчезнувших/выключенных remote: без
+	// этого записи живут вечно, а пересозданный remote с тем же ID
+	// наследовал бы чужой накопленный backoff.
+	for id := range s.deaths {
+		if _, ok := wanted[id]; !ok {
+			delete(s.deaths, id)
+			delete(s.lastDeath, id)
+		}
+	}
+	// Страховка от расхождения карт (пишутся парно, но инвариант не
+	// закреплён типом).
+	for id := range s.lastDeath {
+		if _, ok := wanted[id]; !ok {
+			delete(s.lastDeath, id)
+		}
+	}
 	for id, r := range wanted {
 		if _, ok := s.runners[id]; ok {
 			continue
