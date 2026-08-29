@@ -513,6 +513,70 @@ func TestGenerateIndexesArchFilter(t *testing.T) {
 	}
 }
 
+// TestGenerateIndexesByHashGC — by-hash копии прошлых регенераций
+// удаляются: остаётся ровно по одной копии на текущие Packages и
+// Packages.gz, устаревшие sha256-ключи исчезают (аудит, накопление GC).
+func TestGenerateIndexesByHashGC(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	byHashPrefix := "repo/1/apt/dists/stable/main/binary-amd64/by-hash/sha256/"
+
+	putDeb(t, storage, repo, "pool/main/f/foo.deb", "Package: foo\nVersion: 1.0\nArchitecture: amd64\nDescription: v1\n")
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("первая генерация: %v", err)
+	}
+	count := func() int {
+		t.Helper()
+		n := 0
+		for range storage.List(context.Background(), byHashPrefix) {
+			n++
+		}
+		return n
+	}
+	if n := count(); n != 2 {
+		t.Fatalf("после первой генерации by-hash = %d записей, хочу 2", n)
+	}
+
+	// Обновляем пакет тем же путём (перезапись через Put+Commit) —
+	// содержимое Packages меняется, старые by-hash становятся мусором.
+	v2, _ := buildDeb(t, "Package: foo\nVersion: 2.0\nArchitecture: amd64\nDescription: v2\n")
+	key := port.RepoPrefix(repo) + "/pool/main/f/foo.deb"
+	w, err := storage.Put(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(v2); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("вторая генерация: %v", err)
+	}
+
+	// Ровно 2 записи, и обе соответствуют текущим индексам.
+	pkg := readStorage(t, storage, "repo/1/apt/dists/stable/main/binary-amd64/packages")
+	pkgGz := readStorage(t, storage, "repo/1/apt/dists/stable/main/binary-amd64/packages.gz")
+	wantKeys := map[string]bool{}
+	for _, content := range [][]byte{pkg, pkgGz} {
+		sum := sha256.Sum256(content)
+		wantKeys[byHashPrefix+hex.EncodeToString(sum[:])] = true
+	}
+	got := 0
+	for meta := range storage.List(context.Background(), byHashPrefix) {
+		got++
+		if !wantKeys[meta.Key] {
+			t.Errorf("by-hash осталась устаревшая копия %s", meta.Key)
+		}
+	}
+	if got != 2 {
+		t.Fatalf("после GC by-hash = %d записей, хочу 2", got)
+	}
+}
+
 func TestGenerateIndexesEmptyRepo(t *testing.T) {
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))

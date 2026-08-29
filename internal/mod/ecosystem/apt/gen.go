@@ -214,6 +214,11 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 	if err := writeByHash(ctx, storage, indexDir, packagesGz); err != nil {
 		return fmt.Errorf("apt.gen: by-hash packages.gz: %w", err)
 	}
+	// GC: копии прошлых регенераций (устаревшие sha256) удаляются —
+	// без этого by-hash накапливался бы на каждый reindex (аудит).
+	if err := gcByHash(ctx, storage, indexDir, packagesBytes, packagesGz); err != nil {
+		return err
+	}
 	p.Update("write", repo.Name, 3, 4)
 	release := buildRelease(g.now(), packagesBytes, packagesGz)
 	if err := writeAtomic(ctx, storage, prefix+"/dists/"+repoDist+"/release", release); err != nil {
@@ -429,6 +434,45 @@ func writeByHash(ctx context.Context, storage port.Storage, indexDir string, con
 	hash := hex.EncodeToString(h[:])
 	key := indexDir + "/by-hash/sha256/" + hash
 	return writeAtomic(ctx, storage, key, content)
+}
+
+// gcByHash удаляет by-hash-копии, не соответствующие текущим индексам:
+// клиенты, начавшие качать по старому хешу, не валидны для нового
+// состава Packages, а копии без GC накапливались бы на каждой
+// регенерации (аудит). Новые копии уже записаны к этому моменту, поэтому
+// окно «ключ есть в Release, by-hash ещё нет» отсутствует; удаляем
+// только лишнее. Перечисление — List-контракт сессии 20 (ошибка носителя
+// — ошибка генерации, fail-closed).
+func gcByHash(ctx context.Context, storage port.Storage, indexDir string, current ...[]byte) error {
+	keep := make(map[string]struct{}, len(current))
+	for _, c := range current {
+		sum := sha256.Sum256(c)
+		keep[hex.EncodeToString(sum[:])] = struct{}{}
+	}
+	prefix := indexDir + "/by-hash/"
+	var stale []string
+	for meta, err := range storage.List(ctx, prefix) {
+		if err != nil {
+			return fmt.Errorf("apt.gen: by-hash gc: листинг %s: %w", prefix, err)
+		}
+		rel := strings.TrimPrefix(meta.Key, prefix)
+		hash, ok := strings.CutPrefix(rel, "sha256/")
+		// v1 хранит только sha256; чужие подкаталоги — мусор прошлых
+		// версий формата.
+		if !ok {
+			stale = append(stale, meta.Key)
+			continue
+		}
+		if _, ok := keep[hash]; !ok {
+			stale = append(stale, meta.Key)
+		}
+	}
+	for _, key := range stale {
+		if err := storage.Delete(ctx, key); err != nil {
+			return fmt.Errorf("apt.gen: by-hash gc: удаление %s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 // gzipBytes возвращает gzip-сжатую копию content (один writer, flush на
