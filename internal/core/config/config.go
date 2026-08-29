@@ -17,6 +17,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -228,7 +229,8 @@ func defaultEcosystems() map[string]Ecosystem {
 // Load собирает конфигурацию слоями: defaults → TOML (path == "" —
 // файл не читается) → env (envGetter, обычно os.Getenv) → развёртка
 // file://-секретов → валидация. Все проблемы сообщаются разом,
-// списком (errors.Join).
+// списком (errors.Join). TOML — строгий: неизвестный ключ роняет
+// старт (decodeStrict).
 func Load(path string, envGetter func(string) string) (Config, error) {
 	cfg := defaultConfig()
 	if path != "" {
@@ -236,7 +238,7 @@ func Load(path string, envGetter func(string) string) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("конфигурация: чтение %s: %w", path, err)
 		}
-		if err := toml.Unmarshal(data, &cfg); err != nil {
+		if err := decodeStrict(data, &cfg); err != nil {
 			return Config{}, fmt.Errorf("конфигурация: разбор %s: %w", path, err)
 		}
 		normalizeEcosystemKeys(&cfg)
@@ -250,6 +252,29 @@ func Load(path string, envGetter func(string) string) (Config, error) {
 		return Config{}, errors.Join(append([]error{errors.New("конфигурация недопустима")}, problems...)...)
 	}
 	return cfg, nil
+}
+
+// decodeStrict разбирает TOML в строгом режиме: неизвестный ключ —
+// ошибка с именем ключа и строкой документа (опечатка session_tt
+// молча оставляла дефолт — аудит 2026-08-27). Секции [ecosystem.*] —
+// map: любые имена валидны, строгий режим их не трогает. Прочие
+// ошибки разбора (синтаксис, тип значения) отдаются как есть — их
+// DecodeError уже содержит позицию.
+func decodeStrict(data []byte, cfg *Config) error {
+	dec := toml.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	err := dec.Decode(cfg)
+	var missing *toml.StrictMissingError
+	if !errors.As(err, &missing) {
+		return err
+	}
+	parts := make([]string, 0, len(missing.Errors))
+	for _, de := range missing.Errors {
+		row, _ := de.Position()
+		parts = append(parts, fmt.Sprintf("%q (строка %d)", strings.Join(de.Key(), "."), row))
+	}
+	return fmt.Errorf("неизвестные ключи TOML — опечатка или лишний ключ: %s",
+		strings.Join(parts, ", "))
 }
 
 // minJWTSecretLen — нижняя граница JWT-секрета: HS256 подписывает

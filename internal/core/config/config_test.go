@@ -466,6 +466,40 @@ func TestLoadTOMLBadDuration(t *testing.T) {
 	}
 }
 
+// TestLoadTOMLStrict — неизвестный ключ TOML = ошибка запуска с именем
+// ключа и строкой (аудит 2026-08-27: опечатка session_tt молча
+// оставляла дефолт session_ttl). Имена ключей [ecosystem.*] — map —
+// строгим режимом не ограничены.
+func TestLoadTOMLStrict(t *testing.T) {
+	path := writeTemp(t, "conf.toml", `
+[auth]
+session_tt = "8h"
+
+[cache]
+max_object_siz = "1GiB"
+`)
+	_, err := Load(path, withJWT(nil))
+	if err == nil {
+		t.Fatal("конфиг с опечатками должен падать на старте")
+	}
+	msg := err.Error()
+	for _, want := range []string{"auth.session_tt", "cache.max_object_siz", "строка"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("в ошибке нет %q:\n%s", want, msg)
+		}
+	}
+
+	// Регрессия: ключи экосистем с произвольными именами проходят.
+	ok := writeTemp(t, "eco.toml", "[ecosystem.rpm_md]\nenabled = false\n")
+	cfg, err := Load(ok, withJWT(nil))
+	if err != nil {
+		t.Fatalf("ключи [ecosystem.*] — map, строгий режим не должен их отвергать: %v", err)
+	}
+	if cfg.Ecosystem["rpm-md"].Enabled {
+		t.Error("ecosystem.rpm_md.enabled = false из TOML не применился")
+	}
+}
+
 func TestParseByteSize(t *testing.T) {
 	cases := []struct {
 		in   string
