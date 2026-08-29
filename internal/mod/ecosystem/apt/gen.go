@@ -146,18 +146,29 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 	p.Log(fmt.Sprintf("apt.gen: найдено %d .deb в %s", len(debKeys), poolPrefix))
 
 	// Фаза 2: чтение control + SHA256 из каждого .deb (один проход),
-	// сборка Packages в памяти.
+	// сборка Packages в памяти. Пакеты чужой архитектуры пропускаются:
+	// иначе arm64-.deb попал бы в binary-amd64/Packages, и apt на
+	// amd64 пытался бы ставить несовместимый пакет.
 	p.Update("control", repo.Name, 0, int64(len(debKeys)))
 	packages := &bytes.Buffer{}
 	packages.Grow(64 * 1024)
+	skipped := 0
 	for i, key := range debKeys {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err := appendPackagesEntry(ctx, storage, key, packages); err != nil {
+		included, arch, err := appendPackagesEntry(ctx, storage, key, packages)
+		if err != nil {
 			return fmt.Errorf("apt.gen: %s: %w", key, err)
 		}
+		if !included {
+			skipped++
+			p.Log(fmt.Sprintf("apt.gen: %s: Architecture %q ≠ amd64/all — пропущен", key, arch))
+		}
 		p.Update("control", repo.Name, int64(i+1), int64(len(debKeys)))
+	}
+	if skipped > 0 {
+		p.Log(fmt.Sprintf("apt.gen: пропущено %d пакет(ов) чужой архитектуры (binary-%s)", skipped, repoArch))
 	}
 
 	// Фаза 3: запись packages + packages.gz + by-hash + release.
@@ -253,10 +264,14 @@ func collectDebs(ctx context.Context, storage port.Storage, poolPrefix string) (
 // поля, которых нет в control: Filename (путь от корня репо), Size
 // (фактические байты через tee — метаданные носителя могут солгать),
 // SHA256 (посчитан по байтам .deb).
-func appendPackagesEntry(ctx context.Context, storage port.Storage, debKey string, buf *bytes.Buffer) error {
+//
+// Возвращает included=false для пакетов с Architecture ≠ amd64/all —
+// они не попадают в binary-amd64/Packages (arch возвращается для лога
+// пропуска вызывающим). Пропущенные не дочитываются (SHA не нужен).
+func appendPackagesEntry(ctx context.Context, storage port.Storage, debKey string, buf *bytes.Buffer) (included bool, arch string, err error) {
 	obj, err := storage.Get(ctx, debKey)
 	if err != nil {
-		return err
+		return false, "", err
 	}
 	defer obj.Body.Close()
 	h := sha256.New()
@@ -264,13 +279,21 @@ func appendPackagesEntry(ctx context.Context, storage port.Storage, debKey strin
 	tee := io.TeeReader(cr, h)
 	stanza, err := readControl(tee)
 	if err != nil {
-		return err
+		return false, "", err
+	}
+	// Фильтр архитектуры: в binary-amd64 живут только пакеты с
+	// Architecture: amd64 (совпадает с целевой) и arch: all
+	// (архитектуро-независимые). Поле берётся как есть — dpkg пишет
+	// канонический регистр «Architecture».
+	arch = stanza.Get("Architecture")
+	if arch != repoArch && arch != "all" {
+		return false, arch, nil
 	}
 	// Докачиваем остаток .deb (data.tar.*) через tee, чтобы SHA256
 	// был посчитан по всему файлу: readControl остановился после
 	// control.tar.*, но в .deb ещё data.tar.*.
 	if _, err := io.Copy(io.Discard, tee); err != nil {
-		return fmt.Errorf("apt.deb: дочтение .deb: %w", err)
+		return false, arch, fmt.Errorf("apt.deb: дочтение .deb: %w", err)
 	}
 	sha := hex.EncodeToString(h.Sum(nil))
 	// Filename: путь от корня apt-секции репо (без repo/<id>/apt/).
@@ -283,7 +306,7 @@ func appendPackagesEntry(ctx context.Context, storage port.Storage, debKey strin
 	stanza.Set("SHA256", sha)
 	writeStanza(buf, stanza)
 	buf.WriteByte('\n')
-	return nil
+	return true, arch, nil
 }
 
 // countReader считает прочитанные байты: источник размера индексных

@@ -475,6 +475,44 @@ func TestGenerateIndexesMultipleDebs(t *testing.T) {
 	}
 }
 
+// TestGenerateIndexesArchFilter — в binary-amd64/Packages попадают
+// только Architecture: amd64 и all; arm64-пакет пропускается с логом
+// (имя и arch), а не портит индекс чужой архитектурой.
+func TestGenerateIndexesArchFilter(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	putDeb(t, storage, repo, "pool/main/a/arm64.deb", "Package: arm\nVersion: 1.0\nArchitecture: arm64\nDescription: foreign\n")
+	putDeb(t, storage, repo, "pool/main/a/all.deb", "Package: allpkg\nVersion: 1.0\nArchitecture: all\nDescription: arch-independent\n")
+	putDeb(t, storage, repo, "pool/main/a/native.deb", "Package: native\nVersion: 1.0\nArchitecture: amd64\nDescription: native\n")
+
+	rec := &recordingProgress{}
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, rec); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+
+	pkg := string(readStorage(t, storage, "repo/1/apt/dists/stable/main/binary-amd64/packages"))
+	if !strings.Contains(pkg, "Package: allpkg\n") {
+		t.Errorf("arch:all пакет должен попасть в binary-amd64:\n%s", pkg)
+	}
+	if !strings.Contains(pkg, "Package: native\n") {
+		t.Errorf("amd64 пакет должен попасть в binary-amd64:\n%s", pkg)
+	}
+	if strings.Contains(pkg, "Package: arm\n") {
+		t.Errorf("arm64-пакет попал в binary-amd64 (фильтр не работает):\n%s", pkg)
+	}
+	// Лог пропуска: имя пакета и архитектура.
+	if !slices.ContainsFunc(rec.logs, func(s string) bool {
+		return strings.Contains(s, "arm64.deb") && strings.Contains(s, "arm64")
+	}) {
+		t.Errorf("нет лога пропуска arm64-пакета: %v", rec.logs)
+	}
+	if !slices.ContainsFunc(rec.logs, func(s string) bool { return strings.Contains(s, "пропущено 1") }) {
+		t.Errorf("нет суммарного счётчика пропусков: %v", rec.logs)
+	}
+}
+
 func TestGenerateIndexesEmptyRepo(t *testing.T) {
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
