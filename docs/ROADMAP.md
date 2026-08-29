@@ -76,3 +76,23 @@ UI, документация. Тег v1.0.0 и публикация артефа
 - Vue 3 SPA (`//go:embed`, i18n ru/en), Playwright e2e-смоук (opt-in).
 - Пользовательская документация (`docs/func/ru/`: quickstart, config,
   api, ui, ecosystems/, deploy, personal-repos) + README + RELEASE.md.
+
+## M4 — постаудит и полировка ✅ (релиз v1.0.0 — отдельная приёмка)
+
+**Статус: постаудит завершён (сессии 19–26, 2026-08-29)** — находки
+аудита 2026-08-27 закрыты. Тег `v1.0.0` и публикация артефактов —
+по чеклисту [RELEASE.md](RELEASE.md) отдельно, без спешки.
+
+- Инварианты кеша: регистрочувствительные ключи, byte-exact gzip,
+  checksum-mismatch, fail-closed листинг storage (сессии 19–20).
+- Дрейф db-драйверов закрыт контрактными suite: no-op UPDATE на
+  mariadb, revoke roundtrip, FK, граница ключа 767 (сессия 21).
+- Безопасность HTTP: trusted_proxies, JWT-секрет ≥ 32 байт,
+  персистентные revocation, конфигурируемый bcrypt cost (сессии 22, 25).
+- Зеркало и задачи: планировщик с jitter, panic recovery, bounded
+  история задач (сессии 23, 25).
+- Publish: fail-closed генерация, by-hash GC, квоты (сессия 24).
+- Полировка (сессия 26): strict TOML (опечатка = ошибка запуска),
+  cap limit аудита ≤ 1000, merged integration coverage в CI, честные
+  ошибки неподдерживаемых форматов индексов (apt xz, pacman
+  .db.tar.gz, rpm .zck/.zst/.xz/.bz2); CHANGELOG и SECURITY.md.
