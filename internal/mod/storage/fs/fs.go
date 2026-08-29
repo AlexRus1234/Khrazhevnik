@@ -56,6 +56,8 @@ type Storage struct {
 }
 
 // New создаёт корень и tmp-каталог; rand именует временные файлы.
+// На старте tmp/ подметается: живых writers не бывает (один процесс на
+// каталог данных), все остатки — недокачки погибшего при крэше upload'а.
 func New(root string, rand port.Rand) (*Storage, error) {
 	if root == "" {
 		return nil, fmt.Errorf("fs: пустой корень хранилища")
@@ -63,7 +65,29 @@ func New(root string, rand port.Rand) (*Storage, error) {
 	if err := os.MkdirAll(filepath.Join(root, tmpDir), 0o755); err != nil {
 		return nil, fmt.Errorf("fs: создание корня %s: %w", root, err)
 	}
+	if err := sweepTmp(root); err != nil {
+		return nil, err
+	}
 	return &Storage{root: root, rand: rand}, nil
+}
+
+// sweepTmp удаляет осиротевшие tmp-файлы после крэша/убийства процесса:
+// без подметания недокачки копились бы вечно (аудит, fs durability).
+// Сбой удаления — ошибка старта: молча оставить замусоренный tmp —
+// значит спрятать проблему носителя от оператора.
+func sweepTmp(root string) error {
+	tmpPath := filepath.Join(root, tmpDir)
+	entries, err := os.ReadDir(tmpPath)
+	if err != nil {
+		return fmt.Errorf("fs: чтение tmp %s: %w", tmpPath, err)
+	}
+	for _, e := range entries {
+		p := filepath.Join(tmpPath, e.Name())
+		if err := os.RemoveAll(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("fs: удаление осиротевшего tmp %s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 // Get возвращает ридер поверх зафиксированных байтов. Каталог (место
@@ -260,7 +284,8 @@ func (w *writer) Write(p []byte) (int, error) {
 	return w.file.Write(p)
 }
 
-// Commit делает объект видимым: close → mkdir → rename → fsync каталога.
+// Commit делает объект видимым: fsync данных → close → mkdir → rename
+// → fsync каталога.
 func (w *writer) Commit(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -269,6 +294,14 @@ func (w *writer) Commit(ctx context.Context) error {
 		return fmt.Errorf("fs: повторный Commit для %q", w.key)
 	}
 	w.done = true
+	// fsync данных до close/rename: rename+dir-fsync переживают крэш
+	// структурно, но не выталкивают буферы тела — без Sync на
+	// final-пути может оказаться усечённый Release/.db.
+	if err := w.file.Sync(); err != nil {
+		_ = w.file.Close()
+		_ = os.Remove(w.tmpPath)
+		return fmt.Errorf("fs: сброс буферов %q: %w", w.key, err)
+	}
 	if err := w.file.Close(); err != nil {
 		return fmt.Errorf("fs: закрытие временного файла: %w", err)
 	}
@@ -287,11 +320,10 @@ func (w *writer) Commit(ctx context.Context) error {
 	return nil
 }
 
-// Abort отбрасывает запись и временный файл.
-func (w *writer) Abort(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+// Abort отбрасывает запись и временный файл. Выполняется даже при
+// отменённом ctx: проверка отмены утекала бы tmp-файл и fd при обрыве
+// клиента посреди Put (аудит, fs durability).
+func (w *writer) Abort(_ context.Context) error {
 	if w.done {
 		return fmt.Errorf("fs: повторный Abort для %q", w.key)
 	}

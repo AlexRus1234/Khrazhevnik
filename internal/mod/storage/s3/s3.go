@@ -67,6 +67,8 @@ type Storage struct {
 }
 
 // New создаёт клиент S3 и спул-каталог; rand именует спул-файлы.
+// На старте спул подметается: живых writers не бывает (один процесс на
+// spool_dir), все остатки — тела погибших при крэше upload'ов.
 // Endpoint с «https://» → Secure=true (TLS), иначе http; схема
 // отсекается — minio.New принимает host[:port] без схемы.
 func New(cfg config.S3Storage, rand port.Rand) (*Storage, error) {
@@ -93,7 +95,28 @@ func New(cfg config.S3Storage, rand port.Rand) (*Storage, error) {
 	if err := os.MkdirAll(cfg.SpoolDir, 0o755); err != nil {
 		return nil, fmt.Errorf("s3: создание спула %s: %w", cfg.SpoolDir, err)
 	}
+	if err := sweepSpool(cfg.SpoolDir); err != nil {
+		return nil, err
+	}
 	return &Storage{client: cli, bucket: cfg.Bucket, spoolDir: cfg.SpoolDir, rand: rand}, nil
+}
+
+// sweepSpool удаляет осиротевшие спул-файлы после крэша/убийства
+// процесса (аудит, fs durability: s3-спул симметричен fs tmp/).
+// Сбой удаления — ошибка старта: недокачки копились бы вечно, а
+// замусоренный спул — проблема носителя, которую нужно показать.
+func sweepSpool(spoolDir string) error {
+	entries, err := os.ReadDir(spoolDir)
+	if err != nil {
+		return fmt.Errorf("s3: чтение спула %s: %w", spoolDir, err)
+	}
+	for _, e := range entries {
+		p := filepath.Join(spoolDir, e.Name())
+		if err := os.RemoveAll(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("s3: удаление осиротевшего спула %s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 // Get возвращает ридер поверх зафиксированных байтов. S3 GetObject —
@@ -339,11 +362,10 @@ func (w *writer) Commit(ctx context.Context) error {
 	return nil
 }
 
-// Abort отбрасывает запись и спул-файл.
-func (w *writer) Abort(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+// Abort отбрасывает запись и спул-файл. Выполняется даже при
+// отменённом ctx: проверка отмены утекала бы спул и fd при обрыве
+// клиента посреди Put (аудит, fs durability).
+func (w *writer) Abort(_ context.Context) error {
 	if w.done {
 		return fmt.Errorf("s3: повторный Abort для %q", w.key)
 	}

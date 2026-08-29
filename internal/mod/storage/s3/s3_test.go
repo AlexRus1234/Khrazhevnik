@@ -19,6 +19,8 @@ package s3
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/minio/minio-go/v7"
@@ -81,6 +83,27 @@ func TestNewCreatesSpoolAndClient(t *testing.T) {
 	}
 	if s.bucket != "khrazhevnik" || s.spoolDir != dir {
 		t.Fatalf("Storage = %+v", s)
+	}
+}
+
+// TestNewSweepsSpool — осиротевшие спул-файлы (крэш между Put и
+// Commit/Abort) вычищаются на старте: живых writers не бывает.
+func TestNewSweepsSpool(t *testing.T) {
+	dir := t.TempDir()
+	orphaned := filepath.Join(dir, "orphaned-spool")
+	if err := os.WriteFile(orphaned, []byte("dead body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(config.S3Storage{
+		Endpoint: "https://play.min.io:9000", Region: "us-east-1",
+		Bucket: "khrazhevnik", AccessKeyID: "id", SecretAccessKey: "key",
+		SpoolDir: dir,
+	}, testutil.FixedRand()); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("спул после старта: %d записей (err %v), хочу 0", len(entries), err)
 	}
 }
 
