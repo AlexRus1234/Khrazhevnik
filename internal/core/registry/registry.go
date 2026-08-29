@@ -73,11 +73,13 @@ type RepoAdapterFactory = func() (port.RepoAdapter, error)
 
 // SignerFactory создаёт подписчик метаданных личных репозиториев
 // (mod/sign/openpgp — сессия 15). cfg — секция [signing]: keys_dir +
-// опциональная passphrase. Единственный продакшен-подписчик v1 —
+// опциональная passphrase; clock — источник времени для меток подписей
+// (packet.Config.Now; сессия 24 — правило «время только через
+// port.Clock»). Единственный продакшен-подписчик v1 —
 // openpgp (ed25519 для nix — сессия 16, живёт вне port.Signer). nil
 // от фабрики или отсутствие регистрации — publish работает без
 // подписи (apt с trusted=yes; /key.asc отдаёт 503).
-type SignerFactory = func(cfg config.Signing) (port.Signer, error)
+type SignerFactory = func(cfg config.Signing, clock port.Clock) (port.Signer, error)
 
 // NarSignerFactory создаёт nix narinfo-подписчик (mod/sign/ed25519 —
 // сессия 16, живёт вне port.Signer: своя, более простая модель подписи
