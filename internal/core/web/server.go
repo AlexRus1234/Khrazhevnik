@@ -30,12 +30,14 @@ import (
 // Каскад graceful shutdown (docs/ARCHITECTURE.md §2): SIGTERM →
 // оба HTTP-слушателя параллельно (5с) → фоновые задачи (30с).
 //
-// Таймауты (аудит 2026-08-27, slowloris): админ — короткие потолки
-// на чтение/запись (JSON-API, стримов нет); публичный — потолка на
-// запись НЕТ (убил бы стриминг больших пакетов), вместо него —
-// write-deadline на соединение в стриминг-хендлерах (stream.go):
-// медленный читатель отваливается по дедлайну последней записи, а не
-// держит FD вечно. IdleTimeout в обоих гасит вечные keep-alive.
+// Таймауты (аудит 2026-08-27, slowloris; сессия 27): админ — короткие
+// потолки на чтение/запись (JSON-API; исключение — upload-стрим PUT
+// objects, его read-deadline продлевает сам stallReader в stream.go);
+// публичный — потолка на запись НЕТ (убил бы стриминг больших
+// пакетов), вместо него — write-deadline на соединение в стриминг-
+// хендлерах (stream.go): медленный читатель отваливается по дедлайну
+// последней записи, а не держит FD вечно. IdleTimeout в обоих гасит
+// вечные keep-alive.
 const (
 	httpShutdownTimeout = 5 * time.Second
 	tasksWaitTimeout    = 30 * time.Second
@@ -45,7 +47,7 @@ const (
 	adminWriteTimeout = 30 * time.Second
 	adminIdleTimeout  = 120 * time.Second
 
-	publicReadTimeout = 60 * time.Second // тело upload'а пакета бывает большим
+	publicReadTimeout = 60 * time.Second // public читает только GET; большой поток (upload) — через admin
 	publicIdleTimeout = 120 * time.Second
 )
 
