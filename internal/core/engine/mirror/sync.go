@@ -65,9 +65,19 @@ func (e *Engine) startJob(ctx context.Context, remote domain.Remote) (domain.Syn
 	return created, nil
 }
 
-// interruptedReason — курсор sync-задач, помеченных recovery'ем после
-// рестарта процесса: живых воркеров для них нет.
-const interruptedReason = "interrupted by restart"
+// interruptedReason — общий маркер sync-задач, прерванных не по вине
+// upstream (recovery после рестарта, отмена ctx). Общий префикс в
+// cursor — контракт мониторинга: прерванная задача не успех (resume по
+// diff дочитает хвост) и не пороговый сбой путей.
+const interruptedReason = "interrupted"
+
+// interruptedByRestart — конкретизация для recovery: живых воркеров
+// нет, процесс умер посреди sync (сессия 23).
+const interruptedByRestart = interruptedReason + " by restart"
+
+// interruptedByCancel — конкретизация для отмены ctx: shutdown или стоп
+// remote посреди sync (сессия 28).
+const interruptedByCancel = interruptedReason + " by cancel"
 
 // RecoverInterruptedJobs — стартовый recovery: все sync_jobs в running
 // без живой задачи переводятся в failed (один запрос к каталогу).
@@ -84,7 +94,7 @@ func (e *Engine) RecoverInterruptedJobs(ctx context.Context) error {
 			continue
 		}
 		j.State = domain.StateFailed
-		j.Cursor = "error:" + interruptedReason
+		j.Cursor = "error:" + interruptedByRestart
 		j.UpdatedAt = e.clock.Now()
 		if err := e.jobs.UpdateJob(ctx, j); err != nil {
 			return err
@@ -113,6 +123,17 @@ func (e *Engine) failJob(job domain.SyncJob, cause error) error {
 	if cause != nil {
 		job.Cursor = "error:" + truncateForCursor(cause.Error())
 	}
+	return e.jobs.UpdateJob(context.Background(), job)
+}
+
+// failJobInterrupted фиксирует отмену sync (shutdown, стоп remote).
+// Прогресс (files/bytes) сохраняется в курсоре вместе с причиной:
+// оператору виден объём недокачанного хвоста, resume по diff дочитает
+// его без перекачки. context.Background() — см. succeedJob.
+func (e *Engine) failJobInterrupted(job domain.SyncJob, files int, bytes int64) error {
+	job.State = domain.StateFailed
+	job.Cursor = "error:" + interruptedByCancel + " (" + encodeCursor(files, bytes) + ")"
+	job.UpdatedAt = e.clock.Now()
 	return e.jobs.UpdateJob(context.Background(), job)
 }
 

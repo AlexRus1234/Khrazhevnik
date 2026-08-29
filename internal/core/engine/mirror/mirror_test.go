@@ -20,8 +20,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -486,6 +488,144 @@ func TestSyncCancelWritesFinalJobState(t *testing.T) {
 	}
 	if jobsList[0].State != domain.StateFailed {
 		t.Errorf("sync_jobs.state = %q, хочу failed (финальный статус после отмены)", jobsList[0].State)
+	}
+}
+
+// TestSyncCancelBigToSyncInterrupted — отмена при большом toSync:
+// воркеры успевают завалить только in-flight пути (≤ Workers), порог
+// ошибок не превышен — без проверки отмены задача записалась бы
+// succeeded (верификация сессии 23). Обязана уйти в failed с маркером
+// interrupted и сохранённым прогрессом: повторный sync не перекачивает
+// успешные пути.
+func TestSyncCancelBigToSyncInterrupted(t *testing.T) {
+	const (
+		total = 50
+		fast  = 8 // отдаются сразу; дальше — за шлагбаумом
+	)
+	gate := make(chan struct{})
+	var (
+		gateOnce sync.Once
+		blocked  atomic.Int64
+		hitsMu   sync.Mutex
+		hits     = map[string]*atomic.Int64{}
+	)
+	openGate := func() { gateOnce.Do(func() { close(gate) }) }
+	defer openGate()
+	count := func(path string) int64 {
+		hitsMu.Lock()
+		defer hitsMu.Unlock()
+		if c, ok := hits[path]; ok {
+			return c.Load()
+		}
+		return 0
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsMu.Lock()
+		c, ok := hits[r.URL.Path]
+		if !ok {
+			c = &atomic.Int64{}
+			hits[r.URL.Path] = c
+		}
+		hitsMu.Unlock()
+		if n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/pkg/f"), ".deb")); n > fast {
+			blocked.Add(1)
+			<-gate
+		}
+		c.Add(1)
+		_, _ = w.Write([]byte("deb-bytes"))
+	}))
+	defer srv.Close()
+
+	clock := testutil.NewManualClock(time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC))
+	storage := testutil.NewFakeStorage(clock)
+	index := testutil.NewFakeObjectIndex()
+	remotes := testutil.NewFakeRemoteStore()
+	remote, err := remotes.CreateRemote(context.Background(), domain.Remote{
+		Name: "pkg", Ecosystem: "t", BaseURL: srv.URL, Mode: domain.ModeMirror, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, total)
+	for i := 1; i <= total; i++ {
+		paths = append(paths, fmt.Sprintf("/f%02d.deb", i))
+	}
+	eco := testutil.FakeEcosystem{
+		NameOf: "t", Base: srv.URL, MutableTTL: time.Minute,
+		EnumeratePaths: paths,
+	}
+	cache := cacheengine.New(storage, index, srv.Client(), clock,
+		cacheengine.Config{StaleIfError: true}, metrics.NewCache())
+	jobs := testutil.NewFakeJobStore()
+	// ErrorThreshold поднят: 4 in-flight отмены (8% из 50) не должны
+	// срабатывать по порогу — иначе проверка interrupted не тестируется
+	mir := New(Config{Workers: 4, RetryMax: 0, ErrorThreshold: 0.5, ProgressInterval: 10 * time.Millisecond},
+		cache, storage, index, remotes, jobs, clock, map[string]port.Ecosystem{"t": eco})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- mir.Sync(ctx, remote, &recordingProgress{}) }()
+
+	// дожидаемся, пока все 4 воркера встанут за шлагбаум: к этому
+	// моменту ровно fast путей закоммичено (воркер берёт следующий
+	// путь только закончив предыдущий, фидер отдаёт их по порядку)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && blocked.Load() < 4 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if blocked.Load() < 4 {
+		openGate()
+		t.Fatalf("воркеры не дошли до шлагбаума: %d из 4", blocked.Load())
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("отменённый sync должен вернуть ошибку")
+		}
+	case <-time.After(5 * time.Second):
+		openGate()
+		t.Fatal("sync не вернулся после отмены")
+	}
+	openGate()
+
+	jobsList, jerr := jobs.Jobs(context.Background())
+	if jerr != nil || len(jobsList) == 0 {
+		t.Fatalf("sync_jobs не записан: %v", jerr)
+	}
+	job := jobsList[0]
+	if job.State != domain.StateFailed {
+		t.Errorf("sync_jobs.state = %q, хочу failed (interrupted ≠ succeeded)", job.State)
+	}
+	if !strings.Contains(job.Cursor, interruptedReason) {
+		t.Errorf("cursor = %q, хочу маркер %q", job.Cursor, interruptedReason)
+	}
+	if !strings.Contains(job.Cursor, fmt.Sprintf("files=%d", fast)) {
+		t.Errorf("cursor = %q, хочу сохранённый прогресс files=%d", job.Cursor, fast)
+	}
+
+	// повторный sync: хвост дочитывается, успешное не перекачивается
+	if err := mir.Sync(context.Background(), remote, &recordingProgress{}); err != nil {
+		t.Fatalf("повторный sync: %v", err)
+	}
+	for i := 1; i <= total; i++ {
+		path := fmt.Sprintf("/pkg/f%02d.deb", i)
+		want := int64(1)
+		if i > fast && i <= fast+4 {
+			// пути, оборванные отменой: запрос дошёл до upstream,
+			// но докачка прервалась — повторный sync качает их заново
+			want = 2
+		}
+		if got := count(path); got != want {
+			t.Errorf("%s: %d запросов upstream, хочу %d", path, got, want)
+		}
+	}
+	job, jerr = jobs.Job(context.Background(), job.ID)
+	if jerr != nil {
+		t.Fatal(jerr)
+	}
+	if job.State != domain.StateSucceeded {
+		t.Errorf("sync_jobs.state после повторного sync = %q, хочу succeeded", job.State)
 	}
 }
 

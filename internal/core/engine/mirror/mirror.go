@@ -160,8 +160,9 @@ func (e *Engine) throttle() cacheengine.Throttle {
 // Sync синхронизирует remote: enumerate → diff → worker pool prefetch.
 // Блокирует до завершения; вызывающий — воркер TaskRegistry. Прогресс
 // пишется в p (кадры) и sync_jobs (батч по ProgressInterval). Отмена ctx
-// гасит воркеры; sync_jobs помечается failed. Ошибочные пути ретрятся
-// до RetryMax; задача failed если доля ошибок > ErrorThreshold.
+// гасит воркеры; sync_jobs помечается failed с маркером interrupted.
+// Ошибочные пути ретрятся до RetryMax; задача failed если доля ошибок
+// > ErrorThreshold.
 func (e *Engine) Sync(ctx context.Context, remote domain.Remote, p Progress) error {
 	if p == nil {
 		p = noopProgress{}
@@ -224,6 +225,17 @@ func (e *Engine) Sync(ctx context.Context, remote domain.Remote, p Progress) err
 		for _, line := range topErrors(res.errors, 10) {
 			p.Log("ошибка: " + line)
 		}
+	}
+
+	// Отмена (shutdown, стоп remote) проверяется ДО порога ошибок:
+	// воркеры успевают завалить только in-flight пути (≤ Workers), и
+	// при большом toSync порог не превышен — без этой проверки задача
+	// записывалась бы succeeded, а мониторинг врал бы (interrupted ≠
+	// succeeded; верификация сессии 23).
+	if ctx.Err() != nil {
+		_ = e.failJobInterrupted(job, res.done, res.bytes)
+		p.Log("sync прерван: " + ctx.Err().Error())
+		return ctx.Err()
 	}
 
 	if res.failed > 0 && float64(res.failed)/float64(len(dr.toSync)) > e.cfg.ErrorThreshold {
