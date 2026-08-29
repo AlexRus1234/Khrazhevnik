@@ -70,9 +70,10 @@ nix-клиента (перебор substituter'ов): отдаётся корр�
 
 ## Личное репо
 
-Upload: `<32hex>.narinfo` (в корне репо) + `nar/<32hex>.nar.xz|.nar`;
-прочие пути — 400. Хеш store path — 32 hex-символа (`[0-9a-f]{32}`,
-контракт адаптера).
+Upload: `<хеш>.narinfo` (в корне репо) + `nar/<хеш>.nar.xz|.nar`, где
+хеш — 32 символа nix-base32 (канонический алфавит nix: цифры и латиница
+без `e`/`o`/`t`/`u` — так кодирует хеши store path сам nix); прочие
+пути — 400.
 
 Reindex **переподписывает** narinfo: поле `Sig` заменяется ключом
 инстанса (ed25519, формат `name:pubkey:signature`), остальное —
@@ -105,10 +106,10 @@ trusted-public-keys = khrazhevnik:<pubkey-b64> cache.nixos.org-1:6NCHbD9f...
 ## Ограничения
 
 - Только pull-through; фоновый sync не поддерживается.
-- Хеш store path валидируется как 32 hex; реальный nix использует
-  собственное base32-подобное кодирование — несматченные nar/narinfo
-  уходят в conservative mutable{TTL 1m}, pull-through работает, но
-  hit-rate immutable-кеша ниже.
+- Личные репо валидируют хеш store path как 32 символа nix-base32;
+  прокси-классификация пока матчит 32 hex — несматченные nar/narinfo
+  с nix-base32 хешами уходят в conservative mutable{TTL 1m},
+  pull-through работает, но hit-rate immutable-кеша ниже.
 - Narinfo отдаётся byte-exact; переподпись и патчи путей невозможны
   (подписи upstream должны быть валидны) — кроме личных репо, где
   переподпись и есть функция.

@@ -1,10 +1,10 @@
-StorePath: /nix/store/0123456789abcdef0123456789abcdef-hello-2.12.1
-URL: nar/0123456789abcdef0123456789abcdef.nar.xz
+StorePath: /nix/store/x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y-hello-2.12.1
+URL: nar/x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y.nar.xz
 Compression: xz
 FileHash: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 FileSize: 1024
 NarHash: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 NarSize: 2048
-References: 0bcdef0123456789abcdef012345678a-glibc-2.39
-Deriver: 0123456789abcdef0123456789abcdef-hello-2.12.1.drv
+References: f0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y-glibc-2.39
+Deriver: x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y-hello-2.12.1.drv
 Sig: cache.example.org-1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef==

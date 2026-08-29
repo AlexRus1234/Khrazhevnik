@@ -26,9 +26,9 @@
 // Защита от adversarial-ввода (фаззинг FuzzParseNarinfo): потолок
 // размера 16KiB (narinfo маленький — единицы КБ; запас кратный),
 // tolerant к неизвестным ключам (forward-compat), без паники на битом
-// тексте. Валидатор путей: 32-hex хеш store path ([0-9a-f]{32}) — так
-// зафиксировано в задаче (сессия 13); пути в URL:-поле валидны
-// относительно /nar/ (nar/<32hex>.nar[.xz]) или запись отбрасывается
+// тексте. Валидатор путей: 32-символьный nix-base32 хеш store path —
+// так кодирует реальные nix-хеши nix сам; пути в URL:-поле валидны
+// относительно /nar/ (nar/<hash>.nar[.xz]) или запись отбрасывается
 // (WantNar возвращает пустую строку).
 
 package nix
@@ -179,26 +179,30 @@ func splitFields(s string) []string {
 	return out
 }
 
-// isHash32 проверяет, что s — ровно 32 hex-символа ([0-9a-f]{32}):
-// хеш store path в путях narinfo/nar. Задача сессии 13 — 32 hex; реальный
-// nix использует своё base32-подобное кодирование, но для валидатора
-// достаточно hex-контракта (синтетические тестовые данные — hex).
-func isHash32(s string) bool {
+// isNixBase32 проверяет, что s — ровно 32 символа алфавита nix-base32:
+// хеш store path в путях narinfo/nar. Ранний контракт (сессия 13)
+// требовал 32 hex — синтетические тестовые данные использовали hex,
+// из-за чего настоящие narinfo/nar получали 400 на upload и ломали
+// resign. Алфавит — канонический nix (libutil/hash.cc): цифры и
+// латиница БЕЗ e, o, t, u (32 символа); hex с 'e' им не соответствует —
+// и не является валидным nix-хешем.
+const nixBase32Chars = "0123456789abcdfghijklmnpqrsvwxyz"
+
+func isNixBase32(s string) bool {
 	if len(s) != 32 {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if strings.IndexByte(nixBase32Chars, s[i]) < 0 {
 			return false
 		}
 	}
 	return true
 }
 
-// validNarName проверяет, что имя файла в URL: — nar/<32hex>.nar[.xz]
+// validNarName проверяет, что имя файла в URL: — nar/<hash>.nar[.xz]
 // (без префикса nar/, только имя). Суффикс .nar.xz (сжатый, основной)
-// или .nar (несжатый, редко). Хеш — 32 hex.
+// или .nar (несжатый, редко). Хеш — 32 символа nix-base32.
 func validNarName(name string) bool {
 	var hash string
 	switch {
@@ -209,16 +213,16 @@ func validNarName(name string) bool {
 	default:
 		return false
 	}
-	return isHash32(hash)
+	return isNixBase32(hash)
 }
 
 // WantNar достаёт upstream-путь nar-архива из narinfo (поле URL:).
 // Возвращает путь с ведущим «/» (конвенция Enumerate/StorageKey, как в
-// apt/rpmmmd/pacman/apk) — «/nar/<32hex>.nar.xz» или «/nar/<32hex>.nar».
-// Запись отбрасывается (пустая строка), если URL отсутствует или невалиден
-// относительно /nar/ (не nar/<32hex>.nar[.xz]): фаззинг-инвариант — все
-// пути в URL:-поле валидны или запись отброшена. Задел для будущего
-// префетча «зеркало по использованию»; интеграции с зеркалом нет.
+// apt/rpmmmd/pacman/apk) — «/nar/<hash>.nar.xz» или «/nar/<hash>.nar»
+// (hash — 32 символа nix-base32). Запись отбрасывается (пустая строка),
+// если URL отсутствует или невалиден относительно /nar/: фаззинг-
+// инвариант — все пути в URL:-поле валидны или запись отброшена. Задел
+// для будущего префетча «зеркало по использованию»; интеграции с зеркалом нет.
 func WantNar(n *Narinfo) string {
 	if n == nil || n.URL == "" {
 		return ""

@@ -26,8 +26,10 @@ import (
 	"testing"
 )
 
-// hash32 — валидный 32-hex хеш store path для тестов (синтетический).
-const narHash32 = "0123456789abcdef0123456789abcdef"
+// narHash32 — валидный 32-символьный nix-base32 хеш store path для
+// тестов (алфавит nix без e/o/t/u — как у реального nix). Hex-хеши
+// ('e' внутри) валидными nix-хешами не являются.
+const narHash32 = "x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y"
 
 // mustReadTestdata читает файл из testdata/.
 func mustReadTestdata(t *testing.T, name string) []byte {
@@ -46,15 +48,15 @@ func TestParseNarinfoGolden(t *testing.T) {
 		t.Fatalf("ParseNarinfo: %v", err)
 	}
 	want := &Narinfo{
-		StorePath:   "/nix/store/0123456789abcdef0123456789abcdef-hello-2.12.1",
-		URL:         "nar/0123456789abcdef0123456789abcdef.nar.xz",
+		StorePath:   "/nix/store/" + narHash32 + "-hello-2.12.1",
+		URL:         "nar/" + narHash32 + ".nar.xz",
 		Compression: "xz",
 		FileHash:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		FileSize:    1024,
 		NarHash:     "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		NarSize:     2048,
-		References:  []string{"0bcdef0123456789abcdef012345678a-glibc-2.39"},
-		Deriver:     "0123456789abcdef0123456789abcdef-hello-2.12.1.drv",
+		References:  []string{"f0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y-glibc-2.39"},
+		Deriver:     narHash32 + "-hello-2.12.1.drv",
 		Sig:         "cache.example.org-1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef==",
 	}
 	if !narinfoEqual(n, want) {
@@ -238,27 +240,31 @@ func TestParseNarinfoDeterminism(t *testing.T) {
 	}
 }
 
-func TestIsHash32(t *testing.T) {
+func TestIsNixBase32(t *testing.T) {
 	cases := []struct {
 		s    string
 		want bool
 	}{
 		{narHash32, true},
-		{"0123456789abcdef0123456789abcdef", true},
+		// весь алфавит nix-base32 (без e/o/t/u)
+		{"0123456789abcdfghijklmnpqrsvwxyz", true},
 		{"ffffffffffffffffffffffffffffffff", true},
+		// hex с 'e' — НЕ валидный nix-base32 (реальный кейс из аудита)
+		{"0123456789abcdef0123456789abcdef", false},
+		{"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", false},
 		// 31 символ
-		{"0123456789abcdef0123456789abcde", false},
+		{narHash32[:31], false},
 		// 33 символа
-		{"0123456789abcdef0123456789abcdef0", false},
-		// заглавные — не hex (нижний регистр)
-		{"0123456789ABCDEF0123456789ABCDEF", false},
-		// не-hex буквы
-		{"ghijklmnopqrstuvghijklmnopqrstuv", false},
+		{narHash32 + "x", false},
+		// заглавные — nix-base32 lowercase
+		{"X0VM1MKFNQRQ3HXJCP2WSZ5L8H4CGD9Y", false},
+		// буквы вне алфавита (e, o, t, u)
+		{"ghoiklmnpqrstuoghijklmnopqrstug", false},
 		{"", false},
 	}
 	for _, c := range cases {
-		if got := isHash32(c.s); got != c.want {
-			t.Errorf("isHash32(%q) = %v, хочу %v", c.s, got, c.want)
+		if got := isNixBase32(c.s); got != c.want {
+			t.Errorf("isNixBase32(%q) = %v, хочу %v", c.s, got, c.want)
 		}
 	}
 }
@@ -273,11 +279,13 @@ func TestValidNarName(t *testing.T) {
 		// не nar-суффикс
 		{narHash32 + ".nar.gz", false},
 		{narHash32 + ".txt", false},
-		// не 32-hex хеш
+		// не 32-символьный хеш
 		{"foo.nar.xz", false},
-		{"0123456789abcdef0123456789abcde.nar.xz", false}, // 31
+		{narHash32[:31] + ".nar.xz", false}, // 31
+		// hex с 'e' — не nix-base32
+		{"0123456789abcdef0123456789abcdef.nar.xz", false},
 		// заглавные
-		{"0123456789ABCDEF0123456789ABCDEF.nar.xz", false},
+		{"X0VM1MKFNQRQ3HXJCP2WSZ5L8H4CGD9Y.nar.xz", false},
 		{"", false},
 	}
 	for _, c := range cases {
@@ -302,7 +310,7 @@ func TestWantNar(t *testing.T) {
 		{"чужой префикс", &Narinfo{URL: "pool/" + narHash32 + ".nar.xz"}, ""},
 		{"без префикса nar/", &Narinfo{URL: narHash32 + ".nar.xz"}, ""},
 		{"невалидный хеш", &Narinfo{URL: "nar/foo.nar.xz"}, ""},
-		{"несжатый, не-hex", &Narinfo{URL: "nar/" + strings.Repeat("z", 32) + ".nar"}, ""},
+		{"не-nix-base32 ('e' в hex)", &Narinfo{URL: "nar/" + strings.Repeat("e", 32) + ".nar"}, ""},
 		{"nar.gz не поддерживается", &Narinfo{URL: "nar/" + narHash32 + ".nar.gz"}, ""},
 		{"лишний путь", &Narinfo{URL: "nar/sub/" + narHash32 + ".nar.xz"}, ""},
 	}
@@ -322,7 +330,7 @@ func TestWantNarFromGolden(t *testing.T) {
 		t.Fatalf("ParseNarinfo: %v", err)
 	}
 	got := WantNar(n)
-	want := "/nar/0123456789abcdef0123456789abcdef.nar.xz"
+	want := "/nar/" + narHash32 + ".nar.xz"
 	if got != want {
 		t.Errorf("WantNar(golden) = %q, хочу %q", got, want)
 	}

@@ -172,10 +172,15 @@ func TestValidateObjectPath(t *testing.T) {
 		{narHash32 + ".narinfo", true},
 		{"nar/" + narHash32 + ".nar.xz", true},
 		{"nar/" + narHash32 + ".nar", true},
-		{"foo.narinfo", false},                   // не hex
-		{"nar/foo.nar.xz", false},                // не hex
+		{"foo.narinfo", false},                   // не хеш
+		{"nar/foo.nar.xz", false},                // не хеш
 		{"sub/" + narHash32 + ".narinfo", false}, // не в корне
 		{"nar/" + narHash32 + ".nar.gz", false},  // неверный суффикс
+		// hex с 'e' — не nix-base32 (реальные nix-хеши иного алфавита).
+		{"0123456789abcdef0123456789abcdef.narinfo", false},
+		{"nar/0123456789abcdef0123456789abcdef.nar.xz", false},
+		// другой валидный nix-base32 хеш.
+		{"0123456789abcdfghijklmnpqrsvwxyz.narinfo", true},
 		{"", false},
 	}
 	for _, c := range cases {
@@ -184,6 +189,29 @@ func TestValidateObjectPath(t *testing.T) {
 		if got != c.want {
 			t.Errorf("ValidateObjectPath(%q) = %v, want ok=%v", c.path, err, c.want)
 		}
+	}
+}
+
+// TestGenerateIndexes_OversizedNarinfoFails — narinfo крупнее 16KiB
+// отклоняется (ErrNarinfoTooLarge): чтение идёт через LimitReader ДО
+// ReadAll, гигантский вход не должен попадать в память целиком.
+func TestGenerateIndexes_OversizedNarinfoFails(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	// narinfoForTest (~250 байт) + набивка до > 16KiB.
+	big := string(narinfoForTest("")) + strings.Repeat("Filler: x\n", (maxNarinfoSize/10)+64)
+	key := putNarinfo(t, storage, repo, narHash32, big)
+
+	g := &Generator{nar: newFakeNarSigner()}
+	err := g.GenerateIndexes(context.Background(), repo, storage, nil)
+	if !errors.Is(err, ErrNarinfoTooLarge) {
+		t.Fatalf("ожидали ErrNarinfoTooLarge, получили %v", err)
+	}
+	// Оригинал не тронут (переподпись не состоялась).
+	out := readStorage(t, storage, key)
+	if !bytes.Equal([]byte(big), out) {
+		t.Errorf("oversized narinfo был изменён")
 	}
 }
 

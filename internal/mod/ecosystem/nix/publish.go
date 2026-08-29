@@ -19,11 +19,12 @@
 // переподписывается Sig'ом ключа инстанса (ed25519, mod/sign/ed25519).
 // nar-файлы (nar/<hash>.nar.xz) — immutable, проходят byte-exact без
 // генерации (загружены и раздаются как есть). Пользователь загружает
-// <hash>.narinfo + nar/<hash>.nar.xz; сервис валидирует narinfo (парсер
-// parse.go, WantNar) и переподписывает Sig по строгим правилам: только
-// поле Sig добавляется/заменяется, остальное байт-точно (golden-тест на
-// дифф). Публичный ключ — GET /repo/<name>/nix-key.asc (wire, сессия 16)
-// + дока trusted-public-keys.
+// <hash>.narinfo + nar/<hash>.nar.xz (hash — 32 символа nix-base32);
+// сервис валидирует narinfo (парсер parse.go, WantNar) и переподписывает
+// Sig по строгим правилам: только поле Sig добавляется/заменяется,
+// остальное байт-точно (golden-тест на дифф). Публичный ключ —
+// GET /repo/<name>/nix-key.asc (wire, сессия 16) + дока
+// trusted-public-keys.
 
 package nix
 
@@ -65,25 +66,27 @@ func (g *Generator) SetNarSigner(s port.NarSigner) { g.nar = s }
 // Name — имя экосистемы, совпадает с Adapter.Name.
 func (g *Generator) Name() string { return Name }
 
-// ValidateObjectPath принимает <32hex>.narinfo (в корне репо) и
-// nar/<32hex>.nar.xz|.nar. Прочие пути — ValidationError (маппится в 400).
-// nar-файлы immutable, проходят без генерации; narinfo переподписывается.
+// ValidateObjectPath принимает <hash>.narinfo (в корне репо) и
+// nar/<hash>.nar.xz|.nar, где hash — 32 символа nix-base32 (реальные
+// хеши store path; hex с 'e' ими не являются). Прочие пути —
+// ValidationError (маппится в 400). nar-файлы immutable, проходят без
+// генерации; narinfo переподписывается.
 func (g *Generator) ValidateObjectPath(p string) error {
-	// nar/<32hex>.nar.xz или nar/<32hex>.nar.
+	// nar/<hash>.nar.xz или nar/<hash>.nar.
 	if rest, ok := strings.CutPrefix(p, "nar/"); ok {
 		if validNarName(rest) {
 			return nil
 		}
-		return &domain.ValidationError{What: "путь nix-репо", Value: p, Reason: "nar/<32hex>.nar[.xz] ожидается"}
+		return &domain.ValidationError{What: "путь nix-репо", Value: p, Reason: "nar/<32 nix-base32>.nar[.xz] ожидается"}
 	}
-	// <32hex>.narinfo в корне (без ведущего «/»).
+	// <hash>.narinfo в корне (без ведущего «/»).
 	if strings.HasSuffix(p, ".narinfo") {
 		hash := strings.TrimSuffix(p, ".narinfo")
-		if !strings.Contains(hash, "/") && isHash32(hash) {
+		if !strings.Contains(hash, "/") && isNixBase32(hash) {
 			return nil
 		}
 	}
-	return &domain.ValidationError{What: "путь nix-репо", Value: p, Reason: "ожидался <32hex>.narinfo или nar/<32hex>.nar[.xz]"}
+	return &domain.ValidationError{What: "путь nix-репо", Value: p, Reason: "ожидался <32 nix-base32>.narinfo или nar/<32 nix-base32>.nar[.xz]"}
 }
 
 // GenerateIndexes обходит .narinfo в репо, валидирует каждый (парсер +
@@ -135,9 +138,10 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 }
 
 // collectNarinfos возвращает лексически отсортированный список ключей
-// <32hex>.narinfo в корне nix-репо (не под nar/). Ошибка листинга —
-// ошибка генерации: без неё переподписались бы только видные narinfo,
-// а сбой носителя выглядел бы как «переподписывать нечего».
+// <hash>.narinfo в корне nix-репо (не под nar/; hash — 32 символа
+// nix-base32). Ошибка листинга — ошибка генерации: без неё
+// переподписались бы только видные narinfo, а сбой носителя выглядел бы
+// как «переподписывать нечего».
 func collectNarinfos(ctx context.Context, storage port.Storage, prefix string) ([]string, error) {
 	var out []string
 	listPrefix := prefix + "/"
@@ -146,7 +150,7 @@ func collectNarinfos(ctx context.Context, storage port.Storage, prefix string) (
 			return nil, fmt.Errorf("листинг %s: %w", listPrefix, err)
 		}
 		rel := strings.TrimPrefix(meta.Key, listPrefix)
-		// только корневые <32hex>.narinfo (без «/» в rel).
+		// только корневые <hash>.narinfo (без «/» в rel).
 		if strings.Contains(rel, "/") {
 			continue
 		}
@@ -154,7 +158,7 @@ func collectNarinfos(ctx context.Context, storage port.Storage, prefix string) (
 			continue
 		}
 		hash := strings.TrimSuffix(rel, ".narinfo")
-		if isHash32(hash) {
+		if isNixBase32(hash) {
 			out = append(out, meta.Key)
 		}
 	}
@@ -171,7 +175,10 @@ func resignNarinfo(ctx context.Context, storage port.Storage, key string, signer
 	if err != nil {
 		return err
 	}
-	content, err := io.ReadAll(obj.Body)
+	// LimitReader ДО ReadAll (шаблон ParseNarinfo): вход крупнее 16KiB
+	// отклоняется, не попав в память целиком, — гигантский «narinfo» не
+	// должен выедать память на регенерации.
+	content, err := io.ReadAll(io.LimitReader(obj.Body, maxNarinfoSize+1))
 	obj.Body.Close()
 	if err != nil {
 		return fmt.Errorf("чтение: %w", err)
