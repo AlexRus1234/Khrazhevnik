@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -452,6 +453,30 @@ func TestEnumerateRpmMdGzPrimary(t *testing.T) {
 	}
 	if len(got) != 3 {
 		t.Fatalf("Enumerate .gz = %+v, хочу 3 hrefs", got)
+	}
+}
+
+func TestEnumerateRpmMdUnsupportedPrimary(t *testing.T) {
+	// primary в сжатиях вне whitelist: Enumerate обязана упасть с
+	// честной причиной (формат назван) до fetch'а primary — раньше
+	// бинарный поток уходил в XML-парсер и sync падал с общим
+	// «parse primary».
+	a := newEnumerateAdapter(t)
+	for _, href := range []string{"repodata/primary.xml.zck", "repodata/primary.xml.zst", "repodata/primary.xml.xz", "repodata/primary.xml.bz2"} {
+		meta := fakeMeta{files: map[string][]byte{
+			"/rpm/fedora/repodata/repomd.xml": []byte(`<?xml version="1.0"?><repomd xmlns="http://linux.duke.edu/metadata/repo"><data type="primary"><location href="` + href + `"/></data></repomd>`),
+		}}
+		_, err := a.Enumerate(context.Background(), domain.Remote{
+			ID: 1, Name: "fedora", Ecosystem: Name,
+		}, meta)
+		var ue *domain.UnsupportedError
+		if !errors.As(err, &ue) {
+			t.Errorf("%s: ошибка = %v, хочу *UnsupportedError", href, err)
+			continue
+		}
+		if !strings.Contains(err.Error(), href) {
+			t.Errorf("%s: причина не называет формат: %v", href, err)
+		}
 	}
 }
 

@@ -193,6 +193,12 @@ func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port
 	// repomd разобран целиком — его знания о repodata валидны, даже
 	// если primary дальше не качнулся.
 	a.sums.replace(remote.ID, sums)
+	// Честная ошибка для сжатий вне whitelist — до fetch'а: sync
+	// падает с причиной «формат не поддерживается», а не с общим
+	// «parse primary» на бинарном потоке.
+	if err := unsupportedPrimaryErr(href); err != nil {
+		return nil, err
+	}
 	body, err := meta.Fetch(ctx, "/"+URLPrefix+"/"+remote.Name+"/"+href)
 	if err != nil {
 		return nil, fmt.Errorf("rpm-md: primary %s: %w", href, err)
@@ -250,6 +256,28 @@ func (a *Adapter) parseRepomd(ctx context.Context, meta port.MetaFetcher, remote
 		return nil, "", fmt.Errorf("rpm-md: repomd без <data type=\"primary\">")
 	}
 	return sums, primary, nil
+}
+
+// unsupportedPrimaryErr — честная ошибка для сжатий primary.xml,
+// которые Хражевник не распаковывает: .zck (zchunk, Fedora), .zst,
+// .xz, .bz2. Поддержаны несжатый и .gz (unwrapGzIfNeeded). nil —
+// формат нам известен или неизвестен парсеру (пусть скажет своё).
+func unsupportedPrimaryErr(href string) error {
+	unsupported := map[string]string{
+		".zck": "zchunk — декодера нет в whitelist зависимостей",
+		".zst": "zstd — декомпрессия primary не поддерживается",
+		".xz":  "xz — декодера нет в whitelist зависимостей",
+		".bz2": "bzip2 — декомпрессия primary не поддерживается",
+	}
+	for suffix, reason := range unsupported {
+		if strings.HasSuffix(href, suffix) {
+			return &domain.UnsupportedError{
+				What: "enumerate",
+				Why:  fmt.Sprintf("rpm-md: primary %s в неподдерживаемом формате (%s), возьмите .gz-вариант", href, reason),
+			}
+		}
+	}
+	return nil
 }
 
 // unwrapGzIfNeeded оборачивает body в gzip.Reader, если имя файла

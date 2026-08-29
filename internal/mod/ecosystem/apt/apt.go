@@ -289,7 +289,8 @@ func (a *Adapter) releaseComponents(ctx context.Context, meta port.MetaFetcher, 
 // enumeratePackages fetch'ит Packages-файл компонента/арха и достаёт
 // поле Filename каждой записи (и SHA256 — для таблицы чексумм).
 // Пробует несжатый Packages, затем .gz (Debian часто отдаёт только
-// сжатый). Дедуп по seen (перезаписи «all»-пакетов в разных arch-файлах).
+// сжатый), затем честную ошибку для .xz-only upstream'а. Дедуп по
+// seen (перезаписи «all»-пакетов в разных arch-файлах).
 func (a *Adapter) enumeratePackages(ctx context.Context, meta port.MetaFetcher, remoteName, dist, comp, arch string, seen map[string]struct{}, sums map[string]port.Checksum) ([]string, error) {
 	base := "/" + Name + "/" + remoteName + "/dists/" + dist + "/" + comp + "/binary-" + arch + "/Packages"
 	body, err := meta.Fetch(ctx, base)
@@ -298,6 +299,9 @@ func (a *Adapter) enumeratePackages(ctx context.Context, meta port.MetaFetcher, 
 		if errors.As(err, &nf) {
 			body, err = meta.Fetch(ctx, base+".gz")
 			if err != nil {
+				if nfGz := (*domain.NotFoundError)(nil); errors.As(err, &nfGz) {
+					return nil, unsupportedIndexErr(ctx, meta, base, err)
+				}
 				return nil, err
 			}
 			defer body.Close()
@@ -312,6 +316,23 @@ func (a *Adapter) enumeratePackages(ctx context.Context, meta port.MetaFetcher, 
 	}
 	defer body.Close()
 	return scanFilenames(body, seen, sums)
+}
+
+// unsupportedIndexErr — Packages нет ни несжатым, ни в .gz. Debian/
+// Ubuntu публикуют ещё и .xz: если upstream отдаёт только его, sync
+// должен падать с причиной «формат не поддерживается», а не с
+// NotFound, неотличимым от пустого upstream (xz-декодера в whitelist
+// зависимостей нет и не добавляем). Если .xz тоже нет — исходный
+// NotFound: индекс действительно отсутствует.
+func unsupportedIndexErr(ctx context.Context, meta port.MetaFetcher, base string, notFound error) error {
+	if body, err := meta.Fetch(ctx, base+".xz"); err == nil {
+		_ = body.Close()
+		return &domain.UnsupportedError{
+			What: "enumerate",
+			Why:  fmt.Sprintf("apt: индекс %s.xz в неподдерживаемом формате xz — декодера нет в whitelist зависимостей", base),
+		}
+	}
+	return notFound
 }
 
 // scanFilenames читает Packages-поток и собирает уникальные Filename

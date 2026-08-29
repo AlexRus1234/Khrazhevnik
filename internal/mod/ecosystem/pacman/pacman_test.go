@@ -19,6 +19,7 @@ package pacman
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -427,6 +428,23 @@ func TestEnumeratePacmanErrors(t *testing.T) {
 		var nf *domain.NotFoundError
 		if !errors.As(err, &nf) {
 			t.Fatalf("ошибка = %v, хочу *NotFoundError", err)
+		}
+	})
+	t.Run("legacy .db.tar.gz — UnsupportedError", func(t *testing.T) {
+		// upstream публикует только до-zstd-имя {repo}.db.tar.gz: sync
+		// должен падать с честной причиной, а не с NotFound.
+		meta := fakeMeta{files: map[string][]byte{
+			"/pacman/arch/core/os/x86_64/core.db.tar.gz": []byte("gz-stream"),
+		}}
+		_, err := a.Enumerate(context.Background(), domain.Remote{
+			ID: 1, Name: "arch", Ecosystem: Name, Include: []string{"core/x86_64"},
+		}, meta)
+		var ue *domain.UnsupportedError
+		if !errors.As(err, &ue) {
+			t.Fatalf("ошибка = %v, хочу *UnsupportedError", err)
+		}
+		if !strings.Contains(err.Error(), ".db.tar.gz") {
+			t.Errorf("причина не называет legacy-формат: %v", err)
 		}
 	})
 	t.Run("nil MetaFetcher — ошибка", func(t *testing.T) {

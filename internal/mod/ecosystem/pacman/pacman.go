@@ -27,6 +27,7 @@ package pacman
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -236,6 +237,10 @@ func (a *Adapter) enumerateRepo(ctx context.Context, meta port.MetaFetcher, remo
 	dbPath := "/" + Name + "/" + remoteName + "/" + repoDir + "/" + r.repo + ".db"
 	body, err := meta.Fetch(ctx, dbPath)
 	if err != nil {
+		var nf *domain.NotFoundError
+		if errors.As(err, &nf) {
+			return nil, unsupportedDBErr(ctx, meta, dbPath, err)
+		}
 		return nil, err
 	}
 	defer body.Close()
@@ -251,6 +256,23 @@ func (a *Adapter) enumerateRepo(ctx context.Context, meta port.MetaFetcher, remo
 		paths = append(paths, "/"+repoDir+"/"+fn)
 	}
 	return paths, nil
+}
+
+// unsupportedDBErr — {repo}.db не найден. Пробуем legacy-имя
+// {repo}.db.tar.gz (до zstd-эпохи Arch): если upstream публикует
+// только его, sync должен падать с причиной «gzip не поддерживается»,
+// а не с NotFound, неотличимым от пустого upstream (парсер .db
+// читает только zstd — gz-декомпрессии нет). Иначе — исходный
+// NotFound: индекс действительно отсутствует.
+func unsupportedDBErr(ctx context.Context, meta port.MetaFetcher, dbPath string, notFound error) error {
+	if body, err := meta.Fetch(ctx, dbPath+".tar.gz"); err == nil {
+		_ = body.Close()
+		return &domain.UnsupportedError{
+			What: "enumerate",
+			Why:  fmt.Sprintf("pacman: индекс %s.tar.gz в формате gzip — парсер читает только zstd (.db)", dbPath),
+		}
+	}
+	return notFound
 }
 
 // lookupRemote возвращает Remote по имени из кеша; при истечении TTL

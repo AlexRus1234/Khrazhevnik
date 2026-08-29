@@ -496,6 +496,41 @@ func TestEnumerateAptGzFallback(t *testing.T) {
 	}
 }
 
+func TestEnumerateAptXzOnly(t *testing.T) {
+	// upstream публикует только Packages.xz: Enumerate обязана отдать
+	// UnsupportedError с причиной «xz», а не NotFound, неотличимый от
+	// пустого upstream (аудит-хвост сессии 26).
+	a := newEnumerateAdapter(t)
+	meta := fakeMeta{files: map[string][]byte{
+		"/apt/debian/dists/stable/Release":                       mustReadTestdata(t, "Release.golden"),
+		"/apt/debian/dists/stable/main/binary-amd64/Packages.xz": []byte("xz-stream"),
+		"/apt/debian/dists/stable/main/binary-arm64/Packages.xz": []byte("xz-stream"),
+	}}
+	_, err := a.Enumerate(context.Background(), domain.Remote{
+		ID: 1, Name: "debian", Ecosystem: Name, Include: []string{"stable/main"},
+	}, meta)
+	var ue *domain.UnsupportedError
+	if !errors.As(err, &ue) {
+		t.Fatalf("ошибка = %v, хочу *UnsupportedError", err)
+	}
+	if !strings.Contains(err.Error(), "xz") {
+		t.Errorf("причина не называет формат xz: %v", err)
+	}
+
+	// Регрессия: индекса нет вообще ни в одном формате — остаётся
+	// NotFound (не UnsupportedError).
+	meta = fakeMeta{files: map[string][]byte{
+		"/apt/debian/dists/stable/Release": mustReadTestdata(t, "Release.golden"),
+	}}
+	_, err = a.Enumerate(context.Background(), domain.Remote{
+		ID: 1, Name: "debian", Ecosystem: Name, Include: []string{"stable/main"},
+	}, meta)
+	var nf *domain.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("без индексов вообще ошибка = %v, хочу *NotFoundError", err)
+	}
+}
+
 func TestEnumerateAptErrors(t *testing.T) {
 	a := newEnumerateAdapter(t)
 	t.Run("пустой Include — ValidationError", func(t *testing.T) {
