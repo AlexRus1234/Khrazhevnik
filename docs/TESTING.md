@@ -28,6 +28,28 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 | mod/storage, mod/db     | ≥85%          | контрактные suite на всех драйверах |
 | core/web                | 60–80%        | httptest API-тесты               |
 
+## Подсчёт покрытия (merged-профиль)
+
+Цифра покрытия в CI (шаг Coverage report build.yml) считается по
+**объединённому профилю unit + integration**, а не только по unit:
+вклад integration-suite (реальные слушатели, fs/s3-хранилища,
+sqlite/postgres/mariadb) в покрытие движков и модулей существенен.
+Unit-only цифра (~67% на момент внедрения) была занижена и вводила в
+заблуждение; фактическая merged-цифра фиксируется прогоном CI — за
+конкретным числом не гоняемся, цели — таблица выше.
+
+- unit: `go test ./... -covermode=atomic -coverprofile …`
+- integration: `go test -tags integration -covermode=atomic
+  -coverpkg=./... -coverprofile … ./test/integration/...` (контрактные
+  suite pg/mariadb/s3 требуют сервисных env `KHRZ_TEST_*`, как в шаге
+  Go tests; локально скипаются)
+- merge — конкатенация без gocovmerge: шапка `mode: atomic` один раз,
+  тела обоих профилей с дедупликацией одинаковых строк (`sort -u`);
+  одинаковые блоки с разными счётчиками `go tool cover` суммирует.
+
+Локально — `make test-integration-cover` (integration-профиль
+отдельно); полный merged — только в CI.
+
 ## Уровни
 
 1. **Unit** — рядом с кодом (`*_test.go`), stdlib testing, фейки пишутся

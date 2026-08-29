@@ -7,6 +7,7 @@ NPM ?= npm
 PKG := ./...
 BIN := bin/khrazhevnik
 COVER_OUT := coverage/coverage.out
+COVER_INT_OUT := coverage/coverage-integration.out
 WEB_ASSETS := internal/core/web/assets
 
 # Образ: реестр/репо и тег по умолчанию. CI передаёт TAG=версия.
@@ -53,6 +54,16 @@ test-race: web-stub
 .PHONY: test-integration
 test-integration: web-stub
 	"$(GO)" test -race -tags integration ./test/integration/...
+
+# test-integration-cover — интеграционный профиль с инструментированием
+# ВСЕХ пакетов (-coverpkg=./...): вклад integration-suite в покрытие.
+# Объединение с unit-профилем — шаг Coverage report в CI (конкатенация
+# с дедупликацией строк, см. docs/TESTING.md §Подсчёт покрытия).
+.PHONY: test-integration-cover
+test-integration-cover: web-stub
+	@mkdir -p coverage
+	"$(GO)" test -race -tags integration -covermode=atomic -coverpkg=./... -coverprofile="$(COVER_INT_OUT)" ./test/integration/...
+	"$(GO)" tool cover -func="$(COVER_INT_OUT)" | tail -n 1
 
 .PHONY: cover
 cover: web-stub
