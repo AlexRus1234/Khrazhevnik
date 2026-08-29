@@ -554,3 +554,71 @@ func TestGenerateIndexesListingErrorKeepsOldIndexes(t *testing.T) {
 		t.Fatal("ошибка листинга перезаписала валидный APKINDEX (не fail-closed)")
 	}
 }
+
+// TestGenerateIndexesDependencies — зависимостям из .PKGINFO место в
+// APKINDEX (D:/p:/i:, space-joined): без них `apk add` не резолвит
+// зависимости из личного репо.
+func TestGenerateIndexesDependencies(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	pkginfo := "pkgname = foo\npkgver = 1.0-r0\narch = x86_64\n" +
+		"depend = so:libc.musl-x86_64.so.1\n" +
+		"depend = musl\n" +
+		"provides = cmd:foo=1.0-r0\n" +
+		"install_if = foo-doc musl\n"
+	putApk(t, storage, repo, "x86_64/foo-1.0-r0.apk", pkginfo)
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+
+	idxGz := readStorage(t, storage, "repo/1/apk/apkindex.tar.gz")
+	gz, err := gzip.NewReader(bytes.NewReader(idxGz))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	text, err := extractAPKINDEXText(gz)
+	if err != nil {
+		t.Fatalf("extractAPKINDEXText: %v", err)
+	}
+	for _, want := range []string{
+		"D:so:libc.musl-x86_64.so.1 musl\n",
+		"p:cmd:foo=1.0-r0\n",
+		"i:foo-doc musl\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("APKINDEX не содержит %q:\n%s", want, text)
+		}
+	}
+}
+
+// TestGenerateIndexesNoDependenciesOmitsLines — без depend/provides/
+// install_if в .PKGINFO строки D:/p:/i: не эмитятся (пустые D: ломают
+// строгие парсеры клиентов).
+func TestGenerateIndexesNoDependenciesOmitsLines(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	putApk(t, storage, repo, "x86_64/foo-1.0-r0.apk", "pkgname = foo\npkgver = 1.0-r0\narch = x86_64\n")
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	idxGz := readStorage(t, storage, "repo/1/apk/apkindex.tar.gz")
+	gz, err := gzip.NewReader(bytes.NewReader(idxGz))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	text, err := extractAPKINDEXText(gz)
+	if err != nil {
+		t.Fatalf("extractAPKINDEXText: %v", err)
+	}
+	for _, banned := range []string{"D:", "p:", "i:"} {
+		if strings.Contains(text, banned+"\n") || strings.Contains(text, "\n"+banned) {
+			t.Errorf("APKINDEX содержит %q без зависимостей в пакете:\n%s", banned, text)
+		}
+	}
+}

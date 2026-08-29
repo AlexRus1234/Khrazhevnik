@@ -34,6 +34,7 @@ package rpmmmd
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -42,26 +43,34 @@ import (
 
 // RPM-теги (подмножество, нужное primary.xml). Константы — canonical
 // номера тегов rpm.org; Unknown-теги игнорируются (forward-compat).
+// RequireName/ProvideName — имена зависимостей (без версий-диапазонов:
+// те живут в отдельных тегах RequireVersion/Flags, которые dnf
+// резолвит опционально — entry с одним name клиенты принимают).
 const (
-	tagName        = 1000
-	tagVersion     = 1001
-	tagRelease     = 1002
-	tagEpoch       = 1003
-	tagSummary     = 1004
-	tagDescription = 1005
-	tagBuildTime   = 1006
-	tagSize        = 1009
-	tagLicense     = 1014
-	tagURL         = 1016
-	tagArch        = 1022
+	tagName         = 1000
+	tagVersion      = 1001
+	tagRelease      = 1002
+	tagEpoch        = 1003
+	tagSummary      = 1004
+	tagDescription  = 1005
+	tagBuildTime    = 1006
+	tagSize         = 1009
+	tagLicense      = 1014
+	tagURL          = 1016
+	tagArch         = 1022
+	tagSourceRPM    = 1044
+	tagProvideName  = 1047
+	tagRequireName  = 1049
+	tagConflictName = 1054
 )
 
-// Типы данных индексных записей. Парсер достаёт только string/int32;
-// int64/char/bin/массивы игнорируются (forward-compat: createrepo_c
-// иногда кладёт массивы — нас интересует первое значение).
+// Типы данных индексных записей. Парсер достаёт string/int32/
+// string-array; int64/char/bin игнорируются (forward-compat:
+// createrepo_c иногда кладёт массивы — нас интересует первое значение).
 const (
-	typeString = 6
-	typeInt32  = 4
+	typeString      = 6
+	typeInt32       = 4
+	typeStringArray = 8
 )
 
 // Потолки защиты от adversarial-ввода (фаззинг). Реальный main header
@@ -80,7 +89,9 @@ var ErrInvalidRPM = errors.New("rpm-md: некорректный RPM")
 // RPMHeader — поля из main header, нужные primary.xml. Epoch 0 = нет
 // эпохи (в primary.xml выводится epoch="0", как createrepo_c). Size —
 // установленный размер (RPMTAG_SIZE), не размер файла: размер файла
-// берётся из Storage.Meta (package-атрибут <size>).
+// берётся из Storage.Meta (package-атрибут <size>). Requires/Provides —
+// имена зависимостей (rpm:requires/rpm:provides, entry без
+// flags/ver/rel); SourceRPM — имя исходного SRPM (rpm:sourcerpm).
 type RPMHeader struct {
 	Name        string
 	Version     string
@@ -93,6 +104,9 @@ type RPMHeader struct {
 	URL         string
 	Size        int64
 	BuildTime   int64
+	SourceRPM   string
+	Requires    []string
+	Provides    []string
 }
 
 // leadMagic — 4 байта 0xED 0xAB 0xEE 0xDB в начале .rpm.
@@ -197,6 +211,7 @@ func extractHeader(index, data []byte) (*RPMHeader, error) {
 		tag := binary.BigEndian.Uint32(index[i:])
 		typ := binary.BigEndian.Uint32(index[i+4:])
 		off := binary.BigEndian.Uint32(index[i+8:])
+		count := binary.BigEndian.Uint32(index[i+12:])
 		switch tag {
 		case tagName:
 			h.Name = readHeaderString(data, off)
@@ -214,12 +229,18 @@ func extractHeader(index, data []byte) (*RPMHeader, error) {
 			h.License = readHeaderString(data, off)
 		case tagURL:
 			h.URL = readHeaderString(data, off)
+		case tagSourceRPM:
+			h.SourceRPM = readHeaderString(data, off)
 		case tagEpoch:
 			h.Epoch = readHeaderInt32(data, off, typ)
 		case tagSize:
 			h.Size = readHeaderInt32(data, off, typ)
 		case tagBuildTime:
 			h.BuildTime = readHeaderInt32(data, off, typ)
+		case tagRequireName:
+			h.Requires = readHeaderStringArray(data, off, count, typ)
+		case tagProvideName:
+			h.Provides = readHeaderStringArray(data, off, count, typ)
 		}
 	}
 	if h.Name == "" || h.Version == "" || h.Release == "" || h.Arch == "" {
@@ -257,6 +278,30 @@ func readHeaderInt32(data []byte, off, typ uint32) int64 {
 		return 0
 	}
 	return int64(binary.BigEndian.Uint32(data[off:end]))
+}
+
+// readHeaderStringArray достаёт count nul-terminated строк подряд из
+// data по offset (STRING_ARRAY, тип 8 — так REQUIRENAME/PROVIDENAME
+// хранятся в реальных .rpm). Чужой тип или выход за границу → nil
+// (tolerant: битый массив не валит парсер); лишний count по сравнению
+// с фактическими строками даёт собранные строки.
+func readHeaderStringArray(data []byte, off, count, typ uint32) []string {
+	if typ != typeStringArray || count == 0 || int(off) >= len(data) {
+		return nil
+	}
+	rest := data[off:]
+	out := make([]string, 0, count)
+	for i := uint32(0); i < count && len(rest) > 0; i++ {
+		s := rest
+		if idx := bytes.IndexByte(rest, 0); idx >= 0 {
+			s = rest[:idx]
+			rest = rest[idx+1:]
+		} else {
+			rest = nil
+		}
+		out = append(out, string(s))
+	}
+	return out
 }
 
 // drain пропускает n байт из br. Отдельная функция — для читаемости и

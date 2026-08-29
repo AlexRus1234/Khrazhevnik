@@ -38,14 +38,16 @@ import (
 	"khrazhevnik/internal/testutil"
 )
 
-// tagSpec — одна пара (tag, string-значение) для сборки main header
-// фикстуры. строки идут в data-секцию nul-terminated; int32 —
-// 4-байтно-выравнены.
+// tagSpec — одна пара (tag, значение) для сборки main header фикстуры.
+// Строки идут в data-секцию nul-terminated; int32 — 4-байтно-выравнены;
+// строковые массивы (strs) — подряд nul-terminated с count=len(strs).
 type tagSpec struct {
 	tag   uint32
 	str   string
 	i32   uint32
 	isInt bool
+	strs  []string
+	isArr bool
 }
 
 // buildHeaderStruct собирает header struct (magic+ver+reserved+nindex+
@@ -56,7 +58,8 @@ func buildHeaderStruct(tags []tagSpec) []byte {
 	var data []byte
 	offsets := make([]int, len(tags))
 	for i, t := range tags {
-		if t.isInt {
+		switch {
+		case t.isInt:
 			for len(data)%4 != 0 {
 				data = append(data, 0)
 			}
@@ -64,7 +67,13 @@ func buildHeaderStruct(tags []tagSpec) []byte {
 			var b [4]byte
 			binary.BigEndian.PutUint32(b[:], t.i32)
 			data = append(data, b[:]...)
-		} else {
+		case t.isArr:
+			offsets[i] = len(data)
+			for _, s := range t.strs {
+				data = append(data, s...)
+				data = append(data, 0)
+			}
+		default:
 			offsets[i] = len(data)
 			data = append(data, t.str...)
 			data = append(data, 0)
@@ -74,13 +83,17 @@ func buildHeaderStruct(tags []tagSpec) []byte {
 	for i, t := range tags {
 		var b [16]byte
 		binary.BigEndian.PutUint32(b[0:], t.tag)
-		if t.isInt {
-			binary.BigEndian.PutUint32(b[4:], typeInt32)
-		} else {
-			binary.BigEndian.PutUint32(b[4:], typeString)
+		typ, count := uint32(typeString), uint32(1)
+		switch {
+		case t.isInt:
+			typ = typeInt32
+		case t.isArr:
+			typ = typeStringArray
+			count = uint32(len(t.strs))
 		}
+		binary.BigEndian.PutUint32(b[4:], typ)
 		binary.BigEndian.PutUint32(b[8:], uint32(offsets[i]))
-		binary.BigEndian.PutUint32(b[12:], 1)
+		binary.BigEndian.PutUint32(b[12:], count)
 		index = append(index, b[:]...)
 	}
 	out := []byte{0x8e, 0xad, 0xe8, 0x01, 0, 0, 0, 0} // magic+ver+reserved
@@ -96,9 +109,10 @@ func buildHeaderStruct(tags []tagSpec) []byte {
 // buildRPM собирает минимальный валидный .rpm: 96-байтный lead + пустой
 // sig header (16 байт, уже 8-выравнен) + main header с тегами name/
 // version/release/epoch/arch/summary/description/license/url/size/
-// buildtime. Без payload — генератор payload не читает, а SHA256
+// buildtime (+ extra — зависимости и прочие теги конкретного теста).
+// Без payload — генератор payload не читает, а SHA256
 // считается по всему потоку (lead+sig+main).
-func buildRPM(name, ver, rel, arch, summary string, size, buildtime int64) []byte {
+func buildRPM(name, ver, rel, arch, summary string, size, buildtime int64, extra ...tagSpec) []byte {
 	var lead [leadSize]byte
 	lead[0] = 0xed
 	lead[1] = 0xab
@@ -110,7 +124,7 @@ func buildRPM(name, ver, rel, arch, summary string, size, buildtime int64) []byt
 	binary.BigEndian.PutUint16(lead[76:], 1) // osnum
 	binary.BigEndian.PutUint16(lead[78:], 5) // sigtype = HEADER
 	sigHeader := buildHeaderStruct(nil)      // пустой sig (16 байт)
-	mainHeader := buildHeaderStruct([]tagSpec{
+	tags := append([]tagSpec{
 		{tag: tagName, str: name},
 		{tag: tagVersion, str: ver},
 		{tag: tagRelease, str: rel},
@@ -122,7 +136,8 @@ func buildRPM(name, ver, rel, arch, summary string, size, buildtime int64) []byt
 		{tag: tagEpoch, i32: 0, isInt: true},
 		{tag: tagSize, i32: uint32(size), isInt: true},
 		{tag: tagBuildTime, i32: uint32(buildtime), isInt: true},
-	})
+	}, extra...)
+	mainHeader := buildHeaderStruct(tags)
 	out := make([]byte, 0, len(lead)+len(sigHeader)+len(mainHeader))
 	out = append(out, lead[:]...)
 	out = append(out, sigHeader...)
@@ -716,4 +731,118 @@ func TestBuildRPMNonEmpty(t *testing.T) {
 		t.Fatal("sha256(buildRPM) нулевой — фикстура пуста")
 	}
 	_ = hex.EncodeToString
+}
+
+// TestParseRPMHeaderDependencies — парсер достаёт sourcerpm (string) и
+// requires/provides (STRING_ARRAY): без них primary.xml не сможет
+// передать dnf зависимости личного репо.
+func TestParseRPMHeaderDependencies(t *testing.T) {
+	rpm := buildRPM("foo", "1.0", "1", "x86_64", "test", 4096, 1724323200,
+		tagSpec{tag: tagSourceRPM, str: "foo-1.0-1.src.rpm"},
+		tagSpec{tag: tagRequireName, strs: []string{"libc.so.6", "libz.so.1"}, isArr: true},
+		tagSpec{tag: tagProvideName, strs: []string{"foo = 1.0-1", "foo(x86-64)"}, isArr: true},
+	)
+	hdr, err := ParseRPMHeader(bytes.NewReader(rpm))
+	if err != nil {
+		t.Fatalf("ParseRPMHeader: %v", err)
+	}
+	if hdr.SourceRPM != "foo-1.0-1.src.rpm" {
+		t.Errorf("SourceRPM = %q", hdr.SourceRPM)
+	}
+	wantReq := []string{"libc.so.6", "libz.so.1"}
+	if !slices.Equal(hdr.Requires, wantReq) {
+		t.Errorf("Requires = %v, хочу %v", hdr.Requires, wantReq)
+	}
+	wantProv := []string{"foo = 1.0-1", "foo(x86-64)"}
+	if !slices.Equal(hdr.Provides, wantProv) {
+		t.Errorf("Provides = %v, хочу %v", hdr.Provides, wantProv)
+	}
+}
+
+// TestParseRPMHeaderBadArrayTolerant — чужой тип или нулевой count у
+// тега-массива → nil (tolerant), парсер не валится.
+func TestParseRPMHeaderBadArrayTolerant(t *testing.T) {
+	rpm := buildRPM("foo", "1.0", "1", "x86_64", "test", 4096, 1724323200,
+		tagSpec{tag: tagRequireName, str: "not-an-array"}, // тип string, не массив
+		tagSpec{tag: tagProvideName, strs: []string{}, isArr: true},
+	)
+	hdr, err := ParseRPMHeader(bytes.NewReader(rpm))
+	if err != nil {
+		t.Fatalf("ParseRPMHeader: %v", err)
+	}
+	if hdr.Requires != nil {
+		t.Errorf("Requires = %v, хочу nil (чужой тип)", hdr.Requires)
+	}
+	if hdr.Provides != nil {
+		t.Errorf("Provides = %v, хочу nil (count=0)", hdr.Provides)
+	}
+}
+
+// TestGenerateIndexesDependencies — primary.xml несёт rpm:sourcerpm и
+// rpm:requires/rpm:provides (entry с name): `dnf install` резолвит
+// зависимости из личного репо.
+func TestGenerateIndexesDependencies(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	rpm := buildRPM("foo", "1.0", "1", "x86_64", "test package", 4096, 1724323200,
+		tagSpec{tag: tagSourceRPM, str: "foo-1.0-1.src.rpm"},
+		tagSpec{tag: tagRequireName, strs: []string{"libc.so.6(GLIBC_2.4)", "libz.so.1"}, isArr: true},
+		tagSpec{tag: tagProvideName, strs: []string{"foo = 1.0-1"}, isArr: true},
+	)
+	putRpm(t, storage, repo, "packages/f/foo-1.0-1.x86_64.rpm", rpm)
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+
+	priGz := readStorage(t, storage, "repo/1/rpm-md/repodata/primary.xml.gz")
+	gz, err := gzip.NewReader(bytes.NewReader(priGz))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	primary, _ := io.ReadAll(gz)
+	pStr := string(primary)
+	for _, want := range []string{
+		"<rpm:sourcerpm>foo-1.0-1.src.rpm</rpm:sourcerpm>",
+		"<rpm:requires>",
+		`<rpm:entry name="libc.so.6(GLIBC_2.4)"/>`,
+		`<rpm:entry name="libz.so.1"/>`,
+		"</rpm:requires>",
+		"<rpm:provides>",
+		`<rpm:entry name="foo = 1.0-1"/>`,
+		"</rpm:provides>",
+	} {
+		if !strings.Contains(pStr, want) {
+			t.Errorf("primary.xml не содержит %q:\n%s", want, pStr)
+		}
+	}
+}
+
+// TestGenerateIndexesNoDependenciesOmitsBlocks — без тегов зависимостей
+// блоки rpm:requires/rpm:provides/rpm:sourcerpm не эмитятся (не пустышки).
+func TestGenerateIndexesNoDependenciesOmitsBlocks(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	putRpm(t, storage, repo, "packages/f/foo-1.0-1.x86_64.rpm",
+		buildRPM("foo", "1.0", "1", "x86_64", "test package", 4096, 1724323200))
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	priGz := readStorage(t, storage, "repo/1/rpm-md/repodata/primary.xml.gz")
+	gz, err := gzip.NewReader(bytes.NewReader(priGz))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	primary, _ := io.ReadAll(gz)
+	pStr := string(primary)
+	for _, banned := range []string{"<rpm:sourcerpm>", "<rpm:requires>", "<rpm:provides>"} {
+		if strings.Contains(pStr, banned) {
+			t.Errorf("primary.xml содержит %q без зависимостей в пакете:\n%s", banned, pStr)
+		}
+	}
 }

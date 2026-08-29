@@ -206,6 +206,9 @@ func (c *countReader) Read(p []byte) (int, error) {
 // разделитель записей — пустая строка. Поля — подмножество, нужное apk
 // update и roundtrip-парсеру ParseAPKINDEX (F:/P:/V:). C — sha1-чекcумма
 // .apk (Q1 = sha1, apk v2 convention); S — размер файла; I — установлен.
+// D:/p:/i: — зависимости (depends/provides/install_if, space-joined,
+// как их пишет apk-tools): без них `apk add` не может резолвить
+// зависимости пакета из личного репо.
 func writeAPKINDEXEntry(buf *bytes.Buffer, pi *PkgInfo, checksum, filepath string, csize int64) {
 	fmt.Fprintf(buf, "C:%s\n", checksum)
 	fmt.Fprintf(buf, "P:%s\n", pi.Name)
@@ -234,6 +237,15 @@ func writeAPKINDEXEntry(buf *bytes.Buffer, pi *PkgInfo, checksum, filepath strin
 	}
 	if pi.BuildDate != 0 {
 		fmt.Fprintf(buf, "t:%d\n", pi.BuildDate)
+	}
+	if len(pi.Depends) > 0 {
+		fmt.Fprintf(buf, "D:%s\n", strings.Join(pi.Depends, " "))
+	}
+	if len(pi.Provides) > 0 {
+		fmt.Fprintf(buf, "p:%s\n", strings.Join(pi.Provides, " "))
+	}
+	if len(pi.InstallIf) > 0 {
+		fmt.Fprintf(buf, "i:%s\n", strings.Join(pi.InstallIf, " "))
 	}
 	fmt.Fprintf(buf, "F:%s\n", filepath)
 	buf.WriteByte('\n') // разделитель записей

@@ -603,3 +603,91 @@ func TestGenerateIndexesListingErrorKeepsOldIndexes(t *testing.T) {
 		t.Fatal("ошибка листинга перезаписала валидный .db (не fail-closed)")
 	}
 }
+
+// TestGenerateIndexesDependencies — зависимости из .PKGINFO попадают в
+// desc-запись .db (%DEPENDS%/%PROVIDES%/%CONFLICTS%, по значению на
+// строку, как repo-add): без них `pacman -S` не резолвит зависимости
+// из личного репо.
+func TestGenerateIndexesDependencies(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	pkginfo := "pkgname = foo\npkgver = 1.0-1\narch = x86_64\n" +
+		"depend = glibc\n" +
+		"depend = libfoo>=2.0\n" +
+		"provides = foo=1.0-1\n" +
+		"conflict = foo-git\n"
+	putPkg(t, storage, repo, "foo-1.0-1-x86_64.pkg.tar.zst", pkginfo)
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+
+	// Распаковываем .db (zstd → tar) и читаем desc.
+	dbBytes := readStorage(t, storage, "repo/1/pacman/alice.db")
+	desc, err := extractDescFromDB(dbBytes, "foo-1.0-1-x86_64")
+	if err != nil {
+		t.Fatalf("extractDescFromDB: %v", err)
+	}
+	for _, want := range []string{
+		"%DEPENDS%\nglibc\nlibfoo>=2.0\n\n",
+		"%PROVIDES%\nfoo=1.0-1\n\n",
+		"%CONFLICTS%\nfoo-git\n\n",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("desc не содержит %q:\n%s", want, desc)
+		}
+	}
+}
+
+// TestGenerateIndexesNoDependenciesOmitsFields — без depend/provides/
+// conflict поля %DEPENDS%/%PROVIDES%/%CONFLICTS% не эмитятся.
+func TestGenerateIndexesNoDependenciesOmitsFields(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	putPkg(t, storage, repo, "foo-1.0-1-x86_64.pkg.tar.zst", pkginfoText)
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	dbBytes := readStorage(t, storage, "repo/1/pacman/alice.db")
+	desc, err := extractDescFromDB(dbBytes, "pacman-example-1.0-1-x86_64")
+	if err != nil {
+		t.Fatalf("extractDescFromDB: %v", err)
+	}
+	for _, banned := range []string{"%DEPENDS%", "%PROVIDES%", "%CONFLICTS%"} {
+		if strings.Contains(desc, banned) {
+			t.Errorf("desc содержит %q без зависимостей в пакете:\n%s", banned, desc)
+		}
+	}
+}
+
+// extractDescFromDB распаковывает .db (zstd+tar) и возвращает текст
+// desc-файла каталога dir.
+func extractDescFromDB(dbBytes []byte, dir string) (string, error) {
+	zr, err := zstd.NewReader(bytes.NewReader(dbBytes))
+	if err != nil {
+		return "", err
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return "", fmt.Errorf("каталог %s не найден в .db", dir)
+		}
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimPrefix(hdr.Name, "./") == dir+"/desc" {
+			b, err := io.ReadAll(tr)
+			if err != nil {
+				return "", err
+			}
+			return string(b), nil
+		}
+	}
+}

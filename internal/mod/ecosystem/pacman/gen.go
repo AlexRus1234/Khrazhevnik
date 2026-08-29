@@ -236,8 +236,11 @@ func (c *countReader) Read(p []byte) (int, error) {
 }
 
 // buildDescText собирает текст desc-файла в pacman-формате: поля
-// %FIELD%\nvalue\n\n (как repo-add). Поля — подмножество, нужное pacman
-// -Sy и roundtrip-парсеру ParseDB (%FILENAME%/%NAME%/%VERSION%).
+// %FIELD%\nvalue\n\n (как repo-add), многозначные — по одному значению
+// на строку. Поля — подмножество, нужное pacman -Sy и roundtrip-парсеру
+// ParseDB (%FILENAME%/%NAME%/%VERSION%). %DEPENDS%/%PROVIDES%/
+// %CONFLICTS% — из .PKGINFO: без них `pacman -S` не может резолвить
+// зависимости пакета из личного репо.
 func buildDescText(pi *PkgInfo, filename string, csize int64, sha string) string {
 	var b strings.Builder
 	writeDescField(&b, "FILENAME", filename)
@@ -266,6 +269,15 @@ func buildDescText(pi *PkgInfo, filename string, csize int64, sha string) string
 		writeDescField(&b, "ISIZE", fmt.Sprintf("%d", pi.Size))
 	}
 	writeDescField(&b, "SHA256SUM", sha)
+	if len(pi.Conflicts) > 0 {
+		writeDescField(&b, "CONFLICTS", strings.Join(pi.Conflicts, "\n"))
+	}
+	if len(pi.Provides) > 0 {
+		writeDescField(&b, "PROVIDES", strings.Join(pi.Provides, "\n"))
+	}
+	if len(pi.Depends) > 0 {
+		writeDescField(&b, "DEPENDS", strings.Join(pi.Depends, "\n"))
+	}
 	return b.String()
 }
 

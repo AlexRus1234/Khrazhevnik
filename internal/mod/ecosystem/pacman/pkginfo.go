@@ -46,10 +46,11 @@ const maxPkgInfoSize = 64 << 10
 var ErrPkgInfoTooLarge = errors.New("pacman: .PKGINFO превышает лимит 64KiB")
 
 // PkgInfo — разобранный .PKGINFO. Поля, нужные desc-генератору; прочие
-// (depend, makedepend, optdepend, checkdepend, backup, ...) игнорируются
+// (makedepend, optdepend, checkdepend, backup, ...) игнорируются
 // (forward-compat: makepkg добавляет поля — парсер не должен ломаться).
-// Первое значение поля выигрывает (дубли игнорируются), кроме License,
-// которая может быть многозначной (собираем все).
+// Первое значение поля выигрывает (дубли игнорируются), кроме
+// многозначных License/Depends/Provides/Conflicts (depend/provides/
+// conflict идут строками «key = value», по одной зависимости).
 type PkgInfo struct {
 	Name      string
 	Version   string
@@ -60,6 +61,9 @@ type PkgInfo struct {
 	BuildDate int64
 	Size      int64
 	License   []string
+	Depends   []string
+	Provides  []string
+	Conflicts []string
 }
 
 // ParsePkgInfo разбирает .PKGINFO из r. Tolerant к CRLF и мусору;
@@ -100,8 +104,9 @@ func parsePkgInfoBytes(data []byte) (*PkgInfo, error) {
 }
 
 // applyPkgInfoField разбирает одно поле в PkgInfo. Первое значение
-// выигрывает (дубли игнорируются), кроме License (многозначная —
-// собираем все вхождения). Неизвестные ключи игнорируются (forward-compat).
+// выигрывает (дубли игнорируются), кроме многозначных License/Depends/
+// Provides/Conflicts (собираем все вхождения). Неизвестные ключи
+// игнорируются (forward-compat).
 func applyPkgInfoField(pi *PkgInfo, key, val string) {
 	switch key {
 	case "pkgname":
@@ -120,11 +125,26 @@ func applyPkgInfoField(pi *PkgInfo, key, val string) {
 		setOnceInt(&pi.BuildDate, val)
 	case "size":
 		setOnceInt(&pi.Size, val)
-	case "license":
-		// license может повторяться (multi-license) — собираем все.
+	case "license", "depend", "provides", "conflict":
+		// многозначные поля — по одному значению на строку.
 		if val != "" {
-			pi.License = append(pi.License, val)
+			appendMulti(pi, key, val)
 		}
+	}
+}
+
+// appendMulti дописывает значение в многозначное поле (первое вхождение
+// переключателя уже нормализовало key).
+func appendMulti(pi *PkgInfo, key, val string) {
+	switch key {
+	case "license":
+		pi.License = append(pi.License, val)
+	case "depend":
+		pi.Depends = append(pi.Depends, val)
+	case "provides":
+		pi.Provides = append(pi.Provides, val)
+	case "conflict":
+		pi.Conflicts = append(pi.Conflicts, val)
 	}
 }
 

@@ -49,9 +49,10 @@ var ErrPkgInfoTooLarge = errors.New("apk: .PKGINFO превышает лимит
 var ErrBadApk = errors.New("apk: некорректный .apk")
 
 // PkgInfo — разобранный .PKGINFO. Поля, нужные APKINDEX-генератору;
-// прочие (depend, provides, install_if, ...) игнорируются (forward-compat).
-// Первое значение выигрывает (дубли игнорируются), кроме License
-// (многозначная — собираем все, как у pacman).
+// неизвестные ключи игнорируются (forward-compat). Первое значение
+// выигрывает (дубли игнорируются), кроме многозначных License/Depends/
+// Provides/InstallIf — собираем все вхождения (depend/provides/
+// install_if идут строками «key = value», по одной зависимости).
 type PkgInfo struct {
 	Name       string
 	Version    string
@@ -63,6 +64,9 @@ type PkgInfo struct {
 	BuildDate  int64
 	Size       int64
 	License    []string
+	Depends    []string
+	Provides   []string
+	InstallIf  []string
 }
 
 // ParsePkgInfo разбирает .PKGINFO из r. Tolerant к CRLF/мусору; потолок
@@ -98,7 +102,8 @@ func parsePkgInfoBytes(data []byte) (*PkgInfo, error) {
 }
 
 // applyPkgInfoField разбирает одно поле. Первое значение выигрывает,
-// кроме License (многозначная). Неизвестные — игнор (forward-compat).
+// кроме многозначных License/Depends/Provides/InstallIf. Неизвестные —
+// игнор (forward-compat).
 func applyPkgInfoField(pi *PkgInfo, key, val string) {
 	switch key {
 	case "pkgname":
@@ -119,10 +124,25 @@ func applyPkgInfoField(pi *PkgInfo, key, val string) {
 		setOnceInt(&pi.BuildDate, val)
 	case "size":
 		setOnceInt(&pi.Size, val)
-	case "license":
+	case "license", "depend", "provides", "install_if":
 		if val != "" {
-			pi.License = append(pi.License, val)
+			appendMulti(pi, key, val)
 		}
+	}
+}
+
+// appendMulti дописывает значение в многозначное поле (первое вхождение
+// переключателя уже нормализовало key).
+func appendMulti(pi *PkgInfo, key, val string) {
+	switch key {
+	case "license":
+		pi.License = append(pi.License, val)
+	case "depend":
+		pi.Depends = append(pi.Depends, val)
+	case "provides":
+		pi.Provides = append(pi.Provides, val)
+	case "install_if":
+		pi.InstallIf = append(pi.InstallIf, val)
 	}
 }
 

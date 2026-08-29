@@ -250,7 +250,11 @@ func (c *countReader) Read(p []byte) (int, error) {
 // набор тегов, которые читают dnf/zypper: name, arch, version(epoch/
 // ver/rel), checksum (sha256 файла), summary, description, url, time
 // (file mtime + buildtime), size (package=size файла, installed=SIZE),
-// location href, rpm:license. Текст — xmlEscape, атрибуты — escapeAttr.
+// location href, rpm:license; зависимости — rpm:sourcerpm, rpm:requires,
+// rpm:provides (entry с name; flags/ver/rel из отдельных тегов RPM
+// не читаем — dnf резолвит и без них, а без зависимостей вовсе
+// `dnf install` не может резолвить из личного репо). Текст — xmlEscape,
+// атрибуты — escapeAttr.
 func writePrimaryPackage(buf *bytes.Buffer, h *RPMHeader, sha, href string, pkgSize int64, mtime time.Time) {
 	buf.WriteString("\t<package type=\"rpm\">\n")
 	fmt.Fprintf(buf, "\t\t<name>%s</name>\n", xmlEscape(h.Name))
@@ -268,6 +272,23 @@ func writePrimaryPackage(buf *bytes.Buffer, h *RPMHeader, sha, href string, pkgS
 	buf.WriteString("\t\t<format>\n")
 	if h.License != "" {
 		fmt.Fprintf(buf, "\t\t\t<rpm:license>%s</rpm:license>\n", xmlEscape(h.License))
+	}
+	if h.SourceRPM != "" {
+		fmt.Fprintf(buf, "\t\t\t<rpm:sourcerpm>%s</rpm:sourcerpm>\n", xmlEscape(h.SourceRPM))
+	}
+	if len(h.Requires) > 0 {
+		buf.WriteString("\t\t\t<rpm:requires>\n")
+		for _, dep := range h.Requires {
+			fmt.Fprintf(buf, "\t\t\t\t<rpm:entry name=\"%s\"/>\n", escapeAttr(dep))
+		}
+		buf.WriteString("\t\t\t</rpm:requires>\n")
+	}
+	if len(h.Provides) > 0 {
+		buf.WriteString("\t\t\t<rpm:provides>\n")
+		for _, prov := range h.Provides {
+			fmt.Fprintf(buf, "\t\t\t\t<rpm:entry name=\"%s\"/>\n", escapeAttr(prov))
+		}
+		buf.WriteString("\t\t\t</rpm:provides>\n")
 	}
 	buf.WriteString("\t\t</format>\n")
 	buf.WriteString("\t</package>\n")
