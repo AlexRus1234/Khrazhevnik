@@ -20,7 +20,7 @@ import (
 func handlerAuth(t *testing.T) (*auth.Service, *testutil.FakeUserStore) {
 	t.Helper()
 	users := testutil.NewFakeUserStore()
-	a, err := auth.New(auth.Config{Users: users, Tokens: &handlerTokens{}, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("33333333-3333-4333-8333-333333333333"), JWTSecret: "secret", SessionTTL: time.Hour})
+	a, err := auth.New(auth.Config{Users: users, Tokens: &handlerTokens{}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("33333333-3333-4333-8333-333333333333"), JWTSecret: "secret", SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func usersByID(t *testing.T, a *auth.Service, id int64) []domain.User {
 // (аудит 2026-08-27).
 func TestLoginCatalogFailureNotUnauthorized(t *testing.T) {
 	users := &failingUserStore{FakeUserStore: testutil.NewFakeUserStore(), err: errors.New("db down")}
-	a, err := auth.New(auth.Config{Users: users, Tokens: &handlerTokens{}, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("33333333-3333-4333-8333-333333333333"), JWTSecret: "secret", SessionTTL: time.Hour})
+	a, err := auth.New(auth.Config{Users: users, Tokens: &handlerTokens{}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("33333333-3333-4333-8333-333333333333"), JWTSecret: "secret", SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

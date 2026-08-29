@@ -160,7 +160,7 @@ enabled = true
 |-------|----------------------------|-------------|-----|-------------------------------------|
 | POST  | `/api/v1/setup`            | — (пустая БД), `X-Setup-Token`; rate-limit 10/min | 201/403 | Первый админ. Атомарно: `INSERT ... WHERE NOT EXISTS` (EnsureFirstUser) — параллельные вызовы создают ровно одного админа, проигравшие — 403 `setup_already_done` |
 | POST  | `/api/v1/auth/login`       | —           | 200/401 | Выдача JWT; rate-limit 10/min      |
-| POST  | `/api/v1/auth/logout`      | session     | 204 | Отзыв JWT в процессе                |
+| POST  | `/api/v1/auth/logout`      | session     | 204 | Персистентный отзыв JWT (переживает рестарт; сбой каталога — 503) |
 
 ### Управление upstream'ами
 
@@ -422,8 +422,9 @@ khrazhevnik -config khrazhevnik.toml -add-remote apt/debian=https://deb.debian.o
 
 Таблицы (миграция 0001, goose): `users`, `api_tokens`, `repos`,
 `repo_perms`, `remotes`, `sync_jobs`, `audit_log`, `object_index`
-(etag/expires mutable-объектов кеша). `schema_migrations` — служебная
-таблица goose.
+(etag/expires mutable-объектов кеша). Миграция 0005 добавляет
+`revoked_sessions` (персистентный отзыв JWT-сессий, сессия 25).
+`schema_migrations` — служебная таблица goose.
 
 | Таблица        | Назначение                                        |
 |----------------|---------------------------------------------------|
@@ -435,6 +436,7 @@ khrazhevnik -config khrazhevnik.toml -add-remote apt/debian=https://deb.debian.o
 | `sync_jobs`    | sync-задачи зеркал (состояние, resume-данные; курсор кодирует прогресс `files=N;bytes=M`)     |
 | `audit_log`    | аудит мутаций (actor/action/object/result/detail) |
 | `object_index` | etag/expires mutable-объектов кеша; `storage_key` — ключ версионных байт (миграция 0003; пустой — байты под самим `key`, записи до версионирования) |
+| `revoked_sessions` | отзывы JWT (jti, expires_at); logout переживает рестарт; просроченные чистятся при вставке |
 
 Драйверы — плагин через TOML:
 

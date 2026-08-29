@@ -70,13 +70,14 @@ func init() {
 			return registry.CatalogSet{}, err
 		}
 		return registry.CatalogSet{
-			Users:    st,
-			Tokens:   st,
-			Repos:    st,
-			Remotes:  st,
-			Jobs:     st,
-			Audit:    st,
-			ObjIndex: st,
+			Users:       st,
+			Tokens:      st,
+			Repos:       st,
+			Remotes:     st,
+			Jobs:        st,
+			Audit:       st,
+			ObjIndex:    st,
+			Revocations: st,
 		}, nil
 	})
 }
@@ -87,6 +88,7 @@ type Store struct {
 	db               *sql.DB
 	sleep            func(time.Duration)
 	upsertObjectMeta string
+	upsertRevocation string
 }
 
 // Open парсит DSN (mysql.ParseDSN — fail-fast на плохом формате),
@@ -116,6 +118,7 @@ func Open(cfg config.Database) (*Store, error) {
 		db:               db,
 		sleep:            time.Sleep,
 		upsertObjectMeta: objectMetaUpsertSQL(),
+		upsertRevocation: revocationUpsertSQL(),
 	}, nil
 }
 

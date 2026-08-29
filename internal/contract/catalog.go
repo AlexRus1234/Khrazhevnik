@@ -43,14 +43,15 @@ var fixed = time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
 // Catalog — набор срезов порта каталога для контрактного suite.
 // Close — опциональная очистка адаптера (закрытие *sql.DB); nil ок.
 type Catalog struct {
-	Users    port.UserStore
-	Tokens   port.TokenStore
-	Repos    port.RepoStore
-	Remotes  port.RemoteStore
-	Jobs     port.JobStore
-	Audit    port.AuditLog
-	ObjIndex port.ObjectIndex
-	Close    func() error
+	Users       port.UserStore
+	Tokens      port.TokenStore
+	Repos       port.RepoStore
+	Remotes     port.RemoteStore
+	Jobs        port.JobStore
+	Audit       port.AuditLog
+	ObjIndex    port.ObjectIndex
+	Revocations port.SessionRevocationStore
+	Close       func() error
 }
 
 // CatalogSuite гоняет контрактный suite каталога (сессия 04; кейсы
@@ -76,6 +77,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("jobs", func(t *testing.T) { jobSuite(t, newCat(t)) })
 	t.Run("audit", func(t *testing.T) { auditSuite(t, newCat(t)) })
 	t.Run("object_index", func(t *testing.T) { objectIndexSuite(t, newCat(t)) })
+	t.Run("revocations", func(t *testing.T) { revocationsSuite(t, newCat(t)) })
 	t.Run("noop_update", func(t *testing.T) { noopUpdateSuite(t, newCat(t)) })
 	t.Run("concurrent_upsert", func(t *testing.T) { concurrentUpsertSuite(t, newCat(t)) })
 	t.Run("keyset_pagination_100", func(t *testing.T) { keysetPaginationSuite(t, newCat(t)) })
@@ -510,6 +512,40 @@ func objectIndexSuite(t *testing.T, c Catalog) {
 	}
 	if _, err := c.ObjIndex.ObjectMeta(ctx, boundary.Key); err != nil {
 		t.Fatalf("ObjectMeta(ключ 767 байт): %v", err)
+	}
+}
+
+// revocationsSuite — персистентный отзыв JWT-сессий (сессия 25):
+// вставка → проверка; после истечения срока отзыв не активен;
+// повторная вставка того же jti идемпотентна. Кейс «рестарта»
+// (новый адаптер на той же БД видит отзыв) — в integration.
+func revocationsSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	now := fixed
+	if err := c.Revocations.InsertRevocation(ctx, "jti-1", now, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	yes, err := c.Revocations.IsRevoked(ctx, "jti-1", now)
+	if err != nil || !yes {
+		t.Fatalf("IsRevoked(jti-1) = %v, %v; хочу true", yes, err)
+	}
+	if yes, err := c.Revocations.IsRevoked(ctx, "jti-2", now); err != nil || yes {
+		t.Fatalf("IsRevoked(чужой) = %v, %v; хочу false", yes, err)
+	}
+	// Граница срока: ровно до expiresAt отзыв активен, после — нет.
+	yes, err = c.Revocations.IsRevoked(ctx, "jti-1", now.Add(time.Hour))
+	if err != nil || !yes {
+		t.Fatalf("IsRevoked(в срок) = %v, %v; хочу true", yes, err)
+	}
+	if yes, err := c.Revocations.IsRevoked(ctx, "jti-1", now.Add(time.Hour+time.Second)); err != nil || yes {
+		t.Fatalf("IsRevoked(после срока) = %v, %v; хочу false", yes, err)
+	}
+	// Повторная вставка — обновление срока, не ошибка.
+	if err := c.Revocations.InsertRevocation(ctx, "jti-1", now, now.Add(2*time.Hour)); err != nil {
+		t.Fatalf("повторная вставка отзыва: %v", err)
+	}
+	if yes, err := c.Revocations.IsRevoked(ctx, "jti-1", now.Add(time.Hour+time.Second)); err != nil || !yes {
+		t.Fatalf("обновлённый срок отзыва: %v, %v; хочу true", yes, err)
 	}
 }
 

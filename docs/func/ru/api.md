@@ -50,7 +50,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 |-------|---------------------|------|-----------|----------------------------------|
 | POST  | `/api/v1/setup`     | пустая таблица users (атомарно), опц. заголовок `X-Setup-Token`; rate-limit 10/min | 201/403 | Создать первого админа `{username,password}` |
 | POST  | `/api/v1/auth/login`| —    | 200/401   | `{username,password}` → `{token,expires_at}`; rate-limit 10/min |
-| POST  | `/api/v1/auth/logout`| session | 204    | Отзыв JWT в процессе            |
+| POST  | `/api/v1/auth/logout`| session | 204    | Персистентный отзыв JWT (переживает рестарт; сбой каталога — 503) |
 
 ## Пользователи и API-токены (admin)
 

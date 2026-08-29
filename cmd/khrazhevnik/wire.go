@@ -142,7 +142,7 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		return nil, err
 	}
 
-	authService, err := auth.New(auth.Config{Users: catalog.Users, Tokens: catalog.Tokens, Audit: catalog.Audit, Clock: systemClock{}, Rand: uuidRand{}, JWTSecret: cfg.Auth.JWTSecret, SessionTTL: cfg.Auth.SessionTTL.Duration})
+	authService, err := auth.New(auth.Config{Users: catalog.Users, Tokens: catalog.Tokens, Revocations: catalog.Revocations, Audit: catalog.Audit, Clock: systemClock{}, Rand: uuidRand{}, JWTSecret: cfg.Auth.JWTSecret, SessionTTL: cfg.Auth.SessionTTL.Duration})
 	if err != nil {
 		return nil, err
 	}

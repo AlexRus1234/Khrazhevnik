@@ -43,7 +43,7 @@ func middlewareAuth(t *testing.T) (*auth.Service, *testutil.FakeUserStore, strin
 	t.Helper()
 	users := testutil.NewFakeUserStore()
 	tokens := &middlewareTokens{}
-	a, err := auth.New(auth.Config{Users: users, Tokens: tokens, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("22222222-2222-4222-8222-222222222222"), JWTSecret: "secret", SessionTTL: time.Hour})
+	a, err := auth.New(auth.Config{Users: users, Tokens: tokens, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("22222222-2222-4222-8222-222222222222"), JWTSecret: "secret", SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func (s *failingUserStore) UserByUsername(context.Context, string) (domain.User,
 func TestAuthMiddlewareCatalogFailure(t *testing.T) {
 	users := &failingUserStore{FakeUserStore: testutil.NewFakeUserStore(), err: errors.New("db down")}
 	tokens := &middlewareTokens{hashErr: errors.New("db down")}
-	a, err := auth.New(auth.Config{Users: users, Tokens: tokens, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("22222222-2222-4222-8222-222222222222"), JWTSecret: "secret", SessionTTL: time.Hour})
+	a, err := auth.New(auth.Config{Users: users, Tokens: tokens, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("22222222-2222-4222-8222-222222222222"), JWTSecret: "secret", SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

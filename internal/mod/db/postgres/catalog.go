@@ -110,14 +110,24 @@ const (
 	sqlJobDelete = `DELETE FROM sync_jobs WHERE id = $1`
 )
 
-// Аудит и индекс mutable-объектов.
+// Аудит, индекс mutable-объектов и отзывы JWT-сессий.
 const (
 	sqlAuditInsert = `INSERT INTO audit_log (ts, actor, action, object, result, detail)
 		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`
 	sqlAuditPage     = `SELECT id, ts, actor, action, object, result, detail FROM audit_log WHERE id > $1 ORDER BY id LIMIT $2`
 	sqlObjMetaGet    = `SELECT key, storage_key, etag, size, content_type, last_modified, expires_at FROM object_index WHERE key = $1`
 	sqlObjMetaDelete = `DELETE FROM object_index WHERE key = $1`
+
+	sqlRevPurge = `DELETE FROM revoked_sessions WHERE expires_at < $1`
+	sqlRevCheck = `SELECT EXISTS (SELECT 1 FROM revoked_sessions WHERE jti = $1 AND expires_at >= $2)`
 )
+
+// revocationUpsertSQL — идемпотентная вставка отзыва через
+// диалект-шим; собирается один раз при открытии Store.
+func revocationUpsertSQL() string {
+	return dbtalk.Upsert(dbtalk.Postgres{}, "revoked_sessions", "jti",
+		[]string{"jti", "expires_at"})
+}
 
 // objectMetaUpsertSQL — upsert object_index через диалект-шим; собирается
 // один раз при открытии Store.
@@ -735,6 +745,31 @@ func scanObjectMeta(row interface{ Scan(dest ...any) error }) (domain.ObjectMeta
 	m.LastModified = timeFromNull(lastModified)
 	m.ExpiresAt = timeFromNull(expires)
 	return m, nil
+}
+
+// InsertRevocation отзывает jti до expiresAt; попутно чистит записи,
+// просроченные к моменту now (вставка + гигиена одним вызовом).
+// Повторная вставка того же jti — обновление срока (идемпотентно).
+func (s *Store) InsertRevocation(ctx context.Context, jti string, now, expiresAt time.Time) error {
+	_, err := call(ctx, s, func() (sql.Result, error) {
+		if _, err := s.db.ExecContext(ctx, sqlRevPurge, dbtalk.Now(now)); err != nil {
+			return nil, err
+		}
+		return s.db.ExecContext(ctx, s.upsertRevocation, jti, dbtalk.Now(expiresAt))
+	})
+	if err != nil {
+		return mapWrite(err, "отзыв сессии", jti)
+	}
+	return nil
+}
+
+// IsRevoked сообщает, жив ли отзыв jti на момент now.
+func (s *Store) IsRevoked(ctx context.Context, jti string, now time.Time) (bool, error) {
+	return call(ctx, s, func() (bool, error) {
+		var yes bool
+		err := s.db.QueryRowContext(ctx, sqlRevCheck, jti, dbtalk.Now(now)).Scan(&yes)
+		return yes, err
+	})
 }
 
 // exec — DELETE c требованием затронутой строки: отсутствие сущности —

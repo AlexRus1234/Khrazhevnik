@@ -57,13 +57,14 @@ func init() {
 			return registry.CatalogSet{}, err
 		}
 		return registry.CatalogSet{
-			Users:    st,
-			Tokens:   st,
-			Repos:    st,
-			Remotes:  st,
-			Jobs:     st,
-			Audit:    st,
-			ObjIndex: st,
+			Users:       st,
+			Tokens:      st,
+			Repos:       st,
+			Remotes:     st,
+			Jobs:        st,
+			Audit:       st,
+			ObjIndex:    st,
+			Revocations: st,
 		}, nil
 	})
 }
@@ -73,10 +74,11 @@ func init() {
 type Store struct {
 	db    *sql.DB
 	sleep func(time.Duration)
-	// upsertObjectMeta — upsert object_index, собранный через
+	// upsertObjectMeta/upsertRevocation — upsert'ы, собранные через
 	// dbtalk.Upsert один раз при открытии (SQL-константы — для
 	// остального; upsert — предмет диалект-шима).
 	upsertObjectMeta string
+	upsertRevocation string
 }
 
 // Open открывает БД по cfg.DSN, применяет миграции и возвращает Store.
@@ -102,6 +104,7 @@ func Open(cfg config.Database) (*Store, error) {
 		db:               db,
 		sleep:            time.Sleep,
 		upsertObjectMeta: objectMetaUpsertSQL(),
+		upsertRevocation: revocationUpsertSQL(),
 	}, nil
 }
 

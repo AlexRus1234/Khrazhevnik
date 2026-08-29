@@ -96,10 +96,15 @@ func handleLogin(d Deps, limiter *authmw.LoginRateLimit) http.HandlerFunc {
 	}
 }
 
-// handleLogout — POST /api/v1/auth/logout: отзыв JWT в процессе.
+// handleLogout — POST /api/v1/auth/logout: персистентный отзыв JWT
+// (переживает рестарт, сессия 25). Ошибка вставки — не 204: logout,
+// не переживающий рестарт, отчитался бы ложным успехом.
 func handleLogout(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		d.Auth.RevokeSession(authmw.JTIFromContext(r.Context()))
+		if err := d.Auth.RevokeSession(r.Context(), authmw.JTIFromContext(r.Context())); err != nil {
+			writeErr(w, err)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

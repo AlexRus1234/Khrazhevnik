@@ -37,6 +37,9 @@ type CatalogSet struct {
 	Jobs     port.JobStore
 	Audit    port.AuditLog
 	ObjIndex port.ObjectIndex
+	// Revocations — персистентный отзыв JWT-сессий (сессия 25):
+	// logout переживает рестарт процесса.
+	Revocations port.SessionRevocationStore
 }
 
 // Фабрики модулей: вызываются в cmd/khrazhevnik/wire.go с секцией

@@ -112,3 +112,17 @@ type ObjectIndex interface {
 	PutObjectMeta(ctx context.Context, m domain.ObjectMeta) error
 	DeleteObjectMeta(ctx context.Context, key string) error
 }
+
+// SessionRevocationStore — персистентный отзыв JWT-сессий: logout
+// переживает рестарт процесса, in-memory карта в auth.Service — только
+// fast-path (аудит 2026-08-27: in-memory отзыв «оживал» после
+// рестарта до естественного exp токена).
+type SessionRevocationStore interface {
+	// InsertRevocation отзывает jti до expiresAt и попутно чистит
+	// записи, просроченные к моменту now (один вызов = вставка +
+	// гигиена; logout редок — отдельный тик чистки не нужен).
+	// Повторная вставка того же jti — обновление (идемпотентно).
+	InsertRevocation(ctx context.Context, jti string, now, expiresAt time.Time) error
+	// IsRevoked сообщает, жив ли отзыв jti на момент now.
+	IsRevoked(ctx context.Context, jti string, now time.Time) (bool, error)
+}

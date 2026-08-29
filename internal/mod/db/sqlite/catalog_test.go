@@ -36,13 +36,14 @@ import (
 
 // Компиляция срезов порта: Store обязан реализовать весь каталог.
 var (
-	_ port.UserStore   = (*Store)(nil)
-	_ port.TokenStore  = (*Store)(nil)
-	_ port.RepoStore   = (*Store)(nil)
-	_ port.RemoteStore = (*Store)(nil)
-	_ port.JobStore    = (*Store)(nil)
-	_ port.AuditLog    = (*Store)(nil)
-	_ port.ObjectIndex = (*Store)(nil)
+	_ port.UserStore              = (*Store)(nil)
+	_ port.TokenStore             = (*Store)(nil)
+	_ port.RepoStore              = (*Store)(nil)
+	_ port.RemoteStore            = (*Store)(nil)
+	_ port.JobStore               = (*Store)(nil)
+	_ port.AuditLog               = (*Store)(nil)
+	_ port.ObjectIndex            = (*Store)(nil)
+	_ port.SessionRevocationStore = (*Store)(nil)
 )
 
 // fixed — детерминированное время записи (эпоха теряет доли секунды).
@@ -73,16 +74,50 @@ func TestCatalogContract(t *testing.T) {
 	contract.CatalogSuite(t, func(t *testing.T) contract.Catalog {
 		st := openDSN(t, filepath.Join(t.TempDir(), "contract.db"))
 		return contract.Catalog{
-			Users:    st,
-			Tokens:   st,
-			Repos:    st,
-			Remotes:  st,
-			Jobs:     st,
-			Audit:    st,
-			ObjIndex: st,
-			Close:    st.Close,
+			Users:       st,
+			Tokens:      st,
+			Repos:       st,
+			Remotes:     st,
+			Jobs:        st,
+			Audit:       st,
+			ObjIndex:    st,
+			Revocations: st,
+			Close:       st.Close,
 		}
 	})
+}
+
+// TestRevocationsPurgeAndRestart — сессия 25: вставка отзыва чистит
+// просроченные записи (гигиена одним вызовом), а «рестарт» (второй
+// Store на том же файле) видит отзыв.
+func TestRevocationsPurgeAndRestart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "revocations.db")
+	st1 := openDSN(t, path)
+	now := fixed
+	if err := st1.InsertRevocation(ctx, "jti-old", now.Add(-2*time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st1.InsertRevocation(ctx, "jti-live", now, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// Вставка с now — чистка удалила просроченный jti-old физически.
+	var count int
+	if err := st1.db.QueryRow(`SELECT COUNT(*) FROM revoked_sessions`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("после чистки в таблице %d записей, хочу 1", count)
+	}
+	// Рестарт: новый Store на том же файле видит живой отзыв.
+	st2 := openDSN(t, path)
+	yes, err := st2.IsRevoked(ctx, "jti-live", now)
+	if err != nil || !yes {
+		t.Fatalf("отзыв после переоткрытия: %v, %v", yes, err)
+	}
+	if yes, err := st2.IsRevoked(ctx, "jti-old", now); err != nil || yes {
+		t.Fatalf("просроченный отзыв жив: %v, %v", yes, err)
+	}
 }
 
 func TestBuildDSN(t *testing.T) {

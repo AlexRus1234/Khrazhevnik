@@ -29,15 +29,24 @@ import (
 const maxBcryptPassword = 72
 const dummyPasswordHash = "$2a$10$7EqJtq98hPqEX7fNZaFWoO5u4ZJ4Y2Y5xq0XG4Y2DqjF4s8wWqT6W"
 
+// maxRevokedMemory — потолок in-memory fast-path отзывов: сессии
+// короткоживущие (SessionTTL), персистентный слой — источник истины,
+// карта не должна расти безгранично (аудит 2026-08-27: чистилась
+// только лениво и не имела потолка).
+const maxRevokedMemory = 10000
+
 // Config wires authentication to persistence and deterministic system ports.
 type Config struct {
-	Users      port.UserStore
-	Tokens     port.TokenStore
-	Audit      port.AuditLog
-	Clock      port.Clock
-	Rand       port.Rand
-	JWTSecret  string
-	SessionTTL time.Duration
+	Users  port.UserStore
+	Tokens port.TokenStore
+	// Revocations — персистентный отзыв JWT-сессий: logout переживает
+	// рестарт процесса (аудит 2026-08-27); nil недопустим.
+	Revocations port.SessionRevocationStore
+	Audit       port.AuditLog
+	Clock       port.Clock
+	Rand        port.Rand
+	JWTSecret   string
+	SessionTTL  time.Duration
 }
 
 // Service is the authentication application service.
@@ -49,7 +58,7 @@ type Service struct {
 
 // New creates an authentication service.
 func New(cfg Config) (*Service, error) {
-	if cfg.Users == nil || cfg.Tokens == nil || cfg.Clock == nil || cfg.Rand == nil || cfg.JWTSecret == "" || cfg.SessionTTL <= 0 {
+	if cfg.Users == nil || cfg.Tokens == nil || cfg.Revocations == nil || cfg.Clock == nil || cfg.Rand == nil || cfg.JWTSecret == "" || cfg.SessionTTL <= 0 {
 		return nil, errors.New("auth: неполная конфигурация")
 	}
 	return &Service{cfg: cfg, revoked: make(map[string]time.Time)}, nil
@@ -255,28 +264,76 @@ func (s *Service) ValidateSession(ctx context.Context, raw string) (Session, err
 		return Session{}, &domain.ForbiddenError{Reason: "недействительная сессия"}
 	}
 	jti, _ := c["jti"].(string)
-	s.revokedMu.Lock()
-	revokedUntil, revoked := s.revoked[jti]
-	if revoked && !s.cfg.Clock.Now().Before(revokedUntil) {
-		delete(s.revoked, jti)
-		revoked = false
+	if jti == "" {
+		// Сессия без jti неотзываема (revocation покрывает все выпущенные
+		// токены) — отклоняем, а не пропускаем мимо карты отзывов.
+		return Session{}, &domain.ForbiddenError{Reason: "недействительная сессия"}
 	}
-	s.revokedMu.Unlock()
-	if revoked {
+	if s.revokedInMemory(jti) {
+		return Session{}, &domain.ForbiddenError{Reason: "отозванная сессия"}
+	}
+	// Персистентная проверка — на каждый запрос: карта в памяти лишь
+	// fast-path, источник истины после рестарта — каталог.
+	yes, err := s.cfg.Revocations.IsRevoked(ctx, jti, s.cfg.Clock.Now())
+	if err != nil {
+		return Session{}, &domain.UnavailableError{What: "каталог", Reason: "проверка отзыва сессии", Err: err}
+	}
+	if yes {
 		return Session{}, &domain.ForbiddenError{Reason: "отозванная сессия"}
 	}
 	return Session{User: u, JTI: jti}, nil
 }
 
-// RevokeSession revokes one JWT in process until its natural expiration. This
-// is intentionally not persistent; token_version remains the durable mass logout mechanism.
-func (s *Service) RevokeSession(jti string) {
+// RevokeSession revokes one JWT until its natural expiration: the
+// revocation is persisted (logout survives a process restart) and kept
+// in memory as a fast-path. A failed insert is returned — logout that
+// would not survive a restart must not answer 204; in-process the
+// session is revoked regardless.
+func (s *Service) RevokeSession(ctx context.Context, jti string) error {
 	if jti == "" {
-		return
+		return nil
 	}
+	now := s.cfg.Clock.Now()
+	until := now.Add(s.cfg.SessionTTL)
+	err := s.cfg.Revocations.InsertRevocation(ctx, jti, now, until)
+	s.rememberRevoked(jti, until)
+	return err
+}
+
+// rememberRevoked добавляет jti в in-memory fast-path: просроченные
+// записи чистятся при каждой вставке, переполнение вытесняет
+// произвольную запись — персистентный слой остаётся источником истины.
+func (s *Service) rememberRevoked(jti string, until time.Time) {
 	s.revokedMu.Lock()
-	s.revoked[jti] = s.cfg.Clock.Now().Add(s.cfg.SessionTTL)
-	s.revokedMu.Unlock()
+	defer s.revokedMu.Unlock()
+	now := s.cfg.Clock.Now()
+	for j, exp := range s.revoked {
+		if !now.Before(exp) {
+			delete(s.revoked, j)
+		}
+	}
+	if len(s.revoked) >= maxRevokedMemory {
+		for j := range s.revoked {
+			delete(s.revoked, j)
+			break
+		}
+	}
+	s.revoked[jti] = until
+}
+
+// revokedInMemory проверяет fast-path, лениво выкидывая просроченное.
+func (s *Service) revokedInMemory(jti string) bool {
+	s.revokedMu.Lock()
+	defer s.revokedMu.Unlock()
+	until, ok := s.revoked[jti]
+	if !ok {
+		return false
+	}
+	if !s.cfg.Clock.Now().Before(until) {
+		delete(s.revoked, jti)
+		return false
+	}
+	return true
 }
 
 // InvalidateUserSessions increments the persisted session version.

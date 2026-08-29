@@ -120,7 +120,7 @@ func newTestAuth(t *testing.T) (*Service, *tokenFake) {
 	t.Helper()
 	users := testutil.NewFakeUserStore()
 	tf := &tokenFake{values: map[int64]domain.APIToken{}}
-	a, err := New(Config{Users: users, Tokens: tf, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour})
+	a, err := New(Config{Users: users, Tokens: tf, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestAuthDelegatesAndDeleteBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, _ := New(Config{Users: users, Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Clock: testutil.FixedClock(time.Unix(1, 0)), Rand: testutil.FixedRand(), JWTSecret: "x", SessionTTL: time.Hour})
+	s, _ := New(Config{Users: users, Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(1, 0)), Rand: testutil.FixedRand(), JWTSecret: "x", SessionTTL: time.Hour})
 	if ok, _ := s.HasUsers(ctx); !ok {
 		t.Fatal("HasUsers")
 	}
@@ -265,6 +265,120 @@ func TestLoginAndIssueFailures(t *testing.T) {
 	}
 }
 
+// failingRevocations — сбой персистентного слоя отзывов поверх фейка.
+type failingRevocations struct {
+	*testutil.FakeRevocations
+	err error
+}
+
+func (f *failingRevocations) IsRevoked(ctx context.Context, jti string, now time.Time) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.FakeRevocations.IsRevoked(ctx, jti, now)
+}
+
+func (f *failingRevocations) InsertRevocation(ctx context.Context, jti string, now, expiresAt time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	return f.FakeRevocations.InsertRevocation(ctx, jti, now, expiresAt)
+}
+
+// Персистентный отзыв (сессия 25): logout переживает «рестарт» — новый
+// Service с чистой in-memory картой на том же каталоге отклоняет
+// отозванный токен и принимает живой.
+func TestRevocationPersistsAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	users := testutil.NewFakeUserStore()
+	tf := &tokenFake{values: map[int64]domain.APIToken{}}
+	revocations := testutil.NewFakeRevocations()
+	build := func(rand port.Rand) *Service {
+		a, err := New(Config{Users: users, Tokens: tf, Revocations: revocations, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: rand, JWTSecret: "secret", SessionTTL: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	a1 := build(testutil.FixedRand("11111111-1111-4111-8111-111111111111"))
+	admin, err := a1.CreateUser(ctx, "alice", "correct", domain.RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := a1.IssueSession(ctx, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a1.RevokeSession(ctx, "11111111-1111-4111-8111-111111111111"); err != nil {
+		t.Fatal(err)
+	}
+
+	// «Рестарт»: новый Service, память пуста, каталог тот же.
+	a2 := build(testutil.FixedRand("22222222-2222-4222-8222-222222222222"))
+	if _, err := a2.ValidateSession(ctx, token); !errors.Is(err, &domain.ForbiddenError{}) {
+		t.Fatalf("отозванная сессия пережила рестарт: %v", err)
+	}
+	live, err := a2.IssueSession(ctx, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a2.ValidateSession(ctx, live); err != nil {
+		t.Fatalf("живая сессия после рестарта: %v", err)
+	}
+	// Сбой каталога при проверке отзыва — Unavailable, не Forbidden.
+	a2.cfg.Revocations = &failingRevocations{FakeRevocations: revocations, err: errors.New("db down")}
+	if _, err := a2.ValidateSession(ctx, live); !errors.Is(err, &domain.UnavailableError{}) {
+		t.Fatalf("сбой проверки отзыва: %v, хочу UnavailableError", err)
+	}
+
+	// Ошибка вставки отзыва возвращается (logout не должен врать 204),
+	// но сессия гасится в процессе.
+	a3 := build(testutil.FixedRand("33333333-3333-4333-8333-333333333333"))
+	tok3, err := a3.IssueSession(ctx, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a3.cfg.Revocations = &failingRevocations{err: errors.New("db down")}
+	if err := a3.RevokeSession(ctx, "33333333-3333-4333-8333-333333333333"); err == nil {
+		t.Fatal("ошибка персистентного отзыва потеряна")
+	}
+	if _, err := a3.ValidateSession(ctx, tok3); !errors.Is(err, &domain.ForbiddenError{}) {
+		t.Fatalf("сессия не отозвана в процессе после сбоя вставки: %v", err)
+	}
+}
+
+// In-memory fast-path ограничен и чистится по exp: потолок держится,
+// свежий отзыв вытесняет старейший, а персистентный слой помнит всё.
+func TestRevokedMemoryBounded(t *testing.T) {
+	ctx := context.Background()
+	a, _ := newTestAuth(t)
+	if err := a.RevokeSession(ctx, "jti-db-persisted"); err != nil {
+		t.Fatal(err)
+	}
+	until := time.Unix(100, 0).Add(time.Hour)
+	for i := 0; i < maxRevokedMemory; i++ {
+		a.revoked[fmt.Sprintf("jti-%d", i)] = until
+	}
+	a.revoked["jti-expired"] = time.Unix(50, 0)
+	a.rememberRevoked("jti-new", until.Add(time.Minute))
+	if len(a.revoked) > maxRevokedMemory {
+		t.Fatalf("карта отзывов %d записей, потолок %d", len(a.revoked), maxRevokedMemory)
+	}
+	if !a.revokedInMemory("jti-new") {
+		t.Fatal("свежий отзыв вытеснен")
+	}
+	if a.revokedInMemory("jti-expired") {
+		t.Fatal("просроченная запись не вычищена")
+	}
+	if a.revokedInMemory("jti-db-persisted") {
+		t.Fatal("вытеснение не сработало")
+	}
+	yes, err := a.cfg.Revocations.IsRevoked(ctx, "jti-db-persisted", time.Unix(100, 0))
+	if err != nil || !yes {
+		t.Fatalf("каталог потерял вытесненный из памяти отзыв: %v, %v", yes, err)
+	}
+}
+
 func TestNewRejectsIncompleteConfig(t *testing.T) {
 	if _, err := New(Config{}); err == nil {
 		t.Fatal("incomplete auth config accepted")
@@ -332,8 +446,10 @@ func TestSessionValidationClaimsAlgorithmRevocationAndExpiry(t *testing.T) {
 	a, _ := newTestAuth(t)
 	u, _ := a.User(context.Background(), 1)
 	_, _ = a.IssueSession(context.Background(), u)
-	a.RevokeSession("")
-	a.RevokeSession("jti")
+	_ = a.RevokeSession(context.Background(), "")
+	if err := a.RevokeSession(context.Background(), "jti"); err != nil {
+		t.Fatal(err)
+	}
 	revokedClaims := jwt.MapClaims{"sub": "1", "jti": "jti", "ver": float64(u.TokenVersion), "exp": float64(time.Unix(100, 0).Add(time.Hour).Unix())}
 	revokedRaw, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, revokedClaims).SignedString([]byte("secret"))
 	if _, err := a.ValidateSession(context.Background(), revokedRaw); err == nil {
@@ -365,7 +481,9 @@ func TestSessionValidationClaimsAlgorithmRevocationAndExpiry(t *testing.T) {
 	a.cfg.Clock = clock
 	claims := jwt.MapClaims{"sub": fmt.Sprint(u.ID), "jti": "gone", "ver": float64(u.TokenVersion), "exp": float64(clock.now.Add(5 * time.Hour).Unix())}
 	valid, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("secret"))
-	a.RevokeSession("gone")
+	if err := a.RevokeSession(context.Background(), "gone"); err != nil {
+		t.Fatal(err)
+	}
 	clock.now = clock.now.Add(4 * time.Hour)
 	if _, err := a.ValidateSession(context.Background(), valid); err != nil {
 		t.Fatalf("expired revocation not cleaned: %v", err)

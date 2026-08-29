@@ -240,6 +240,48 @@ func (s *FakeAuditLog) Len() int {
 	return len(s.entries)
 }
 
+// FakeRevocations — map-реализация port.SessionRevocationStore: как
+// боевой адаптер, при вставке чистит записи, просроченные к now.
+// Нужен тестам аутентификации (сессия 25).
+type FakeRevocations struct {
+	mu   sync.Mutex
+	jtis map[string]time.Time
+}
+
+// NewFakeRevocations создаёт пустое хранилище отзывов.
+func NewFakeRevocations() *FakeRevocations {
+	return &FakeRevocations{jtis: map[string]time.Time{}}
+}
+
+// InsertRevocation отзывает jti до expiresAt; попутно чистит записи,
+// просроченные к now (паритет с боевым адаптером).
+func (s *FakeRevocations) InsertRevocation(_ context.Context, jti string, now, expiresAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for j, exp := range s.jtis {
+		if exp.Before(now) {
+			delete(s.jtis, j)
+		}
+	}
+	s.jtis[jti] = expiresAt
+	return nil
+}
+
+// IsRevoked сообщает, жив ли отзыв jti на момент now.
+func (s *FakeRevocations) IsRevoked(_ context.Context, jti string, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	exp, ok := s.jtis[jti]
+	return ok && !exp.Before(now), nil
+}
+
+// Len возвращает число записей (для проверок в тестах).
+func (s *FakeRevocations) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.jtis)
+}
+
 // FakeRepoStore — map-реализация port.RepoStore: детерминированные ID
 // по возрастанию, ошибки домена как у боевого адаптера БД. Нужен тестам
 // publish-движка (сессия 14); здесь — для полноты срезов каталога.
