@@ -170,13 +170,16 @@ func TestMirrorSchedulerPicksUpRemoteViaAPI(t *testing.T) {
 	post(t, "http://"+adminAddr+"/api/v1/setup", `{"username":"admin","password":"password"}`, "", 201)
 	token := login(t, adminAddr, "admin", "password")
 
-	// admin-API: создаём mirror-remote ПОСЛЕ старта планировщика;
-	// sync_interval — time.Duration в наносекундах (20мс)
-	body := `{"name":"pkg","ecosystem":"t","base_url":"` + up.URL + `","mode":"mirror","enabled":true,"sync_interval":20000000}`
+	// admin-API: создаём mirror-remote ПОСЛЕ старта планировщика.
+	// sync_interval — time.Duration в наносекундах; адаптеры БД хранят
+	// его целыми секундами (sync_interval_sec), берём 1с — минимальный
+	// авто-интервал, который доживает до БД без усечения в «вручную».
+	body := `{"name":"pkg","ecosystem":"t","base_url":"` + up.URL + `","mode":"mirror","enabled":true,"sync_interval":1000000000}`
 	post(t, "http://"+adminAddr+"/api/v1/remotes", body, token, 201)
 
 	// без рестарта: remote подхватывается и sync скачивает пакет
-	deadline := time.Now().Add(3 * time.Second)
+	// (первый тик — через sync_interval, запас — на медленный CI)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if hits.Load() >= 1 {
 			break
