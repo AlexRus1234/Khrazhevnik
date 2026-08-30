@@ -26,8 +26,13 @@ import (
 	"khrazhevnik/internal/testutil"
 )
 
-// hash32 — валидный 32-hex хеш store path для тестов (синтетический).
-const hash32 = "0123456789abcdef0123456789abcdef"
+// hash32 — валидный 32-символьный nix-base32 хеш store path для
+// тестов (алфавит nix без e/o/t/u — как у реального nix).
+const hash32 = "x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y"
+
+// hash32hex — 32 hex-символа с 'e': для nix-классификации НЕ валиден
+// (реальные nix-хеши — nix-base32); такой путь падает в conservative.
+const hash32hex = "0123456789abcdef0123456789abcdef"
 
 func newTestAdapter(t *testing.T) *Adapter {
 	t.Helper()
@@ -68,7 +73,7 @@ type classifyCase struct {
 func TestClassifyTable(t *testing.T) {
 	a := newTestAdapter(t)
 	cases := []classifyCase{
-		// Immutable: nar-архивы (content-addressed по 32-hex хешу).
+		// Immutable: nar-архивы (content-addressed по 32 nix-base32).
 		{"nar/" + hash32 + ".nar.xz", domain.KindImmutable, 0},
 		{"nar/" + hash32 + ".nar", domain.KindImmutable, 0},
 		// Mutable{TTL 1h}: narinfo (метаданные пути, byte-exact).
@@ -81,7 +86,14 @@ func TestClassifyTable(t *testing.T) {
 		// Unknown → conservative Mutable{TTL 1m}.
 		{"some/random/path.dat", domain.KindMutable, mutableUnknownTTL},
 		{"nar/not-a-hash.nar.xz", domain.KindMutable, mutableUnknownTTL},
-		{"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.narinfo", domain.KindMutable, mutableUnknownTTL},
+		// 31-символьный «хеш» — не 32: conservative.
+		{hash32[:31] + ".narinfo", domain.KindMutable, mutableUnknownTTL},
+		// hex-хеш с 'e' — не nix-base32 (у реального nix таких нет):
+		// narinfo и nar с ним не попадают в nar/narinfo-ветки —
+		// conservative mutable{TTL 1m} (сессия 33).
+		{hash32hex + ".narinfo", domain.KindMutable, mutableUnknownTTL},
+		{"nar/" + hash32hex + ".nar.xz", domain.KindMutable, mutableUnknownTTL},
+		{"nar/" + hash32hex + ".nar", domain.KindMutable, mutableUnknownTTL},
 	}
 	for _, tc := range cases {
 		got, err := a.Classify(tc.path)

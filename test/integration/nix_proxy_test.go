@@ -54,8 +54,10 @@ import (
 	"khrazhevnik/internal/testutil"
 )
 
-// nixHash — синтетический 32-hex хеш store path для тестов.
-const nixHash = "0123456789abcdef0123456789abcdef"
+// nixHash — синтетический 32-символьный nix-base32 хеш store path
+// (алфавит nix без e/o/t/u — как у реального nix; hex-хеши не
+// матчатся классификацией сессии 33).
+const nixHash = "x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y"
 
 // nixUpstream — httptest-сервер с мини-nix-binary-cache: narinfo,
 // nar.xz и nix-cache-info. Считает запросы к upstream.

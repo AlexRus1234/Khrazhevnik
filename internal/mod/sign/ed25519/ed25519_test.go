@@ -67,21 +67,26 @@ func TestSignVerify_Roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	msg := []byte("narinfo: /nix/store/abc...-foo-1.0\nRefer: ...")
+	msg := []byte("1;/nix/store/abc...-foo-1.0;sha256:...;1234;/nix/store/def...-bar")
 	sigLine := s.Sign(msg)
 
-	parts := strings.SplitN(sigLine, ":", 3)
-	if len(parts) != 3 {
-		t.Fatalf("sig-строка не из 3 полей: %q", sigLine)
+	parts := strings.SplitN(sigLine, ":", 2)
+	if len(parts) != 2 {
+		t.Fatalf("sig-строка не из 2 полей: %q", sigLine)
 	}
 	if parts[0] != "hydra.example.org" {
 		t.Errorf("name в sig = %q, хочу hydra.example.org", parts[0])
 	}
-	if parts[1] != s.PubKeyB64() {
-		t.Errorf("pubkey в sig не совпадает с PubKeyB64")
+	// signature — base64 64 байт ed25519 (88 символов с padding).
+	sigBytes, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("signature не base64: %v", err)
+	}
+	if len(sigBytes) != ed25519.SignatureSize {
+		t.Errorf("signature = %d байт, хочу %d", len(sigBytes), ed25519.SignatureSize)
 	}
 
-	ok, err := Verify(msg, sigLine)
+	ok, err := Verify(s.PubKey(), msg, sigLine)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -93,7 +98,7 @@ func TestSignVerify_Roundtrip(t *testing.T) {
 func TestVerify_TamperMsg(t *testing.T) {
 	s, _ := New("k")
 	sigLine := s.Sign([]byte("original"))
-	ok, err := Verify([]byte("tampered"), sigLine)
+	ok, err := Verify(s.PubKey(), []byte("tampered"), sigLine)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -107,14 +112,14 @@ func TestVerify_TamperSig(t *testing.T) {
 	sigLine := s.Sign([]byte("msg"))
 	// Перевернём байт декодированной сигнатуры и пере-кодируем: base64
 	// остаётся валидной формы, но подпись реально иная.
-	parts := strings.SplitN(sigLine, ":", 3)
-	sigBytes, err := base64.StdEncoding.DecodeString(parts[2])
+	parts := strings.SplitN(sigLine, ":", 2)
+	sigBytes, err := base64.StdEncoding.DecodeString(parts[1])
 	if err != nil {
 		t.Fatalf("decode sig: %v", err)
 	}
 	sigBytes[0] ^= 0xff
-	bad := parts[0] + ":" + parts[1] + ":" + base64.StdEncoding.EncodeToString(sigBytes)
-	ok, err := Verify([]byte("msg"), bad)
+	bad := parts[0] + ":" + base64.StdEncoding.EncodeToString(sigBytes)
+	ok, err := Verify(s.PubKey(), []byte("msg"), bad)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -126,40 +131,49 @@ func TestVerify_TamperSig(t *testing.T) {
 func TestVerify_WrongKey(t *testing.T) {
 	s1, _ := New("k1")
 	s2, _ := New("k2")
-	sigLine := s1.Sign([]byte("msg"))
-	// Подпись s1, проверяем — ok. Подпись s1 проверяется под pubkey
-	// s1 (внутри sig-строки), так что Verify пройдёт. Чтобы проверить
-	// «чужой pubkey», используем VerifyWithPubKey с ожидаемым s2.
-	ok, err := VerifyWithPubKey([]byte("msg"), sigLine, s2.PubKeyB64())
+	msg := []byte("msg")
+	sigLine := s1.Sign(msg)
+	// Подпись s1 под pubkey s1: чужой pubkey s2 её не валидирует
+	// (nix-клиент проверяет парой из trusted-public-keys).
+	ok, err := Verify(s2.PubKey(), msg, sigLine)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if ok {
+		t.Error("Verify вернул true под чужим pubkey")
+	}
+	// Имя в sig-строке обязано совпасть с именем ключа из конфига
+	// (local-keys.cc verifyDetached: несовпадение keyName = невалид).
+	ok, err = VerifyWithPubKey(s1.PubKey(), msg, sigLine, "k2")
 	if err != nil {
 		t.Fatalf("VerifyWithPubKey: %v", err)
 	}
 	if ok {
-		t.Error("VerifyWithPubKey вернул true для чужого pubkey")
+		t.Error("VerifyWithPubKey вернул true для чужого имени ключа")
 	}
-	// С ожидаемым s1 — ok.
-	ok, err = VerifyWithPubKey([]byte("msg"), sigLine, s1.PubKeyB64())
+	// С ожидаемым k1 — ok.
+	ok, err = VerifyWithPubKey(s1.PubKey(), msg, sigLine, "k1")
 	if err != nil {
 		t.Fatalf("VerifyWithPubKey: %v", err)
 	}
 	if !ok {
-		t.Error("VerifyWithPubKey вернул false для своего pubkey")
+		t.Error("VerifyWithPubKey вернул false для своего имени ключа")
 	}
 }
 
 func TestVerify_Malformed(t *testing.T) {
 	s, _ := New("k")
-	goodPub := s.PubKeyB64()
+	pub := s.PubKey()
 	cases := []string{
 		"onlyonefield",
-		"two:fields",
-		"k:not-base64!:abc",
-		"k:" + strings.Repeat("A", 44) + ":tooshort",
-		// валидный pubkey, но signature-поле — не base64.
-		"k:" + goodPub + ":!!not-base64!!",
+		// 3 поля «name:pubkey:sig» — формат, который nix не парсит
+		// (local-keys.cc: ровно одно «:»).
+		"three:fields:here",
+		"k:not-base64!",
+		"k:tooshort",
 	}
 	for _, c := range cases {
-		if _, err := Verify([]byte("msg"), c); err == nil {
+		if _, err := Verify(pub, []byte("msg"), c); err == nil {
 			t.Errorf("ожидалась ошибка для малформата %q", c)
 		}
 	}
@@ -203,11 +217,12 @@ func TestLoadOrGenerate_PersistsAcrossCalls(t *testing.T) {
 	if s1.PubKeyB64() != s2.PubKeyB64() {
 		t.Fatalf("pubkey изменился между вызовами: %s vs %s", s1.PubKeyB64(), s2.PubKeyB64())
 	}
-	// Подпись первого pubkey валидирует подпись второго (тот же ключ).
-	msg := []byte("store path narinfo")
-	ok, err := VerifyWithPubKey(msg, s1.Sign(msg), s2.PubKeyB64())
+	// Подпись s1 валидируется ключом s2 (тот же ключ, pubkey стабилен
+	// между рестартами — инвариант LoadOrGenerate).
+	msg := []byte("1;/nix/store/x-foo;sha256:y;1;")
+	ok, err := VerifyWithPubKey(s2.PubKey(), msg, s1.Sign(msg), s2.Name())
 	if err != nil || !ok {
-		t.Errorf("подпись s1 не валидируется pubkey s2: ok=%v err=%v", ok, err)
+		t.Errorf("подпись s1 не валидируется ключом s2: ok=%v err=%v", ok, err)
 	}
 }
 

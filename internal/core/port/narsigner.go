@@ -25,10 +25,10 @@
 package port
 
 // NarSigner — источник ed25519-подписи nix narinfo. Sign возвращает
-// sig-строку формата «name:pubkey:signature» (pubkey и signature —
-// base64 raw байт ed25519); msg — canonical narinfo-сообщение без
-// поля Sig (nix подписывает именно байты сообщения, без завершающего
-// перевода строки). PubKeyB64 — base64 публичной части для публикации в
+// sig-строку формата «name:signature» (signature — base64 raw байт
+// ed25519); msg — nix fingerprint «1;StorePath;NarHash;NarSize;Refs»
+// (libstore PathInfo::fingerprint), собранный генератором из полей
+// narinfo. PubKeyB64 — base64 публичной части для публикации в
 // nix-метаданных (trusted-public-keys); Name — метка ключа.
 type NarSigner interface {
 	Sign(msg []byte) string

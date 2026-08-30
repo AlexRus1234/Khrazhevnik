@@ -15,12 +15,15 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // Пакет ed25519 — подпись narinfo-строк в формате nix-бинарного кеша:
-// «name:pubkey:signature», где pubkey и signature — base64 (nix
-// использует raw ed25519 + base64, не OpenPGP). Задел под генератор
-// nix-индексов (сессия 16): здесь только примитивы подписи и формат
-// sig-строки, roundtrip-тесты. Интеграция в publish/nix-генератор —
-// сессия 16; здесь модуль НЕ реализует port.Signer (тот заточен под
-// OpenPGP/cleartext apt) — у nix своя, более простая модель подписи.
+// «name:signature», где signature — base64 raw байт (nix использует
+// detached ed25519 + base64, не OpenPGP; см. libutil local-keys.cc
+// SecretKey::signDetached). Подписывается fingerprint «1;StorePath;
+// NarHash;NarSize;Refs» (libstore PathInfo::fingerprint), не байты
+// файла. Задел под генератор nix-индексов (сессия 16): здесь только
+// примитивы подписи и формат sig-строки, roundtrip-тесты. Интеграция в
+// publish/nix-генератор — сессия 16; здесь модуль НЕ реализует
+// port.Signer (тот заточен под OpenPGP/cleartext apt) — у nix своя,
+// более простая модель подписи.
 //
 // Ключ — ed25519 из stdlib (crypto/ed25519), без зависимостей.
 
@@ -42,7 +45,7 @@ import (
 	"khrazhevnik/internal/core/registry"
 )
 
-// narSignerName — метка ключа nix в sig-строке («khrazhevnik:pubkey:sig»).
+// narSignerName — метка ключа nix в sig-строке («khrazhevnik:sig»).
 // Клиенты добавляют «khrazhevnik:<pubkey-b64>» в trusted-public-keys.
 // KISS v1: один ключ инстанса на все nix-репо (как у openpgp).
 const narSignerName = "khrazhevnik"
@@ -117,40 +120,41 @@ func FromKey(name string, priv ed25519.PrivateKey) (*Signer, error) {
 }
 
 // Sign подписывает msg и возвращает sig-строку nix:
-// «name:pubkey:signature» (pubkey и signature — base64 raw байт).
-// msg — canonical narinfo-строка без завершающего перевода строки
-// (nix подписывает именно байты сообщения).
+// «name:signature» (signature — base64 raw байт ed25519). msg —
+// fingerprint «1;StorePath;NarHash;NarSize;Refs», который подписывает
+// сам nix (libstore PathInfo::fingerprint), а не байты файла.
 func (s *Signer) Sign(msg []byte) string {
 	sig := ed25519.Sign(s.priv, msg)
-	return s.name + ":" + s.pubB64 + ":" + base64.StdEncoding.EncodeToString(sig)
+	return s.name + ":" + base64.StdEncoding.EncodeToString(sig)
 }
 
 // PubKeyB64 возвращает base64 публичной части (для публикации в
 // nix-метаданных binary-cacha, чтобы клиенты знали, кем подписано).
 func (s *Signer) PubKeyB64() string { return s.pubB64 }
 
+// PubKey возвращает raw публичную часть ed25519 (32 байта) — для
+// Verify, которому нужен ключ из trusted-public-keys, а не из sig-
+// строки (в 2-полевом nix-формате pubkey в Sig: не живёт).
+func (s *Signer) PubKey() ed25519.PublicKey { return s.pub }
+
 // Name возвращает метку ключа.
 func (s *Signer) Name() string { return s.name }
 
-// Verify проверяет sig-строку формата «name:pubkey:signature» против
-// msg: base64-декодирует pubkey и signature, сверяет ed25519.Verify.
-// Имя в sig-строке игнорируется (pubkey однозначно определяет ключ);
-// оно нужно только людям и nix-клиентам для человекочитаемых ошибок.
-// Возвращает (true, nil) для валидной подписи, (false, nil) для
-// невалидной (несовпадение), (false, err) для малформированной строки.
-func Verify(msg []byte, sigLine string) (bool, error) {
-	parts := strings.SplitN(sigLine, ":", 3)
-	if len(parts) != 3 {
-		return false, fmt.Errorf("ed25519: sig-строка должна быть name:pubkey:signature, получено %d полей", len(parts))
-	}
-	pub, err := base64.StdEncoding.DecodeString(parts[1])
-	if err != nil {
-		return false, fmt.Errorf("ed25519: pubkey base64: %w", err)
-	}
+// Verify проверяет sig-строку формата «name:signature» против msg
+// с ожидаемым pub (nix-клиент знает pubkey из trusted-public-keys;
+// в 2-полевой sig-строке pubkey не живёт): base64-декодирует
+// signature, сверяет ed25519.Verify. Возвращает (true, nil) для
+// валидной подписи, (false, nil) для невалидной (несовпадение),
+// (false, err) для малформированной строки.
+func Verify(pub ed25519.PublicKey, msg []byte, sigLine string) (bool, error) {
 	if len(pub) != ed25519.PublicKeySize {
 		return false, fmt.Errorf("ed25519: pubkey длиной %d, хочу %d", len(pub), ed25519.PublicKeySize)
 	}
-	sig, err := base64.StdEncoding.DecodeString(parts[2])
+	parts := strings.SplitN(sigLine, ":", 2)
+	if len(parts) != 2 {
+		return false, fmt.Errorf("ed25519: sig-строка должна быть name:signature, получено %d полей", len(parts))
+	}
+	sig, err := base64.StdEncoding.DecodeString(parts[1])
 	if err != nil {
 		return false, fmt.Errorf("ed25519: signature base64: %w", err)
 	}
@@ -160,20 +164,22 @@ func Verify(msg []byte, sigLine string) (bool, error) {
 	return ed25519.Verify(pub, msg, sig), nil
 }
 
-// VerifyWithPubKey проверяет sig-строку, требуя совпадения pubkey в
-// строке с ожидаемым wantPubB64. nix-клиенты доверяют pubkey из
-// конфига (trusted-public-keys), поэтому сверка ожидаемого pubkey
-// обязательна — иначе sig-строка с чужим pubkey прошла бы Verify,
-// если подпись просто валидна под этим чужим ключом.
-func VerifyWithPubKey(msg []byte, sigLine, wantPubB64 string) (bool, error) {
-	parts := strings.SplitN(sigLine, ":", 3)
-	if len(parts) != 3 {
-		return false, fmt.Errorf("ed25519: sig-строка должна быть name:pubkey:signature")
+// VerifyWithPubKey проверяет sig-строку, требуя совпадения имени ключа
+// в строке с ожидаемым wantName и подписи под pub. nix-клиенты
+// доверяют паре «имя:pubkey» из конфига (trusted-public-keys) и
+// сверяют имя в sig-строке с именем ключа (local-keys.cc
+// verifyDetached: keyName обязана совпасть) — иначе sig-строка с
+// чужим именем прошла бы Verify, если подпись просто валидна под
+// чужим ключом.
+func VerifyWithPubKey(pub ed25519.PublicKey, msg []byte, sigLine, wantName string) (bool, error) {
+	parts := strings.SplitN(sigLine, ":", 2)
+	if len(parts) != 2 {
+		return false, fmt.Errorf("ed25519: sig-строка должна быть name:signature")
 	}
-	if parts[1] != wantPubB64 {
+	if parts[0] != wantName {
 		return false, nil
 	}
-	return Verify(msg, sigLine)
+	return Verify(pub, msg, sigLine)
 }
 
 // LoadOrGenerate готовит narinfo-ключ инстанса в keysDir. Первый старт:

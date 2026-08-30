@@ -17,8 +17,10 @@
 // Генератор nix-индексов личного репозитория (port.RepoAdapter).
 // Единственное место в проекте, где мы МЕНЯЕМ чужой файл: narinfo
 // переподписывается Sig'ом ключа инстанса (ed25519, mod/sign/ed25519).
-// nar-файлы (nar/<hash>.nar.xz) — immutable, проходят byte-exact без
-// генерации (загружены и раздаются как есть). Пользователь загружает
+// Подписывается не файл, а nix fingerprint «1;StorePath;NarHash;
+// NarSize;References» (libstore PathInfo::fingerprint) — как делает
+// сам nix. nar-файлы (nar/<hash>.nar.xz) — immutable, проходят byte-exact
+// без генерации (загружены и раздаются как есть). Пользователь загружает
 // <hash>.narinfo + nar/<hash>.nar.xz (hash — 32 символа nix-base32);
 // сервис валидирует narinfo (парсер parse.go, WantNar) и переподписывает
 // Sig по строгим правилам: только поле Sig добавляется/заменяется,
@@ -34,6 +36,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 
 	"khrazhevnik/internal/core/domain"
@@ -192,9 +195,9 @@ func resignNarinfo(ctx context.Context, storage port.Storage, key string, signer
 		return err
 	}
 	if WantNar(n) == "" {
-		return fmt.Errorf("%w: нет валидного URL (nar/<32hex>.nar[.xz])", ErrBadNarinfo)
+		return fmt.Errorf("%w: нет валидного URL (nar/<32 nix-base32>.nar[.xz])", ErrBadNarinfo)
 	}
-	out := resignNarinfoBytes(content, signer)
+	out := resignNarinfoBytes(content, n, signer)
 	// Если Sig не изменился (например, уже наш) — не пишем (no-op).
 	if bytes.Equal(out, content) {
 		return nil
@@ -202,29 +205,31 @@ func resignNarinfo(ctx context.Context, storage port.Storage, key string, signer
 	return writeAtomic(ctx, storage, key, out)
 }
 
-// resignNarinfoBytes переподписывает Sig в content. Алгоритм (байт-точный
+// resignNarinfoBytes переподписывает Sig в content (n — уже разобранный
+// narinfo того же content, парсится в вызывающем коде для валидации).
+// nix подписывает/проверяет не файл, а derived fingerprint
+// (libstore PathInfo::fingerprint) — подписываем его, иначе реальный
+// `nix store verify`/substitution отвергнут Sig. Алгоритм (байт-точный
 // для non-Sig): делим content на строки по \n, выбрасываем ВСЕ Sig-строки
 // (личное репо подписано одним ключом инстанса — чужие Sig не нужны),
-// собираем message = non-Sig строки, joined by \n (без trailing \n —
-// canonical narinfo-сообщение, которое подписывает nix). newSig =
-// signer.Sign(message). Дописываем наш Sig в конец. Trailing \n
-// сохраняется (или добавляется, если не было — Sig-строка обязана
-// завершаться \n, как у nix).
-func resignNarinfoBytes(content []byte, signer port.NarSigner) []byte {
+// собираем fingerprint из полей разобранного narinfo и подписываем.
+// Дописываем наш Sig в конец. Trailing \n сохраняется (или добавляется,
+// если не было — Sig-строка обязана завершаться \n, как у nix).
+func resignNarinfoBytes(content []byte, n *Narinfo, signer port.NarSigner) []byte {
 	hasTrailingNL := len(content) > 0 && content[len(content)-1] == '\n'
 	base := content
 	if hasTrailingNL {
 		base = content[:len(content)-1]
 	}
 	lines := bytes.Split(base, []byte("\n"))
-	// non-Sig строки (все, кроме начинающихся с «Sig:») + сборка message.
+	// non-Sig строки (все, кроме начинающихся с «Sig:»).
 	var nonSig [][]byte
 	for _, l := range lines {
 		if !bytes.HasPrefix(l, []byte("Sig:")) {
 			nonSig = append(nonSig, l)
 		}
 	}
-	msg := bytes.Join(nonSig, []byte("\n"))
+	msg := []byte(fingerprint(n))
 	newSigLine := []byte("Sig: " + signer.Sign(msg))
 	outLines := make([][]byte, 0, len(nonSig)+1)
 	outLines = append(outLines, nonSig...)
@@ -234,6 +239,40 @@ func resignNarinfoBytes(content []byte, signer port.NarSigner) []byte {
 	// завершаться \n). Личное репо всегда отдаёт narinfo с trailing \n.
 	out = append(out, '\n')
 	return out
+}
+
+// fingerprint собирает подписываемое сообщение nix из полей narinfo —
+// в точности libstore PathInfo::fingerprint (все nix-версии с 2.0):
+// "1;" + StorePath + ";" + NarHash + ";" + NarSize + ";" +
+// References.join(","). Нюансы формата, свереные с исходниками nix
+// (path-info.cc / local-keys.cc):
+//   - References — ПОЛНЫЕ пути storeDir + "/" + bare-имя из файла
+//     (printStorePathSet; nix держит их в std::set — сортируем;
+//     общий префикс storeDir не меняет лексический порядок);
+//   - пустой References — пустая строка после trailing «;»;
+//   - NarHash — как в файле, с префиксом «sha256:» (to_string
+//     includeType=true).
+//
+// Именно по этой строке реальный nix-клиент сверяет Sig из narinfo.
+func fingerprint(n *Narinfo) string {
+	// storeDir выводим из StorePath («/nix/store/<hash>-<name>»):
+	// fingerprint требует полных путей, файл хранит bare-имена.
+	storeDir := ""
+	if i := strings.LastIndexByte(n.StorePath, '/'); i >= 0 {
+		storeDir = n.StorePath[:i]
+	}
+	refs := make([]string, len(n.References))
+	copy(refs, n.References)
+	sort.Strings(refs)
+	for i, r := range refs {
+		// bare-имя из narinfo → полный путь; уже полный — как есть
+		// (префикс не дублируется).
+		if !strings.HasPrefix(r, storeDir+"/") {
+			refs[i] = storeDir + "/" + r
+		}
+	}
+	return "1;" + n.StorePath + ";" + n.NarHash + ";" +
+		strconv.FormatInt(n.NarSize, 10) + ";" + strings.Join(refs, ",")
 }
 
 // writeAtomic пишет байты в storage через Put+Commit; на ошибке Abort.

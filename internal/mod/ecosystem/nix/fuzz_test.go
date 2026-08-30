@@ -29,7 +29,7 @@ import (
 //   - без паники на любом вводе;
 //   - размер записи < 16KiB: ввод > лимита → ErrNarinfoTooLarge;
 //   - все пути в URL:-поле валидны относительно /nar/ или запись
-//     отброшена: WantNar либо пусто, либо /nar/<32hex>.nar[.xz];
+//     отброшена: WantNar либо пусто, либо /nar/<32 nix-base32>.nar[.xz];
 //   - детерминизм: повторный разбор тех же байт даёт тот же результат.
 func FuzzParseNarinfo(f *testing.F) {
 	// Посев-корпус: золотой narinfo + синтетика + битые варианты.
@@ -79,7 +79,8 @@ func FuzzParseNarinfo(f *testing.F) {
 			return
 		}
 		// Инвариант путей: WantNar либо пусто (запись отброшена), либо
-		// валидный /nar/<32hex>.nar[.xz] — никаких мусорных путей наружу.
+		// валидный /nar/<32 nix-base32>.nar[.xz] — никаких мусорных
+		// путей наружу.
 		nar := WantNar(first)
 		if nar == "" {
 			return
@@ -122,7 +123,14 @@ func FuzzResignNarinfo(f *testing.F) {
 	signer := &stubNarSigner{}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		out := resignNarinfoBytes(data, signer)
+		// resignNarinfoBytes требует разобранный Narinfo (fingerprint
+		// строится из полей); для fuzz-байт парсим тем же парсером —
+		// не-парсящийся вход здесь невозможен (парсер tolerant).
+		n, err := ParseNarinfo(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("ParseNarinfo(tolerant) на %d байтах: %v", len(data), err)
+		}
+		out := resignNarinfoBytes(data, n, signer)
 		// non-Sig контент обязан сохраниться (байт-точно, modulo trailing
 		// \n — resign всегда добавляет trailing \n для Sig-строки, даже
 		// если во входе его не было).

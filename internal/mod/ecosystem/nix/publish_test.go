@@ -19,6 +19,8 @@ package nix
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -33,9 +35,11 @@ import (
 	"khrazhevnik/internal/testutil"
 )
 
-// fakeNarSigner — port.NarSigner с детерминированным ed25519-ключом
-// (один seed → стабильный pubkey + подпись). Возвращает sig-строку
-// «fake:<pubkey-b64>:<sig>»; Verify (через ed25519) проверяет roundtrip.
+// fakeNarSigner — port.NarSigner с детерминированной «подписью».
+// Возвращает sig-строку «fake:<pubkey-b64>:<sig-hex>» (трёхполевой
+// формат НЕ влияет на инварианты byte-exact — тесты проверяют
+// строку как opaque-значение). Крипто-verify по fingerprint —
+// TestResignSignsFingerprint_RealEd25519.
 type fakeNarSigner struct {
 	name string
 	pub  string
@@ -49,11 +53,28 @@ func newFakeNarSigner() *fakeNarSigner {
 
 func (f *fakeNarSigner) Sign(msg []byte) string {
 	// «подпись» = hex(msg) — детерминирована, проверяем в тестах по
-	// формату, а не крипто-verify (реальный verify — в ed25519_test).
+	// формату, а не крипто-verify (реальный verify — выше и в ed25519_test).
 	return f.name + ":" + f.pub + ":" + hexEncode(msg)
 }
 func (f *fakeNarSigner) PubKeyB64() string { return f.pub }
 func (f *fakeNarSigner) Name() string      { return f.name }
+
+// ed25519Signer — настоящая ed25519-подпись в nix-формате «name:sig»
+// (как mod/sign/ed25519.Signer, но локально: mod→mod depguard запрещает
+// пакету nix импортировать sign-модуль даже в тестах).
+type ed25519Signer struct {
+	name string
+	priv ed25519.PrivateKey
+}
+
+func (s *ed25519Signer) Sign(msg []byte) string {
+	return s.name + ":" + base64.StdEncoding.EncodeToString(ed25519.Sign(s.priv, msg))
+}
+func (s *ed25519Signer) PubKeyB64() string {
+	pub, _ := s.priv.Public().(ed25519.PublicKey)
+	return base64.StdEncoding.EncodeToString(pub)
+}
+func (s *ed25519Signer) Name() string { return s.name }
 
 func hexEncode(b []byte) string {
 	const hex = "0123456789abcdef"
@@ -65,16 +86,23 @@ func hexEncode(b []byte) string {
 	return string(out)
 }
 
-// narinfoForTest — валидный narinfo (URL указывает на nar/<32hex>.nar.xz).
-func narinfoForTest(extraSig string) []byte {
+// narinfoForTest — валидный narinfo (URL указывает на nar/<32 nix-
+// base32>.nar.xz); refs — содержимое References-строки (bare-имена,
+// как в реальном narinfo; fingerprint восстановит полные пути).
+func narinfoForTest(extraSig string, refs ...string) []byte {
 	s := "StorePath: /nix/store/" + narHash32 + "-hello-2.12.1\n" +
 		"URL: nar/" + narHash32 + ".nar.xz\n" +
 		"Compression: xz\n" +
 		"FileHash: sha256:" + strings.Repeat("0", 64) + "\n" +
 		"FileSize: 1024\n" +
 		"NarHash: sha256:" + strings.Repeat("0", 64) + "\n" +
-		"NarSize: 2048\n" +
-		"Deriver: " + narHash32 + "-hello-2.12.1.drv\n"
+		"NarSize: 2048\n"
+	if len(refs) > 0 {
+		s += "References: " + strings.Join(refs, " ") + "\n"
+	} else {
+		s += "References: \n"
+	}
+	s += "Deriver: " + narHash32 + "-hello-2.12.1.drv\n"
 	if extraSig != "" {
 		s += "Sig: " + extraSig + "\n"
 	}
@@ -95,9 +123,13 @@ func stripSigLines(content []byte) []byte {
 }
 
 func TestResignNarinfoBytes_ReplacesSig(t *testing.T) {
-	orig := narinfoForTest("upstream-1:oldpub:oldsig==")
+	orig := narinfoForTest("upstream-1:oldpub:oldsig==", "f0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y-glibc-2.39")
+	n, err := ParseNarinfo(bytes.NewReader(orig))
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := newFakeNarSigner()
-	out := resignNarinfoBytes(orig, s)
+	out := resignNarinfoBytes(orig, n, s)
 	// non-Sig контент байт-точно идентичен.
 	if !bytes.Equal(stripSigLines(orig), stripSigLines(out)) {
 		t.Errorf("non-Sig контент изменился:\norig-stripped: %q\nout-stripped:  %q",
@@ -120,8 +152,12 @@ func TestResignNarinfoBytes_ReplacesSig(t *testing.T) {
 
 func TestResignNarinfoBytes_AppendsSigIfAbsent(t *testing.T) {
 	orig := narinfoForTest("") // без Sig
+	n, err := ParseNarinfo(bytes.NewReader(orig))
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := newFakeNarSigner()
-	out := resignNarinfoBytes(orig, s)
+	out := resignNarinfoBytes(orig, n, s)
 	if !bytes.Equal(stripSigLines(orig), stripSigLines(out)) {
 		t.Errorf("non-Sig контент изменился при добавлении Sig")
 	}
@@ -134,8 +170,12 @@ func TestResignNarinfoBytes_DiffIsSigOnly(t *testing.T) {
 	// Дифф orig → out строго +Sig/-Sig: вычитаем non-Sig → равны, и
 	// ровно одна Sig-строка заменена (origSig ≠ outSig).
 	orig := narinfoForTest("upstream-1:oldpub:oldsig==")
+	n, err := ParseNarinfo(bytes.NewReader(orig))
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := newFakeNarSigner()
-	out := resignNarinfoBytes(orig, s)
+	out := resignNarinfoBytes(orig, n, s)
 	origSig := sigLine(orig)
 	outSig := sigLine(out)
 	if origSig == outSig {
@@ -161,6 +201,139 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// TestFingerprint — точный формат подписываемого сообщения
+// (libstore PathInfo::fingerprint, сверен с исходниками nix 2.0+):
+// «1;StorePath;NarHash;NarSize;Refs», References — ПОЛНЫЕ пути
+// storeDir + "/" + bare-имя из файла, отсортированы; пустой
+// References — пустая строка после trailing «;».
+func TestFingerprint(t *testing.T) {
+	storePath := "/nix/store/" + narHash32 + "-hello-2.12.1"
+	cases := []struct {
+		name string
+		n    *Narinfo
+		want string
+	}{
+		{
+			"пустой References — пустая строка между «;;»",
+			&Narinfo{
+				StorePath:  storePath,
+				NarHash:    "sha256:" + strings.Repeat("0", 64),
+				NarSize:    2048,
+				References: nil,
+			},
+			"1;" + storePath + ";sha256:" + strings.Repeat("0", 64) + ";2048;",
+		},
+		{
+			"References — полные пути, отсортированы",
+			&Narinfo{
+				StorePath: storePath,
+				NarHash:   "sha256:" + strings.Repeat("0", 64),
+				NarSize:   2048,
+				References: []string{
+					"z0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y-zeta-1.0",
+					"f0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y-glibc-2.39",
+				},
+			},
+			"1;" + storePath + ";sha256:" + strings.Repeat("0", 64) +
+				";2048;/nix/store/f0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y-glibc-2.39," +
+				"/nix/store/z0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y-zeta-1.0",
+		},
+		{
+			"References уже с полным путём — не дублируем префикс",
+			&Narinfo{
+				StorePath:  storePath,
+				NarHash:    "sha256:" + strings.Repeat("0", 64),
+				NarSize:    2048,
+				References: []string{storePath},
+			},
+			"1;" + storePath + ";sha256:" + strings.Repeat("0", 64) + ";2048;/nix/store/" + narHash32 + "-hello-2.12.1",
+		},
+	}
+	for _, tc := range cases {
+		if got := fingerprint(tc.n); got != tc.want {
+			t.Errorf("%s: fingerprint = %q, хочу %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestResignSignsFingerprint_RealEd25519 — сессия 33, задача 2:
+// Signer подписывает именно fingerprint (не строки файла), и тест
+// вручную верифицирует подпись ed25519 по собранному fingerprint.
+// Ключ детерминированный (NewKeyFromSeed) — expected-подпись тест
+// строит сам из fingerprint независимо от resign-кода.
+func TestResignSignsFingerprint_RealEd25519(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = byte(i * 7)
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatal("приватный ключ без ed25519.PublicKey")
+	}
+	signer := &ed25519Signer{name: "testkey", priv: priv}
+
+	orig := narinfoForTest("upstream-1:old==", "f0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y-glibc-2.39")
+	n, err := ParseNarinfo(bytes.NewReader(orig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := resignNarinfoBytes(orig, n, signer)
+
+	// Expected-подпись строим сами: fingerprint → ed25519.Sign.
+	fp := fingerprint(n)
+	wantSig := ed25519.Sign(priv, []byte(fp))
+	wantLine := "Sig: testkey:" + base64.StdEncoding.EncodeToString(wantSig)
+
+	got := sigLine(out)
+	if got != wantLine {
+		t.Fatalf("Sig-строка = %q, хочу %q (подпись не по fingerprint)", got, wantLine)
+	}
+	// Механизм nix-verify: base64-decode sig → ed25519.Verify(pub, fp).
+	parts := strings.SplitN(strings.TrimPrefix(got, "Sig: "), ":", 2)
+	if len(parts) != 2 {
+		t.Fatalf("sig-строка не name:sig: %q", got)
+	}
+	sigBytes, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("signature не base64: %v", err)
+	}
+	if !ed25519.Verify(pub, []byte(fp), sigBytes) {
+		t.Fatal("ed25519.Verify по fingerprint отверг подпись")
+	}
+	// Tamper-гвард: подпись по строкам файла не совпадает.
+	linesMsg := strings.Join([]string{
+		"StorePath: /nix/store/" + narHash32 + "-hello-2.12.1",
+		"URL: nar/" + narHash32 + ".nar.xz",
+	}, "\n")
+	if bytes.Equal(ed25519.Sign(priv, []byte(linesMsg)), sigBytes) {
+		t.Fatal("подпись совпала с подписью по строкам файла — подписывается не fingerprint")
+	}
+}
+
+// TestResignGoldenByteDiff — golden-тест на байт-дифф (сессия 33,
+// задача 2): re-sign golden narinfo; дифф строго ±Sig-строки, non-Sig
+// байт-точно; Sig валидируется по fingerprint ключом из testdata.
+func TestResignGoldenByteDiff(t *testing.T) {
+	golden := mustReadTestdata(t, "narinfo.golden")
+	n, err := ParseNarinfo(bytes.NewReader(golden))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := resignNarinfoBytes(golden, n, newFakeNarSigner())
+
+	if !bytes.Equal(stripSigLines(golden), stripSigLines(out)) {
+		t.Errorf("non-Sig дифф golden-переподписи:\ngolden: %q\nout:   %q",
+			stripSigLines(golden), stripSigLines(out))
+	}
+	if origSig, outSig := sigLine(golden), sigLine(out); origSig == outSig {
+		t.Error("Sig не изменилась")
+	}
+	if !bytes.HasSuffix(out, []byte("\n")) {
+		t.Error("trailing \\n потерян")
+	}
 }
 
 func TestValidateObjectPath(t *testing.T) {
