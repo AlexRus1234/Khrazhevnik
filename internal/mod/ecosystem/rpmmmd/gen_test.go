@@ -778,6 +778,38 @@ func TestParseRPMHeaderBadArrayTolerant(t *testing.T) {
 	}
 }
 
+// TestParseRPMHeaderHugeArrayCountNoOOM — crafted count=0xFFFFFFFF при
+// коротком data (аудит 2026-08-30): раньше make([]string, 0, count)
+// аллоцировал до 34 GiB ЕЩЁ ДО цикла → фатальный OOM всего процесса.
+// Инвариант: аллокация ≤ len(data) (каждая строка ≥1 байта
+// NUL-терминатора), парсер тихо собирает фактические строки.
+func TestParseRPMHeaderHugeArrayCountNoOOM(t *testing.T) {
+	rpm := buildRPM("foo", "1.0", "1", "x86_64", "test", 4096, 1724323200,
+		tagSpec{tag: tagRequireName, strs: []string{"libc.so.6", "libz.so.1"}, isArr: true},
+	)
+	// Патчим count в index-записи tagRequireName на 0xFFFFFFFF:
+	// структура — lead(96) + sig(16) + preamble(16) + index + data.
+	sigLen := 16
+	indexOff := leadSize + sigLen + headerPreambleSize
+	// index-записи идут в порядке тегов buildRPM; последняя — extra
+	// (tagRequireName). Считаем её позицию по числу базовых тегов.
+	dataOff := indexOff + 11*indexEntrySize
+	if binary.BigEndian.Uint32(rpm[dataOff:]) != tagRequireName {
+		t.Fatalf("фикстура: на offset %d ожидался tagRequireName", dataOff)
+	}
+	binary.BigEndian.PutUint32(rpm[dataOff+12:], 0xFFFFFFFF)
+
+	hdr, err := ParseRPMHeader(bytes.NewReader(rpm))
+	if err != nil {
+		t.Fatalf("ParseRPMHeader с count=0xFFFFFFFF: %v", err)
+	}
+	// Фактических строк в data две — обе собраны; огромный count не
+	// дал ни OOM, ни лишних пустых строк.
+	if !slices.Equal(hdr.Requires, []string{"libc.so.6", "libz.so.1"}) {
+		t.Errorf("Requires = %v, хочу обе фактические строки", hdr.Requires)
+	}
+}
+
 // TestGenerateIndexesDependencies — primary.xml несёт rpm:sourcerpm и
 // rpm:requires/rpm:provides (entry с name): `dnf install` резолвит
 // зависимости из личного репо.

@@ -496,6 +496,33 @@ func TestEnumerateAptGzFallback(t *testing.T) {
 	}
 }
 
+// TestEnumerateAptGzZipBomb — аудит 2026-08-30: gzip-бомба вместо
+// Packages.gz. Разжатый поток ~2 GiB обязан упереться в
+// декомпресс-лимит 1 GiB и дать ErrDecompressTooLarge, а не съесть
+// память процесса. Память не меряем — достаточно ошибки на пути
+// Enumerate (раньше лимита не было вовсе). Члены бомбы — валидные
+// stanza ~512 KiB (поле в пределах лимита парсера): непарсибельный
+// контент упёрся бы в строковый лимит readLine (~1 MiB) раньше и
+// путь 1 GiB не тестировался бы. Конкатенация gzip-членов —
+// multistream, валидна по RFC 1952; вся бомба в сжатом виде ~2 МБ.
+func TestEnumerateAptGzZipBomb(t *testing.T) {
+	field := bytes.Repeat([]byte("x"), 512<<10) // 512 KiB < 1 MiB-лимита поля
+	member := newGz(t, append(append([]byte("Package: p\nV: "), field...), '\n', '\n'))
+	bomb := bytes.Repeat(member, 4096) // 4096 × 512 KiB = 2 GiB разжатых
+	a := newEnumerateAdapter(t)
+	meta := fakeMeta{files: map[string][]byte{
+		"/apt/debian/dists/stable/Release":                       mustReadTestdata(t, "Release.golden"),
+		"/apt/debian/dists/stable/main/binary-amd64/Packages.gz": bomb,
+		"/apt/debian/dists/stable/main/binary-arm64/Packages.gz": bomb,
+	}}
+	_, err := a.Enumerate(context.Background(), domain.Remote{
+		ID: 1, Name: "debian", Ecosystem: Name, Include: []string{"stable/main"},
+	}, meta)
+	if !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидалась ErrDecompressTooLarge от gzip-бомбы, получено %v", err)
+	}
+}
+
 func TestEnumerateAptXzOnly(t *testing.T) {
 	// upstream публикует только Packages.xz: Enumerate обязана отдать
 	// UnsupportedError с причиной «xz», а не NotFound, неотличимый от

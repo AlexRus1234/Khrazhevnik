@@ -306,3 +306,54 @@ func (r *errReader) Read(p []byte) (int, error) {
 	r.pos += n
 	return n, nil
 }
+
+// countingReader считает прочитанные из r байты: OOM-тестам нужно
+// доказать, что отказ наступает ДО полного прочтения потока.
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
+}
+
+// TestStanzasHugeLineNoNewline — аудит 2026-08-30: строка 2 MiB без
+// \n. Раньше ReadString('\n') буферизовала её целиком ДО проверки
+// лимита; теперь ErrFieldTooLong после ~лимита прочитанного —
+// счётчик доказывает, что из потока взято существенно меньше
+// полного размера (и не больше лимита строки + буфер bufio).
+func TestStanzasHugeLineNoNewline(t *testing.T) {
+	data := bytes.Repeat([]byte("x"), 2<<20) // 2 MiB без \n
+	cr := &countingReader{r: bytes.NewReader(data)}
+	_, err := readAllErr(t, cr)
+	if !errors.Is(err, ErrFieldTooLong) {
+		t.Fatalf("ожидалась ErrFieldTooLong, получено %v", err)
+	}
+	if cr.n >= len(data) {
+		t.Fatalf("прочитано %d из %d байт — отказ обязан наступать до полного прочтения", cr.n, len(data))
+	}
+	if want := maxFieldValue + maxFieldName + 2; cr.n > want+8192 {
+		t.Errorf("прочитано %d байт, хочу не более ~%d (лимит строки + буфер bufio)", cr.n, want)
+	}
+}
+
+// TestStanzasLineAtSliceBoundary — строка длиннее буфера bufio
+// (4096), но короче лимита: куски склеиваются, содержимое не теряется
+// и не дублируется (регрессия чанкового чтения в readLine).
+func TestStanzasLineAtSliceBoundary(t *testing.T) {
+	value := strings.Repeat("y", 8000) // > 4096, < лимита
+	input := []byte("Description: " + value + "\n\n")
+	stanzas, err := readAllErr(t, bytes.NewReader(input))
+	if err != nil {
+		t.Fatalf("строка 8000 байт не должна валить парсер: %v", err)
+	}
+	if len(stanzas) != 1 {
+		t.Fatalf("записей = %d, хочу 1", len(stanzas))
+	}
+	if got := stanzas[0].Get("Description"); got != value {
+		t.Errorf("строка через границу буфера искажена: len=%d, хочу len=%d", len(got), len(value))
+	}
+}

@@ -127,7 +127,7 @@ func stanzas(r io.Reader, lim limits) iter.Seq2[*Stanza, error] {
 		var lastName string
 		count := 0
 		for {
-			line, err := readLine(br)
+			line, err := readLine(br, lim.field+lim.name+2)
 			eof := errors.Is(err, io.EOF)
 			if err != nil && !eof {
 				_ = yield(nil, err)
@@ -167,20 +167,51 @@ func stanzas(r io.Reader, lim limits) iter.Seq2[*Stanza, error] {
 	}
 }
 
-// readLine читает одну строку без ограничения длины (bufio.Reader
-// поднимает буфер при необходимости), срезая финальный \n и \r\n.
-// Возвращает io.EOF, когда поток исчерпан (line при этом может
-// содержать хвост без завершающего перевода — отдаётся как последняя
-// строка). Проглатывание io.EOF здесь было бы вечным циклом:
-// итератор не узнал бы о конце потока.
-func readLine(br *bufio.Reader) (string, error) {
-	line, err := br.ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
+// readLine читает одну строку с потолком max и возвращает её без
+// финального \n и \r\n. ReadString('\n') буферизовал бы строку
+// целиком ДО проверки лимита — гигабайтная строка без \n съедала
+// память до отказа (OOM-путь аудита 2026-08-30), поэтому лимит
+// проверяется В ПРОЦЕССЕ чтения: строка длиннее max (или EOF-хвост
+// длиннее max) → ErrFieldTooLong немедленно, после ~max прочитанного,
+// а не после полного буфера. max — lim.field+lim.name+2: строка-поле
+// длиннее этого перелимитна либо по значению, либо по имени —
+// processLine отклонил бы её всё равно, ранний отказ не сужает
+// множество принимаемых вводов. Возвращает io.EOF, когда поток
+// исчерпан (line при этом может содержать хвост без завершающего
+// перевода — отдаётся как последняя строка). Проглатывание io.EOF
+// здесь было бы вечным циклом: итератор не узнал бы о конце потока.
+// Контракт (line, err) не меняется.
+func readLine(br *bufio.Reader, max int) (string, error) {
+	var buf []byte
+	for {
+		slice, err := br.ReadSlice('\n')
+		switch {
+		case err == nil:
+			// \n найден: срезаем его и собираем строку из кусков.
+			line := slice[:len(slice)-1]
+			if len(buf) > 0 {
+				buf = append(buf, line...)
+				line = buf
+			}
+			return strings.TrimSuffix(string(line), "\r"), nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			// строка длиннее буфера bufio — копим куски до max.
+			if len(buf)+len(slice) > max {
+				return "", ErrFieldTooLong
+			}
+			buf = append(buf, slice...)
+		case errors.Is(err, io.EOF):
+			// \n не встретился: хвост без перевода — последняя
+			// строка; EOF обязан дойти до итератора.
+			if len(buf)+len(slice) > max {
+				return "", ErrFieldTooLong
+			}
+			buf = append(buf, slice...)
+			return strings.TrimSuffix(string(buf), "\r"), io.EOF
+		default:
+			return "", err
+		}
 	}
-	line = strings.TrimSuffix(line, "\n")
-	line = strings.TrimSuffix(line, "\r")
-	return line, err
 }
 
 // processLine разбирает одну строку и обновляет текущую запись.

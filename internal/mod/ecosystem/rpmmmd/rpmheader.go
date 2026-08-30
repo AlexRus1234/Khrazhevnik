@@ -28,7 +28,8 @@
 // rpm.org RPM Format v3. Защита от adversarial-ввода (фаззинг): потолки
 // nindex (64K) и dataLen (16MiB) — на превышение ErrInvalidRPM без
 // чтения гигабайтов; обрезанный поток → io.ReadFull ErrUnexpectedEOF →
-// ErrInvalidRPM; чужой magic → ErrInvalidRPM. Парсер не паникует.
+// ErrInvalidRPM; чужой magic → ErrInvalidRPM. Парсер не паникует и не
+// аллоцирует по недоверенному count.
 
 package rpmmmd
 
@@ -284,12 +285,19 @@ func readHeaderInt32(data []byte, off, typ uint32) int64 {
 // data по offset (STRING_ARRAY, тип 8 — так REQUIRENAME/PROVIDENAME
 // хранятся в реальных .rpm). Чужой тип или выход за границу → nil
 // (tolerant: битый массив не валит парсер); лишний count по сравнению
-// с фактическими строками даёт собранные строки.
+// с фактическими строками даёт собранные строки. Ёмкость среза —
+// min(count, len(rest)): count — недоверенный uint32 из заголовка, без
+// ограничения crafted count=0xFFFFFFFF аллоцирует десятки GiB ещё до
+// цикла (каждая строка ≥1 байта NUL-терминатора, поэтому строк не
+// больше, чем байт в остатке данных; округление вниз).
 func readHeaderStringArray(data []byte, off, count, typ uint32) []string {
 	if typ != typeStringArray || count == 0 || int(off) >= len(data) {
 		return nil
 	}
 	rest := data[off:]
+	if int64(count) > int64(len(rest)) {
+		count = uint32(len(rest))
+	}
 	out := make([]string, 0, count)
 	for i := uint32(0); i < count && len(rest) > 0; i++ {
 		s := rest

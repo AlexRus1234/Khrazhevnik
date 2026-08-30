@@ -52,6 +52,10 @@ const (
 	remoteCacheTTL    = 30 * time.Second
 	mutableIndexTTL   = 5 * time.Minute
 	mutableUnknownTTL = 1 * time.Minute
+
+	// maxDecompressedApt — лимит на разжатый Packages.gz-поток
+	// (zip-bomb guard, инвариант сессии 12 — общий с pacman/apk).
+	maxDecompressedApt = int64(1 << 30) // 1 GiB
 )
 
 func init() {
@@ -310,7 +314,12 @@ func (a *Adapter) enumeratePackages(ctx context.Context, meta port.MetaFetcher, 
 				return nil, fmt.Errorf("unpack Packages.gz: %w", gzErr)
 			}
 			defer func() { _ = gz.Close() }()
-			return scanFilenames(gz, seen, sums)
+			// Декомпресс-лимит (аудит 2026-08-30): злонамеренный upstream
+			// с gzip-бомбой вместо Packages.gz не должен съесть память
+			// процесса — лимит проверяется в процессе чтения (по образцу
+			// pacman/apk).
+			limited := &limitedReader{r: gz, limit: maxDecompressedApt}
+			return scanFilenames(limited, seen, sums)
 		}
 		return nil, err
 	}
@@ -519,4 +528,29 @@ func globToRegex(glob string) *regexp.Regexp {
 	}
 	b.WriteByte('$')
 	return regexp.MustCompile(b.String())
+}
+
+// ErrDecompressTooLarge — разжатый Packages.gz превысил лимит
+// (zip-bomb guard). Сравнение через errors.Is.
+var ErrDecompressTooLarge = errors.New("apt: декомпрессия превысила лимит")
+
+// limitedReader — обёртка, считающая байты и возвращающая
+// ErrDecompressTooLarge при превышении лимита (паттерн pacman/apk):
+// лимит проверяется в процессе чтения, а не после полного буфера.
+type limitedReader struct {
+	r     io.Reader
+	n     int64
+	limit int64
+}
+
+func (l *limitedReader) Read(p []byte) (int, error) {
+	if l.n >= l.limit {
+		return 0, ErrDecompressTooLarge
+	}
+	n, err := l.r.Read(p)
+	l.n += int64(n)
+	if l.n > l.limit {
+		return n, ErrDecompressTooLarge
+	}
+	return n, err
 }
