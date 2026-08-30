@@ -19,11 +19,14 @@ package web
 import (
 	"bytes"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"khrazhevnik/internal/testutil"
 )
 
 // TestStallWriterPassthrough — рекордер тестов не поддерживает
@@ -84,6 +87,66 @@ func TestStallReaderExtendsDeadline(t *testing.T) {
 	}
 	if rec.extends != 2 {
 		t.Errorf("SetReadDeadline вызван %d раз, хочу 2", rec.extends)
+	}
+}
+
+// chainRecorder — дедлайн-рекордер на САМОМ низу цепочки (вместо
+// голого httptest.ResponseRecorder): если ResponseController доходит
+// до него сквозь statusRecorder/auditRecorder, счётчик дедлайнов
+// растёт. Реальные таймауты ставит только conn-based writer — здесь
+// проверяем цепочку Unwrap, а не сам механизм таймаута.
+type chainRecorder struct {
+	*httptest.ResponseRecorder
+	extends int
+}
+
+func (c *chainRecorder) SetReadDeadline(time.Time) error {
+	c.extends++
+	return nil
+}
+
+func (c *chainRecorder) SetWriteDeadline(time.Time) error {
+	c.extends++
+	return nil
+}
+
+// TestResponseControllerReachesWriterThroughRecorders — ядро сессии 32:
+// в прод-цепочках writer обёрнут recorder'ами (statusRecorder на обоих
+// роутерах, auditRecorder поверх на upload-роутах). До фикса у обёрток
+// не было Unwrap, и ResponseController stallWriter/stallReader молча
+// получал errNotSupported: пер-write дедлайны не работали в проде,
+// только в тестах с сырым writer. Собираем обе прод-цепочки и
+// проверяем, что дедлайн доходит до нижнего writer.
+func TestResponseControllerReachesWriterThroughRecorders(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Двойная обёртка upload-цепочки: LogRequests → AuditMiddleware →
+	// хендлер со stallReader (как PUT /repos/{id}/objects/*).
+	uploadChain := LogRequests(log)(
+		AuditMiddleware(testutil.NewFakeAuditLog(), testutil.NewManualClock(time.Unix(0, 0)))(
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = newStallReader(w, r.Body).Read(make([]byte, 1))
+			}),
+		),
+	)
+	bottom := &chainRecorder{ResponseRecorder: httptest.NewRecorder()}
+	uploadChain.ServeHTTP(bottom,
+		httptest.NewRequest(http.MethodPut, "/api/v1/repos/1/objects/x", strings.NewReader("x")))
+	if bottom.extends == 0 {
+		t.Fatal("SetReadDeadline не дошёл сквозь auditRecorder+statusRecorder — Unwrap отсутствует")
+	}
+
+	// Одиночная обёртка публичной раздачи: LogRequests → хендлер со
+	// stallWriter (как GET /{eco}/* и /repo/{name}/* на :29202).
+	publicChain := LogRequests(log)(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = newStallWriter(w).Write([]byte("x"))
+		}),
+	)
+	bottom = &chainRecorder{ResponseRecorder: httptest.NewRecorder()}
+	publicChain.ServeHTTP(bottom, httptest.NewRequest(http.MethodGet, "/pool/main/x/pool.deb", nil))
+	if bottom.extends == 0 {
+		t.Fatal("SetWriteDeadline не дошёл сквозь statusRecorder — Unwrap отсутствует")
 	}
 }
 

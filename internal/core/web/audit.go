@@ -91,6 +91,15 @@ func (r *auditRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap открывает http.ResponseController доступ к нижележащему
+// writer (аудит 2026-08-30): upload-цепочка auditRecorder →
+// statusRecorder → writer без него рвала read-deadline stallReader'а
+// (errNotSupported), и PUT /repos/{id}/objects/* длиннее 30s убивал
+// adminReadTimeout — цель сессии 27 не достигалась.
+func (r *auditRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 // recordAudit собирает запись из контекста запроса и пишет её в порт.
 // Ошибка записи логируется, но не возвращается наверх: аудит не должен
 // ломать основной ответ (контракт port.AuditLog).

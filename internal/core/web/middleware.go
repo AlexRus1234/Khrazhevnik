@@ -92,6 +92,15 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap открывает http.ResponseController доступ к нижележащему
+// writer (аудит 2026-08-30): без него SetWriteDeadline/
+// SetReadDeadline stall-хендлеров молча возвращали errNotSupported
+// на всём публичном роутере — пер-write защита от slow-reader не
+// работала в прод-цепочке, только в тестах с сырым writer.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 // LogRequests — построчный лог запросов (slog): метод, путь, статус,
 // длительность, request_id. Статусы 5xx поднимаются до error.
 func LogRequests(log *slog.Logger) func(http.Handler) http.Handler {
