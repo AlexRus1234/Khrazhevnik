@@ -24,6 +24,7 @@ package main
 import (
 	"context"
 	crand "crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -419,26 +420,48 @@ func wireEcosystems(cfg config.Config, remotes port.RemoteStore) (map[string]por
 	return ecosystems, nil
 }
 
+// Доли бюджета каскада задач (server.waitTasks передаёт 30s целиком;
+// HTTP-фаза уже позади). Одна ошибка стадии больше не прерывает
+// остальные (аудит 2026-08-30, сессия 35):Scheduler, съевший весь
+// бюджет, оставлял ноль WaitAll и DrainBackgroundDeletes — ровно в
+// том деградированном сценарии, где дренаж нужнее всего.
+const (
+	schedulerStopBudget = 10 * time.Second
+	tasksWaitBudget     = 15 * time.Second
+	drainDeletesBudget  = 5 * time.Second
+)
+
 // WaitTasks — хук graceful shutdown: отменяет ctx-дерево фоновых
 // задач и ждёт их завершения в рамках таймаута каскада (server.go).
 // Зеркало: сначала стопаем scheduler (per-remote тикеры), затем
 // TaskRegistry (ручные sync и потенциальные publish — сессия 14),
 // затем дожимаем фоновые удаления прошлых версий mutable-объектов.
+// Каждой стадии — своя доля бюджета; ошибки агрегируются, ни одна
+// стадия не пропускается из-за ошибки предыдущей.
 func (a *App) WaitTasks(ctx context.Context) error {
+	var errs []error
 	if a.Scheduler != nil {
-		if err := a.Scheduler.Stop(ctx); err != nil {
-			return err
+		sctx, cancel := context.WithTimeout(ctx, schedulerStopBudget)
+		defer cancel()
+		if err := a.Scheduler.Stop(sctx); err != nil {
+			errs = append(errs, fmt.Errorf("scheduler stop: %w", err))
 		}
 	}
 	if a.Tasks != nil {
-		if err := a.Tasks.WaitAll(ctx); err != nil {
-			return err
+		tctx, cancel := context.WithTimeout(ctx, tasksWaitBudget)
+		defer cancel()
+		if err := a.Tasks.WaitAll(tctx); err != nil {
+			errs = append(errs, fmt.Errorf("tasks wait: %w", err))
 		}
 	}
 	if a.Cache != nil {
-		return a.Cache.DrainBackgroundDeletes(ctx)
+		dctx, cancel := context.WithTimeout(ctx, drainDeletesBudget)
+		defer cancel()
+		if err := a.Cache.DrainBackgroundDeletes(dctx); err != nil {
+			errs = append(errs, fmt.Errorf("background deletes: %w", err))
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // NotifyRemotesChanged — хук для web.Deps: будит reconcile-цикл

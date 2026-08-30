@@ -67,16 +67,15 @@ type Server struct {
 	mu         sync.Mutex
 	publicAddr string
 	adminAddr  string
+	// shutdownTimeout — бюджет HTTP-фазы каскада; 0 → httpShutdownTimeout.
+	// Поле, а не константа: тесты «висящего» соединения не должны ждать
+	// полные 5s (сессия 35).
+	shutdownTimeout time.Duration
 }
 
 // Run слушает до отмены ctx; при отмене гаснет каскадом. Сбой одного
 // из слушателей останавливает оба и возвращает ошибку.
 func (s *Server) Run(ctx context.Context) error {
-	log := s.Log
-	if log == nil {
-		log = slog.Default()
-	}
-
 	publicLn, err := net.Listen("tcp", s.PublicAddr)
 	if err != nil {
 		return fmt.Errorf("web: слушатель public %s: %w", s.PublicAddr, err)
@@ -86,6 +85,22 @@ func (s *Server) Run(ctx context.Context) error {
 		_ = publicLn.Close()
 		return fmt.Errorf("web: слушатель admin %s: %w", s.AdminAddr, err)
 	}
+	return s.serve(ctx, publicLn, adminLn)
+}
+
+// serve — жизненный цикл уже забинженных слушателей. Отделён от Run,
+// чтобы тесты могли подсунуть свои listener'ы и уронить один из них в
+// рантайме (ветка смерти листенера, сессия 35).
+func (s *Server) serve(ctx context.Context, publicLn, adminLn net.Listener) error {
+	log := s.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	httpTimeout := s.shutdownTimeout
+	if httpTimeout <= 0 {
+		httpTimeout = httpShutdownTimeout
+	}
+
 	s.mu.Lock()
 	s.publicAddr = publicLn.Addr().String()
 	s.adminAddr = adminLn.Addr().String()
@@ -114,16 +129,20 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case err := <-errCh:
-		if cerr := shutdownHTTP(publicSrv, adminSrv); cerr != nil {
-			log.Error("web: ошибки остановки слушателей", "err", cerr)
+		// листенер умер — фоновые задачи всё равно нужно дождаться:
+		// sync_jobs иначе зависают в running до следующего старта.
+		// Бюджет — общий таймаут каскада, а не остаток после HTTP.
+		if cerr := errors.Join(shutdownHTTP(httpTimeout, publicSrv, adminSrv), s.waitTasks()); cerr != nil {
+			log.Error("web: ошибки остановки", "err", cerr)
 		}
 		return err
 	case <-ctx.Done():
 	}
-	if err := shutdownHTTP(publicSrv, adminSrv); err != nil {
-		return err
-	}
-	return s.waitTasks()
+	// Ошибка HTTP-фазы (живой стрим пакетов на публичном слушателе без
+	// WriteTimeout → Shutdown по 5s-таймауту вернёт DeadlineExceeded) не
+	// отменяет фазу задач: стадии каскада независимы, ошибки
+	// агрегируются (аудит 2026-08-30, сессия 35).
+	return errors.Join(shutdownHTTP(httpTimeout, publicSrv, adminSrv), s.waitTasks())
 }
 
 // Addrs — фактические адреса слушателей (после bind внутри Run;
@@ -152,9 +171,11 @@ func serveListener(name string, srv *http.Server, ln net.Listener) error {
 	return nil
 }
 
-// shutdownHTTP гасит слушатели параллельно с общим таймаутом.
-func shutdownHTTP(servers ...*http.Server) error {
-	ctx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+// shutdownHTTP гасит слушатели параллельно с общим таймаутом. Ошибка
+// здесь — не приговор фазе задач: вызывающий join'ит её с остальными
+// стадиями каскада (сессия 35).
+func shutdownHTTP(timeout time.Duration, servers ...*http.Server) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -170,7 +191,8 @@ func shutdownHTTP(servers ...*http.Server) error {
 	return errors.Join(errs...)
 }
 
-// waitTasks выполняет хук фоновых задач с таймаутом каскада.
+// waitTasks выполняет хук фоновых задач с таймаутом каскада. Вызывается
+// даже при ошибке HTTP-фазы: стадии каскада не зависят друг от друга.
 func (s *Server) waitTasks() error {
 	if s.WaitTasks == nil {
 		return nil
