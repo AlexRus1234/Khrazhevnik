@@ -251,9 +251,9 @@ func (p *taskProgress) Log(line string) { p.task.logLine(line) }
 type TaskRegistry struct {
 	mu       sync.Mutex
 	tasks    map[string]*Task
-	active   map[string]*Task // ключ kind|label → бегущая задача
+	active   map[string]*Task    // ключ kind|label → бегущая задача
 	claims   map[string]struct{} // занятые Claim'ами ключи kind|label
-	sem      chan struct{}    // семафор параллелизма (буфер N)
+	sem      chan struct{}       // семафор параллелизма (буфер N)
 	wg       sync.WaitGroup
 	clock    port.Clock
 	shutdown context.Context
