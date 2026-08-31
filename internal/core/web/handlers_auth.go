@@ -40,8 +40,16 @@ type credentials struct {
 // EnsureFirstAdmin (один INSERT ... WHERE NOT EXISTS): параллельные
 // вызовы в bootstrap-окне завершает ровно один победитель, остальные —
 // 403 setup_already_done (аудит 2026-08-27). Опциональный X-Setup-Token.
+// Аудит (аудит 2026-08-30): action/actor кладём до всей логики — роут
+// под AuditMiddleware, каждая попытка (валидная, с кривым
+// X-Setup-Token, повторная) оставляет запись bootstrap-события.
+// Actor «bootstrap»: анонимный входной пункт, identity тут — сам факт
+// bootstrap-попытки (успешный вход пишется движком auth с username).
 func handleSetup(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := WithAuditAction(r.Context(), "setup")
+		ctx = authmw.WithAuditActor(ctx, "bootstrap")
+		*r = *r.WithContext(ctx)
 		if d.Auth == nil {
 			writeErrCode(w, http.StatusNotFound, "not_found")
 			return
@@ -66,7 +74,6 @@ func handleSetup(d Deps) http.HandlerFunc {
 			writeErrCode(w, http.StatusForbidden, "setup_already_done")
 			return
 		}
-		*r = *r.WithContext(WithAuditAction(r.Context(), "setup"))
 		writeJSON(w, http.StatusCreated, userOut(u))
 	}
 }
@@ -98,7 +105,10 @@ func handleLogin(d Deps, limiter *authmw.LoginRateLimit) http.HandlerFunc {
 
 // handleLogout — POST /api/v1/auth/logout: персистентный отзыв JWT
 // (переживает рестарт, сессия 25). Ошибка вставки — не 204: logout,
-// не переживающий рестарт, отчитался бы ложным успехом.
+// не переживающий рестарт, отчитался бы ложным успехом. Аудит —
+// автоматическим middleware на роуте (action auth.logout ставит
+// router-wrapper — хендлер при 401 не выполняется; ранее logout вообще
+// не аудировался, аудит 2026-08-30).
 func handleLogout(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := d.Auth.RevokeSession(r.Context(), authmw.JTIFromContext(r.Context())); err != nil {

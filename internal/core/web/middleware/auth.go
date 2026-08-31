@@ -14,6 +14,30 @@ import (
 	"khrazhevnik/internal/core/port"
 )
 
+// auditActorKey — actor для audit-трейла, когда аутентификация
+// опознала, но отклонила личность (403: валидная сессия без прав,
+// валидный scoped-токен не туда). Ключ живёт здесь, а не в web/audit:
+// middleware не имеет права импортировать web (depguard), а web читает
+// его через AuditActorFromContext — уже импортируя middleware (аудит
+// 2026-08-30).
+type auditActorKey struct{}
+
+// WithAuditActor кладёт опознанного-но-отклонённого actor. Никакого
+// самого токена — только username сессии или префикс токена.
+func WithAuditActor(ctx context.Context, actor string) context.Context {
+	if actor == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, auditActorKey{}, actor)
+}
+
+// AuditActorFromContext достаёт отклонённого actor ("" — не клался).
+// Для web recordAudit: приоритет ниже живой аутентификации.
+func AuditActorFromContext(ctx context.Context) string {
+	actor, _ := ctx.Value(auditActorKey{}).(string)
+	return actor
+}
+
 // authReject — единый отлуп auth-middleware: сбой каталога — 503
 // (валидная учётка не должна маскироваться под 401 при сбое БД),
 // всё остальное — 401.
@@ -81,9 +105,13 @@ func RequireSession(a *auth.Service) func(http.Handler) http.Handler {
 				authReject(w, err)
 				return
 			}
+			// Мутируем сам request (а не создаём копию): наружный
+			// audit-мiddleware держит этот же r и после ответа читает
+			// actor из контекста (аудит 2026-08-30).
 			ctx := context.WithValue(r.Context(), userKey{}, session.User)
 			ctx = context.WithValue(ctx, jtiKey{}, session.JTI)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			*r = *r.WithContext(ctx)
+			next.ServeHTTP(w, r)
 		})
 	}
 }
@@ -102,18 +130,26 @@ func RequireAPIToken(a *auth.Service) func(http.Handler) http.Handler {
 				authReject(w, err)
 				return
 			}
+			// Мутируем сам request — наружный audit-мiddleware видит
+			// token/user после ответа (аудит 2026-08-30).
 			ctx := context.WithValue(r.Context(), userKey{}, user)
 			ctx = context.WithValue(ctx, tokenKey{}, token)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			*r = *r.WithContext(ctx)
+			next.ServeHTTP(w, r)
 		})
 	}
 }
 
 // RequireAdmin enforces the live role loaded from the database.
+// 403 при опознанной не-админ сессии кладёт actor в контекст —
+// отклонённая мутация аудируется с личностью, а не «anonymous».
 func RequireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, ok := UserFromContext(r.Context())
 		if !ok || u.Role != domain.RoleAdmin {
+			if ok {
+				*r = *r.WithContext(WithAuditActor(r.Context(), u.Username))
+			}
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -122,6 +158,7 @@ func RequireAdmin(next http.Handler) http.Handler {
 }
 
 // RequireScope checks an API token scope, or the admin role for sessions.
+// Отклонённый, но валидный токен аудируется своим префиксом.
 func RequireScope(scope domain.Scope) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +177,7 @@ func RequireScope(scope domain.Scope) func(http.Handler) http.Handler {
 					return
 				}
 			}
+			*r = *r.WithContext(WithAuditActor(r.Context(), "token:"+t.Prefix))
 			http.Error(w, "forbidden", http.StatusForbidden)
 		})
 	}
@@ -210,6 +248,8 @@ func RequireRepoAccess(a *auth.Service, repos port.RepoStore) func(http.Handler)
 				next.ServeHTTP(w, r)
 				return
 			}
+			// Валидная сессия без прав на это репо — аудируем личность.
+			*r = *r.WithContext(WithAuditActor(r.Context(), u.Username))
 			http.Error(w, "forbidden", http.StatusForbidden)
 		}))
 		token := tokenMw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -229,6 +269,13 @@ func RequireRepoAccess(a *auth.Service, repos port.RepoStore) func(http.Handler)
 					return
 				}
 			}
+			// Валидный токен не с тем scope — аудируем префикс, не секрет.
+			// RequireAPIToken выше уже положил token-user в request-контекст;
+			// для наружного audit он выглядел бы actor'ом успеха. Затираем
+			// user-контекст значением-заглушкой: реальный actor — маркер.
+			ctx := context.WithValue(r.Context(), userKey{}, domain.User{})
+			ctx = WithAuditActor(ctx, "token:"+t.Prefix)
+			*r = *r.WithContext(ctx)
 			http.Error(w, "forbidden", http.StatusForbidden)
 		}))
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

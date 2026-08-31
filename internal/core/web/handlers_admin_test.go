@@ -483,6 +483,159 @@ func metricsStub() http.Handler {
 	})
 }
 
+// lastAudit — последняя запись фейк-лога (по возрастанию ID).
+func lastAudit(t *testing.T, log *testutil.FakeAuditLog) domain.AuditEntry {
+	t.Helper()
+	entries, err := log.AuditEntries(context.Background(), 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("аудит пуст")
+	}
+	return entries[len(entries)-1]
+}
+
+// TestAuditRejectedMutations — ядро сессии 37: отклонённые auth'ом
+// мутации оставляют записи. 401 (кривой токен) → result="401",
+// actor=anonymous; 403 (валидная сессия без прав) → result="403",
+// actor=username.
+func TestAuditRejectedMutations(t *testing.T) {
+	env := newAdminEnv(t)
+	// 401: POST /remotes с кривым bearer.
+	rec := callAdmin(env, http.MethodPost, "/api/v1/remotes", `{}`, "garbage")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("кривой токен = %d, хочу 401", rec.Code)
+	}
+	e := lastAudit(t, env.audit)
+	if e.Result != "401" || e.Actor != "anonymous" {
+		t.Errorf("401: result=%q actor=%q, хочу 401/anonymous", e.Result, e.Actor)
+	}
+	if e.Action != "create.remotes" {
+		t.Errorf("401: action=%q, хочу create.remotes", e.Action)
+	}
+	// 403: валидная user-сессия на admin-only мутации.
+	rec = callAdmin(env, http.MethodPost, "/api/v1/remotes", `{}`, env.jwtUser)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("user-сессия на /remotes = %d, хочу 403", rec.Code)
+	}
+	e = lastAudit(t, env.audit)
+	if e.Result != "403" || e.Actor != "user" {
+		t.Errorf("403: result=%q actor=%q, хочу 403/user", e.Result, e.Actor)
+	}
+}
+
+// TestAuditScopedTokenForbiddenOnForeignRepo — scoped-токен валиден,
+// но не на это репо: 403 с actor=token:<prefix> (не anonymous —
+// личность атакующего известна из токена).
+func TestAuditScopedTokenForbiddenOnForeignRepo(t *testing.T) {
+	// Свой auth-сервис: FixedRand в newRepoEnv один UUID — все токены
+	// коллидируют по SHA256, TokenBySHA256 нашёл бы admin-токен.
+	// Здесь Rand с двумя значениями: admin-токен и scoped различимы.
+	users := testutil.NewFakeUserStore()
+	tokens := &handlerTokens{}
+	clock := testutil.NewManualClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC))
+	a, err := auth.New(auth.Config{
+		Users: users, Tokens: tokens, Audit: nil, Revocations: testutil.NewFakeRevocations(),
+		Clock: clock, Rand: testutil.FixedRand(
+			"77777777-7777-4777-8777-777777777777",
+			"88888888-8888-4888-8888-888888888888",
+		),
+		JWTSecret: "secret", SessionTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := a.CreateUser(t.Context(), "admin", "password", domain.RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwtAdmin, err := a.IssueSession(t.Context(), admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Репо 1 существует (чужой путь — репо 2 — отвергается по scope
+	// до владельческого lookup).
+	_, scoped, err := a.IssueAPIToken(t.Context(), admin, "scoped", []domain.Scope{"repo:1:write"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditLog := testutil.NewFakeAuditLog()
+	h := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: a, SetupToken: "setup",
+		Repos: testutil.NewFakeRepoStore(), Audit: auditLog,
+		Tasks: NewTaskRegistry(2, clock), Publish: nil, Clock: clock,
+	})
+	// Санити: admin-токен и scoped различимы (разные SHA256).
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/repos/2/objects/pool/x.deb", strings.NewReader("x"))
+	req.ContentLength = 1
+	req.Header.Set("Authorization", "Bearer "+scoped)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("scoped-токен в чужое репо = %d, хочу 403, тело %q (админ JWT %q)", rec.Code, rec.Body.String(), jwtAdmin)
+	}
+	entries, err := auditLog.AuditEntries(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("аудит пуст")
+	}
+	e := entries[len(entries)-1]
+	if e.Result != "403" {
+		t.Errorf("result=%q, хочу 403", e.Result)
+	}
+	if !strings.HasPrefix(e.Actor, "token:") || e.Actor == "token:" {
+		t.Errorf("actor=%q, хочу token:<prefix>", e.Actor)
+	}
+	if !strings.HasPrefix(e.Action, "update.repos.objects") {
+		t.Errorf("action=%q, хочу update.repos.objects*", e.Action)
+	}
+}
+
+// TestAuditLogoutAndSetup — security-события: logout (успешный и
+// отклонённый) и setup-попытки (брутфорс X-Setup-Token) аудируются.
+func TestAuditLogoutAndSetup(t *testing.T) {
+	env := newAdminEnv(t)
+	// Успешный logout — auth.logout от username сессии.
+	rec := callAdmin(env, http.MethodPost, "/api/v1/auth/logout", "", env.jwtAdmin)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("logout = %d", rec.Code)
+	}
+	e := lastAudit(t, env.audit)
+	if e.Action != "auth.logout" || e.Actor != "admin" || e.Result != domain.AuditOK {
+		t.Errorf("logout: %+v", e)
+	}
+	// Logout с кривым токеном — 401, но запись есть.
+	rec = callAdmin(env, http.MethodPost, "/api/v1/auth/logout", "", "garbage")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("logout с кривым токеном = %d, хочу 401", rec.Code)
+	}
+	e = lastAudit(t, env.audit)
+	if e.Action != "auth.logout" || e.Result != "401" || e.Actor != "anonymous" {
+		t.Errorf("logout 401: %+v", e)
+	}
+	// Setup-брутфорс: кривой X-Setup-Token → 403 + запись.
+	// Bootstrap-окно уже закрыто (в env создан admin), ставим SetupToken.
+	h := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Remotes: env.remotes, Audit: env.audit, Tasks: env.tasks, Clock: env.clock,
+	})
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/setup", strings.NewReader(`{"username":"hacker","password":"password"}`))
+	r.RemoteAddr = "10.0.0.7:1"
+	r.Header.Set("X-Setup-Token", "wrong")
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, r)
+	if rec2.Code != http.StatusForbidden {
+		t.Fatalf("setup с кривым токеном = %d, хочу 403", rec2.Code)
+	}
+	e = lastAudit(t, env.audit)
+	if e.Action != "setup" || e.Result != "403" || e.Actor != "bootstrap" {
+		t.Errorf("setup 403: %+v", e)
+	}
+}
+
 // itoa64 — локальный strconv.FormatInt (без импорта ради одной строки).
 func itoa64(n int64) string {
 	if n == 0 {

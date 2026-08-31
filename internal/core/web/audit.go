@@ -20,7 +20,9 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/port"
@@ -35,6 +37,11 @@ type auditDetailKey struct{}
 // происходит (user.create vs user.delete), middleware знает только
 // метод и путь.
 type auditActionKey struct{}
+
+// auditRecordTimeout — потолок записи аудита WithoutCancel-контекстом:
+// он не наследует отмену соединения, но и не должен висеть вечно,
+// если каталог тормозит (аудит 2026-08-30).
+const auditRecordTimeout = 5 * time.Second
 
 // WithAuditDetail кладёт в контекст detail, который audit middleware
 // добавит к автоматической записи. Возвращает новый context.
@@ -54,12 +61,30 @@ func WithAuditAction(ctx context.Context, action string) context.Context {
 	return context.WithValue(ctx, auditActionKey{}, action)
 }
 
+// auditAction — middleware-обёртка: ставит фиксированный action в
+// контекст до auth-слоя, так что отклонённые auth'ом запросы всё равно
+// аудируются осмысленным action'ом (хендлер при reject не выполняется,
+// свой action положить не может). Мутирует request, как auth-
+// middleware: наружный audit читает тот же r (аудит 2026-08-30).
+func auditAction(action string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*r = *r.WithContext(WithAuditAction(r.Context(), action))
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // AuditMiddleware автоматическая запись аудита для всех не-GET /api/v1
-// запросов: actor из auth-контекста (user или «anonymous»), action —
-// из контекста (если хендлер положил) или выводится из метода+пути,
-// object — путь запроса, result — по коду ответа (2xx → ok, иначе error),
-// detail — из контекста, если хендлер положил. Запись идёт после
-// завершения хендлера, не ломает основной поток.
+// запросов: actor из auth-контекста (user, токен, маркер отклонённого
+// или «anonymous»), action — из контекста (если хендлер положил) или
+// выводится из метода+пути, object — путь запроса, result — HTTP-статус
+// ответа (2xx → ok, 401/403/500/... — своим кодом: иначе брутфорс
+// токенов и упавшие в панику мутации неразличимы в трейле, аудит
+// 2026-08-30), detail — из контекста, если хендлер положил. Запись идёт
+// после завершения хендлера, не ломает основной поток; переживает
+// панику хендлера (recover до наружного Recoverer'а — это 500, а не
+// потерянная запись) и отключение клиента (WithoutCancel).
 //
 // GET пропускается без аудита: чтение не мутация. /api/v1/auth/login
 // аудитируется отдельно в хендлере (actor ещё неизвестен до входа).
@@ -72,7 +97,22 @@ func AuditMiddleware(log port.AuditLog, clock port.Clock) func(http.Handler) htt
 				return
 			}
 			rec := &auditRecorder{ResponseWriter: w, status: http.StatusOK}
+			panicked := true
+			defer func() {
+				if panicked {
+					// Паника хендлера: наружный Recoverer ответит 500; здесь
+					// остаётся записать её в аудит, иначе мутация исчезает из
+					// трейла — Recoverer разворачивает стек выше нас (аудит
+					// 2026-08-30). re-panic прокидывает стек в Recoverer.
+					if err := recover(); err != nil {
+						rec.status = http.StatusInternalServerError
+						recordAudit(log, clock, r, rec.status)
+						panic(err)
+					}
+				}
+			}()
 			next.ServeHTTP(rec, r)
+			panicked = false
 			recordAudit(log, clock, r, rec.status)
 		})
 	}
@@ -103,37 +143,71 @@ func (r *auditRecorder) Unwrap() http.ResponseWriter {
 // recordAudit собирает запись из контекста запроса и пишет её в порт.
 // Ошибка записи логируется, но не возвращается наверх: аудит не должен
 // ломать основной ответ (контракт port.AuditLog).
+//
+// WithoutCancel: контекст запроса умирает вместе с соединением, а аудит
+// мутации не должен зависеть от живости клиента — оборванный upload
+// всё равно обязан оставить запись (аудит 2026-08-30). Таймаут — свой
+// короткий, не наследует дедлайны запроса.
 func recordAudit(log port.AuditLog, clock port.Clock, r *http.Request, status int) {
 	if log == nil {
 		return
 	}
 	actor := "anonymous"
-	if u, ok := authmw.UserFromContext(r.Context()); ok {
+	rejected := authmw.AuditActorFromContext(r.Context())
+	if u, ok := authmw.UserFromContext(r.Context()); ok && u.Username != "" {
 		actor = u.Username
-	}
-	if t, ok := authmw.TokenFromContext(r.Context()); ok && actor == "anonymous" {
+	} else if t, ok := authmw.TokenFromContext(r.Context()); ok {
 		actor = "token:" + t.Prefix
+	}
+	if rejected != "" {
+		// auth-middleware опознал, но отлупил (нет прав) — личность
+		// известна, «anonymous» скрыл бы атаку scoped-токеном. Маркер
+		// старше остаточного auth-контекста: reject-ветки затирают
+		// user-контекст заглушкой, но при способе «не успели затереть»
+		// маркер всё равно надёжнее.
+		actor = rejected
 	}
 	action, _ := r.Context().Value(auditActionKey{}).(string)
 	if action == "" {
 		action = actionFromRequest(r)
 	}
 	detail, _ := r.Context().Value(auditDetailKey{}).(string)
-	result := domain.AuditOK
-	if status >= 400 {
-		result = domain.AuditError
-	}
 	entry := domain.AuditEntry{
 		At:     clock.Now(),
 		Actor:  actor,
 		Action: action,
 		Object: r.URL.Path,
-		Result: result,
+		Result: auditResultForStatus(status),
 		Detail: detail,
 	}
-	if err := log.Record(r.Context(), entry); err != nil {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditRecordTimeout)
+	defer cancel()
+	if err := log.Record(ctx, entry); err != nil {
 		// Не ломаем ответ; пишем в slog, чтобы потеря аудита была видна.
 		slog.Default().Warn("аудит: запись не удалась", "err", err, "action", action)
+	}
+}
+
+// auditResultForStatus — result-словарь: успешные мутации остаются
+// «ok» (богатый результат уже в detail успешных записей), отклонённые
+// и упавшие — HTTP-кодом статуса: «401»/«403»/«500» говорят сами за
+// себя и не требуют расшифровки. Неизвестный не-2xx — «error».
+func auditResultForStatus(status int) string {
+	switch {
+	case status < 300:
+		return domain.AuditOK
+	case status == http.StatusUnauthorized,
+		status == http.StatusForbidden,
+		status == http.StatusNotFound,
+		status == http.StatusConflict,
+		status == http.StatusRequestEntityTooLarge,
+		status == http.StatusUnprocessableEntity,
+		status == http.StatusTooManyRequests,
+		status == http.StatusInternalServerError,
+		status == http.StatusServiceUnavailable:
+		return strconv.Itoa(status)
+	default:
+		return domain.AuditError
 	}
 }
 

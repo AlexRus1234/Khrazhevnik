@@ -44,6 +44,7 @@ type repoEnv struct {
 	repos    *testutil.FakeRepoStore
 	storage  *testutil.FakeStorage
 	publish  *publishStub
+	audit    *testutil.FakeAuditLog
 	clock    *testutil.ManualClock
 	jwtAdmin string
 	jwtUser  string
@@ -147,7 +148,7 @@ func newRepoEnv(t *testing.T) *repoEnv {
 	publicH := BuildPublicRouter(Deps{Log: nil, Version: "test", Cache: nil, Ecosystems: nil, Storage: storage, Repos: repos, Signer: &fakeKeySigner{}})
 	return &repoEnv{
 		admin: adminH, public: publicH, auth: a, repos: repos,
-		storage: storage, publish: publish, clock: clock,
+		storage: storage, publish: publish, audit: auditLog, clock: clock,
 		jwtAdmin: jwtAdmin, jwtUser: jwtUser, jwtOther: jwtOther, apiAdmin: apiAdmin,
 	}
 }

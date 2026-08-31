@@ -162,6 +162,7 @@ func BuildAdminRouter(d Deps) http.Handler {
 	r.Use(SecurityHeaders)
 	r.Get("/healthz", handleHealthz)
 	if d.MetricsHandler != nil {
+		// /metrics — за RequireAdminOrAPIToken с admin scope.
 		if d.Auth == nil {
 			// fail closed: без auth-сервиса метрики не отдаются вовсе —
 			// счётчики кеша и латенси внутренняя кухня, «путь живёт без
@@ -170,7 +171,6 @@ func BuildAdminRouter(d Deps) http.Handler {
 				http.Error(w, "metrics unavailable without auth", http.StatusServiceUnavailable)
 			})
 		} else {
-			// /metrics — за RequireAdminOrAPIToken с admin scope.
 			r.With(authmw.RequireAdminOrAPIToken(d.Auth)).Handle("/metrics", d.MetricsHandler)
 		}
 	}
@@ -178,25 +178,34 @@ func BuildAdminRouter(d Deps) http.Handler {
 		api.Get("/", handleAPIRoot(d))
 		if d.Auth != nil {
 			limiter := authmw.NewLoginRateLimit(d.TrustedProxies...)
+			// auditWrap — аудит НАРУЖНО auth-цепочки (аудит 2026-08-30):
+			// отклонённые auth-мiddleware мутации (брутфорс токенов,
+			// scoped-токен в чужое репо, паника хендлера) оставляют
+			// записи c result=401/403/500; actor — из auth-контекста
+			// при успехе, «anonymous»/опознанный маркер при отказе.
+			// Скоуп — только /api/v1, публичный порт не трогаем; GET
+			// внутри middleware пропускается без записи.
+			auditWrap := AuditMiddleware(d.Audit, d.clock())
 			// /setup — анонимный входной пункт, как и /auth/login: тот же
 			// rate-limit (аудит 2026-08-27 — bootstrap-окно не должно быть
-			// бесплатным брутфорс-полигоном).
-			api.With(limiter.Middleware).Post("/setup", handleSetup(d))
+			// бесплатным брутфорс-полигоном). Под audit: неудачные
+			// bootstrap-попытки — security-события (аудит 2026-08-30).
+			api.With(auditWrap, limiter.Middleware).Post("/setup", handleSetup(d))
 			api.With(limiter.Middleware).Post("/auth/login", handleLogin(d, limiter))
-			api.With(authmw.RequireSession(d.Auth)).Post("/auth/logout", handleLogout(d))
+			// logout — security-событие: аудируется даже при отказе
+			// (отозванная/чужая сессия не должна исчезать из трейла).
+			// audit наружнее auth — 401/logout тоже запись; action кладём
+			// до auth: при reject хендлер не выполняется (аудит 2026-08-30).
+			api.With(auditWrap, auditAction("auth.logout"), authmw.RequireSession(d.Auth)).Post("/auth/logout", handleLogout(d))
 
 			// adminAuth — auth-цепочка для admin-only роутов: сессия
 			// админа или admin-scoped API-токен. /metrics выше использует
 			// ту же цепочку.
 			adminAuth := authmw.RequireAdminOrAPIToken(d.Auth)
-			// auditInner — аудит-мiddleware, ставится ПОСЛЕ auth (внутри
-			// цепочки), чтобы видеть actor из auth-контекста. Порядок
-			// chi: With(A, B) → A → B → handler; A — внешний.
-			auditInner := AuditMiddleware(d.Audit, d.clock())
 
 			// /users и /api-tokens — admin-only (вынесены из handlers_auth
 			// для порядка: auth-хендлеры теперь только про аутентификацию).
-			api.With(adminAuth, auditInner).Route("/users", func(users chi.Router) {
+			api.With(auditWrap, adminAuth).Route("/users", func(users chi.Router) {
 				users.Get("/", handleUsers(d))
 				users.Post("/", handleCreateUser(d))
 				users.Delete("/{id}", handleDeleteUser(d))
@@ -206,7 +215,7 @@ func BuildAdminRouter(d Deps) http.Handler {
 			})
 
 			// /remotes — admin-only CRUD upstream'ов + sync-триггер.
-			api.With(adminAuth, auditInner).Route("/remotes", func(remotes chi.Router) {
+			api.With(auditWrap, adminAuth).Route("/remotes", func(remotes chi.Router) {
 				remotes.Get("/", handleListRemotes(d))
 				remotes.Post("/", handleCreateRemote(d))
 				remotes.Patch("/{id}", handleUpdateRemote(d))
@@ -222,8 +231,8 @@ func BuildAdminRouter(d Deps) http.Handler {
 			// суброутера owner-scoped (у него нет Get("/")).
 			repoWrite := authmw.RequireRepoAccess(d.Auth, d.Repos)
 			api.Route("/repos", func(repos chi.Router) {
-				// admin-only: вся CRUD/perms под adminAuth+audit.
-				repos.With(adminAuth, auditInner).Group(func(admin chi.Router) {
+				// admin-only: вся CRUD/perms под audit→adminAuth.
+				repos.With(auditWrap, adminAuth).Group(func(admin chi.Router) {
 					admin.Get("/", handleListRepos(d))
 					admin.Post("/", handleCreateRepo(d))
 					admin.Get("/{id}", handleGetRepo(d))
@@ -233,10 +242,10 @@ func BuildAdminRouter(d Deps) http.Handler {
 					admin.Post("/{id}/perms", handleGrantPerm(d))
 					admin.Delete("/{id}/perms/{userID}", handleRevokePerm(d))
 				})
-				// owner-scoped: objects + reindex под repoWrite+audit.
+				// owner-scoped: objects + reindex под audit→repoWrite.
 				// Паттерны — длинее, чем admin-CRUD, не пересекаются с
 				// /repos/{id} (GET/PATCH/DELETE без хвоста).
-				repos.With(repoWrite, auditInner).Group(func(self chi.Router) {
+				repos.With(auditWrap, repoWrite).Group(func(self chi.Router) {
 					self.Get("/{id}/objects", handleListObjects(d))
 					self.Put("/{id}/objects/*", handlePutObject(d))
 					self.Delete("/{id}/objects/*", handleDeleteObject(d))

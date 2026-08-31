@@ -50,8 +50,11 @@ func TestAuditMiddlewareWritesResultByStatus(t *testing.T) {
 	clock := testutil.NewManualClock(time.Unix(1000, 0))
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		status := http.StatusOK
-		if r.URL.Path == "/api/v1/fail" {
+		switch r.URL.Path {
+		case "/api/v1/fail":
 			status = http.StatusBadRequest
+		case "/api/v1/rejected":
+			status = http.StatusForbidden
 		}
 		w.WriteHeader(status)
 	})
@@ -68,18 +71,26 @@ func TestAuditMiddlewareWritesResultByStatus(t *testing.T) {
 		t.Errorf("OK result = %q", entries[0].Result)
 	}
 
-	// 4xx — result=error.
+	// 403 — result="403" (код статуса, аудит 2026-08-30).
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/rejected", nil))
+	entries, _ = log.AuditEntries(context.Background(), 0, 10)
+	if entries[1].Result != "403" {
+		t.Errorf("403 result = %q, хочу \"403\"", entries[1].Result)
+	}
+
+	// 4xx без явного словаря — result=error.
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/fail", nil))
 	entries, _ = log.AuditEntries(context.Background(), 0, 10)
-	if entries[1].Result != domain.AuditError {
-		t.Errorf("400 result = %q", entries[1].Result)
+	if entries[2].Result != domain.AuditError {
+		t.Errorf("400 result = %q, хочу error", entries[2].Result)
 	}
 
 	// GET — без аудита.
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/x", nil))
-	if log.Len() != 2 {
+	if log.Len() != 3 {
 		t.Errorf("GET записался в аудит: %d", log.Len())
 	}
 }
@@ -158,5 +169,100 @@ func TestStatusForMapping(t *testing.T) {
 		if status != tc.want || code != tc.code {
 			t.Errorf("%v → %d/%q, хочу %d/%q", tc.err, status, code, tc.want, tc.code)
 		}
+	}
+}
+
+// slowAuditLog — фейк, читающий контекст: до отмены записи не
+// принимает (имитация медленного каталога), после отмены — падает,
+// как любой честный store с ctx.
+type slowAuditLog struct {
+	testutil.FakeAuditLog
+}
+
+func (s *slowAuditLog) Record(ctx context.Context, e domain.AuditEntry) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(50 * time.Millisecond):
+		return s.FakeAuditLog.Record(ctx, e)
+	}
+}
+
+// TestAuditRecordSurvivesCancelledContext — ядро сессии 37: отмена
+// r.Context() до Record (клиент оборвал соединение посреди мутации)
+// не должна терять запись аудита — WithoutCancel + свой таймаут.
+func TestAuditRecordSurvivesCancelledContext(t *testing.T) {
+	log := &slowAuditLog{}
+	clock := testutil.NewManualClock(time.Unix(1000, 0))
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h := AuditMiddleware(log, clock)(next)
+	// Отменённый контекст, как у мёртвого соединения.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/remotes", nil).WithContext(ctx)
+	h.ServeHTTP(httptest.NewRecorder(), r)
+	if log.Len() != 1 {
+		t.Fatalf("отмена контекста потеряла запись аудита: %d", log.Len())
+	}
+	entries, _ := log.AuditEntries(context.Background(), 0, 10)
+	if entries[0].Action != "create.remotes" {
+		t.Errorf("action = %q", entries[0].Action)
+	}
+}
+
+// TestAuditMiddlewareRecordsPanic — паника хендлера мутации: запись
+// result=500 остаётся, паника прокидывается наружу (её ловит Recoverer).
+func TestAuditMiddlewareRecordsPanic(t *testing.T) {
+	log := testutil.NewFakeAuditLog()
+	clock := testutil.NewManualClock(time.Unix(1000, 0))
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("handler exploded")
+	})
+	h := AuditMiddleware(log, clock)(next)
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("middleware проглотил панику — Recoverer выше не ответит 500")
+		}
+	}()
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/v1/remotes", nil))
+	entries, _ := log.AuditEntries(context.Background(), 0, 10)
+	if len(entries) != 1 || entries[0].Result != "500" {
+		t.Fatalf("паника не записана как 500: %+v", entries)
+	}
+}
+
+// TestAuditActorFromRejectedAuth — actor опознан-но-отклонён:
+// WithAuditActor (кладут auth-middleware при 403) виден recordAudit'у
+// и перекрывает остаточный auth-контекст (reject-ветки затирают user
+// заглушкой — Username пуст, маркер приоритетнее).
+func TestAuditActorFromRejectedAuth(t *testing.T) {
+	log := testutil.NewFakeAuditLog()
+	clock := testutil.NewManualClock(time.Unix(1000, 0))
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	h := AuditMiddleware(log, clock)(next)
+	// Только маркер отклонённого (auth-контекста нет) → actor = маркер.
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/repos/7/objects/x", nil)
+	r = r.WithContext(authmw.WithAuditActor(r.Context(), "token:deadbeef"))
+	h.ServeHTTP(httptest.NewRecorder(), r)
+	// Реальная механика reject'а: user-контекст затёрт заглушкой
+	// (как в RequireRepoAccess), поверх — маркер.
+	r2 := httptest.NewRequest(http.MethodPost, "/api/v1/repos/7/objects/x", nil)
+	ctx := authmw.WithUserContext(r2.Context(), domain.User{})
+	ctx = authmw.WithAuditActor(ctx, "token:deadbeef")
+	r2 = r2.WithContext(ctx)
+	h.ServeHTTP(httptest.NewRecorder(), r2)
+	entries, _ := log.AuditEntries(context.Background(), 0, 10)
+	if len(entries) != 2 {
+		t.Fatalf("записей = %d, хочу 2", len(entries))
+	}
+	if entries[0].Actor != "token:deadbeef" {
+		t.Errorf("actor отклонённого = %q, хочу token:deadbeef", entries[0].Actor)
+	}
+	if entries[1].Actor != "token:deadbeef" {
+		t.Errorf("actor после затирания user = %q, хочу token:deadbeef", entries[1].Actor)
 	}
 }
