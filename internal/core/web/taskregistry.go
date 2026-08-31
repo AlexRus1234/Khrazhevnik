@@ -241,10 +241,18 @@ func (p *taskProgress) Log(line string) { p.task.logLine(line) }
 // семафором до N (mirror.workers); дубль (kind,label) — 409; сверх N —
 // 429. Shutdown — отмена ctx-дерева: все воркеры получают отмену,
 // WaitAll ждёт их завершения в рамках таймаута каскада (server.go).
+//
+// Claim — атомарная проверка-и-занятие ключа (kind|label) для
+// не-TaskRegistry запускающих сторон (сессия 38: плановый тик
+// планировщика зеркал). Пара Claim/Release занимает тот же ключ, что
+// и Start: ручной и плановый sync одного remote не параллелятся —
+// проигравший узнаёт об этом сразу (409 или skip тика), а не по
+// интерливингу курсоров sync_jobs.
 type TaskRegistry struct {
 	mu       sync.Mutex
 	tasks    map[string]*Task
 	active   map[string]*Task // ключ kind|label → бегущая задача
+	claims   map[string]struct{} // занятые Claim'ами ключи kind|label
 	sem      chan struct{}    // семафор параллелизма (буфер N)
 	wg       sync.WaitGroup
 	clock    port.Clock
@@ -265,6 +273,7 @@ func NewTaskRegistry(workers int, clock port.Clock) *TaskRegistry {
 	return &TaskRegistry{
 		tasks:    make(map[string]*Task),
 		active:   make(map[string]*Task),
+		claims:   make(map[string]struct{}),
 		sem:      make(chan struct{}, workers),
 		clock:    clock,
 		shutdown: ctx,
@@ -273,13 +282,18 @@ func NewTaskRegistry(workers int, clock port.Clock) *TaskRegistry {
 }
 
 // Start регистрирует задачу и запускает fn в фоновой горутине с
-// производным от shutdown контекстом. Лимит параллелизма и дубль
-// проверяются атомарно под mu. fn завершает задачу через возвращённую
-// ошибку: nil → succeeded, иначе failed; отмена ctx — failed.
+// производным от shutdown контекстом. Лимит параллелизма, дубль
+// (kind,label) и внешний Claim проверяются атомарно под mu. fn
+// завершает задачу через возвращённую ошибку: nil → succeeded,
+// иначе failed; отмена ctx — failed.
 func (r *TaskRegistry) Start(kind, label string, fn func(ctx context.Context, p Progress) error) (string, error) {
 	r.mu.Lock()
 	key := kind + "|" + label
 	if _, dup := r.active[key]; dup {
+		r.mu.Unlock()
+		return "", ErrTaskDuplicate
+	}
+	if _, busy := r.claims[key]; busy {
 		r.mu.Unlock()
 		return "", ErrTaskDuplicate
 	}
@@ -299,10 +313,37 @@ func (r *TaskRegistry) Start(kind, label string, fn func(ctx context.Context, p 
 	r.tasks[task.ID] = task
 	r.evictHistoryLocked()
 	r.active[key] = task
+	r.claims[key] = struct{}{}
 	r.mu.Unlock()
 
 	r.launch(task, fn)
 	return task.ID, nil
+}
+
+// Claim атомарно занимает ключ kind|label для внешнего запускающего
+// (плановый тик планировщика зеркал, сессия 38): false — ключ уже
+// занят задачей (Start) или другим Claim. Release обязан освободить
+// ровно тот ключ, что занял Claim (перекос пары оставил бы remote
+// без sync навсегда).
+func (r *TaskRegistry) Claim(kind, label string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := kind + "|" + label
+	if _, busy := r.active[key]; busy {
+		return false
+	}
+	if _, busy := r.claims[key]; busy {
+		return false
+	}
+	r.claims[key] = struct{}{}
+	return true
+}
+
+// Release освобождает ключ, занятый Claim.
+func (r *TaskRegistry) Release(kind, label string) {
+	r.mu.Lock()
+	delete(r.claims, kind+"|"+label)
+	r.mu.Unlock()
 }
 
 // evictHistoryLocked держит историю задач в пределах maxTaskHistory:
@@ -341,6 +382,7 @@ func (r *TaskRegistry) launch(task *Task, fn func(ctx context.Context, p Progres
 			<-r.sem
 			r.mu.Lock()
 			delete(r.active, task.Kind+"|"+task.Label)
+			delete(r.claims, task.Kind+"|"+task.Label)
 			r.mu.Unlock()
 		}()
 		p := &taskProgress{task: task, clock: r.clock}

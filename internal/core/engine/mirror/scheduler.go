@@ -57,6 +57,22 @@ type Scheduler struct {
 	// в wire): reconcile и смерти runner'ов возвращать некому.
 	ErrorHook func(error)
 
+	// ClaimSync — атомарное занятие ключа sync|<name> до старта
+	// планового sync (сессия 38): nil — дедупа нет (тесты без
+	// реестра задач); false — remote уже синхронизируется (ручной
+	// запуск через TaskRegistry или другой тик). UnclaimSync —
+	// парное освобождение после тика. Колбэки, а не TaskRegistry-
+	// детали: планировщик остаётся engine-слоем, склейка — в wire.
+	// Одна точка атомарности на обе стороны — мьютекс реестра задач
+	// (Start занимает тот же ключ, что Claim): иначе тик и ручной
+	// старт в окне «проверил → занял» прошли бы оба.
+	ClaimSync   func(name string) bool
+	UnclaimSync func(name string)
+
+	// DebugHook — опциональный приёмник debug-сообщений цикла (пропуск
+	// тика — штатная ситуация, не error).
+	DebugHook func(string)
+
 	mu        sync.Mutex
 	runners   map[int64]*runner
 	deaths    map[int64]int       // подряд умерших runner'ов (backoff)
@@ -265,6 +281,23 @@ func (s *Scheduler) reportError(err error) {
 	}
 }
 
+// reportDebug — штатные ситуации цикла (пропуск тика при занятом
+// remote, сессия 38): не error-поток, оператору на debug-уровне.
+func (s *Scheduler) reportDebug(msg string) {
+	if s.DebugHook != nil {
+		s.DebugHook(msg)
+	}
+}
+
+// unclaim освобождает ключ sync|<name> после тика. Nil-чек обязателен:
+// тест может подменить ClaimSync, оставив UnclaimSync nil — гонка
+// «tick → defer → подмена колбэка» не должна паниковать.
+func (s *Scheduler) unclaim(name string) {
+	if s.UnclaimSync != nil {
+		s.UnclaimSync(name)
+	}
+}
+
 // runner — per-remote тикер.
 type runner struct {
 	sched  *Scheduler
@@ -329,6 +362,16 @@ func (rn *runner) tick() bool {
 	}
 	if !shouldRun(r) {
 		return false
+	}
+	// дедуп планового тика против ручного sync и второго тика (сессия
+	// 38): атомарное проверка-и-занятие общего ключа. Проигравший тик —
+	// skip, не смерть: следующий тик по расписанию.
+	if rn.sched.ClaimSync != nil {
+		if !rn.sched.ClaimSync(r.Name) {
+			rn.sched.reportDebug(fmt.Sprintf("sync %s: пропуск тика — уже идёт (ручной или другой тик)", r.Name))
+			return true
+		}
+		defer rn.sched.unclaim(r.Name)
 	}
 	ctx, cancel := context.WithCancel(rn.sched.shutdown)
 	defer cancel()

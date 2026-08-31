@@ -387,3 +387,238 @@ func TestShouldRun(t *testing.T) {
 		})
 	}
 }
+
+// claimRecorder — фейк Claim/Unclaim с подсчётом вызовов (сессия 38).
+type claimRecorder struct {
+	mu       sync.Mutex
+	busy     map[string]bool // имя → занят
+	claims   atomic.Int64
+	unclaims atomic.Int64
+	denied   atomic.Int64
+}
+
+func newClaimRecorder() *claimRecorder {
+	return &claimRecorder{busy: map[string]bool{}}
+}
+
+func (c *claimRecorder) claim(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.busy[name] {
+		c.denied.Add(1)
+		return false
+	}
+	c.busy[name] = true
+	c.claims.Add(1)
+	return true
+}
+
+func (c *claimRecorder) unclaim(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.busy, name)
+	c.unclaims.Add(1)
+}
+
+// claimHeld — ручное занятие ключа имитацией ручного sync.
+func (c *claimRecorder) claimHeld(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.busy[name] = true
+}
+
+// releaseHeld — ручное освобождение ключа «ручного sync» (не считается
+// в unclaims тика).
+func (c *claimRecorder) releaseHeld(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.busy, name)
+}
+
+func (c *claimRecorder) isBusy(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.busy[name]
+}
+
+// TestSchedulerTickSkipsWhenManualSyncRunning — ключ sync|<name> занят
+// (ручной запуск через TaskRegistry): плановый тик не стартует второй
+// sync, а молча пропускает — runner жив, debug-сообщение написано.
+func TestSchedulerTickSkipsWhenManualSyncRunning(t *testing.T) {
+	env := newMirrorEnv(t)
+	remote := env.remote
+	remote.SyncInterval = time.Hour
+	if err := env.remotes.UpdateRemote(context.Background(), remote); err != nil {
+		t.Fatal(err)
+	}
+	cr := newClaimRecorder()
+	cr.claimHeld(remote.Name) // ручной sync уже забрал ключ
+	sched := NewScheduler(env.mirror, env.remotes,
+		testutil.FixedRand("44444444-4444-4444-8444-444444444444"), env.clock, 0)
+	sched.ClaimSync = cr.claim
+	sched.UnclaimSync = cr.unclaim
+	var debugs atomic.Int64
+	sched.DebugHook = func(string) { debugs.Add(1) }
+
+	rn := newRunner(sched, remote)
+	if !rn.tick() {
+		t.Fatal("проигравший тик — skip, не смерть runner'а")
+	}
+	if got := env.repo.count("/pkg/a.deb"); got != 0 {
+		t.Fatalf("tick дёрнул upstream (%d запросов) — дедуп не сработал", got)
+	}
+	if debugs.Load() == 0 {
+		t.Error("пропуск тика не отражён в debug-хуке")
+	}
+	if cr.claims.Load() != 0 {
+		t.Errorf("тик не должен занимать ключ при отказе: claims = %d", cr.claims.Load())
+	}
+	if cr.denied.Load() != 1 {
+		t.Errorf("denied = %d, хочу 1", cr.denied.Load())
+	}
+
+	// ручной sync завершён — следующий тик проходит и занимает ключ
+	cr.releaseHeld(remote.Name)
+	if !rn.tick() {
+		t.Fatal("второй тик после освобождения не должен убивать runner")
+	}
+	if got := env.repo.count("/pkg/a.deb"); got != 1 {
+		t.Fatalf("после освобождения sync не состоялся: %d запросов", got)
+	}
+	// claimHeld не считается в claims: один успешный Claim от второго тика
+	if cr.claims.Load() != 1 || cr.unclaims.Load() != 1 {
+		t.Errorf("claims=%d unclaims=%d, хочу 1/1", cr.claims.Load(), cr.unclaims.Load())
+	}
+}
+
+// TestSchedulerTickClaimReleasesAfterSync — ключ занимается на время
+// тика и освобождается после: ручной sync, стартовавший между тиками,
+// не блокируется навсегда.
+func TestSchedulerTickClaimReleasesAfterSync(t *testing.T) {
+	env := newMirrorEnv(t)
+	remote := env.remote
+	remote.SyncInterval = time.Hour
+	if err := env.remotes.UpdateRemote(context.Background(), remote); err != nil {
+		t.Fatal(err)
+	}
+	cr := newClaimRecorder()
+	sched := NewScheduler(env.mirror, env.remotes,
+		testutil.FixedRand("44444444-4444-4444-8444-444444444444"), env.clock, 0)
+	sched.ClaimSync = cr.claim
+	sched.UnclaimSync = cr.unclaim
+
+	rn := newRunner(sched, remote)
+	if !rn.tick() {
+		t.Fatal("свободный remote — тик обязан пройти")
+	}
+	if cr.claims.Load() != 1 {
+		t.Errorf("тик не занял ключ: claims = %d", cr.claims.Load())
+	}
+	if cr.unclaims.Load() != 1 {
+		t.Errorf("ключ не освобождён после тика: unclaims = %d", cr.unclaims.Load())
+	}
+	if cr.isBusy(remote.Name) {
+		t.Error("ключ остался занятым после тика")
+	}
+}
+
+// TestSchedulerTickClaimReleasesOnSyncError — ошибка sync не держит
+// ключ: Unclaim идёт defer'ом, следующий тик может попробовать снова.
+func TestSchedulerTickClaimReleasesOnSyncError(t *testing.T) {
+	env := newMirrorEnv(t)
+	remote := env.remote
+	remote.SyncInterval = time.Hour
+	if err := env.remotes.UpdateRemote(context.Background(), remote); err != nil {
+		t.Fatal(err)
+	}
+	env.repo.setFail("/pkg/a.deb", true)
+	env.repo.setFail("/pkg/b.deb", true)
+	// negative-кеш 5xx ещё пуст — ошибки пойдут в sync напрямую
+	cr := newClaimRecorder()
+	sched := NewScheduler(env.mirror, env.remotes,
+		testutil.FixedRand("44444444-4444-4444-8444-444444444444"), env.clock, 0)
+	sched.ClaimSync = cr.claim
+	sched.UnclaimSync = cr.unclaim
+
+	rn := newRunner(sched, remote)
+	// тик с падающим upstream не убивает runner (ошибки — в sync_jobs)
+	if !rn.tick() {
+		t.Fatal("ошибки sync — не смерть runner'а")
+	}
+	if cr.unclaims.Load() != 1 {
+		t.Errorf("ключ не освобождён после неудачного тика: unclaims = %d", cr.unclaims.Load())
+	}
+	if cr.isBusy(remote.Name) {
+		t.Error("ключ остался занятым после неудачного тика")
+	}
+}
+
+// TestSchedulerClaimSyncNilKeepsOldBehavior — nil-колбэк (деградация
+// без реестра): тик выполняется без дедупа, существующие сценарии
+// не задеты.
+func TestSchedulerClaimSyncNilKeepsOldBehavior(t *testing.T) {
+	env := newMirrorEnv(t)
+	remote := env.remote
+	remote.SyncInterval = time.Hour
+	if err := env.remotes.UpdateRemote(context.Background(), remote); err != nil {
+		t.Fatal(err)
+	}
+	sched := NewScheduler(env.mirror, env.remotes,
+		testutil.FixedRand("44444444-4444-4444-8444-444444444444"), env.clock, 0)
+
+	rn := newRunner(sched, remote)
+	if !rn.tick() {
+		t.Fatal("tick без ClaimSync обязан работать как раньше")
+	}
+	if got := env.repo.count("/pkg/a.deb"); got != 1 {
+		t.Fatalf("sync без дедупа не состоялся: %d запросов", got)
+	}
+}
+
+// TestSchedulerTickVsManualRace — гонка «тик и ручной стартовали
+// одновременно»: обе стороны атомарно проверяют-и-занимают один ключ
+// — проходит ровно одна. Пара тик+тик: один Claim, не два (второй
+// тик — skip). Реальный TaskRegistry в тесте не используется:
+// engine→web импорт запрещён (depguard), атомарность фейка —
+// мьютексом, как в реестре.
+func TestSchedulerTickVsManualRace(t *testing.T) {
+	env := newMirrorEnv(t)
+	remote := env.remote
+	remote.SyncInterval = time.Hour
+	if err := env.remotes.UpdateRemote(context.Background(), remote); err != nil {
+		t.Fatal(err)
+	}
+	cr := newClaimRecorder()
+	sched := NewScheduler(env.mirror, env.remotes,
+		testutil.FixedRand("44444444-4444-4444-8444-444444444444"), env.clock, 0)
+	sched.ClaimSync = cr.claim
+	sched.UnclaimSync = cr.unclaim
+
+	// два «тика» идут параллельно: в Claim проходит один, второй — skip.
+	// Upstream отдаёт тела мгновенно, поэтому шлагбаум не нужен: даже
+	// при быстром sync ровно один Claim засчитывается, второй либо
+	// отказан, либо занял бы ключ при пустом дедупе.
+	const ticks = 2
+	var wg sync.WaitGroup
+	var tickOK atomic.Int64
+	for range ticks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rn := newRunner(sched, remote)
+			if rn.tick() {
+				tickOK.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := cr.claims.Load(); got != 1 {
+		t.Errorf("успешных Claim = %d, хочу ровно 1 (второй тик — skip)", got)
+	}
+	if cr.denied.Load() != 1 {
+		t.Errorf("отказанных Claim = %d, хочу 1", cr.denied.Load())
+	}
+	if tickOK.Load() != ticks {
+		t.Errorf("живых тиков = %d, хочу %d (skip — не смерть)", tickOK.Load(), ticks)
+	}
+}

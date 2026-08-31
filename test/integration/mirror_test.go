@@ -144,6 +144,11 @@ func TestMirrorSchedulerPicksUpRemoteViaAPI(t *testing.T) {
 		cacheEngine, storage, catalog.ObjIndex, catalog.Remotes, catalog.Jobs, clock, ecos)
 	mirrorAPI := mirrorSyncerTest{engine: mirrorEngine, remotes: catalog.Remotes, tasks: tasks}
 	scheduler := mirrorengine.NewScheduler(mirrorEngine, catalog.Remotes, testutil.RealRand(), clock, 0)
+	// дедуп плановый vs ручной sync (сессия 38): тот же ключ, что и
+	// mirrorSyncerTest.Sync → tasks.Start("sync", name) — зеркалирует
+	// wiring wire.go.
+	scheduler.ClaimSync = func(name string) bool { return tasks.Claim("sync", name) }
+	scheduler.UnclaimSync = func(name string) { tasks.Release("sync", name) }
 	scheduler.Start(context.Background())
 	t.Cleanup(func() { _ = scheduler.Stop(context.Background()) })
 

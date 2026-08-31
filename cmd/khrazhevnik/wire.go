@@ -198,6 +198,12 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	// reconcile-цикл переживает транзиентные сбои БД (ретрай на тике),
 	// ошибки — в лог; старт не может «отключить» авто-sync.
 	scheduler.ErrorHook = func(err error) { log.Error("mirror scheduler", "err", err) }
+	// дедуп плановый sync vs ручной (сессия 38): тик занимает тот же
+	// ключ sync|<name>, что и TaskRegistry.Start ручного запуска.
+	// Проигравший тик — skip (debug), проигравший ручной — 409.
+	scheduler.ClaimSync = func(name string) bool { return tasks.Claim("sync", name) }
+	scheduler.UnclaimSync = func(name string) { tasks.Release("sync", name) }
+	scheduler.DebugHook = func(msg string) { log.Debug("mirror scheduler", "msg", msg) }
 	scheduler.Start(context.Background())
 	var metricsHandler http.Handler
 	if cfg.Metrics.Enabled {

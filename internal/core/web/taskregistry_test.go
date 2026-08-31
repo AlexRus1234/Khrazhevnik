@@ -135,6 +135,61 @@ func TestTaskRegistryDuplicateRejected(t *testing.T) {
 	}
 }
 
+// Claim/Release — атомарное занятие ключа для внешнего запускающего
+// (плановый тик планировщика зеркал, сессия 38). Параллелит Start:
+// занятый Claim'ом ключ отклоняет задачу 409, бегущая задача — Claim.
+func TestTaskRegistryClaimBlocksAndIsBlocked(t *testing.T) {
+	r, _ := newTestRegistry(t, 2)
+	if !r.Claim("sync", "debian") {
+		t.Fatal("первый Claim должен проходить")
+	}
+	// Второй Claim того же ключа — отказ.
+	if r.Claim("sync", "debian") {
+		t.Fatal("повторный Claim того же ключа должен отклоняться")
+	}
+	// Ручной Start против занятого ключа — 409 (контракт дубля).
+	if _, err := r.Start("sync", "debian", func(context.Context, Progress) error { return nil }); !errors.Is(err, ErrTaskDuplicate) {
+		t.Fatalf("Start против Claim = %v, хочу ErrTaskDuplicate", err)
+	}
+	// Другой label не задет.
+	if _, err := r.Start("sync", "ubuntu", func(context.Context, Progress) error { return nil }); err != nil {
+		t.Fatalf("другой label против Claim: %v", err)
+	}
+	r.Release("sync", "debian")
+	// После Release ключ снова доступен обеим сторонам.
+	if !r.Claim("sync", "debian") {
+		t.Fatal("Claim после Release должен проходить")
+	}
+	r.Release("sync", "debian")
+	if _, err := r.Start("sync", "debian", func(context.Context, Progress) error { return nil }); err != nil {
+		t.Fatalf("Start после Release: %v", err)
+	}
+}
+
+// Claim против бегущей задачи — false; после завершения задачи ключ
+// освобождён сам (launch чистит и claims, и active).
+func TestTaskRegistryClaimAgainstRunningTask(t *testing.T) {
+	r, _ := newTestRegistry(t, 1)
+	gate := make(chan struct{})
+	id, err := r.Start("sync", "debian", func(ctx context.Context, p Progress) error {
+		<-gate
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitRunning(t, r, id)
+	if r.Claim("sync", "debian") {
+		t.Fatal("Claim против бегущей задачи должен отклоняться")
+	}
+	close(gate)
+	awaitState(t, r, id, taskSucceeded)
+	if !r.Claim("sync", "debian") {
+		t.Fatal("Claim после завершения задачи должен проходить")
+	}
+	r.Release("sync", "debian")
+}
+
 func TestTaskRegistryLimitRejected(t *testing.T) {
 	r, _ := newTestRegistry(t, 2)
 	gate := make(chan struct{})
