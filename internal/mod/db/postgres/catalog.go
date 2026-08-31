@@ -51,16 +51,24 @@ const auditMaxLimit = 1000
 const (
 	sqlUserInsert = `INSERT INTO users (username, password_hash, role, token_version, created_at)
 		VALUES ($1, $2, $3, $4, $5) RETURNING id`
+	// firstUserLockKey — ключ advisory-лока bootstrap-гонки /setup:
+	// произвольный bigint, постоянен между релизами — параллельные
+	// инстансы обязаны биться за один и тот же лок.
+	firstUserLockKey = 1263485018
+	// sqlUserFirstLock — advisory-лок уровня транзакции: снимается
+	// автоматически на Commit/Rollback, отдельный unlock не нужен.
+	sqlUserFirstLock = `SELECT pg_advisory_xact_lock($1)`
 	// sqlUserInsertFirst — атомарный bootstrap первого пользователя:
 	// INSERT выполняется только на пустой таблице; RETURNING на
 	// пропущенной вставке не даёт строк → ErrNoRows → created=false.
-	// pg_advisory_xact_lock в CTE — обязательная сериализация: в READ
-	// COMMITTED два параллельных INSERT..SELECT не видят незакоммиченную
-	// строку конкурента и молча вставили бы двух админов; лок держится
-	// до конца стейтмента (автокоммит), ожидание переоценивает NOT EXISTS.
-	sqlUserInsertFirst = `WITH gate AS (SELECT pg_advisory_xact_lock(1263485018) AS ok)
-		INSERT INTO users (username, password_hash, role, token_version, created_at)
-		SELECT $1, $2, $3, $4, $5 FROM gate WHERE NOT EXISTS (SELECT 1 FROM users) RETURNING id`
+	// Гонку READ COMMITTED гасит не сам statement, а advisory-лок
+	// ОТДЕЛЬНЫМ statement той же транзакции (см. EnsureFirstUser):
+	// снапшот INSERT берётся в начале statement'а — уже после захвата
+	// лока, поэтому проигравший видит закоммиченную строку победителя
+	// (аудит 2026-08-30: лок внутри CTE не работал — снапшот снимался
+	// ДО ожидания лока, и оба писателя видели пустую таблицу).
+	sqlUserInsertFirst = `INSERT INTO users (username, password_hash, role, token_version, created_at)
+		SELECT $1, $2, $3, $4, $5 WHERE NOT EXISTS (SELECT 1 FROM users) RETURNING id`
 	sqlUserSelect = `SELECT id, username, password_hash, role, token_version, created_at FROM users`
 	sqlUserByID   = sqlUserSelect + ` WHERE id = $1`
 	sqlUserByName = sqlUserSelect + ` WHERE username = $1`
@@ -160,15 +168,37 @@ func (s *Store) CreateUser(ctx context.Context, u domain.User) (domain.User, err
 // EnsureFirstUser атомарно создаёт первого пользователя; created=false —
 // таблица уже непуста (параллельный победитель). ErrNoRows от
 // RETURNING на пропущенной INSERT — не ошибка чтения.
+//
+// Advisory-лок — ОТДЕЛЬНЫЙ statement до INSERT, а не CTE: в READ
+// COMMITTED снапшот statement'а снимается до его выполнения, поэтому
+// лок в CTE не сериализовал (T2 снимал снапшот пустой таблицы, ждал
+// лок T1, получал его и вставлял второго админа — аудит 2026-08-30).
+// Здесь T2 сначала ждёт лок, и лишь затем INSERT берёт свежий
+// снапшот, где видит закоммиченную строку победителя.
 func (s *Store) EnsureFirstUser(ctx context.Context, u domain.User) (domain.User, bool, error) {
 	id, err := call(ctx, s, func() (int64, error) {
+		// Автокоммит невозможен: pg_advisory_xact_lock живёт до конца
+		// транзакции — лок и вставка обязаны ехать в одной.
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, err
+		}
+		defer func() { _ = tx.Rollback() }() // после Commit — no-op
+		if _, err := tx.ExecContext(ctx, sqlUserFirstLock, firstUserLockKey); err != nil {
+			return 0, err
+		}
 		var id int64
-		err := s.db.QueryRowContext(ctx, sqlUserInsertFirst,
+		err = tx.QueryRowContext(ctx, sqlUserInsertFirst,
 			u.Username, u.PasswordHash, string(u.Role), u.TokenVersion, dbtalk.Now(u.CreatedAt)).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, nil
+			// Таблица непуста; Commit (а не Rollback) фиксирует штатное
+			// завершение и снимает лок для следующего ждущего.
+			return 0, tx.Commit()
 		}
-		return id, err
+		if err != nil {
+			return 0, err
+		}
+		return id, tx.Commit()
 	})
 	if err != nil {
 		return domain.User{}, false, mapWrite(err, "пользователь", u.Username)
