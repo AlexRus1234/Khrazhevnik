@@ -110,12 +110,15 @@ type PublishAPI interface {
 // BuildPublicRouter — публичный слушатель (:29202): /healthz, раздача
 // пакетов экосистем (сессия 06) и объектов личных репо (сессия 14).
 // Recoverer внутри логгера: паника хендлера отдаёт 500, но строка
-// запроса пишется с итоговым статусом (аудит 2026-08-27).
+// запроса пишется с итоговым статусом (аудит 2026-08-27). NoSniff на
+// весь роутер: браузеру запрещена переинтерпретация и repo-объектов,
+// и upstream-ответов прокси (аудит 2026-08-30).
 func BuildPublicRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(RequestID)
 	r.Use(LogRequests(d.logger()))
 	r.Use(chimw.Recoverer)
+	r.Use(NoSniff)
 	r.Get("/healthz", handleHealthz)
 	if d.Storage != nil && d.Repos != nil {
 		// /repo/<name>/<путь...> — публичная раздача объектов личного

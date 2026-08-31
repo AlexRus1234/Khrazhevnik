@@ -76,6 +76,15 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 			return
 		}
 		defer obj.Body.Close()
+		// Аудит 2026-08-30 (stored-XSS): Content-Type строго по
+		// расширению, не по содержимому — upload валидирует только
+		// путь, а тело, начинающееся с «<html», без этого отдаётся
+		// net/http-сниффингом как text/html на домене зеркала.
+		// Метаданные Storage для repo-объектов не гарантированы
+		// (fs не знает content-type), поэтому единственный источник —
+		// расширение; неизвестное — octet-stream (fail closed к
+		// «скачиванию», не к «рендеру»). Тело при этом byte-exact.
+		w.Header().Set("Content-Type", repoContentType(rest))
 		if obj.Meta.ETag != "" {
 			w.Header().Set("ETag", obj.Meta.ETag)
 		}
@@ -105,6 +114,19 @@ func isImmutableRepoObject(ecosystem, path string) bool {
 		return strings.HasPrefix(path, "pool/")
 	}
 	return false
+}
+
+// repoContentType — Content-Type repo-объекта по расширению пути
+// (аудит 2026-08-30): публикация валидирует расширение, но не тело —
+// сниффинг net/http отдавал бы HTML-подобные объекты как text/html
+// (stored-XSS на :29202). Модель «не сниффим»: типы, которые клиент
+// хочет интерпретировать (json), перечислены явно; всё остальное,
+// включая неизвестные расширения, — octet-stream (fail closed).
+func repoContentType(path string) string {
+	if strings.HasSuffix(path, ".json") {
+		return "application/json"
+	}
+	return "application/octet-stream"
 }
 
 // handleRepoKey отдаёт публичный ключ инстанса (armored OpenPGP) для
