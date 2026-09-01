@@ -19,8 +19,12 @@ package s3
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/minio/minio-go/v7"
@@ -71,10 +75,27 @@ func TestNewRejectsEmpty(t *testing.T) {
 	}
 }
 
+// emptyUploadsXML — пустой ListMultipartUploads-ответ фейка.
+const emptyUploadsXML = `<?xml version="1.0" encoding="UTF-8"?>
+<ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+<IsTruncated>false</IsTruncated>
+</ListMultipartUploadsResult>`
+
+// startFakeS3 поднимает локальный HTTP-фейк S3 и возвращает endpoint
+// (host:port) для конфига/клиента: New теперь ходит списком multipart
+// на старте, внешний endpoint в юнитах повис бы на сети.
+func startFakeS3(t *testing.T, f *fakeS3) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(f.handler))
+	t.Cleanup(srv.Close)
+	return strings.TrimPrefix(srv.URL, "http://")
+}
+
 func TestNewCreatesSpoolAndClient(t *testing.T) {
 	dir := t.TempDir()
+	endpoint := startFakeS3(t, &fakeS3{uploadsXML: emptyUploadsXML})
 	s, err := New(config.S3Storage{
-		Endpoint: "https://play.min.io:9000", Region: "us-east-1",
+		Endpoint: endpoint, Region: "us-east-1",
 		Bucket: "khrazhevnik", AccessKeyID: "id", SecretAccessKey: "key",
 		SpoolDir: dir,
 	}, testutil.FixedRand())
@@ -90,12 +111,13 @@ func TestNewCreatesSpoolAndClient(t *testing.T) {
 // Commit/Abort) вычищаются на старте: живых writers не бывает.
 func TestNewSweepsSpool(t *testing.T) {
 	dir := t.TempDir()
+	endpoint := startFakeS3(t, &fakeS3{uploadsXML: emptyUploadsXML})
 	orphaned := filepath.Join(dir, "orphaned-spool")
 	if err := os.WriteFile(orphaned, []byte("dead body"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := New(config.S3Storage{
-		Endpoint: "https://play.min.io:9000", Region: "us-east-1",
+		Endpoint: endpoint, Region: "us-east-1",
 		Bucket: "khrazhevnik", AccessKeyID: "id", SecretAccessKey: "key",
 		SpoolDir: dir,
 	}, testutil.FixedRand()); err != nil {
@@ -212,5 +234,74 @@ func TestWriterCommitAfterWriteFailure(t *testing.T) {
 	w := &writer{key: "cache/z", failed: true, writeErr: errors.New("enospace")}
 	if err := w.Commit(ctx); err == nil {
 		t.Fatal("Commit после сбоя Write не вернул ошибку")
+	}
+}
+
+// fakeS3 — локальный HTTP-фейк S3 для sweep-multipart: GET ?uploads
+// отдаёт фиксированный XML листинга, GET ?location — us-east-1,
+// DELETE ?uploadId считается абортом. Сети и контейнеров не нужно.
+type fakeS3 struct {
+	uploadsXML string
+	aborts     atomic.Int32
+}
+
+func (f *fakeS3) handler(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "application/xml")
+		switch {
+		case q.Has("uploads"):
+			_, _ = w.Write([]byte(f.uploadsXML))
+		case q.Has("location"):
+			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>` +
+				`<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">us-east-1</LocationConstraint>`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	case http.MethodDelete:
+		f.aborts.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func newFakeClient(t *testing.T, f *fakeS3) *minio.Client {
+	t.Helper()
+	cli, err := minio.New(startFakeS3(t, f), &minio.Options{Secure: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cli
+}
+
+// TestSweepMultipartEmptyNoOp — пустой ListMultipartUploads: sweep
+// завершается без аборта.
+func TestSweepMultipartEmptyNoOp(t *testing.T) {
+	f := &fakeS3{uploadsXML: emptyUploadsXML}
+	cli := newFakeClient(t, f)
+	sweepMultipart(context.Background(), cli, "khrazhevnik")
+	if n := f.aborts.Load(); n != 0 {
+		t.Fatalf("абортов при пустом листинге: %d, хочу 0", n)
+	}
+}
+
+// TestSweepMultipartAbortsOrphan — incomplete-загрузка, осиротевшая
+// после SIGKILL, абортится startup-sweep'ом (сессия 44: осколки
+// multipart не должны копиться в bucket вечно).
+func TestSweepMultipartAbortsOrphan(t *testing.T) {
+	f := &fakeS3{uploadsXML: `<?xml version="1.0" encoding="UTF-8"?>
+<ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+<IsTruncated>false</IsTruncated>
+<Upload>
+<Key>cache/orphan.deb</Key>
+<UploadId>u1</UploadId>
+</Upload>
+</ListMultipartUploadsResult>`}
+	cli := newFakeClient(t, f)
+	sweepMultipart(context.Background(), cli, "khrazhevnik")
+	if n := f.aborts.Load(); n != 1 {
+		t.Fatalf("абортов после sweep: %d, хочу 1", n)
 	}
 }

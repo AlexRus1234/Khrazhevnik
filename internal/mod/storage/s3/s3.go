@@ -15,12 +15,13 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // Package s3 — S3-совместимое хранилище (port.Storage). Put спулирует
-// байты в локальный каталог (storage.s3.spool_dir); Commit — одиночный
-// PutObject (атомарный в S3: объект либо виден целиком, либо нет),
-// Abort — удаление спула. Стриминг-мультипарт на лету — не-цель v1:
-// max_object_size ограничивает и спул, и объект. Единая точка path-
-// traversal — domain.ValidateKey до любого обращения к S3; namespace
-// tmp/ зарезервирован (как в fs) для единообразия контракта.
+// байты в локальный каталог (storage.s3.spool_dir); Commit — PutObject
+// (атомарный в S3: объект либо виден целиком, либо нет), Abort —
+// удаление спула. Объекты крупнее порога multipart'ятся minio-go
+// (single-PUT cap S3 — 5 GiB < cache.max_object_size): стартовый sweep
+// (спул + incomplete multipart) убирает мусор после краха. Единая точка
+// path-traversal — domain.ValidateKey до любого обращения к S3;
+// namespace tmp/ зарезервирован (как в fs) для единообразия контракта.
 package s3
 
 import (
@@ -30,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"log/slog"
 	"mime"
 	"os"
 	"path/filepath"
@@ -98,6 +100,11 @@ func New(cfg config.S3Storage, rand port.Rand) (*Storage, error) {
 	if err := sweepSpool(cfg.SpoolDir); err != nil {
 		return nil, err
 	}
+	// Баундированный контекст: зависший endpoint не должен блокировать
+	// старт дольше таймаута — это та же «деградация без s3».
+	sweepCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sweepMultipart(sweepCtx, cli, cfg.Bucket)
 	return &Storage{client: cli, bucket: cfg.Bucket, spoolDir: cfg.SpoolDir, rand: rand}, nil
 }
 
@@ -117,6 +124,25 @@ func sweepSpool(spoolDir string) error {
 		}
 	}
 	return nil
+}
+
+// sweepMultipart абортит incomplete multipart-загрузки в bucket: крах
+// процесса посреди multipart (SIGKILL) оставляет осколки навсегда —
+// minio-go абортит их только при возврате ошибки, не при гибели
+// процесса. Безопасно на старте: легитимных multipart-загрузок в этот
+// момент нет — единственный писатель bucket — сам процесс. Ошибки
+// логируются и не валят старт: деградация «без s3» хуже мусора.
+func sweepMultipart(ctx context.Context, cli *minio.Client, bucket string) {
+	log := slog.Default().With("bucket", bucket)
+	for info := range cli.ListIncompleteUploads(ctx, bucket, "", true) {
+		if info.Err != nil {
+			log.Warn("s3: sweep multipart: листинг осколков", "err", info.Err)
+			continue
+		}
+		if err := cli.RemoveIncompleteUpload(ctx, bucket, info.Key); err != nil {
+			log.Warn("s3: sweep multipart: аборт осколка", "key", info.Key, "err", err)
+		}
+	}
 }
 
 // Get возвращает ридер поверх зафиксированных байтов. S3 GetObject —
@@ -364,19 +390,23 @@ func (w *writer) Commit(ctx context.Context) error {
 
 // Abort отбрасывает запись и спул-файл. Выполняется даже при
 // отменённом ctx: проверка отмены утекала бы спул и fd при обрыве
-// клиента посреди Put (аудит, fs durability).
+// клиента посреди Put (аудит, fs durability). Close-ошибка не
+// маскирует cleanup и наоборот: Remove выполняется всегда, ошибки
+// собираются в join.
 func (w *writer) Abort(_ context.Context) error {
 	if w.done {
 		return fmt.Errorf("s3: повторный Abort для %q", w.key)
 	}
 	w.done = true
+	var closeErr error
 	if err := w.file.Close(); err != nil {
-		return fmt.Errorf("s3: закрытие спула: %w", err)
+		closeErr = fmt.Errorf("s3: закрытие спула: %w", err)
 	}
-	if err := os.Remove(w.spoolPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("s3: удаление спула: %w", err)
+	var rmErr error
+	if err := os.Remove(w.spoolPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		rmErr = fmt.Errorf("s3: удаление спула: %w", err)
 	}
-	return nil
+	return errors.Join(closeErr, rmErr)
 }
 
 // Убеждаемся, что *os.File через io.ReadSeeker удовлетворяет io.Reader,

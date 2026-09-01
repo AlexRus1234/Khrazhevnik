@@ -109,6 +109,12 @@ func TestCommitMkdirFailure(t *testing.T) {
 	if errors.As(err, &ike) {
 		t.Fatalf("ошибка Commit не должна быть InvalidKeyError: %v", err)
 	}
+	// Ошибка фиксации после done не должна течь tmp до рестарта:
+	// Abort уже заблокирован, чистит сам Commit (сессия 44).
+	entries, err := os.ReadDir(filepath.Join(st.root, tmpDir))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("tmp после сбоя Commit: %d записей (err %v), хочу 0", len(entries), err)
+	}
 }
 
 func TestDeleteNonEmptyDirPassesThrough(t *testing.T) {
@@ -238,6 +244,33 @@ func TestAbortWithCanceledContext(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(st.root, tmpDir))
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("tmp после Abort с отменённым ctx: %d записей (err %v), хочу 0", len(entries), err)
+	}
+}
+
+// TestAbortCloseErrorStillRemovesTmp — Close-ошибка Abort не должна
+// прятать cleanup: tmp удаляется всегда, ошибка возвращается (сессия
+// 44).
+func TestAbortCloseErrorStillRemovesTmp(t *testing.T) {
+	ctx := context.Background()
+	st := newTest(t)
+	w, err := st.Put(ctx, "cache/closefail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	// Двойной Close *os.File детерминированно падает ErrFileClosed на
+	// обеих платформах — без экзотических FS-состояний.
+	if err := w.(*writer).file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Abort(ctx); err == nil {
+		t.Fatal("Abort с Close-ошибкой не вернул ошибку")
+	}
+	entries, err := os.ReadDir(filepath.Join(st.root, tmpDir))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("tmp после Abort с Close-ошибкой: %d записей (err %v), хочу 0", len(entries), err)
 	}
 }
 

@@ -302,11 +302,16 @@ func (w *writer) Commit(ctx context.Context) error {
 		_ = os.Remove(w.tmpPath)
 		return fmt.Errorf("fs: сброс буферов %q: %w", w.key, err)
 	}
+	// Ошибки после done=true не могут рассчитывать на Abort (заблокирован
+	// контрактом «Abort после Commit») — tmp вычищается здесь, а не
+	// ждёт startup-sweep с окном утечки до рестарта.
 	if err := w.file.Close(); err != nil {
+		_ = os.Remove(w.tmpPath)
 		return fmt.Errorf("fs: закрытие временного файла: %w", err)
 	}
 	final := filepath.Join(w.storage.root, filepath.FromSlash(w.key))
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
+		_ = os.Remove(w.tmpPath)
 		return fmt.Errorf("fs: создание каталога объекта: %w", err)
 	}
 	if err := renameReplace(w.tmpPath, final); err != nil {
@@ -322,19 +327,23 @@ func (w *writer) Commit(ctx context.Context) error {
 
 // Abort отбрасывает запись и временный файл. Выполняется даже при
 // отменённом ctx: проверка отмены утекала бы tmp-файл и fd при обрыве
-// клиента посреди Put (аудит, fs durability).
+// клиента посреди Put (аудит, fs durability). Close-ошибка не
+// маскирует cleanup и наоборот: Remove выполняется всегда, ошибки
+// собираются в join.
 func (w *writer) Abort(_ context.Context) error {
 	if w.done {
 		return fmt.Errorf("fs: повторный Abort для %q", w.key)
 	}
 	w.done = true
+	var closeErr error
 	if err := w.file.Close(); err != nil {
-		return fmt.Errorf("fs: закрытие временного файла: %w", err)
+		closeErr = fmt.Errorf("fs: закрытие временного файла: %w", err)
 	}
-	if err := os.Remove(w.tmpPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("fs: удаление временного файла: %w", err)
+	var rmErr error
+	if err := os.Remove(w.tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		rmErr = fmt.Errorf("fs: удаление временного файла: %w", err)
 	}
-	return nil
+	return errors.Join(closeErr, rmErr)
 }
 
 // cryptoRand — port.Rand поверх crypto/rand (как uuidRand в wire).
