@@ -111,6 +111,23 @@ func publishIntegrationEnv(t *testing.T, signer port.Signer) (*web.Server, strin
 		t.Fatal(err)
 	}
 	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, http.DefaultClient, clock, cacheengine.Config{}, metrics.NewCache())
+	// Ecosystems — как в wireApp: карта имён адаптеров, по которой
+	// admin-роутер гейтит ecosystem при POST/PATCH /repos (сессия 45).
+	// Цикл лояльный, как в wireRepoAdaptersForTest: бланк-импорт в этом
+	// тесте только apt, строгий проход по секциям конфига падал бы на
+	// незарегистрированных именах.
+	ecosystems := map[string]port.Ecosystem{}
+	for _, name := range registry.Ecosystems() {
+		factory, err := registry.Ecosystem(name)
+		if err != nil {
+			continue
+		}
+		adapter, err := factory(config.Ecosystem{}, registry.EcosystemDeps{Remotes: catalog.Remotes, Clock: clock})
+		if err != nil {
+			continue
+		}
+		ecosystems[name] = adapter
+	}
 	tasks := web.NewTaskRegistry(2, clock)
 	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, clock, wireRepoAdaptersForTest(signer, clock))
 	publishAPI := publishSyncerTest{engine: publishEngine, repos: catalog.Repos, tasks: tasks}
@@ -121,7 +138,8 @@ func publishIntegrationEnv(t *testing.T, signer port.Signer) (*web.Server, strin
 		AdminAddr:     cfg.Server.AdminListen,
 		AdminHandler: web.BuildAdminRouter(web.Deps{
 			Log: log, Version: "test", Auth: authService, Cache: cacheEngine,
-			Repos: catalog.Repos, Storage: storage, Audit: catalog.Audit,
+			Ecosystems: ecosystems,
+			Repos:      catalog.Repos, Storage: storage, Audit: catalog.Audit,
 			Tasks: tasks, Publish: publishAPI, Clock: clock,
 		}),
 		Log:       log,
