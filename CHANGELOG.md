@@ -48,3 +48,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   неподдерживаемых форматов индексов (apt `Packages.xz`, pacman
   `.db.tar.gz`, rpm-md `.zck`/`.zst`/`.xz`/`.bz2`) вместо generic
   failed.
+- **Конфиг (сессия 42, BREAKING):** удалён мёртвый `cache.mutable_ttl`
+  (определялся и валидировался, но не потреблялся; TTL mutable-индексов
+  — константы адаптеров) — strict TOML теперь отвергает его в старых
+  конфигах с именем ключа; `mirror.max_bandwidth` и
+  `publish.default_quota_bytes` меньше нуля роняют старт вместо
+  молчаливого «unlimited»; опечатка `KHRZ_LOG_LEVEL` видна — warning
+  со значением и подсказкой уровней, уровень остаётся info.

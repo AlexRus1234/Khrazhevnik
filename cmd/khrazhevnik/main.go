@@ -152,15 +152,26 @@ func warnAdminListen(log *slog.Logger, addr string) {
 }
 
 // newLogger — slog в stderr; уровень из KHRZ_LOG_LEVEL, default info.
+// Опечатка в уровне («debuge») не должна молча означать info: warning
+// пишет временный логгер, потому что основной хендлер ещё не создан.
 func newLogger() *slog.Logger {
-	level := slog.LevelInfo
-	switch strings.ToUpper(os.Getenv(logLevelEnv)) {
+	allowed := "debug|info|warn|error"
+	raw := os.Getenv(logLevelEnv)
+	var level slog.Level
+	switch strings.ToUpper(raw) {
 	case "DEBUG":
 		level = slog.LevelDebug
 	case "WARN", "WARNING":
 		level = slog.LevelWarn
 	case "ERROR":
 		level = slog.LevelError
+	case "":
+		level = slog.LevelInfo
+	default:
+		level = slog.LevelInfo
+		slog.New(slog.NewTextHandler(os.Stderr, nil)).Warn(
+			"неизвестный KHRZ_LOG_LEVEL — использую info",
+			"value", raw, "allowed", allowed)
 	}
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 }

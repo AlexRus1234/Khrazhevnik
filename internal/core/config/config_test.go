@@ -70,7 +70,6 @@ func TestLoadDefaults(t *testing.T) {
 		{"auth.session_ttl", cfg.Auth.SessionTTL.Duration, 8 * time.Hour},
 		{"auth.bcrypt_cost", cfg.Auth.BcryptCost, 12},
 		{"auth.touch_interval", cfg.Auth.TouchInterval.Duration, time.Minute},
-		{"cache.mutable_ttl", cfg.Cache.MutableTTL.Duration, 5 * time.Minute},
 		{"cache.stale_if_error", cfg.Cache.StaleIfError, true},
 		{"cache.max_object_size", cfg.Cache.MaxObjectSize.Bytes, int64(20 << 30)},
 		{"cache.negative_ttl_404", cfg.Cache.NegativeTTL404.Duration, 5 * time.Minute},
@@ -116,7 +115,6 @@ driver = "postgres"
 dsn = "postgres://u:p@localhost/khrazhevnik"
 
 [cache]
-mutable_ttl = "2m"
 stale_if_error = false
 max_object_size = "512MiB"
 negative_ttl_404 = "1m"
@@ -157,9 +155,6 @@ enabled = false
 	if cfg.Database.Driver != "postgres" || cfg.Database.DSN != "postgres://u:p@localhost/khrazhevnik" {
 		t.Errorf("database = %+v", cfg.Database)
 	}
-	if cfg.Cache.MutableTTL.Duration != 2*time.Minute {
-		t.Errorf("mutable_ttl = %v", cfg.Cache.MutableTTL)
-	}
 	if cfg.Cache.StaleIfError {
 		t.Error("stale_if_error должен быть false")
 	}
@@ -191,13 +186,9 @@ func TestLoadEnvOverridesTOML(t *testing.T) {
 	path := writeTemp(t, "conf.toml", `
 [server]
 public_listen = "127.0.0.1:13000"
-
-[cache]
-mutable_ttl = "2m"
 `)
 	cfg, err := Load(path, withJWT(map[string]string{
 		"KHRZ_SERVER__PUBLIC_LISTEN":  ":14000",
-		"KHRZ_CACHE__MUTABLE_TTL":     "7m",
 		"KHRZ_CACHE__MAX_OBJECT_SIZE": "1GiB",
 		"KHRZ_MIRROR__WORKERS":        "12",
 		"KHRZ_METRICS__ENABLED":       "false",
@@ -207,9 +198,6 @@ mutable_ttl = "2m"
 	}
 	if cfg.Server.PublicListen != ":14000" {
 		t.Errorf("env не переопределил public_listen: %q", cfg.Server.PublicListen)
-	}
-	if cfg.Cache.MutableTTL.Duration != 7*time.Minute {
-		t.Errorf("env не переопределил mutable_ttl: %v", cfg.Cache.MutableTTL)
 	}
 	if cfg.Cache.MaxObjectSize.Bytes != 1<<30 {
 		t.Errorf("env не переопределил max_object_size: %d", cfg.Cache.MaxObjectSize.Bytes)
@@ -441,9 +429,9 @@ endpoint = "https://s3.example"
 
 func TestLoadEnvParseProblems(t *testing.T) {
 	_, err := Load("", withJWT(map[string]string{
-		"KHRZ_CACHE__MUTABLE_TTL": "5x",
+		"KHRZ_CACHE__NEGATIVE_TTL_404": "5x",
 	}))
-	if err == nil || !strings.Contains(err.Error(), "KHRZ_CACHE__MUTABLE_TTL") {
+	if err == nil || !strings.Contains(err.Error(), "KHRZ_CACHE__NEGATIVE_TTL_404") {
 		t.Errorf("ожидалась проблема env-парсинга с именем переменной, got %v", err)
 	}
 	_, err = Load("", withJWT(map[string]string{
@@ -499,6 +487,42 @@ max_object_siz = "1GiB"
 	}
 	if cfg.Ecosystem["rpm-md"].Enabled {
 		t.Error("ecosystem.rpm_md.enabled = false из TOML не применился")
+	}
+}
+
+// TestLoadTOMLMutableTTLRemoved — cache.mutable_ttl удалён как мёртвый
+// конфиг (аудит 2026-08-30, сессия 42): строгий TOML отвергает его в
+// старых конфигах с именем ключа — оператор видит, что ручка исчезла,
+// а не получает молчаливое «без эффекта».
+func TestLoadTOMLMutableTTLRemoved(t *testing.T) {
+	path := writeTemp(t, "conf.toml", "[cache]\nmutable_ttl = \"5m\"\n")
+	_, err := Load(path, withJWT(nil))
+	if err == nil || !strings.Contains(err.Error(), "cache.mutable_ttl") {
+		t.Fatalf("удалённый mutable_ttl должен ронять strict-TOML, got %v", err)
+	}
+}
+
+// TestLoadNegativeByteSizes — отрицательные max_bandwidth и
+// default_quota_bytes отвергаются на старте (аудит 2026-08-30):
+// ранее они проходили валидацию, а потребители молча трактовали их
+// как unlimited.
+func TestLoadNegativeByteSizes(t *testing.T) {
+	path := writeTemp(t, "conf.toml", `
+[mirror]
+max_bandwidth = "-1MiB"
+
+[publish]
+default_quota_bytes = "-1GiB"
+`)
+	_, err := Load(path, withJWT(nil))
+	if err == nil {
+		t.Fatal("отрицательные размеры должны падать на старте")
+	}
+	msg := err.Error()
+	for _, want := range []string{"mirror.max_bandwidth", "publish.default_quota_bytes", "отрицательным"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("в ошибке валидации нет %q:\n%s", want, msg)
+		}
 	}
 }
 

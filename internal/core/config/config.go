@@ -100,9 +100,10 @@ type Auth struct {
 	TouchInterval Duration `toml:"touch_interval"`
 }
 
-// Cache — параметры pull-through кеша (движок — сессия 06).
+// Cache — параметры pull-through кеша (движок — сессия 06). TTL
+// mutable-объектов задаётся адаптерами экосистем (свои константы
+// по типам индексов), общим конфигом не управляется.
 type Cache struct {
-	MutableTTL     Duration `toml:"mutable_ttl"`
 	StaleIfError   bool     `toml:"stale_if_error"`
 	MaxObjectSize  ByteSize `toml:"max_object_size"`
 	NegativeTTL404 Duration `toml:"negative_ttl_404"`
@@ -171,7 +172,6 @@ const (
 	defaultSessionTTL   = 8 * time.Hour
 	defaultBcryptCost   = 12
 	defaultTouchMark    = time.Minute
-	defaultMutableTTL   = 5 * time.Minute
 	defaultMaxObject    = int64(20 << 30)
 	defaultNegTTL404    = 5 * time.Minute
 	defaultNegTTL5xx    = 30 * time.Second
@@ -196,7 +196,6 @@ func defaultConfig() Config {
 		},
 		Auth: Auth{SessionTTL: Duration{defaultSessionTTL}, BcryptCost: defaultBcryptCost, TouchInterval: Duration{defaultTouchMark}},
 		Cache: Cache{
-			MutableTTL:     Duration{defaultMutableTTL},
 			StaleIfError:   true,
 			MaxObjectSize:  ByteSize{defaultMaxObject},
 			NegativeTTL404: Duration{defaultNegTTL404},
@@ -309,9 +308,6 @@ func (c Config) validate() []error {
 			minJWTSecretLen, len(c.Auth.JWTSecret)))
 	}
 	problems = append(problems, c.validateAuthParams()...)
-	if c.Cache.MutableTTL.Duration <= 0 {
-		problems = append(problems, positiveField("cache.mutable_ttl"))
-	}
 	if c.Cache.MaxObjectSize.Bytes <= 0 {
 		problems = append(problems, positiveField("cache.max_object_size"))
 	}
@@ -327,8 +323,14 @@ func (c Config) validate() []error {
 	if c.Mirror.IntervalJitter.Duration <= 0 {
 		problems = append(problems, positiveField("mirror.interval_jitter"))
 	}
+	if c.Mirror.MaxBandwidth.Bytes < 0 {
+		problems = append(problems, errors.New("конфигурация: mirror.max_bandwidth: не может быть отрицательным"))
+	}
 	if c.Publish.MaxObjectSize.Bytes <= 0 {
 		problems = append(problems, positiveField("publish.max_object_size"))
+	}
+	if c.Publish.DefaultQuotaBytes.Bytes < 0 {
+		problems = append(problems, errors.New("конфигурация: publish.default_quota_bytes: не может быть отрицательным"))
 	}
 	if c.Publish.DefaultQuotaFiles < 0 {
 		problems = append(problems, errors.New("конфигурация: publish.default_quota_files: не может быть отрицательным"))

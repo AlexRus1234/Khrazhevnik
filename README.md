@@ -287,7 +287,6 @@ session_ttl  = "8h"
 setup_token  = ""               # опц. защита bootstrap первого админа
 
 [cache]
-mutable_ttl     = "5m"          # индексы: revalidate по ETag/Last-Modified
 stale_if_error  = true
 max_object_size = "20GiB"
 negative_ttl_404 = "5m" ; negative_ttl_5xx = "30s"

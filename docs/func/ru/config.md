@@ -124,7 +124,6 @@ env или `file://`.
 
 | Ключ               | Default  | Env                                   | Назначение                        |
 |--------------------|----------|---------------------------------------|-----------------------------------|
-| `mutable_ttl`      | `5m`     | `KHRZ_CACHE__MUTABLE_TTL`            | TTL mutable-индексов по умолчанию |
 | `stale_if_error`   | `true`   | `KHRZ_CACHE__STALE_IF_ERROR`         | Отдавать устаревшее при 5xx upstream |
 | `max_object_size`  | `20GiB`  | `KHRZ_CACHE__MAX_OBJECT_SIZE`        | Потолок кешируемого объекта       |
 | `negative_ttl_404` | `5m`     | `KHRZ_CACHE__NEGATIVE_TTL_404`       | Отрицательное кеширование 404     |

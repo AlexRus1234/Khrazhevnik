@@ -19,6 +19,8 @@ package main
 import (
 	"bytes"
 	"log/slog"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -45,5 +47,39 @@ func TestWarnAdminListen(t *testing.T) {
 		if got := buf.Len() > 0; got != tc.wantWarn {
 			t.Errorf("warnAdminListen(%q): предупреждение = %v, хочу %v (лог %q)", tc.addr, got, tc.wantWarn, buf.String())
 		}
+	}
+}
+
+// TestNewLoggerBadLevel — опечатка KHRZ_LOG_LEVEL («debuge») видна:
+// warning со значением и подсказкой допустимых уровней, затем info
+// (аудит 2026-08-30, сессия 42). newLogger пишет в os.Stderr —
+// подменяем на pipe и ждём flush (канал закрывается процессом).
+func TestNewLoggerBadLevel(t *testing.T) {
+	t.Setenv("KHRZ_LOG_LEVEL", "debuge")
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	newLogger()
+	os.Stderr = orig
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	for _, want := range []string{"KHRZ_LOG_LEVEL", "debuge", "debug|info|warn|error"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("в warning о log level нет %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "level=WARN") {
+		t.Errorf("предупреждение должно быть level=WARN:\n%s", got)
 	}
 }
