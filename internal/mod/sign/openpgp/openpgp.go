@@ -130,7 +130,8 @@ func New(keysDir string, passphrase []byte, clock port.Clock) (*Signer, error) {
 	}
 	if fresh {
 		if err := writeKeyFiles(keysDir, entity, passphrase, cfg); err != nil {
-			if !errors.Is(err, os.ErrExist) {
+			var race *keygenRaceError
+			if !errors.As(err, &race) {
 				return nil, err
 			}
 			// Гонка первого старта: соседний процесс создал private.asc
@@ -237,6 +238,22 @@ func privateKeysEncrypted(e *gp.Entity) bool {
 	return encrypted
 }
 
+// keygenRaceError — единственный легальный сигнал reload-ветки New:
+// exclusive-фиксация private.asc встретила уже существующий файл,
+// т.е. ключ раньше создал соседний процесс. Голый os.ErrExist не
+// подходит: на Linux rename(2) поверх каталога (например, public.asc
+// занят каталогом) тоже возвращает EEXIST — ошибка записи public.asc
+// обязана быть fatal, а не превращаться в молчаливый reload.
+type keygenRaceError struct {
+	err error
+}
+
+func (e *keygenRaceError) Error() string {
+	return fmt.Sprintf("openpgp: гонка keygen: %s", e.err)
+}
+
+func (e *keygenRaceError) Unwrap() error { return e.err }
+
 // writeKeyFiles сериализует приватный (опц. зашифрованный passphrase)
 // и публичный ключи в keysDir с правами 0600. private.asc пишется
 // первым и ЭКСКЛЮЗИВНО (O_CREATE|O_EXCL): при гонке двух процессов на
@@ -265,7 +282,9 @@ func writeKeyFiles(keysDir string, entity *gp.Entity, passphrase []byte, cfg *pa
 		if errors.Is(err, os.ErrExist) {
 			// Гонка первого старта: другой процесс успел создать
 			// private.asc — его ключ канонический, наш выкидываем.
-			return err
+			// Маркер вместо голого ErrExist: New различает эту гонку
+			// от прочих EEXIST (rename поверх каталога public.asc).
+			return &keygenRaceError{err: err}
 		}
 		return fmt.Errorf("openpgp: запись %s: %w", privPath, err)
 	}
