@@ -575,9 +575,23 @@ func TestWriteKeyFiles_PrivateBlockedFails(t *testing.T) {
 }
 
 func TestNew_PublicAscIsDirFails(t *testing.T) {
-	// keysDir валиден, но public.asc — каталог: private.asc пишется,
-	// затем writeArmored(public.asc) падает в OpenFile → writeKeyFiles
-	// возвращает ошибку → New падает на ветке fresh-write.
+	// keysDir валиден, но public.asc — каталог. Реакция на rename
+	// поверх каталога непереносима (правило README 10: Linux-CI ≠
+	// Windows-дев) — сначала capability-проба той же парой tmp/каталог:
+	// если ОС разрешает такую замену, непереносимое состояние не
+	// экзотика локального диска — skip.
+	probeDir := t.TempDir()
+	probeTarget := filepath.Join(probeDir, "target")
+	if err := os.Mkdir(probeTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	probeTmp := filepath.Join(probeDir, "src")
+	if err := os.WriteFile(probeTmp, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(probeTmp, probeTarget); err == nil {
+		t.Skip("ОС разрешает rename поверх пустого каталога — public.asc-каталог не блокирует запись здесь")
+	}
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, publicKeyFile), 0o700); err != nil {
 		t.Fatal(err)
