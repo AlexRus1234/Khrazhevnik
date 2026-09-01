@@ -61,6 +61,11 @@ func handleProxy(d Deps) http.HandlerFunc {
 		// а не будет держать FD и tmp-объект вечно (аудит 2026-08-27).
 		n, _ := io.CopyBuffer(newStallWriter(w), obj.Body, make([]byte, 32*1024))
 		d.Cache.AddBytesToClients(n)
+		// object_bytes — точка прокси-отдачи (byte-exact путь, аудит
+		// 2026-08-30): размер скопированного тела + имя экосистемы.
+		if d.Metrics != nil {
+			d.Metrics.ObserveObjectBytes(eco.Name(), float64(n))
+		}
 	}
 }
 

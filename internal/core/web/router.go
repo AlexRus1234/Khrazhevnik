@@ -31,6 +31,7 @@ import (
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/engine/auth"
 	"khrazhevnik/internal/core/engine/cache"
+	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
 	authmw "khrazhevnik/internal/core/web/middleware"
 )
@@ -83,6 +84,11 @@ type Deps struct {
 	// MetricsHandler — /metrics (Prometheus); nil, если метрики
 	// отключены конфигом.
 	MetricsHandler http.Handler
+	// Metrics — экспортер для Observe-гистограмм (latency запросов,
+	// размер отданных объектов): до аудита 2026-08-30 регистрировался,
+	// но не наблюдался никогда. nil (метрики выключены/деградация) —
+	// ObserveMetrics и точка прокси-отдачи работают как no-op.
+	Metrics *metrics.Handler
 	// Clock — для автоматического аудита и хендлеров, где нужно
 	// «сейчас» (создание remote, запуск sync). Тесты подменяют.
 	Clock port.Clock
@@ -117,6 +123,7 @@ func BuildPublicRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(RequestID)
 	r.Use(LogRequests(d.logger()))
+	r.Use(ObserveMetrics(d.Metrics))
 	r.Use(chimw.Recoverer)
 	r.Use(NoSniff)
 	r.Get("/healthz", handleHealthz)
@@ -158,6 +165,7 @@ func BuildAdminRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(RequestID)
 	r.Use(LogRequests(d.logger()))
+	r.Use(ObserveMetrics(d.Metrics))
 	r.Use(chimw.Recoverer)
 	r.Use(SecurityHeaders)
 	r.Get("/healthz", handleHealthz)

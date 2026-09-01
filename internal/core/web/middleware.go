@@ -24,6 +24,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"khrazhevnik/internal/core/metrics"
 )
 
 // RequestIDHeader — заголовок сквозного идентификатора запроса.
@@ -121,6 +123,29 @@ func LogRequests(log *slog.Logger) func(http.Handler) http.Handler {
 					"request_id", RequestIDFromContext(r.Context()),
 					"remote", r.RemoteAddr,
 				)
+			}()
+			next.ServeHTTP(rec, r)
+		})
+	}
+}
+
+// ObserveMetrics наполняет гистограмму khrazhevnik_request_duration_seconds
+// {method,status} (аудит 2026-08-30: до сих пор Observe звался только из
+// тестов, гистограмма была вечно пустой). Статус пишет тот же тип
+// statusRecorder, что и лог запросов — третьей обёртки не плодим; elapsed —
+// от старта middleware (web-доставка, time.Now здесь разрешён). nil-Handler
+// (метрики выключены/деградация) — no-op без обёртки. Ставится НАРУЖУ
+// Recoverer: паника хендлера = 500 от Recoverer — тоже наблюдение.
+func ObserveMetrics(h *metrics.Handler) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if h == nil {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			defer func() {
+				h.ObserveRequestLatency(r.Method, strconv.Itoa(rec.status), time.Since(start).Seconds())
 			}()
 			next.ServeHTTP(rec, r)
 		})

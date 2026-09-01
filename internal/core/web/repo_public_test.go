@@ -154,7 +154,7 @@ func TestPublicNoSniffOnEveryResponse(t *testing.T) {
 // здесь — браузеру запрещена переинтерпретация, но тип честный.
 func TestPublicProxyContentTypePassthroughWithNoSniff(t *testing.T) {
 	const html = "<html><body>mirror index</body></html>"
-	h, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, html)
 	})

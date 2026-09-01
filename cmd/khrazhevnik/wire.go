@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 
 	"khrazhevnik/internal/core/config"
 	"khrazhevnik/internal/core/domain"
@@ -76,6 +77,11 @@ type App struct {
 	Cache          *cacheengine.Engine
 	Tasks          *web.TaskRegistry
 	MetricsHandler http.Handler
+	// Metrics — Prometheus-экспортер для web.Deps обоих роутеров
+	// (гистограммы latency/размера объектов; аудит 2026-08-30: Handler
+	// создавался, но отбрасывался — Observe никогда не вызывался).
+	// nil при выключенных метриках — middleware no-op.
+	Metrics *metrics.Handler
 	// Mirror — API-адаптер движка зеркал для /remotes/{id}/sync (сессия 11).
 	// nil в деградированном режиме (без модулей); API-триггер sync
 	// отдаёт 503 mirror_unavailable.
@@ -213,8 +219,10 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	scheduler.DebugHook = func(msg string) { log.Debug("mirror scheduler", "msg", msg) }
 	scheduler.Start(context.Background())
 	var metricsHandler http.Handler
+	var metricsExporter *metrics.Handler
 	if cfg.Metrics.Enabled {
-		metricsHandler = metrics.NewHandler(cacheEngine.Metrics(), prometheus.NewRegistry()).MetricsHandler()
+		metricsExporter = metrics.NewHandler(cacheEngine.Metrics(), newPromRegistry())
+		metricsHandler = metricsExporter.MetricsHandler()
 	}
 	return &App{
 		Clock:          systemClock{},
@@ -227,12 +235,25 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		Cache:          cacheEngine,
 		Tasks:          tasks,
 		MetricsHandler: metricsHandler,
+		Metrics:        metricsExporter,
 		Mirror:         mirrorAPI,
 		Publish:        publishAPI,
 		Scheduler:      scheduler,
 		Signer:         signer,
 		NarSigner:      narSigner,
 	}, nil
+}
+
+// newPromRegistry — реестр Prometheus с runtime-коллекторами go/process
+// (аудит 2026-08-30): долгоживущий mirror-сервис оператору нужен с
+// goroutines/GC/FD-телеметрией не меньше, чем с hit-ratio. Коллекторы —
+// подпакеты уже whitelisted'ного prometheus/client_golang, новой строки
+// в go.mod нет. Процесс-коллектор на платформах без /proc молча пуст
+// (ReportErrors выключен по умолчанию) — не ошибка.
+func newPromRegistry() *prometheus.Registry {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	return reg
 }
 
 // wireRepoAdapters собирает RepoAdapter'ы из compile-time реестра по

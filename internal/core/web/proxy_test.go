@@ -20,8 +20,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	cacheengine "khrazhevnik/internal/core/engine/cache"
 	"khrazhevnik/internal/core/metrics"
@@ -30,13 +33,15 @@ import (
 )
 
 // newProxyEnv — публичный роутер с живым движком кеша над
-// httptest-upstream.
-func newProxyEnv(t *testing.T, h http.HandlerFunc) (http.Handler, *testutil.ManualClock, *metrics.Cache, *httptest.Server) {
+// httptest-upstream. Возвращает и Metrics-экспортер (завёрнут в Deps)
+// для smoke-проверок exposition-текста.
+func newProxyEnv(t *testing.T, h http.HandlerFunc) (http.Handler, *testutil.ManualClock, *metrics.Cache, *metrics.Handler, *httptest.Server) {
 	t.Helper()
 	up := httptest.NewServer(h)
 	t.Cleanup(up.Close)
 	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
 	m := metrics.NewCache()
+	exporter := metrics.NewHandler(m, prometheus.NewRegistry())
 	engine := cacheengine.New(
 		testutil.NewFakeStorage(clock), testutil.NewFakeObjectIndex(),
 		up.Client(), clock,
@@ -44,8 +49,8 @@ func newProxyEnv(t *testing.T, h http.HandlerFunc) (http.Handler, *testutil.Manu
 		m,
 	)
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: 40 * time.Second}
-	handler := BuildPublicRouter(Deps{Version: "test", Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}})
-	return handler, clock, m, up
+	handler := BuildPublicRouter(Deps{Version: "test", Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}, Metrics: exporter})
+	return handler, clock, m, exporter, up
 }
 
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
@@ -56,14 +61,14 @@ func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 }
 
 func TestProxyUnknownEcosystem(t *testing.T) {
-	h, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 	if rec := get(t, h, "/nosuch/pkg/a.deb"); rec.Code != http.StatusNotFound {
 		t.Fatalf("неизвестная экосистема = %d, хочу 404", rec.Code)
 	}
 }
 
 func TestProxyServesAndCaches(t *testing.T) {
-	h, _, m, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+	h, _, m, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/deb")
 		w.Header().Set("ETag", `"e1"`)
 		_, _ = io.WriteString(w, "payload")
@@ -100,7 +105,7 @@ func TestProxyServesAndCaches(t *testing.T) {
 
 func TestProxyErrorCodes(t *testing.T) {
 	t.Run("404 upstream → 404 клиенту", func(t *testing.T) {
-		h, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404) })
+		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404) })
 		rec := get(t, h, "/t/pkg/none.deb")
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("код = %d, хочу 404", rec.Code)
@@ -110,7 +115,7 @@ func TestProxyErrorCodes(t *testing.T) {
 		}
 	})
 	t.Run("5xx без копии → 502 клиенту", func(t *testing.T) {
-		h, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(503) })
+		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(503) })
 		if rec := get(t, h, "/t/idx/down"); rec.Code != http.StatusBadGateway {
 			t.Fatalf("код = %d, хочу 502", rec.Code)
 		}
@@ -133,7 +138,7 @@ func TestProxyErrorCodes(t *testing.T) {
 
 func TestProxyStaleServedWithWarning(t *testing.T) {
 	requests := 0
-	h, clock, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+	h, clock, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		requests++
 		if requests == 1 {
 			w.Header().Set("ETag", `"v1"`)
@@ -160,6 +165,49 @@ func TestProxyStaleServedWithWarning(t *testing.T) {
 		t.Errorf("X-Cache = %q, хочу STALE", got)
 	}
 	if got := rec.Header().Get("Warning"); got != `111 khrazhevnik "revalidation failed"` {
-		t.Errorf("Warning = %q", got)
+		t.Errorf("Warning = %q, хочу 111", got)
+	}
+}
+
+// scrapeMetrics — exposition-текст /metrics из экспортера (smoke-проверка
+// наличия метрик по подстрокам, без декодирования формата).
+func scrapeMetrics(t *testing.T, h *metrics.Handler) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return rec.Body.String()
+}
+
+// TestMetricsLatencyObserved — request_duration_seconds наполняется
+// реальным трафиком с корректными (method, status) (аудит 2026-08-30:
+// Observe-методы звались только из тестов, гистограмма была пустой).
+func TestMetricsLatencyObserved(t *testing.T) {
+	h, _, _, exporter, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "payload")
+	})
+	get(t, h, "/t/pkg/a.deb")
+	get(t, h, "/nosuch/pkg/a.deb") // неизвестная экосистема → 404
+	body := scrapeMetrics(t, exporter)
+	if !strings.Contains(body, `khrazhevnik_request_duration_seconds_count{method="GET",status="200"} 1`) {
+		t.Errorf("нет наблюдения GET/200 в request_duration_seconds:\n%s", body)
+	}
+	if !strings.Contains(body, `khrazhevnik_request_duration_seconds_count{method="GET",status="404"} 1`) {
+		t.Errorf("нет наблюдения GET/404 в request_duration_seconds:\n%s", body)
+	}
+}
+
+// TestMetricsObjectBytesObserved — object_bytes наполняется в точке
+// прокси-отдачи: размер скопированного тела + имя экосистемы.
+func TestMetricsObjectBytesObserved(t *testing.T) {
+	h, _, _, exporter, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "payload")
+	})
+	get(t, h, "/t/pkg/a.deb")
+	body := scrapeMetrics(t, exporter)
+	if !strings.Contains(body, `khrazhevnik_object_bytes_count{ecosystem="t"} 1`) {
+		t.Errorf("нет наблюдения object_bytes для eco=t:\n%s", body)
+	}
+	if !strings.Contains(body, `khrazhevnik_object_bytes_sum{ecosystem="t"} 7`) {
+		t.Errorf("сумма object_bytes != 7 байтам:\n%s", body)
 	}
 }

@@ -18,12 +18,15 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	cacheengine "khrazhevnik/internal/core/engine/cache"
 	mirrorengine "khrazhevnik/internal/core/engine/mirror"
+	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/web"
 	"khrazhevnik/internal/testutil"
 )
@@ -121,5 +124,18 @@ func TestAppWaitTasksEmpty(t *testing.T) {
 	app := &App{}
 	if err := app.WaitTasks(context.Background()); err != nil {
 		t.Fatalf("пустое приложение вернуло ошибку: %v", err)
+	}
+}
+
+// TestPromRegistryRuntimeCollectors — реестр wire несёт go/process-
+// коллекторы (аудит 2026-08-30): go_goroutines обязаны появляться в
+// exposition. Процесс-метрики платформозависимы (без /proc — пусто),
+// на них не ассертим (правило переносимости тестов).
+func TestPromRegistryRuntimeCollectors(t *testing.T) {
+	h := metrics.NewHandler(metrics.NewCache(), newPromRegistry())
+	rec := httptest.NewRecorder()
+	h.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), "go_goroutines") {
+		t.Errorf("в exposition нет go_goroutines — Go-коллектор не зарегистрирован")
 	}
 }
