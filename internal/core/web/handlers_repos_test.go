@@ -429,6 +429,86 @@ func TestRepoReindex(t *testing.T) {
 	}
 }
 
+// TestRepoGrantPermIdempotent — повторный грант той же пары → 204:
+// модель perms как set (сессия 41, не сломали идемпотентность).
+func TestRepoGrantPermIdempotent(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	for i := 0; i < 2; i++ {
+		rec := callRepo(env, http.MethodPost, "/api/v1/repos/"+itoaRepo(repoID)+"/perms", `{"user_id":3}`, env.jwtAdmin)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("грант #%d = %d, want 204 (тело %s)", i+1, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestRepoGrantPermUnknownUser404 — грант несуществующему
+// user_id → 404 not_found, а не ложный 204 «успех» (FK 23503
+// мапится mapWrite в ConflictError — аудит 2026-08-30, сессия 41).
+func TestRepoGrantPermUnknownUser404(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	rec := callRepo(env, http.MethodPost, "/api/v1/repos/"+itoaRepo(repoID)+"/perms", `{"user_id":999}`, env.jwtAdmin)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("грант user_id=999 = %d, want 404 (тело %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not_found") {
+		t.Errorf("код ошибки = %s, хочу not_found", rec.Body.String())
+	}
+}
+
+// TestRepoGrantPermUnknownRepo404 — грант в несуществующий repo
+// → 404 (parseInt64URLParam отсекает мусор, Repo — числовой id).
+func TestRepoGrantPermUnknownRepo404(t *testing.T) {
+	env := newRepoEnv(t)
+	rec := callRepo(env, http.MethodPost, "/api/v1/repos/999/perms", `{"user_id":2}`, env.jwtAdmin)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("грант в repo 999 = %d, want 404 (тело %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// grantConflictRepoStore — фейк, чей Grant всегда возвращает
+// ConflictError (имитация unique-нарушения). С пред-проверками
+// хендлера до Grant он не вызывается вовсе.
+type grantConflictRepoStore struct {
+	*testutil.FakeRepoStore
+	grants int
+}
+
+func (s *grantConflictRepoStore) Grant(_ context.Context, _ domain.Perm) error {
+	s.grants++
+	return &domain.ConflictError{What: "право", Key: "stub"}
+}
+
+// TestRepoGrantPermConflictBeforeGrant — на фейк-каталоге: для
+// несуществующего пользователя 404 отдаётся ДО вызова Grant
+// (вариант 1 сессии 41 — пред-проверка пары).
+func TestRepoGrantPermConflictBeforeGrant(t *testing.T) {
+	env := newRepoEnv(t)
+	conflict := &grantConflictRepoStore{FakeRepoStore: env.repos}
+	// Подменим store в собранном роутере нельзя — пересоберём env
+	// вручную: те же фейки, Repos = conflict.
+	tasks := NewTaskRegistry(2, env.clock)
+	adminH := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Repos: conflict, Storage: env.storage, Audit: env.audit,
+		Tasks: tasks, Publish: env.publish, Clock: env.clock,
+	})
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/repos/"+itoaRepo(repoID)+"/perms", strings.NewReader(`{"user_id":999}`))
+	req.RemoteAddr = "10.0.0.9:1"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	adminH.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("грант user_id=999 = %d, want 404 (тело %s)", rec.Code, rec.Body.String())
+	}
+	if conflict.grants != 0 {
+		t.Errorf("Grant вызван %d раз, want 0 — 404 должен отдаётся до INSERT", conflict.grants)
+	}
+}
+
 // Публичный роутер: раздача объектов репо.
 func TestPublicRepoFile(t *testing.T) {
 	env := newRepoEnv(t)

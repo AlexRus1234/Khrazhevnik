@@ -234,7 +234,12 @@ func handleListPerms(d Deps) http.HandlerFunc {
 
 // handleGrantPerm — POST /api/v1/repos/{id}/perms: {user_id}. Выдаёт
 // право записи; идемпотентно (повторный грант того же user → 204, не
-// 409: модель perms как set, а не upsert).
+// 409: модель perms как set, а не upsert). До INSERT проверяем пару
+// repo/user выборками: FK-нарушение 23503 (несуществующий user_id)
+// mapWrite мапит в ConflictError — без проверки это ложный 204
+// «успех» (аудит 2026-08-30). Двойная выборка на редкой админ-
+// операции — плата за честный 404; вариант с Kind в ConflictError
+// отклонён: трогал бы домен и все три драйвера ради одного хендлера.
 func handleGrantPerm(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseInt64URLParam(w, r, "id")
@@ -249,6 +254,14 @@ func handleGrantPerm(d Deps) http.HandlerFunc {
 		}
 		if in.UserID <= 0 {
 			writeErrCode(w, http.StatusBadRequest, "validation_error")
+			return
+		}
+		if _, err := d.Repos.Repo(r.Context(), id); err != nil {
+			writeErr(w, err)
+			return
+		}
+		if _, err := d.Auth.User(r.Context(), in.UserID); err != nil {
+			writeErr(w, err)
 			return
 		}
 		err := d.Repos.Grant(r.Context(), domain.Perm{RepoID: id, UserID: in.UserID, CreatedAt: d.clock().Now()})
