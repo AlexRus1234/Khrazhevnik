@@ -1,6 +1,15 @@
 # Планировочные документы агента — вне репозитория
 /логи/
 
+# Конфигурация agentic-инструментов — вне репозитория
+AGENTS.md
+opencode.json
+.claude/
+CLAUDE.md
+.cursor/
+.cursorrules
+.github/copilot-instructions.md
+
 # Go
 /bin/
 /coverage/
