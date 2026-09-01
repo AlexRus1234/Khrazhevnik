@@ -158,8 +158,59 @@ func TestAuthHandlersEndToEnd(t *testing.T) {
 	}
 }
 
-// TestSetupAtomicBootstrap — 20 параллельных POST /setup в
-// bootstrap-окне: ровно один 201, остальные 403 setup_already_done,
+// TestTokenTTLAndRevokePathContract — рест-контракт /users/{id}/
+// api-tokens (аудит 2026-08-30, сессия 45): ttl<0 → 400 (раньше молча
+// создавался бессрочный: engine видит только ttl>0), ttl=0/отсутствие
+// → 201 бессрочный; revoke сверяет {id} пути с владельцем токена —
+// чужой id → 404, свой → 204.
+func TestTokenTTLAndRevokePathContract(t *testing.T) {
+	a, _ := handlerAuth(t)
+	h := BuildAdminRouter(Deps{Auth: a, SetupToken: "setup"})
+	admin, err := a.CreateUser(t.Context(), "admin", "password", domain.RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := a.CreateUser(t.Context(), "bob", "password", domain.RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := a.IssueSession(t.Context(), admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/users/" + strconv.FormatInt(admin.ID, 10) + "/api-tokens"
+
+	if w := callJSON(h, http.MethodPost, path, "10.0.0.4:1", `{"name":"neg","ttl":-1}`, session); w.Code != http.StatusBadRequest {
+		t.Fatalf("ttl=-1 = %d, хочу 400", w.Code)
+	} else if !strings.Contains(w.Body.String(), "validation_error") {
+		t.Errorf("тело ttl=-1 = %s, хочу validation_error", w.Body.String())
+	}
+
+	create := callJSON(h, http.MethodPost, path, "10.0.0.4:1", `{"name":"forever"}`, session)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("ttl отсутствует = %d, хочу 201 (бессрочный)", create.Code)
+	}
+	if exp, _ := responseMap(t, create)["expires_at"].(string); exp != "0001-01-01T00:00:00Z" {
+		t.Errorf("expires_at без ttl = %q, хочу нулевое время", exp)
+	}
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(create.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	tokenID := strconv.FormatInt(created.ID, 10)
+
+	foreign := "/api/v1/users/" + strconv.FormatInt(other.ID, 10) + "/api-tokens/" + tokenID
+	if w := callJSON(h, http.MethodDelete, foreign, "10.0.0.4:1", "", session); w.Code != http.StatusNotFound {
+		t.Fatalf("revoke с чужим {id} = %d, хочу 404", w.Code)
+	}
+	if w := callJSON(h, http.MethodDelete, path+"/"+tokenID, "10.0.0.4:1", "", session); w.Code != http.StatusNoContent {
+		t.Fatalf("revoke со своим {id} = %d, хочу 204", w.Code)
+	}
+}
+
+// TestSetupAtomicBootstrap — 20 параллельных POST /setup в// bootstrap-окне: ровно один 201, остальные 403 setup_already_done,
 // в таблице один пользователь (аудит 2026-08-27). RemoteAddr у каждой
 // горутины свой — тестируем атомарность, а не rate limiter.
 func TestSetupAtomicBootstrap(t *testing.T) {

@@ -106,14 +106,28 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 }
 
 // isImmutableRepoObject решает, выставить ли Cache-Control: immutable.
-// Для apt: pool/* (пакеты) — content-addressed по имени+версии, можно
-// кешировать навсегда; dists/* (индексы) — перегенерируются, mutable.
-// Для других экосистем: консервативно false (M3 их генераторов нет).
+// Пакеты всех экосистем content-addressed (apt pool/* по имя+версия;
+// rpm-md .rpm/.drpm/.src.rpm; pacman .pkg.tar.*; apk .apk; nix nar/* и
+// <32 nix-base32>.narinfo) — генераторы всех пяти экосистем с сессии
+// 16, клиентам незачем реиспейсить их на каждый проход (аудит
+// 2026-08-30). Индексы (dists/*, repodata/, *.db, APKINDEX.tar.gz) —
+// перегенерируются, mutable. Список зеркалит ValidateObjectPath
+// адаптеров (mod/ecosystem/*/gen.go).
 func isImmutableRepoObject(ecosystem, path string) bool {
-	if ecosystem == "apt" {
+	switch ecosystem {
+	case "apt":
 		return strings.HasPrefix(path, "pool/")
+	case "rpm-md":
+		return strings.HasSuffix(path, ".rpm") || strings.HasSuffix(path, ".drpm")
+	case "pacman":
+		return strings.Contains(path, ".pkg.tar.")
+	case "apk":
+		return strings.HasSuffix(path, ".apk")
+	case "nix":
+		return strings.HasPrefix(path, "nar/") || strings.HasSuffix(path, ".narinfo")
+	default:
+		return false
 	}
-	return false
 }
 
 // repoContentType — Content-Type repo-объекта по расширению пути

@@ -22,6 +22,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"khrazhevnik/internal/core/domain"
 )
 
 // uploadRepoObject — upload через admin-API (как делает реальный
@@ -145,6 +147,41 @@ func TestPublicNoSniffOnEveryResponse(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("404: X-Content-Type-Options = %q, хочу nosniff", got)
+	}
+}
+
+// TestPublicRepoCacheControlImmutable — content-addressed объекты всех
+// экосистем получают Cache-Control immutable (сессия 45: раньше —
+// только apt pool/, клиенты dnf/pacman/apk/nix реиспейсили пакеты
+// понапрасну); индексы (repodata/, dists/) — без него: mutable.
+// Репо rpm-md создаётся напрямую в store: env.Ecosystems реестра —
+// про upload-гейт админ-API, публичная раздача смотрит repo.Ecosystem.
+func TestPublicRepoCacheControlImmutable(t *testing.T) {
+	env := newRepoEnv(t)
+	rpmRepo, err := env.repos.CreateRepo(t.Context(), domain.Repo{Name: "fedora", OwnerID: 2, Ecosystem: "rpm-md", CreatedAt: env.clock.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadRepoObject(t, env, rpmRepo.ID, "packages/f/foo-1.0-1.rpm", []byte("rpm"))
+	uploadRepoObject(t, env, rpmRepo.ID, "repodata/repomd.xml", []byte("idx"))
+	aptRepoID := createRepoViaAPI(t, env, "alice", 2)
+	uploadRepoObject(t, env, aptRepoID, "pool/main/a/foo.deb", []byte("deb"))
+	uploadRepoObject(t, env, aptRepoID, "dists/stable/Release", []byte("rel"))
+
+	const immutable = "public, max-age=31536000, immutable"
+	for path, want := range map[string]string{
+		"/repo/fedora/packages/f/foo-1.0-1.rpm": immutable,
+		"/repo/fedora/repodata/repomd.xml":      "",
+		"/repo/alice/pool/main/a/foo.deb":       immutable,
+		"/repo/alice/dists/stable/Release":      "",
+	} {
+		rec := getPublic(t, env, path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, хочу 200", path, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != want {
+			t.Errorf("Cache-Control %s = %q, хочу %q", path, got, want)
+		}
 	}
 }
 

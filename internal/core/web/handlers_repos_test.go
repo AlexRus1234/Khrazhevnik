@@ -142,6 +142,14 @@ func newRepoEnv(t *testing.T) *repoEnv {
 	tasks := NewTaskRegistry(2, clock)
 	adminH := BuildAdminRouter(Deps{
 		Log: nil, Version: "test", Auth: a, SetupToken: "setup",
+		// Ecosystems — реестр для ecosystem-гейта POST/PATCH /repos
+		// (сессия 45): apt для CRUD-тестов, rpm-md — чтобы PATCH со
+		// сменой eco ломался об immutable-ветку, а не об отсутствие
+		// адаптера в реестре.
+		Ecosystems: map[string]port.Ecosystem{
+			"apt":    testutil.FakeEcosystem{NameOf: "apt"},
+			"rpm-md": testutil.FakeEcosystem{NameOf: "rpm-md"},
+		},
 		Repos: repos, Storage: storage, Audit: auditLog,
 		Tasks: tasks, Publish: publish, Clock: clock,
 	})
@@ -211,6 +219,35 @@ func issueRepoWriteToken(t *testing.T, env *repoEnv, userID int64, repoID int64)
 		t.Fatal(err)
 	}
 	return raw
+}
+
+// TestRepoEcosystemGate — ecosystem сверяется с реестром Deps
+// .Ecosystems (аудит 2026-08-30, сессия 45): неизвестное имя или
+// мусорная строка → 400 (раньше проходило, и каждый upload обрекался
+// на invalid_key); PATCH со сменой ecosystem → 400 (immutable field:
+// ключи «repo/<id>/<eco>/…» осиротели бы), без смены → 200.
+func TestRepoEcosystemGate(t *testing.T) {
+	env := newRepoEnv(t)
+	for _, eco := range []string{"bogus", "foo bar", ""} {
+		body := `{"name":"gate","owner_id":2,"ecosystem":"` + eco + `","quota":{}}`
+		rec := callRepo(env, http.MethodPost, "/api/v1/repos", body, env.jwtAdmin)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("create ecosystem=%q = %d, хочу 400", eco, rec.Code)
+		} else if !strings.Contains(rec.Body.String(), "validation_error") {
+			t.Errorf("create ecosystem=%q тело = %s, хочу validation_error", eco, rec.Body.String())
+		}
+	}
+	id := createRepoViaAPI(t, env, "alice", 2)
+	// Смена ecosystem осиротила бы объекты — immutable.
+	rec := callRepo(env, http.MethodPatch, "/api/v1/repos/"+itoaRepo(id), `{"name":"alice","owner_id":2,"ecosystem":"rpm-md","quota":{}}`, env.jwtAdmin)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("patch со сменой ecosystem = %d, хочу 400", rec.Code)
+	}
+	// То же значение — ок (full-replace присылает все поля).
+	rec = callRepo(env, http.MethodPatch, "/api/v1/repos/"+itoaRepo(id), `{"name":"alice","owner_id":2,"ecosystem":"apt","quota":{"max_bytes":2048,"max_objects":20}}`, env.jwtAdmin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch без смены ecosystem = %d, хочу 200", rec.Code)
+	}
 }
 
 func TestReposAdminCRUD(t *testing.T) {

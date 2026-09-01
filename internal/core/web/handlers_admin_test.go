@@ -298,6 +298,23 @@ func TestAdminTaskNotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("несуществующий task = %d, хочу 404", rec.Code)
 	}
+	// Деградация (Tasks==nil): список — 200 «пусто», конкретный id —
+	// 404: контракт api.md 200/404, id без реестра не существует
+	// (аудит 2026-08-30, сессия 45).
+	degraded := BuildAdminRouter(Deps{Auth: env.auth, Clock: env.clock})
+	get := func(path string) int {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+		w := httptest.NewRecorder()
+		degraded.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := get("/api/v1/tasks"); code != http.StatusOK {
+		t.Errorf("degraded список = %d, хочу 200 []", code)
+	}
+	if code := get("/api/v1/tasks/anything"); code != http.StatusNotFound {
+		t.Errorf("degraded задача = %d, хочу 404", code)
+	}
 }
 
 func TestAdminCacheStats(t *testing.T) {

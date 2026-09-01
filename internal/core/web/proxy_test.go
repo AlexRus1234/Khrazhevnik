@@ -26,6 +26,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"khrazhevnik/internal/core/domain"
 	cacheengine "khrazhevnik/internal/core/engine/cache"
 	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
@@ -132,6 +133,19 @@ func TestProxyErrorCodes(t *testing.T) {
 		h := BuildPublicRouter(Deps{Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}})
 		if rec := get(t, h, "/t/pkg/big.deb"); rec.Code != http.StatusBadGateway {
 			t.Fatalf("код = %d, хочу 502", rec.Code)
+		}
+	})
+	t.Run("storage unavailable → 503, не 502", func(t *testing.T) {
+		// Сбой нашего storage/каталога — не вина upstream: 503, как в
+		// auth-слое (аудит 2026-08-30, сессия 45). Маппинг проверяем
+		// напрямую: в live-прогоне источник ошибки — адаптер хранилища.
+		rec := httptest.NewRecorder()
+		writeProxyError(rec, &domain.UnavailableError{What: "хранилище", Reason: "сбой"})
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("код = %d, хочу 503", rec.Code)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "unavailable") {
+			t.Errorf("тело = %q, хочу текст storage unavailable", body)
 		}
 	})
 }

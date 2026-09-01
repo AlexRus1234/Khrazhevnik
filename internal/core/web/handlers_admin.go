@@ -218,7 +218,12 @@ func handleListTasks(d Deps) http.HandlerFunc {
 	}
 }
 
-// handleGetTask — GET /api/v1/tasks/{id}: снимок одной задачи.
+// handleGetTask — GET /api/v1/tasks/{id}: снимок одной задачи. Контракт
+// api.md — 200/404: и неизвестный id, и Tasks==nil (деградация без
+// реестра) → 404. От расхождение со списком (200 [] при Tasks==nil)
+// сознательно отказались в пользу api.md: «пусто» честно для списка,
+// но конкретный id без реестра не существует (аудит 2026-08-30,
+// сессия 45).
 func handleGetTask(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Tasks == nil {
@@ -403,6 +408,13 @@ func handleCreateToken(d Deps) http.HandlerFunc {
 		if !decodeJSON(w, r, &in) {
 			return
 		}
+		// ttl < 0 молча создавал бессрочный токен (engine смотрит только
+		// ttl > 0) — REST-контракт ждёт валидацию: 0/отсутствие =
+		// бессрочный, отрицательное — ошибка (аудит 2026-08-30).
+		if in.TTL < 0 {
+			writeErr(w, &domain.ValidationError{What: "ttl", Value: in.TTL.String(), Reason: "не может быть отрицательным"})
+			return
+		}
 		t, raw, err := d.Auth.IssueAPIToken(r.Context(), u, in.Name, in.Scopes, in.TTL)
 		if err != nil {
 			writeErr(w, err)
@@ -461,11 +473,34 @@ func handleListTokens(d Deps) http.HandlerFunc {
 	}
 }
 
-// handleRevokeToken переезд из handlers_auth.
+// handleRevokeToken переезд из handlers_auth. {id} из пути — владелец
+// токена: revoke с чужим id срабатывал при любом пользователе в пути,
+// нарушая контракт REST-адресации (аудит 2026-08-30). Несовпадение —
+// 404 not_found (токена «у этого пользователя» нет).
 func handleRevokeToken(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := parseInt64URLParam(w, r, "id")
+		if !ok {
+			return
+		}
 		tokenID, ok := parseInt64URLParam(w, r, "tokenID")
 		if !ok {
+			return
+		}
+		tokens, err := d.Auth.Tokens(r.Context(), userID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		owned := false
+		for _, t := range tokens {
+			if t.ID == tokenID {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			writeErrCode(w, http.StatusNotFound, "not_found")
 			return
 		}
 		if err := d.Auth.RevokeToken(r.Context(), tokenID); err != nil {

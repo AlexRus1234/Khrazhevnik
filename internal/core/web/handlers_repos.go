@@ -31,6 +31,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"khrazhevnik/internal/core/domain"
+	"khrazhevnik/internal/core/port"
 	authmw "khrazhevnik/internal/core/web/middleware"
 )
 
@@ -66,8 +67,11 @@ type repoInput struct {
 }
 
 // validate нормализует поля (name/eco → lowercase, trim) и проверяет
-// доменными валидаторами. Возвращает первую ошибку.
-func (in *repoInput) validate() error {
+// доменными валидаторами. Ecosystem сверяется с реестром Deps
+// .Ecosystems (те же имена, что у роутера прокси): любая непустая
+// строка раньше проходила, и каждый upload обрекался на invalid_key
+// (аудит 2026-08-30). Возвращает первую ошибку.
+func (in *repoInput) validate(ecosystems map[string]port.Ecosystem) error {
 	in.Name = strings.ToLower(strings.TrimSpace(in.Name))
 	in.Ecosystem = strings.ToLower(strings.TrimSpace(in.Ecosystem))
 	if err := domain.ValidateRepoName(in.Name); err != nil {
@@ -75,6 +79,9 @@ func (in *repoInput) validate() error {
 	}
 	if in.Ecosystem == "" {
 		return &domain.ValidationError{What: "экосистема", Value: in.Ecosystem, Reason: "пусто"}
+	}
+	if _, ok := ecosystems[in.Ecosystem]; !ok {
+		return &domain.ValidationError{What: "экосистема", Value: in.Ecosystem, Reason: "нет такого адаптера (зарегистрированы: apt, rpm-md, pacman, apk, nix; включены — зависит от конфига)"}
 	}
 	if in.OwnerID <= 0 {
 		return &domain.ValidationError{What: "owner_id", Value: strconv.FormatInt(in.OwnerID, 10), Reason: "должен быть положительным"}
@@ -118,7 +125,7 @@ func handleCreateRepo(d Deps) http.HandlerFunc {
 		if !decodeJSON(w, r, &in) {
 			return
 		}
-		if err := in.validate(); err != nil {
+		if err := in.validate(d.Ecosystems); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -168,8 +175,16 @@ func handleUpdateRepo(d Deps) http.HandlerFunc {
 		if !decodeJSON(w, r, &in) {
 			return
 		}
-		if err := in.validate(); err != nil {
+		if err := in.validate(d.Ecosystems); err != nil {
 			writeErr(w, err)
+			return
+		}
+		// ecosystem — immutable: ключи объектов «repo/<id>/<eco>/…»,
+		// смена осиротила бы всё опубликованное (аудит 2026-08-30).
+		// PATCH с тем же значением (full-replace присылает все поля) —
+		// ок, отличающееся — validation_error.
+		if in.Ecosystem != existing.Ecosystem {
+			writeErr(w, &domain.ValidationError{What: "ecosystem", Value: in.Ecosystem, Reason: "immutable field: смена осиротит опубликованные объекты"})
 			return
 		}
 		updated := domain.Repo{

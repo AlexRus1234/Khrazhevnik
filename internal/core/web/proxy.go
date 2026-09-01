@@ -92,6 +92,7 @@ func writeProxyError(w http.ResponseWriter, err error) {
 	var tooLarge *domain.TooLargeError
 	var upstream *domain.UpstreamError
 	var badKey *domain.InvalidKeyError
+	var unavail *domain.UnavailableError
 	switch {
 	case errors.As(err, &nf):
 		http.Error(w, "not found", http.StatusNotFound)
@@ -100,6 +101,11 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		http.Error(w, "invalid storage path", http.StatusBadRequest)
 	case errors.As(err, &tooLarge):
 		http.Error(w, "upstream object too large", http.StatusBadGateway)
+	case errors.As(err, &unavail):
+		// сбой нашего storage/каталога — не вина upstream: 503, как в
+		// auth-слое для той же ошибки (аудит 2026-08-30, сессия 45);
+		// 502 «proxy error» вводил в заблуждение про upstream.
+		http.Error(w, "storage unavailable", http.StatusServiceUnavailable)
 	case errors.As(err, &upstream):
 		http.Error(w, "upstream error", http.StatusBadGateway)
 	default:
