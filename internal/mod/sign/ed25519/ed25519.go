@@ -30,6 +30,7 @@
 package ed25519
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -41,6 +42,7 @@ import (
 	"strings"
 
 	"khrazhevnik/internal/core/config"
+	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/registry"
 )
@@ -183,12 +185,15 @@ func VerifyWithPubKey(pub ed25519.PublicKey, msg []byte, sigLine, wantName strin
 }
 
 // LoadOrGenerate готовит narinfo-ключ инстанса в keysDir. Первый старт:
-// генерация ed25519, экспорт сырого приватного ключа (64 байта) в
-// keysDir/nix-ed25519.key (0600). Повторный старт: загрузка 64 байт и
-// восстановление Signer'а. Стабильность pubkey между рестартами —
-// инвариант: клиенты доверяют pubkey в trusted-public-keys, смена ключа
-// инвалидировала бы все ранее подписанные narinfo. keysDir создаётся
-// с 0700 (как у openpgp).
+// генерация ed25519, атомарная фиксация сырого приватного ключа (64
+// байта, 0600) в keysDir/nix-ed25519.key БЕЗ перезаписи существующего
+// (link(2): два процесса на общем keys_dir дают одного победителя,
+// проигравший грузит его ключ). Повторный старт: загрузка 64 байт,
+// проверка деривации публичной части (битый-но-64-байта файл ловится
+// здесь, а не первым невалидным narinfo) и восстановление Signer'а.
+// Стабильность pubkey между рестартами — инвариант: клиенты доверяют
+// pubkey в trusted-public-keys, смена ключа инвалидировала бы все
+// ранее подписанные narinfo. keysDir создаётся с 0700 (как у openpgp).
 func LoadOrGenerate(name, keysDir string) (*Signer, error) {
 	if name == "" {
 		return nil, errors.New("ed25519: пустое имя ключа")
@@ -203,25 +208,52 @@ func LoadOrGenerate(name, keysDir string) (*Signer, error) {
 		return nil, fmt.Errorf("ed25519: keys_dir %s: %w", keysDir, err)
 	}
 	path := filepath.Join(keysDir, narKeyFile)
-	if f, err := os.Open(path); err == nil {
+	f, err := os.Open(path)
+	if err == nil {
 		priv, rerr := io.ReadAll(f)
 		_ = f.Close()
 		if rerr != nil {
-			return nil, fmt.Errorf("ed25519: чтение %s: %w", path, rerr)
+			return nil, &domain.KeyMaterialError{What: "narinfo-ключ", Path: path, Err: rerr}
 		}
 		if len(priv) != ed25519.PrivateKeySize {
-			return nil, fmt.Errorf("ed25519: %s: размер %d, хочу %d", path, len(priv), ed25519.PrivateKeySize)
+			return nil, &domain.KeyMaterialError{
+				What:   "narinfo-ключ",
+				Path:   path,
+				Reason: fmt.Sprintf("размер %d, хочу %d (крэш посреди записи?)", len(priv), ed25519.PrivateKeySize),
+			}
+		}
+		// 64 байта проходят size-проверку, но могут быть мусором/битыми
+		// (крэш посреди записи старым кодом). Настоящая консистентность:
+		// публичная половина обязана совпадать с деривацией из seed —
+		// ловим на старте понятной ошибкой, а не первым невалидным
+		// narinfo в рантайме. priv.Public() здесь бесполезен: для 64
+		// байт он «успешен» всегда.
+		derived := ed25519.NewKeyFromSeed(priv[:ed25519.SeedSize])
+		if !bytes.Equal(priv[ed25519.SeedSize:], derived[ed25519.SeedSize:]) {
+			return nil, &domain.KeyMaterialError{
+				What:   "narinfo-ключ",
+				Path:   path,
+				Reason: "публичная половина не совпадает с деривацией из seed (битый файл?)",
+			}
 		}
 		return FromKey(name, ed25519.PrivateKey(priv))
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("ed25519: open %s: %w", path, err)
 	}
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("ed25519: генерация ключа: %w", err)
+	if !errors.Is(err, os.ErrNotExist) {
+		// Ошибка открытия НЕ «файла нет» (права, I/O) — ключи есть, но
+		// не читаются: жёсткая KeyMaterialError, не тихая регенерация.
+		return nil, &domain.KeyMaterialError{What: "narinfo-ключ", Path: path, Err: err}
 	}
-	if err := os.WriteFile(path, priv, 0o600); err != nil {
-		return nil, fmt.Errorf("ed25519: запись %s: %w", path, err)
+	pub, priv, gerr := ed25519.GenerateKey(rand.Reader)
+	if gerr != nil {
+		return nil, fmt.Errorf("ed25519: генерация ключа: %w", gerr)
+	}
+	if werr := writeKeyAtomic(path, priv); werr != nil {
+		if errors.Is(werr, os.ErrExist) {
+			// Гонка первого старта: соседний процесс зафиксировал ключ
+			// раньше — его ключ канонический, грузим его.
+			return LoadOrGenerate(name, keysDir)
+		}
+		return nil, fmt.Errorf("ed25519: запись %s: %w", path, werr)
 	}
 	return &Signer{
 		name:   name,
@@ -229,4 +261,48 @@ func LoadOrGenerate(name, keysDir string) (*Signer, error) {
 		pub:    pub,
 		pubB64: base64.StdEncoding.EncodeToString(pub),
 	}, nil
+}
+
+// writeKeyAtomic фиксирует 64 байта приватного ключа атомарно: tmp →
+// fsync → close → link(2) без перезаписи цели → fsync каталога. Крэш
+// посреди записи не оставляет битый-но-существующий файл (регенерации
+// не будет — файл есть). Права tmp 0600 переносятся link'ом.
+func writeKeyAtomic(path string, priv []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	writeErr := writeAll(tmp, priv)
+	if writeErr == nil {
+		writeErr = tmp.Sync()
+	}
+	closeErr := tmp.Close()
+	if writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		_ = os.Remove(tmpPath)
+		return writeErr
+	}
+	if err := os.Link(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	_ = os.Remove(tmpPath)
+	return fsyncDir(filepath.Dir(path))
+}
+
+// writeAll — io.Writer с полным вычитом (os.File.Write может
+// записать меньше p; для 64 байт практически нет, но контракт io.Writer
+// обязывает цикл).
+func writeAll(w io.Writer, p []byte) error {
+	for len(p) > 0 {
+		n, err := w.Write(p)
+		if err != nil {
+			return err
+		}
+		p = p[n:]
+	}
+	return nil
 }

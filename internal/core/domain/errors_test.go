@@ -43,6 +43,7 @@ func TestErrorsIsAs(t *testing.T) {
 		{&ValidationError{What: "scope", Value: "x", Reason: "не знаю такой"}, &ValidationError{}},
 		{&StaleError{Have: `"a"`, Want: `"b"`}, &StaleError{}},
 		{&UnsupportedError{What: "enumerate", Why: "nix: только pull-through"}, &UnsupportedError{}},
+		{&KeyMaterialError{What: "ключ подписи", Path: "keys/private.asc", Err: errors.New("обрезан")}, &KeyMaterialError{}},
 		{&UpstreamError{URL: "https://up", Status: 404}, &UpstreamError{}},
 		{&UpstreamError{URL: "https://up", Status: 0, Err: errors.New("timeout")}, &UpstreamError{}},
 	}

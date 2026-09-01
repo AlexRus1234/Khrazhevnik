@@ -19,11 +19,15 @@ package ed25519
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+
+	"khrazhevnik/internal/core/domain"
 )
 
 func TestNew_GeneratesKey(t *testing.T) {
@@ -245,8 +249,67 @@ func TestLoadOrGenerate_CorruptedFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, narKeyFile), []byte("short"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadOrGenerate("k", dir); err == nil {
-		t.Error("битый ключевой файл загружен без ошибки")
+	_, err := LoadOrGenerate("k", dir)
+	if err == nil {
+		t.Fatal("битый ключевой файл загружен без ошибки")
+	}
+	// Битый ключ — KeyMaterialError: wire валит старт, не деградирует
+	// (сессия 40).
+	var km *domain.KeyMaterialError
+	if !errors.As(err, &km) {
+		t.Errorf("битый nar-ключ: хочу KeyMaterialError, got %T: %v", err, err)
+	}
+}
+
+// TestLoadOrGenerate_TruncatedKeyFails — 64 байта мусора проходят
+// size-проверку, но не деривируют публичную часть: ловим на старте,
+// а не первым невалидным narinfo.
+func TestLoadOrGenerate_TruncatedKeyFails(t *testing.T) {
+	dir := t.TempDir()
+	garbage := make([]byte, ed25519.PrivateKeySize)
+	for i := range garbage {
+		garbage[i] = byte(i) + 1 // ненулевые байты — не валидный ключ
+	}
+	if err := os.WriteFile(filepath.Join(dir, narKeyFile), garbage, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadOrGenerate("k", dir)
+	if err == nil {
+		t.Fatal("мусорные 64 байта приняты как ключ")
+	}
+}
+
+// TestLoadOrGenerate_ParallelSameKey — параллельные LoadOrGenerate на
+// одном keys_dir (первый старт): один pubkey у всех, тихий fork
+// инстансных narinfo-ключей исключён (сессия 40).
+func TestLoadOrGenerate_ParallelSameKey(t *testing.T) {
+	dir := t.TempDir()
+	const concurrency = 4
+	pubs := make([]string, concurrency)
+	errs := make([]error, concurrency)
+	var wg sync.WaitGroup
+	for i := range concurrency {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s, err := LoadOrGenerate("khrazhevnik", dir)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			pubs[i] = s.PubKeyB64()
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("LoadOrGenerate #%d: %v", i, err)
+		}
+	}
+	for i := 1; i < concurrency; i++ {
+		if pubs[i] != pubs[0] {
+			t.Errorf("pubkey #%d != #0: fork инстансных narinfo-ключей", i)
+		}
 	}
 }
 

@@ -47,6 +47,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 
 	"khrazhevnik/internal/core/config"
+	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/registry"
 )
@@ -106,7 +107,9 @@ type Signer struct {
 var _ port.Signer = (*Signer)(nil)
 
 // New готовит ключ инстанса в keysDir. Первый старт: генерация ed25519,
-// экспорт private.asc (0600) + public.asc (0600), опциональное
+// экспорт private.asc (0600) + public.asc (0600) через эксклюзивный
+// O_EXCL-захват (два процесса на общем keys_dir не плодят разные
+// ключи — проигравший грузит ключ победителя), опциональное
 // шифрование приватного ключа passphrase. Повторный старт: загрузка
 // private.asc, расшифровка passphrase (если зашифрован) — неверная
 // passphrase падает здесь. keysDir создаётся с 0700. clock — источник
@@ -127,7 +130,21 @@ func New(keysDir string, passphrase []byte, clock port.Clock) (*Signer, error) {
 	}
 	if fresh {
 		if err := writeKeyFiles(keysDir, entity, passphrase, cfg); err != nil {
-			return nil, err
+			if !errors.Is(err, os.ErrExist) {
+				return nil, err
+			}
+			// Гонка первого старта: соседний процесс создал private.asc
+			// раньше — его ключ канонический. Перечитываем и грузим его;
+			// наш свежесгенерированный выкидываем (ещё ничего не подписывал).
+			// public.asc не пишем: победитель уже записал, pubArmor для
+			// runtime строится в памяти из entity.
+			entity, fresh, err = loadOrGenerate(privPath, passphrase, cfg)
+			if err != nil {
+				return nil, err
+			}
+			if fresh {
+				return nil, fmt.Errorf("openpgp: %s исчез сразу после гонки keygen", privPath)
+			}
 		}
 	}
 	// armorPublicKey пишет в bytes.Buffer — ошибиться не может, поэтому
@@ -138,11 +155,14 @@ func New(keysDir string, passphrase []byte, clock port.Clock) (*Signer, error) {
 }
 
 // loadOrGenerate возвращает entity: либо загруженный из privPath
-// (fresh=false), либо свежесгенерированный (fresh=true). Загрузка
-// пробует private.asc; отсутствие файла — сигнал к генерации. При
-// загрузке зашифрованного ключа passphrase расшифровывает его; пустая
-// passphrase для зашифрованного ключа — ошибка (это проверка
-// «расшифровка тестовой строки при passphrase»).
+// (fresh=false), либо свежесгенерированный (fresh=true). Отсутствие
+// private.asc — единственный сигнал к генерации (os.ErrNotExist);
+// прочие ошибки открытия (права, I/O) — KeyMaterialError, не повод
+// молча перегенерировать ключ. Загрузка зашифрованного ключа
+// расшифровывается passphrase; пустая passphrase для зашифрованного
+// ключа и битый/публичный armored — тоже KeyMaterialError: ключи
+// ЕСТЬ, но не читаются, старт обязан упасть, а не деградировать в
+// «репо без подписи».
 func loadOrGenerate(privPath string, passphrase []byte, cfg *packet.Config) (*gp.Entity, bool, error) {
 	f, err := os.Open(privPath)
 	if err != nil {
@@ -153,26 +173,44 @@ func loadOrGenerate(privPath string, passphrase []byte, cfg *packet.Config) (*gp
 			}
 			return e, true, nil
 		}
-		return nil, false, fmt.Errorf("openpgp: чтение %s: %w", privPath, err)
+		return nil, false, &domain.KeyMaterialError{What: "ключ подписи", Path: privPath, Err: err}
 	}
 	defer f.Close()
-	el, err := gp.ReadArmoredKeyRing(f)
-	if err != nil {
-		return nil, false, fmt.Errorf("openpgp: разбор %s: %w", privPath, err)
-	}
-	if len(el) == 0 || el[0] == nil {
-		return nil, false, fmt.Errorf("openpgp: %s не содержит ключа", privPath)
-	}
-	entity := el[0]
-	if privateKeysEncrypted(entity) {
-		if len(passphrase) == 0 {
-			return nil, false, fmt.Errorf("openpgp: ключ зашифрован, а passphrase пуста")
-		}
-		if err := entity.DecryptPrivateKeys(passphrase); err != nil {
-			return nil, false, fmt.Errorf("openpgp: расшифровка ключа (неверная passphrase?): %w", err)
-		}
+	entity, rerr := readPrivateEntity(f, passphrase)
+	if rerr != nil {
+		return nil, false, fmt.Errorf("%w", rerr)
 	}
 	return entity, false, nil
+}
+
+// readPrivateEntity разбирает armored keyring из r и валидирует его
+// как ПРИВАТНЫЙ ключ инстанса: публичный ключ, скопированный поверх
+// private.asc, «успешно» парсится, но взрывается при первом Sign
+// глубоко в go-crypto — отгораживаемся понятной ошибкой на старте.
+func readPrivateEntity(r io.Reader, passphrase []byte) (*gp.Entity, error) {
+	el, err := gp.ReadArmoredKeyRing(r)
+	if err != nil {
+		return nil, &domain.KeyMaterialError{What: "ключ подписи", Reason: "битый armored (крэш посреди записи?)", Err: err}
+	}
+	if len(el) == 0 || el[0] == nil {
+		return nil, &domain.KeyMaterialError{What: "ключ подписи", Reason: "armored не содержит ключа"}
+	}
+	entity := el[0]
+	if entity.PrivateKey == nil {
+		return nil, &domain.KeyMaterialError{
+			What:   "ключ подписи",
+			Reason: "не содержит приватного ключа (это публичный ключ?)",
+		}
+	}
+	if privateKeysEncrypted(entity) {
+		if len(passphrase) == 0 {
+			return nil, &domain.KeyMaterialError{What: "ключ подписи", Reason: "ключ зашифрован, а passphrase пуста"}
+		}
+		if err := entity.DecryptPrivateKeys(passphrase); err != nil {
+			return nil, &domain.KeyMaterialError{What: "ключ подписи", Reason: "расшифровка (неверная passphrase?)", Err: err}
+		}
+	}
+	return entity, nil
 }
 
 // generateEntity создаёт ed25519 Entity с UID инстанса.
@@ -201,7 +239,11 @@ func privateKeysEncrypted(e *gp.Entity) bool {
 
 // writeKeyFiles сериализует приватный (опц. зашифрованный passphrase)
 // и публичный ключи в keysDir с правами 0600. private.asc пишется
-// первым: при сбое до public.asc повторный старт перегенерирует.
+// первым и ЭКСКЛЮЗИВНО (O_CREATE|O_EXCL): при гонке двух процессов на
+// первом старте проигравший получает ErrExist, перечитывает файл
+// победителя и грузит ЕГО ключ — тихий fork инстансных ключей
+// исключён (аудит 2026-08-30). При сбое до public.asc повторный старт
+// перегенерирует.
 //
 // Для passphrase: шифруем приватные ключи в памяти, пишем зашифрованный
 // private.asc (SerializePrivateWithoutSigning — reSign=true упал бы
@@ -216,9 +258,15 @@ func writeKeyFiles(keysDir string, entity *gp.Entity, passphrase []byte, cfg *pa
 		}
 	}
 	privPath := filepath.Join(keysDir, privateKeyFile)
-	if err := writeArmored(privPath, gp.PrivateKeyType, func(w io.Writer) error {
+	err := writeArmored(privPath, gp.PrivateKeyType, func(w io.Writer) error {
 		return entity.SerializePrivateWithoutSigning(w, cfg)
-	}); err != nil {
+	}, true)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			// Гонка первого старта: другой процесс успел создать
+			// private.asc — его ключ канонический, наш выкидываем.
+			return err
+		}
 		return fmt.Errorf("openpgp: запись %s: %w", privPath, err)
 	}
 	if len(passphrase) > 0 {
@@ -229,21 +277,57 @@ func writeKeyFiles(keysDir string, entity *gp.Entity, passphrase []byte, cfg *pa
 	pubPath := filepath.Join(keysDir, publicKeyFile)
 	if err := writeArmored(pubPath, gp.PublicKeyType, func(w io.Writer) error {
 		return entity.Serialize(w)
-	}); err != nil {
+	}, false); err != nil {
 		return fmt.Errorf("openpgp: запись %s: %w", pubPath, err)
 	}
 	return nil
 }
 
-// writeArmored создаёт файл 0600 и пишет в него armored блок через
-// armorWrite — единый путь для private/public.asc.
-func writeArmored(path, blockType string, encode func(io.Writer) error) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+// writeArmored атомарно создаёт файл 0600: tmp-файл в том же каталоге
+// → armor-тело → fsync → close → фиксация → fsync каталога (по образцу
+// fs-storage fs.go Commit). Крэш посреди записи оставляет на диске
+// ЛИБО старый файл, ЛИБО полный новый — «битый private.asc, который
+// навсегда валит ReadArmoredKeyRing» исключён. exclusive=true —
+// фиксация без перезаписи существующей цели (link(2) атомарен и падает
+// с EEXIST, если цель уже есть): первый keygen двух процессов на общем
+// keys_dir даёт ровно одного победителя. Не-excl (public.asc)
+// перезаписывается rename поверх.
+func writeArmored(path, blockType string, encode func(io.Writer) error, exclusive bool) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return armorWrite(f, blockType, encode)
+	tmpPath := tmp.Name()
+	writeErr := armorWrite(tmp, blockType, encode)
+	if writeErr == nil {
+		writeErr = tmp.Sync() // rename без fsync переживает не всякий крэш
+	}
+	closeErr := tmp.Close()
+	if writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		// tmp не виден под целевым именем — очистка мусора best-effort,
+		// битой цели оставить не может.
+		_ = os.Remove(tmpPath)
+		return writeErr
+	}
+	if exclusive {
+		// link(2) — единственный stdlib-способ атомарного «создать, если
+		// нет»: права tmp (0600) сохраняются, окно между проверкой и
+		// фиксацией отсутствует. Windows: CreateHardLink = ERROR_ALREADY_EXISTS.
+		if err := os.Link(tmpPath, path); err != nil {
+			_ = os.Remove(tmpPath)
+			return err
+		}
+		_ = os.Remove(tmpPath)
+		return fsyncDir(filepath.Dir(path))
+	}
+	if err := renameReplace(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return fsyncDir(filepath.Dir(path))
 }
 
 // armorWrite эмитит armored block в w: открывает armor-encoder,

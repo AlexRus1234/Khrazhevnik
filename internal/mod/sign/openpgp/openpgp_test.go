@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp/clearsign"
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 
+	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/testutil"
 )
 
@@ -349,6 +351,145 @@ func TestLoad_CorruptFileFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("ожидалась ошибка для битого private.asc")
 	}
+	// Битый файл — KeyMaterialError: wire обязан валить старт, а не
+	// деградировать в nil-signer (сессия 40).
+	var km *domain.KeyMaterialError
+	if !errors.As(err, &km) {
+		t.Errorf("битый private.asc: хочу domain.KeyMaterialError, got %T: %v", err, err)
+	}
+}
+
+// TestLoad_TruncatedArmoredFails — обрезанный armored (крэш посреди
+// записи старым небезопасным кодом): ReadArmoredKeyRing падает →
+// KeyMaterialError, не nil-деградация.
+func TestLoad_TruncatedArmoredFails(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(t.TempDir(), nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	pub, err := s.PublicKey()
+	if err != nil {
+		t.Fatalf("PublicKey: %v", err)
+	}
+	truncated := pub[:len(pub)/2]
+	if err := os.WriteFile(filepath.Join(dir, privateKeyFile), truncated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = New(dir, nil, nil)
+	if err == nil {
+		t.Fatal("ожидалась ошибка для обрезанного armored")
+	}
+	var km *domain.KeyMaterialError
+	if !errors.As(err, &km) {
+		t.Errorf("обрезанный armored: хочу KeyMaterialError, got %T: %v", err, err)
+	}
+}
+
+// TestLoad_PublicInsteadOfPrivateFails — публичный ключ, скопированный
+// поверх private.asc, парсится «успешно», но приватного ключа не
+// содержит: понятная ошибка на старте, а не паника в глубине go-crypto
+// при первом Sign.
+func TestLoad_PublicInsteadOfPrivateFails(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(t.TempDir(), nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	pub, err := s.PublicKey()
+	if err != nil {
+		t.Fatalf("PublicKey: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, privateKeyFile), pub, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = New(dir, nil, nil)
+	if err == nil {
+		t.Fatal("ожидалась ошибка для публичного ключа в private.asc")
+	}
+	var km *domain.KeyMaterialError
+	if !errors.As(err, &km) {
+		t.Errorf("публичный ключ: хочу KeyMaterialError, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "приватного ключа") {
+		t.Errorf("ошибка не про приватный ключ: %v", err)
+	}
+}
+
+// TestNew_ParallelSameKey — два параллельных New на одном keys_dir
+// (первый старт): ровно один победитель keygen, оба процесса грузят
+// ОДИН fingerprint. Тихий fork инстансных ключей исключён (сессия 40).
+func TestNew_ParallelSameKey(t *testing.T) {
+	dir := t.TempDir()
+	const concurrency = 4
+	fps := make([]string, concurrency)
+	errs := make([]error, concurrency)
+	var wg sync.WaitGroup
+	for i := range concurrency {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s, err := New(dir, nil, nil)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			fps[i] = s.Fingerprint()
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("New #%d: %v", i, err)
+		}
+	}
+	for i := 1; i < concurrency; i++ {
+		if fps[i] != fps[0] {
+			t.Errorf("fingerprint #%d (%s) != #0 (%s): fork инстансных ключей", i, fps[i], fps[0])
+		}
+	}
+}
+
+// TestWriteArmored_ExclusiveRespectsExisting — exclusive-фиксация не
+// перезатирает уже существующий файл: гонка keygen оставляет ключ
+// победителя неприкосновенным.
+func TestWriteArmored_ExclusiveRespectsExisting(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.asc")
+	if err := os.WriteFile(target, []byte("winner"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := writeArmored(target, "PGP PUBLIC KEY BLOCK", func(io.Writer) error { return nil }, true)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("хочу os.ErrExist при существующей цели, got %v", err)
+	}
+	got, rerr := os.ReadFile(target)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(got) != "winner" {
+		t.Errorf("exclusive-фиксация перезатерла цель: %q", got)
+	}
+}
+
+// TestWriteArmored_NoTmpGarbage — после успешной exclusive-фиксации в
+// каталоге не остаётся tmp-файлов.
+func TestWriteArmored_NoTmpGarbage(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "k.asc")
+	if err := writeArmored(target, "PGP PUBLIC KEY BLOCK", func(w io.Writer) error {
+		_, err := w.Write([]byte("body"))
+		return err
+	}, true); err != nil {
+		t.Fatalf("writeArmored: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "k.asc" {
+		t.Errorf("мусор в каталоге после записи: %v", entries)
+	}
 }
 
 // failingReader всегда возвращает ошибку чтения — для error-веток
@@ -408,13 +549,14 @@ func TestArmorWrite_WriteBodyError(t *testing.T) {
 }
 
 func TestWriteArmored_OpenFileFails(t *testing.T) {
-	// path под обычным файлом (не каталогом) — OpenFile не может создать.
+	// path под обычным файлом (не каталогом) — CreateTemp не может
+	// создать tmp рядом с целью.
 	blocker := filepath.Join(t.TempDir(), "iamfile")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	badPath := filepath.Join(blocker, "out.asc")
-	if err := writeArmored(badPath, "PGP PUBLIC KEY BLOCK", func(io.Writer) error { return nil }); err == nil {
+	if err := writeArmored(badPath, "PGP PUBLIC KEY BLOCK", func(io.Writer) error { return nil }, false); err == nil {
 		t.Fatal("ожидалась ошибка writeArmored OpenFile под файлом")
 	}
 }

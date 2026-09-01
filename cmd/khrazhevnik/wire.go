@@ -187,10 +187,17 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	// Signer — подписчик метаданных (openpgp, сессия 15): генерирует
 	// ключ инстанса в cfg.Signing.KeysDir на первом старте, грузит на
 	// повторных. nil в деградированном режиме (модуль не слинкован или
-	// keygen упал — логируем и работаем без подписи). Внедряется в
+	// keygen упал по «мягкой» причине — логируем и работаем без подписи);
+	// битый ключевой материал — ошибка старта (сессия 40). Внедряется в
 	// RepoAdapter'ы через port.SignerInjector (v1 — только apt).
-	signer := wireSigner(cfg, log)
-	narSigner := wireNarSigner(cfg, log)
+	signer, err := wireSigner(cfg, log)
+	if err != nil {
+		return nil, err
+	}
+	narSigner, err := wireNarSigner(cfg, log)
+	if err != nil {
+		return nil, err
+	}
 	publishAdapters := wireRepoAdapters(signer, narSigner, systemClock{})
 	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, systemClock{}, publishAdapters)
 	publishAPI := publishSyncer{engine: publishEngine, repos: catalog.Repos, tasks: tasks}
@@ -271,43 +278,64 @@ func wireRepoAdapters(signer port.Signer, narSigner port.NarSigner, clock port.C
 }
 
 // wireNarSigner собирает nix narinfo-подписчик из compile-time реестра
-// (ed25519, сессия 16). Отсутствие регистрации или ошибка — не фатально:
-// логируем и возвращаем nil (nix narinfo не переподписываются, отдаются
-// как есть). Ключ генерируется на первом старте в cfg.Signing.KeysDir
-// (файл nix-ed25519.key, 0600), грузится на повторных.
-func wireNarSigner(cfg config.Config, log *slog.Logger) port.NarSigner {
+// (ed25519, сессия 16). Отсутствие регистрации — не фатально: логируем
+// и возвращаем nil (nix narinfo не переподписываются, отдаются как
+// есть). Битый ключевой материал (domain.KeyMaterialError) фатален —
+// старт падает (сессия 40): смена/регенерация narinfo-ключа молча
+// инвалидировала бы все ранее подписанные narinfo. Ключ генерируется
+// на первом старте в cfg.Signing.KeysDir (файл nix-ed25519.key, 0600),
+// грузится на повторных.
+func wireNarSigner(cfg config.Config, log *slog.Logger) (port.NarSigner, error) {
 	factory, err := registry.NarSigner("ed25519")
 	if err != nil {
 		log.Error("nix signing: модуль ed25519 не слинкован — narinfo не переподписываются", "err", err)
-		return nil
+		return nil, nil
 	}
 	signer, err := factory(cfg.Signing)
 	if err != nil {
+		var km *domain.KeyMaterialError
+		if errors.As(err, &km) {
+			return nil, fmt.Errorf("nix signing: %w", err)
+		}
 		log.Error("nix signing: инициализация nar-подписчика не удалась — narinfo не переподписываются", "err", err, "keys_dir", cfg.Signing.KeysDir)
-		return nil
+		return nil, nil
 	}
 	log.Info("nix signing: narinfo-ключ готов", "keys_dir", cfg.Signing.KeysDir, "pubkey", signer.PubKeyB64())
-	return signer
+	return signer, nil
 }
 
 // wireSigner собирает подписчик метаданных из compile-time реестра
-// (openpgp, сессия 15). Отсутствие регистрации или ошибка keygen —
-// не фатально: логируем и возвращаем nil (publish работает без
-// подписи, /key.asc отдаёт 503). Ключ генерируется на первом старте
-// в cfg.Signing.KeysDir, грузится на повторных.
-func wireSigner(cfg config.Config, log *slog.Logger) port.Signer {
+// (openpgp, сессия 15). Отсутствие регистрации (модуль не слинкован)
+// — не фатально: логируем и возвращаем nil (publish работает без
+// подписи, /key.asc отдаёт 503). Но ошибка ИНИЦИАЛИЗАЦИИ фатальна
+// для старта (сессия 40): «ключи есть, но не читаются» (битый файл,
+// неверная passphrase, публичный вместо приватного) раньше маскировалась
+// под nil-деградацию — репо продолжали публиковаться БЕЗ ПОДПИСИ,
+// молча инвалидируя доверие к инстансу. Разделение: os.ErrNotExist
+// внутри New уже не приходит (там генерация); извне различаем по
+// domain.KeyMaterialError — битый материал ≠ «нет ключей вообще».
+func wireSigner(cfg config.Config, log *slog.Logger) (port.Signer, error) {
 	factory, err := registry.Signer("openpgp")
 	if err != nil {
 		log.Error("signing: модуль openpgp не слинкован — репозитории без подписи", "err", err)
-		return nil
+		return nil, nil
 	}
 	signer, err := factory(cfg.Signing, systemClock{})
 	if err != nil {
+		var km *domain.KeyMaterialError
+		if errors.As(err, &km) {
+			// Ключи на диске непригодны: старт без подписи бессмыслен —
+			// все новые подписи невалидны, клиенты сломаны. Оператор чинит
+			// файл (или удаляет keys_dir для осознанной регенерации).
+			return nil, fmt.Errorf("signing: %w", err)
+		}
+		// Прочие ошибки keygen (недоступен keys_dir, entropy) — деградация
+		// прежняя: лог + nil, сервер жив, publish без подписи.
 		log.Error("signing: инициализация подписчика не удалась — репозитории без подписи", "err", err, "keys_dir", cfg.Signing.KeysDir)
-		return nil
+		return nil, nil
 	}
 	log.Info("signing: ключ инстанса готов", "keys_dir", cfg.Signing.KeysDir)
-	return signer
+	return signer, nil
 }
 
 // publishSyncer — обёртка publish.Engine под web.PublishAPI: запуск

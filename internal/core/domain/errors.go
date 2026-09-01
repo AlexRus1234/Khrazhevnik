@@ -247,6 +247,45 @@ func (e *StaleError) Is(target error) bool {
 	return ok
 }
 
+// KeyMaterialError — ключ подписи на диске есть, но непригоден:
+// битый файл (крэш посреди старой записи), неверная passphrase,
+// публичный ключ вместо приватного. Это не «ключей нет вообще»
+// (путь генерации), а «лежат, но не читаются» — старт обязан
+// упасть жёстко: тихая деградация в «репозитории без подписи»
+// молча инвалидировала бы все ранее опубликованные подписи
+// инстанса (аудит 2026-08-30, сессия 40).
+type KeyMaterialError struct {
+	What   string // «ключ подписи», «narinfo-ключ», ...
+	Path   string // путь к файлу ключа (может быть пустым)
+	Reason string // человекочитаемая причина (может быть пустой)
+	Err    error  // обёрнутая причина (может быть nil)
+}
+
+// Error реализует интерфейс error.
+func (e *KeyMaterialError) Error() string {
+	msg := e.What
+	if e.Path != "" {
+		msg += ": " + e.Path
+	}
+	if e.Reason != "" {
+		msg += ": " + e.Reason
+	}
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return "ключевой материал неисправен: " + msg
+}
+
+// Is поддерживает errors.Is(err, &KeyMaterialError{}).
+func (e *KeyMaterialError) Is(target error) bool {
+	_, ok := target.(*KeyMaterialError)
+	return ok
+}
+
+// Unwrap возвращает обёрнутую причину: errors.Is добирается до неё
+// сквозь типизированную обёртку.
+func (e *KeyMaterialError) Unwrap() error { return e.Err }
+
 // UnsupportedError — операция не поддерживается для данного объекта
 // (канон: port.Ecosystem.Enumerate для nix — синк всего cache.nixos.org
 // не реализуем, только pull-through «по использованию»). Web-слой
