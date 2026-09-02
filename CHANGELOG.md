@@ -48,6 +48,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   неподдерживаемых форматов индексов (apt `Packages.xz`, pacman
   `.db.tar.gz`, rpm-md `.zck`/`.zst`/`.xz`/`.bz2`) вместо generic
   failed.
+- **Upload-стриминг (сессия 27):** read-deadline в стриминге upload —
+  WriteTimeout админского слушателя не рвёт большие (1GiB) тела.
+- **Зеркало (сессия 28):** отменённый sync фиксируется как failed
+  («interrupted by cancel») с сохранением прогресса, а не succeeded;
+  чистка deaths-map планировщика.
+- **Retention by-hash (сессия 29):** by-hash-объекты живут два
+  поколения Release (marker `.retained`) — GC не удаляет индексы
+  актуального Release.
+- **Logout (сессия 30):** сбой каталога БД при отзыве сессии — 503
+  вместо 500.
+- **Док-хвосты (сессия 31):** постамбула сессии 21 (VALUES-col),
+  комментарии, config.md.
 - **Конфиг (сессия 42, BREAKING):** удалён мёртвый `cache.mutable_ttl`
   (определялся и валидировался, но не потреблялся; TTL mutable-индексов
   — константы адаптеров) — strict TOML теперь отвергает его в старых

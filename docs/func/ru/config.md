@@ -18,9 +18,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 # Конфигурация
 
-Слои: **defaults → TOML → env**. TOML-флайг `-config` (по умолчанию
-`khrazhevnik.toml`; пустое значение — только defaults+env, так работает
-контейнер). Env переопределяет TOML, TOML переопределяет defaults.
+Слои: **defaults → TOML → env**. TOML-флаг `-config <путь>` подключает
+файл; дефолт флага — пусто, без флага TOML не читается вовсе
+(defaults+env — так работает контейнер). Env переопределяет TOML, TOML
+переопределяет defaults.
 
 Формат env: префикс `KHRZ_`, сегменты пути через `__` (двойное
 подчёркивание), верхний регистр, дефисы — подчёркиваниями:

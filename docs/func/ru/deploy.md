@@ -103,8 +103,10 @@ curl -s -X POST http://127.0.0.1:30202/api/v1/remotes \
 podman exec khrazhevnik /khrazhevnik -add-remote apt/debian=https://deb.debian.org/debian
 ```
 
-Адаптер экосистемы должен быть включён (quadlet уже ставит
-`KHRZ_ECOSYSTEM__APT__ENABLED=true`); иначе `/apt/*` отдаёт 404.
+Все 5 экосистем включены по умолчанию — отдельное env-включение не
+нужно. 404 на `/<eco>/*` означает либо выключенную экосистему
+(`KHRZ_ECOSYSTEM__<ИМЯ>__ENABLED=false`), либо remote с таким именем
+не зарегистрирован.
 
 ## Настройка клиентов на прокси
 

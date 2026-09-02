@@ -139,8 +139,9 @@ read-only rootfs) под rootless podman quadlet.
 ### Интерфейсы и безопасность
 
 - Два слушателя: публика `:29202` (раздача пакетов без auth +
-  `/healthz`), админка `:30202` (`/api/v1`, `/metrics`, SPA `/ui`) — по
-  умолчанию на loopback
+  `/healthz`), админка `:30202` (`/api/v1`, `/metrics`, SPA `/ui`).
+  Дефолт `:30202` — все интерфейсы (старт пишет warning в лог);
+  loopback обеспечивает quadlet (`PublishPort=127.0.0.1:30202:30202`)
 - Веб-админка (Vue 3, русский/английский): дашборд со статистикой кеша и
   живыми задачами, remotes, репозитории с upload/reindex, пользователи и
   scoped-токены, аудит-журнал, публичные ключи с готовыми строками
@@ -248,9 +249,13 @@ CGO не требуется (SQLite — `modernc.org/sqlite`), исполняе�
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -trimpath -ldflags="-s -w \
-  -X khrazhevnik/cmd/khrazhevnik.Version=1.0.0" \
+  -X main.Version=1.0.0" \
   -o khrazhevnik ./cmd/khrazhevnik
 ```
+
+> Для package main линкер принимает только `-X main.Version=…`;
+> полный import path (`khrazhevnik/cmd/khrazhevnik.Version`) молча
+> не применяется — версия останется `dev` (как в CI и Containerfile).
 
 > Релизные бинарники (`khrazhevnik-<version>-linux-amd64` + `.sha256`) и
 > OCI-образ публикуются вручную из CI в Packages и Releases подключённых
@@ -330,7 +335,7 @@ graceful shutdown: SIGTERM → HTTP 5с → фоновые задачи 30с.
 | Порт | Доступ | Назначение |
 |---|---|---|
 | 29202 | публичный | раздача пакетов (`/<eco>/<remote>/<путь>`, `/repo/<name>/*`), `/healthz` |
-| 30202 | 127.0.0.1 | админ-API `/api/v1`, `/metrics`, веб-админка `/ui` |
+| 30202 | все интерфейсы (дефолт; warn при старте — loopback через PublishPort quadlet'а) | админ-API `/api/v1`, `/metrics`, веб-админка `/ui` |
 
 Rootless-режим: оба порта ≥1024; публикация на 80/443 — через
 reverse-proxy на хосте. `AutoUpdate=registry` в quadlet включает
@@ -381,10 +386,11 @@ scoped API-токен `Bearer khz_...` (CI-скрипты: `admin`,
 │   ├── mod/                  # Модули (регистрируются в init()): ecosystem/
 │   │                        # {apt, rpmmmd, pacman, apk, nix}, storage/{fs, s3},
 │   │                        # db/{sqlite, postgres, mariadb}, sign/{openpgp, ed25519}
-│   └── testutil/             # Общие test doubles (FixedClock, FakeStorage, …)
+│   ├── testutil/             # Общие test doubles (FixedClock, FakeStorage, …)
+│   └── contract/             # Контрактные suite каталога/хранилища (integration)
 ├── migrations/<driver>/      # Embedded goose-миграции (по каталогу на СУБД)
 ├── web/                      # Vue 3 + Vite + TypeScript SPA (бандл → core/web/assets)
-├── deploy/                   # Containerfile (multi-stage → scratch) + quadlet/
+├── deploy/                   # Containerfile (node → golang → scratch) + quadlet/
 ├── test/                     # integration/ (in-process + binary-smoke), smoke/
 ├── docs/                     # ARCHITECTURE/SPECIFICATION/TESTING/ROADMAP; func/ru/
 └── .forgejo/workflows/       # CI: сборка, тесты, e2e, OCI

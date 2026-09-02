@@ -20,10 +20,8 @@ PublishPort=29202:29202
 PublishPort=127.0.0.1:30202:30202
 ReadOnly=true
 Volume=/var/lib/khrazhevnik:/var/lib/khrazhevnik
-# Адаптеры экосистем включаются env (defaults без них отдают 404 на
-# /apt/* и /rpm/*). Новые экосистемы — по образцу (сессии 12–13).
-Environment=KHRZ_ECOSYSTEM__APT__ENABLED=true
-Environment=KHRZ_ECOSYSTEM__RPM_MD__ENABLED=true
+# Все 5 экосистем включены по умолчанию; env-строки вида
+# KHRZ_ECOSYSTEM__<ИМЯ>__ENABLED=false — только чтобы выключить.
 # JWT-секрет — единственный обязательный секрет; Podman Secret
 # подставляет его в env (значение НЕ светится в `systemctl show`).
 Secret=jwt-secret,type=env,target=KHRZ_AUTH__JWT_SECRET

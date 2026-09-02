@@ -33,8 +33,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   сверяются с БД **на каждом запросе**: отзыв токена/смена роли
   действуют немедленно.
 
-Все ошибки — единый JSON: `{"error":"snake_case_code"}` (+ `detail`
-для некоторых). Мутации (не-GET) пишутся в аудит-лог.
+Ошибки хендлеров — единый JSON: `{"error":"snake_case_code"}`.
+Исключение — 401/403 из auth-middleware (включая 503 при сбое БД):
+отдаются plain text (`unauthorized`, `forbidden`). Мутации (не-GET)
+пишутся в аудит-лог.
 
 ## Общие эндпоинты
 
@@ -49,7 +51,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 | Метод | Путь                | Auth | Код       | Назначение                       |
 |-------|---------------------|------|-----------|----------------------------------|
 | POST  | `/api/v1/setup`     | пустая таблица users (атомарно), опц. заголовок `X-Setup-Token`; rate-limit 10/min | 201/403 | Создать первого админа `{username,password}` |
-| POST  | `/api/v1/auth/login`| —    | 200/401   | `{username,password}` → `{token,expires_at}`; rate-limit 10/min |
+| POST  | `/api/v1/auth/login`| —    | 200/401   | `{username,password}` → `{token}` (JWT; TTL — `auth.session_ttl`); rate-limit 10/min |
 | POST  | `/api/v1/auth/logout`| session | 204    | Персистентный отзыв JWT (переживает рестарт; сбой каталога — 503) |
 
 ## Пользователи и API-токены (admin)
@@ -98,7 +100,7 @@ reindex/листинг конкретного репо).
 | POST  | `/api/v1/repos/{id}/perms`           | 204/400/404          | Выдать право (`{user_id}`) |
 | DELETE| `/api/v1/repos/{id}/perms/{userID}`  | 204/404              | Отозвать право           |
 | GET   | `/api/v1/repos/{id}/objects`         | 200                  | Листинг объектов         |
-| PUT   | `/api/v1/repos/{id}/objects/*`       | 201/409/413          | Upload (стрим; `Content-Length` обязателен) |
+| PUT   | `/api/v1/repos/{id}/objects/*`       | 201/409/411/413 | Upload (стрим; `Content-Length` обязателен, без него — 411) |
 | DELETE| `/api/v1/repos/{id}/objects/*`       | 204/404              | Удаление объекта         |
 | POST  | `/api/v1/repos/{id}/reindex`         | 202/409/429          | Задача генерации индексов |
 
@@ -116,7 +118,7 @@ reindex/листинг конкретного репо).
 |-------|---------------------------------|------------|--------------------------------|
 | GET   | `/{eco}/{remote}/{путь}`        | 200/404…   | Кеш-прокси upstream            |
 | GET   | `/repo/{name}/{путь}`           | 200/404    | Личное репо (объекты+индексы)  |
-| GET   | `/repo/{name}/key.asc`          | 200/404/503| Публичный OpenPGP-ключ инстанса|
+| GET   | `/repo/{name}/key.asc`          | 200/404    | Публичный OpenPGP-ключ инстанса|
 | GET   | `/repo/{name}/nix-key.asc`      | 200/404    | Публичный nix-ключ (для narinfo-подписи) |
 
 `/{eco}/*` — URL-префикс экосистемы: `apt`, `rpm` (для rpm-md),
@@ -127,7 +129,7 @@ reindex/листинг конкретного репо).
 
 | Метод | Путь                 | Код     | Назначение            |
 |-------|----------------------|---------|-----------------------|
-| GET   | `/api/v1/tasks`      | 200     | Снимки задач (активные первыми) |
+| GET   | `/api/v1/tasks`      | 200     | Снимки задач (сортировка по `started_at`, ранние первыми) |
 | GET   | `/api/v1/tasks/{id}` | 200/404 | Снимок задачи         |
 
 Снимок: `{id, kind, label, state, phase, current, processed, total,
@@ -144,8 +146,12 @@ sync-задач — в `sync_jobs` (одна на remote).
 
 ## Коды ошибок
 
-`not_found`, `conflict`, `forbidden`, `validation_error`, `too_large`,
-`quota_exceeded`, `stale`, `task_duplicate`, `task_limit`,
-`invalid_json`, `setup_already_done`, `invalid_setup_token`,
-`invalid_credentials`, `tasks_unavailable`, `mirror_unavailable`,
-`publish_unavailable`, `unsupported`, `internal`.
+`not_found`, `conflict`, `forbidden`, `admin_required` (force-only
+действие не-админом), `unavailable` (сбой каталога БД в auth-путях),
+`invalid_key` (некорректный ключ/путь объекта), `validation_error`,
+`too_large`, `payload_too_large` (тело JSON-запроса > 1 MiB),
+`length_required` (411, upload без `Content-Length`), `quota_exceeded`,
+`stale`, `task_duplicate`, `task_limit`, `invalid_json`,
+`setup_already_done`, `invalid_setup_token`, `invalid_credentials`,
+`tasks_unavailable`, `mirror_unavailable`, `publish_unavailable`,
+`unsupported`, `internal`.

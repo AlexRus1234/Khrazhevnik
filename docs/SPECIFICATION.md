@@ -59,9 +59,10 @@ per-write deadline 30s в стриминг-хендлерах (`web/stream.go`).
 
 ## Конфигурация
 
-TOML-файл (флаг `-config`, по умолчанию `khrazhevnik.toml`; пустое
-значение — только defaults+env) + env-слой. Слои: **defaults → TOML →
-env**. Пакет `internal/core/config`.
+TOML-файл подключается только явным флагом `-config <путь>` (дефолт
+флага — пусто; без флага TOML не читается вовсе — defaults+env, так
+работает контейнер) + env-слой. Слои: **defaults → TOML → env**.
+Пакет `internal/core/config`.
 
 ```toml
 [server]
@@ -150,8 +151,10 @@ enabled = true
 Админ-API (порт :30202) под корнем `/api/v1`. Аутентификация — JWT-
 сессии (`Authorization: Bearer <jwt>`) или scoped API-токены
 (`Bearer khz_...`); role/`token_version` сверяются с БД на каждом
-запросе. Все ошибки — `{"error":"snake_case_code"}`; фронт маппит
-в i18n (сессия 18). Мутации (не-GET) автоматом пишутся в аудит-лог
+запросе. Ошибки хендлеров — JSON `{"error":"snake_case_code"}`; фронт
+маппит в i18n (сессия 18). Исключение — 401/403 из auth-middleware
+(и 503 при сбое БД в нём же): отдаются plain text (`unauthorized`,
+`forbidden`), не JSON. Мутации (не-GET) автоматом пишутся в аудит-лог
 через `AuditMiddleware`: actor из auth-контекста, action из
 `WithAuditAction` (или выводится из метода+пути), result по коду
 ответа, detail из `WithAuditDetail`.
@@ -195,10 +198,16 @@ per-repo `signed=false` — не-цели (KISS). Если инициализа�
 
 | Метод | Путь                          | Auth | Код | Назначение                          |
 |-------|-------------------------------|------|-----|-------------------------------------|
-| GET   | `/repo/{name}/key.asc`        | —    | 200/404/503 | Armored публичный ключ инстанса (для `signed-by` в `sources.list`) |
+| GET   | `/repo/{name}/key.asc`        | —    | 200/404 | Armored публичный ключ инстанса (для `signed-by` в `sources.list`) |
 
-404 — репо с таким именем не существует; 503 — подписчик не
-инициализирован (деградированный режим).
+404 — репо с таким именем не существует **или** подписчик не
+инициализирован: роут `/key.asc` регистрируется только при успешной
+инициализации подписчика, в деградированном режиме (репо без подписи,
+`apt` с `trusted=yes`) запрос проваливается в wildcard-раздачу и
+заканчивается 404 — 503 не отдаётся. Диагностика: 404 на живом репо —
+проверить запись `signing.keys_dir` и ошибки подписчика в логе старта
+(`curl -s -w '%{http_code}\n' -o /dev/null
+http://<хражевник>:29202/repo/<name>/key.asc`).
 
 | Метод | Путь                                      | Auth                              | Код | Назначение                          |
 |-------|-------------------------------------------|-----------------------------------|-----|-------------------------------------|
@@ -211,7 +220,7 @@ per-repo `signed=false` — не-цели (KISS). Если инициализа�
 | POST  | `/api/v1/repos/{id}/perms`                | admin                             | 204/400/404 | Выдать право записи (`user_id`) |
 | DELETE| `/api/v1/repos/{id}/perms/{userID}`       | admin                             | 204/404 | Отозвать право записи          |
 | GET   | `/api/v1/repos/{id}/objects`              | admin или владелец или `repo:<id>:write` | 200 | Листинг объектов репо |
-| PUT   | `/api/v1/repos/{id}/objects/*`            | admin или владелец или `repo:<id>:write` | 201/409/413 | Upload объекта (стрим, `Content-Length` обязателен) |
+| PUT   | `/api/v1/repos/{id}/objects/*`            | admin или владелец или `repo:<id>:write` | 201/409/411/413 | Upload объекта (стрим, `Content-Length` обязателен; без него — 411 `length_required`) |
 | DELETE| `/api/v1/repos/{id}/objects/*`            | admin или владелец или `repo:<id>:write` | 204/404 | Удаление объекта |
 | POST  | `/api/v1/repos/{id}/reindex`              | admin или владелец или `repo:<id>:write` | 202/409/429 | Запуск reindex-задачи; 409 — дубль, 429 — лимит воркеров |
 
@@ -278,7 +287,7 @@ swap — сессия 17 с s3). Полный swap с подписью — се�
 
 | Метод | Путь                       | Auth        | Код | Назначение                          |
 |-------|----------------------------|-------------|-----|-------------------------------------|
-| GET   | `/api/v1/tasks`            | admin       | 200 | Снимки всех задач (активные первыми)|
+| GET   | `/api/v1/tasks`            | admin       | 200 | Снимки всех задач (сортировка по `started_at`, ранние первыми)|
 | GET   | `/api/v1/tasks/{id}`       | admin       | 200/404 | Снимок одной задачи            |
 
 Снимок задачи: `{id, kind, label, state, phase, current, processed,
@@ -323,11 +332,15 @@ stale_served,negative_hits,upstream_errors}_total`,
 
 ### Коды ошибок
 
-`not_found`, `conflict`, `forbidden`, `validation_error`, `too_large`,
-`quota_exceeded`, `stale`, `task_duplicate`, `task_limit`, `invalid_json`,
+`not_found`, `conflict`, `forbidden`, `admin_required` (force-only
+действие не-админом), `unavailable` (сбой каталога БД в auth-путях),
+`invalid_key` (некорректный ключ/путь объекта), `validation_error`,
+`too_large`, `payload_too_large` (тело JSON-запроса > 1 MiB),
+`length_required` (411, upload без `Content-Length`), `quota_exceeded`,
+`stale`, `task_duplicate`, `task_limit`, `invalid_json`,
 `setup_already_done`, `invalid_setup_token`, `invalid_credentials`,
-`tasks_unavailable`, `mirror_unavailable`, `publish_unavailable`, `unsupported`,
-`internal`.
+`tasks_unavailable`, `mirror_unavailable`, `publish_unavailable`,
+`unsupported`, `internal`.
 
 ## Экосистемы
 
@@ -427,9 +440,13 @@ khrazhevnik -config khrazhevnik.toml -add-remote apt/debian=https://deb.debian.o
 
 Таблицы (миграция 0001, goose): `users`, `api_tokens`, `repos`,
 `repo_perms`, `remotes`, `sync_jobs`, `audit_log`, `object_index`
-(etag/expires mutable-объектов кеша). Миграция 0005 добавляет
-`revoked_sessions` (персистентный отзыв JWT-сессий, сессия 25).
-`schema_migrations` — служебная таблица goose.
+(etag/expires mutable-объектов кеша). Дальнейшие миграции: 0002 —
+`api_tokens.revoked_at` (мягкий отзыв с сохранением записи для аудита);
+0003 — `object_index.storage_key` (версионные байты mutable-объектов);
+0004 — `remotes.sync_interval_sec` и `remotes.include` (планируемый
+sync и include-фильтры); 0005 — `revoked_sessions` (персистентный
+отзыв JWT-сессий, сессия 25). `schema_migrations` — служебная таблица
+goose.
 
 | Таблица        | Назначение                                        |
 |----------------|---------------------------------------------------|

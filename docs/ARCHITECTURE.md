@@ -78,6 +78,7 @@ internal/mod/             МОДУЛИ (каждый регистрируетс�
   db/         sqlite/, postgres/, mariadb/
   sign/       openpgp/, ed25519/
 internal/testutil/        FixedClock, SeqClock, FixedRand, FakeStorage, fakes Catalog*
+internal/contract/        общие контрактные suite каталога и storage (гоняются в CI против sqlite/fs и контейнерных postgres/mariadb/minio)
 migrations/<driver>/      embedded goose-миграции каталога (по каталогу на БД)
 web/                      Vue 3 + Vite + TS SPA
 deploy/                   Containerfile, quadlet/
@@ -287,7 +288,9 @@ type MetaFetcher interface {
 
 ## 8. Контейнер
 
-- Multi-stage: golang:1.26-alpine (CGO_ENABLED=0, -trimpath) → scratch.
+- Трёхстадийный multi-stage: node:22-alpine (Vue-SPA, vite build) →
+  golang:1.26-alpine (CGO_ENABLED=0, -trimpath, //go:embed бандла) →
+  scratch (бинарник + CA-bundle).
 - `USER 65534:65534`, `EXPOSE 29202 30202`, `VOLUME /var/lib/khrazhevnik`.
 - Writable только `/var/lib/khrazhevnik` (sqlite, fs-store, ключи);
   ReadOnlyRootfs=true в quadlet.
