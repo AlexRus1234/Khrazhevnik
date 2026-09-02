@@ -30,6 +30,10 @@ import (
 // тестов (алфавит nix без e/o/t/u — как у реального nix).
 const hash32 = "x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y"
 
+// fileHash52 — валидный 52-символьный nix-base32 fileHash nar-архива
+// (sha256 сжатого файла, (256−1)/5+1 = 52 символа).
+const fileHash52 = "x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9yx0vm1mkfnqrq3hxjcp2w"
+
 // hash32hex — 32 hex-символа с 'e': для nix-классификации НЕ валиден
 // (реальные nix-хеши — nix-base32); такой путь падает в conservative.
 const hash32hex = "0123456789abcdef0123456789abcdef"
@@ -73,9 +77,10 @@ type classifyCase struct {
 func TestClassifyTable(t *testing.T) {
 	a := newTestAdapter(t)
 	cases := []classifyCase{
-		// Immutable: nar-архивы (content-addressed по 32 nix-base32).
-		{"nar/" + hash32 + ".nar.xz", domain.KindImmutable, 0},
-		{"nar/" + hash32 + ".nar", domain.KindImmutable, 0},
+		// Immutable: nar-архивы (content-addressed по 52 nix-base32
+		// fileHash — sha256 сжатого файла).
+		{"nar/" + fileHash52 + ".nar.xz", domain.KindImmutable, 0},
+		{"nar/" + fileHash52 + ".nar", domain.KindImmutable, 0},
 		// Mutable{TTL 1h}: narinfo (метаданные пути, byte-exact).
 		{hash32 + ".narinfo", domain.KindMutable, mutableNarinfoTTL},
 		// Mutable{TTL 1h}: nix-cache-info.
@@ -88,12 +93,18 @@ func TestClassifyTable(t *testing.T) {
 		{"nar/not-a-hash.nar.xz", domain.KindMutable, mutableUnknownTTL},
 		// 31-символьный «хеш» — не 32: conservative.
 		{hash32[:31] + ".narinfo", domain.KindMutable, mutableUnknownTTL},
+		// 51-символьный fileHash — не 52: conservative.
+		{"nar/" + fileHash52[:51] + ".nar.xz", domain.KindMutable, mutableUnknownTTL},
 		// hex-хеш с 'e' — не nix-base32 (у реального nix таких нет):
 		// narinfo и nar с ним не попадают в nar/narinfo-ветки —
 		// conservative mutable{TTL 1m} (сессия 33).
 		{hash32hex + ".narinfo", domain.KindMutable, mutableUnknownTTL},
-		{"nar/" + hash32hex + ".nar.xz", domain.KindMutable, mutableUnknownTTL},
-		{"nar/" + hash32hex + ".nar", domain.KindMutable, mutableUnknownTTL},
+		{"nar/" + hash32hex + "0123456789abcdef01234567.nar.xz", domain.KindMutable, mutableUnknownTTL},
+		{"nar/" + hash32hex + "0123456789abcdef01234567.nar", domain.KindMutable, mutableUnknownTTL},
+		// nar с 32-символьным nix-base32 — хеш store path, а не
+		// fileHash: инверсия старого контракта (сессия 47).
+		{"nar/" + hash32 + ".nar.xz", domain.KindMutable, mutableUnknownTTL},
+		{"nar/" + hash32 + ".nar", domain.KindMutable, mutableUnknownTTL},
 	}
 	for _, tc := range cases {
 		got, err := a.Classify(tc.path)
@@ -112,7 +123,7 @@ func TestClassifyTable(t *testing.T) {
 
 func TestClassifyStripsLeadingSlash(t *testing.T) {
 	a := newTestAdapter(t)
-	got, err := a.Classify("/nar/" + hash32 + ".nar.xz")
+	got, err := a.Classify("/nar/" + fileHash52 + ".nar.xz")
 	if err != nil {
 		t.Fatalf("Classify с ведущим «/»: %v", err)
 	}
@@ -137,8 +148,8 @@ func TestClassifyRulesCovered(t *testing.T) {
 		covered[r.name] = false
 	}
 	for _, tc := range []string{
-		"nar/" + hash32 + ".nar.xz",
-		"nar/" + hash32 + ".nar",
+		"nar/" + fileHash52 + ".nar.xz",
+		"nar/" + fileHash52 + ".nar",
 		hash32 + ".narinfo",
 		"nix-cache-info",
 		"log/" + hash32 + ".drv",
@@ -183,18 +194,18 @@ func TestResolveKnownRemote(t *testing.T) {
 		ID: 7, Name: "cache", Ecosystem: "nix",
 		BaseURL: "https://cache.nixos.org", Enabled: true,
 	})
-	target, ok := a.Resolve("/nix/cache/nar/" + hash32 + ".nar.xz")
+	target, ok := a.Resolve("/nix/cache/nar/" + fileHash52 + ".nar.xz")
 	if !ok {
 		t.Fatal("Resolve существующего remote = false")
 	}
-	wantURL := "https://cache.nixos.org/nar/" + hash32 + ".nar.xz"
+	wantURL := "https://cache.nixos.org/nar/" + fileHash52 + ".nar.xz"
 	if target.UpstreamURL != wantURL {
 		t.Errorf("UpstreamURL = %q, хочу %q", target.UpstreamURL, wantURL)
 	}
-	if target.UpstreamPath != "/nar/"+hash32+".nar.xz" {
+	if target.UpstreamPath != "/nar/"+fileHash52+".nar.xz" {
 		t.Errorf("UpstreamPath = %q", target.UpstreamPath)
 	}
-	if target.StorageKey != "cache/nix/7/nar/"+hash32+".nar.xz" {
+	if target.StorageKey != "cache/nix/7/nar/"+fileHash52+".nar.xz" {
 		t.Errorf("StorageKey = %q", target.StorageKey)
 	}
 }
@@ -271,11 +282,11 @@ func TestResolvePicksUpNewRemote(t *testing.T) {
 		t.Fatal("кеш remotes не должен инвалидироваться до TTL")
 	}
 	clock.Advance(remoteCacheTTL)
-	target, ok := a.Resolve("/nix/cache/nar/" + hash32 + ".nar.xz")
+	target, ok := a.Resolve("/nix/cache/nar/" + fileHash52 + ".nar.xz")
 	if !ok {
 		t.Fatal("после TTL кеш remotes не обновился")
 	}
-	if target.UpstreamURL != "https://cache.nixos.org/nar/"+hash32+".nar.xz" {
+	if target.UpstreamURL != "https://cache.nixos.org/nar/"+fileHash52+".nar.xz" {
 		t.Errorf("UpstreamURL = %q", target.UpstreamURL)
 	}
 }

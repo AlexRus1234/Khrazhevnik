@@ -31,6 +31,10 @@ import (
 // ('e' внутри) валидными nix-хешами не являются.
 const narHash32 = "x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y"
 
+// narFileHash52 — валидный 52-символьный nix-base32 fileHash nar-архива
+// (sha256 сжатого файла, (256−1)/5+1 = 52 символа — как у реального nix).
+const narFileHash52 = "x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9yx0vm1mkfnqrq3hxjcp2w"
+
 // mustReadTestdata читает файл из testdata/.
 func mustReadTestdata(t *testing.T, name string) []byte {
 	t.Helper()
@@ -49,7 +53,7 @@ func TestParseNarinfoGolden(t *testing.T) {
 	}
 	want := &Narinfo{
 		StorePath:   "/nix/store/" + narHash32 + "-hello-2.12.1",
-		URL:         "nar/" + narHash32 + ".nar.xz",
+		URL:         "nar/" + narFileHash52 + ".nar.xz",
 		Compression: "xz",
 		FileHash:    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		FileSize:    1024,
@@ -80,12 +84,12 @@ func TestParseNarinfoSigKeepsSecondColon(t *testing.T) {
 func TestParseNarinfoFirstFieldWins(t *testing.T) {
 	// дубль поля — первое значение выигрывает (дубли игнорируются).
 	n, err := ParseNarinfo(bytes.NewReader([]byte(
-		"URL: nar/" + narHash32 + ".nar.xz\n" +
+		"URL: nar/" + narFileHash52 + ".nar.xz\n" +
 			"URL: nar/ffffffffffffffffffffffffffffffff.nar.xz\n")))
 	if err != nil {
 		t.Fatalf("ParseNarinfo: %v", err)
 	}
-	if n.URL != "nar/"+narHash32+".nar.xz" {
+	if n.URL != "nar/"+narFileHash52+".nar.xz" {
 		t.Errorf("URL = %q (первое должно выиграть)", n.URL)
 	}
 }
@@ -93,11 +97,11 @@ func TestParseNarinfoFirstFieldWins(t *testing.T) {
 func TestParseNarinfoUnknownKeyIgnored(t *testing.T) {
 	// неизвестный ключ — forward-compat: игнорируется, парсер не падает.
 	n, err := ParseNarinfo(bytes.NewReader([]byte(
-		"FutureField: something\nURL: nar/" + narHash32 + ".nar.xz\n")))
+		"FutureField: something\nURL: nar/" + narFileHash52 + ".nar.xz\n")))
 	if err != nil {
 		t.Fatalf("ParseNarinfo: %v", err)
 	}
-	if n.URL != "nar/"+narHash32+".nar.xz" {
+	if n.URL != "nar/"+narFileHash52+".nar.xz" {
 		t.Errorf("URL = %q (неизвестный ключ не должен ломать)", n.URL)
 	}
 }
@@ -105,23 +109,23 @@ func TestParseNarinfoUnknownKeyIgnored(t *testing.T) {
 func TestParseNarinfoLineWithoutColon(t *testing.T) {
 	// строка без «:» — tolerant: игнорируется, парсер не падает.
 	n, err := ParseNarinfo(bytes.NewReader([]byte(
-		"this line has no colon\nURL: nar/" + narHash32 + ".nar.xz\n")))
+		"this line has no colon\nURL: nar/" + narFileHash52 + ".nar.xz\n")))
 	if err != nil {
 		t.Fatalf("ParseNarinfo: %v", err)
 	}
-	if n.URL != "nar/"+narHash32+".nar.xz" {
+	if n.URL != "nar/"+narFileHash52+".nar.xz" {
 		t.Errorf("URL = %q", n.URL)
 	}
 }
 
 func TestParseNarinfoCRLF(t *testing.T) {
 	// CRLF-окончания — \r срезается, парсер не ломается.
-	data := []byte("URL: nar/" + narHash32 + ".nar.xz\r\nCompression: xz\r\n")
+	data := []byte("URL: nar/" + narFileHash52 + ".nar.xz\r\nCompression: xz\r\n")
 	n, err := ParseNarinfo(bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("ParseNarinfo CRLF: %v", err)
 	}
-	if n.URL != "nar/"+narHash32+".nar.xz" {
+	if n.URL != "nar/"+narFileHash52+".nar.xz" {
 		t.Errorf("URL = %q (\\r не срезан?)", n.URL)
 	}
 	if n.Compression != "xz" {
@@ -131,11 +135,11 @@ func TestParseNarinfoCRLF(t *testing.T) {
 
 func TestParseNarinfoLastLineNoNewline(t *testing.T) {
 	// последняя строка без \n — всё равно разбирается (tolerant).
-	n, err := ParseNarinfo(bytes.NewReader([]byte("URL: nar/" + narHash32 + ".nar.xz")))
+	n, err := ParseNarinfo(bytes.NewReader([]byte("URL: nar/" + narFileHash52 + ".nar.xz")))
 	if err != nil {
 		t.Fatalf("ParseNarinfo без \\n: %v", err)
 	}
-	if n.URL != "nar/"+narHash32+".nar.xz" {
+	if n.URL != "nar/"+narFileHash52+".nar.xz" {
 		t.Errorf("URL = %q", n.URL)
 	}
 }
@@ -274,18 +278,23 @@ func TestValidNarName(t *testing.T) {
 		name string
 		want bool
 	}{
-		{narHash32 + ".nar.xz", true},
-		{narHash32 + ".nar", true},
+		{narFileHash52 + ".nar.xz", true},
+		{narFileHash52 + ".nar", true},
 		// не nar-суффикс
-		{narHash32 + ".nar.gz", false},
-		{narHash32 + ".txt", false},
-		// не 32-символьный хеш
+		{narFileHash52 + ".nar.gz", false},
+		{narFileHash52 + ".txt", false},
+		// не 52-символьный fileHash
 		{"foo.nar.xz", false},
-		{narHash32[:31] + ".nar.xz", false}, // 31
+		{narFileHash52[:51] + ".nar.xz", false}, // 51
+		{narFileHash52 + "x.nar.xz", false},     // 53
+		// 32-символьный nar — хеш store path, а не fileHash: nar
+		// именуется по sha256 сжатого файла (52), не по пути
+		{narHash32 + ".nar.xz", false},
+		{narHash32 + ".nar", false},
 		// hex с 'e' — не nix-base32
-		{"0123456789abcdef0123456789abcdef.nar.xz", false},
+		{"0123456789abcdef0123456789abcdef0123456789abcdef01234567.nar.xz", false},
 		// заглавные
-		{"X0VM1MKFNQRQ3HXJCP2WSZ5L8H4CGD9Y.nar.xz", false},
+		{strings.ToUpper(narFileHash52) + ".nar.xz", false},
 		{"", false},
 	}
 	for _, c := range cases {
@@ -301,18 +310,20 @@ func TestWantNar(t *testing.T) {
 		n    *Narinfo
 		want string
 	}{
-		{"nar.xz валиден", &Narinfo{URL: "nar/" + narHash32 + ".nar.xz"}, "/nar/" + narHash32 + ".nar.xz"},
-		{"nar несжатый", &Narinfo{URL: "nar/" + narHash32 + ".nar"}, "/nar/" + narHash32 + ".nar"},
-		{"с ведущим «/»", &Narinfo{URL: "/nar/" + narHash32 + ".nar.xz"}, "/nar/" + narHash32 + ".nar.xz"},
+		{"nar.xz валиден", &Narinfo{URL: "nar/" + narFileHash52 + ".nar.xz"}, "/nar/" + narFileHash52 + ".nar.xz"},
+		{"nar несжатый", &Narinfo{URL: "nar/" + narFileHash52 + ".nar"}, "/nar/" + narFileHash52 + ".nar"},
+		{"с ведущим «/»", &Narinfo{URL: "/nar/" + narFileHash52 + ".nar.xz"}, "/nar/" + narFileHash52 + ".nar.xz"},
 		{"URL отсутствует", &Narinfo{}, ""},
 		{"пустой URL", &Narinfo{URL: ""}, ""},
 		{"nil narinfo", nil, ""},
-		{"чужой префикс", &Narinfo{URL: "pool/" + narHash32 + ".nar.xz"}, ""},
-		{"без префикса nar/", &Narinfo{URL: narHash32 + ".nar.xz"}, ""},
+		{"чужой префикс", &Narinfo{URL: "pool/" + narFileHash52 + ".nar.xz"}, ""},
+		{"без префикса nar/", &Narinfo{URL: narFileHash52 + ".nar.xz"}, ""},
 		{"невалидный хеш", &Narinfo{URL: "nar/foo.nar.xz"}, ""},
-		{"не-nix-base32 ('e' в hex)", &Narinfo{URL: "nar/" + strings.Repeat("e", 32) + ".nar"}, ""},
-		{"nar.gz не поддерживается", &Narinfo{URL: "nar/" + narHash32 + ".nar.gz"}, ""},
-		{"лишний путь", &Narinfo{URL: "nar/sub/" + narHash32 + ".nar.xz"}, ""},
+		{"не-nix-base32 ('e' в hex)", &Narinfo{URL: "nar/" + strings.Repeat("e", 52) + ".nar"}, ""},
+		// 32-символьный nar — не fileHash: инверсия старого контракта
+		{"32-символьный nar", &Narinfo{URL: "nar/" + narHash32 + ".nar.xz"}, ""},
+		{"nar.gz не поддерживается", &Narinfo{URL: "nar/" + narFileHash52 + ".nar.gz"}, ""},
+		{"лишний путь", &Narinfo{URL: "nar/sub/" + narFileHash52 + ".nar.xz"}, ""},
 	}
 	for _, c := range cases {
 		if got := WantNar(c.n); got != c.want {
@@ -330,7 +341,7 @@ func TestWantNarFromGolden(t *testing.T) {
 		t.Fatalf("ParseNarinfo: %v", err)
 	}
 	got := WantNar(n)
-	want := "/nar/" + narHash32 + ".nar.xz"
+	want := "/nar/" + narFileHash52 + ".nar.xz"
 	if got != want {
 		t.Errorf("WantNar(golden) = %q, хочу %q", got, want)
 	}

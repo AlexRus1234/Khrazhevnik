@@ -139,11 +139,11 @@ case-чувствителен и сохраняется, `cache/apt/<id>/pool/Fo
 
 ## nix (binary cache)
 
-- **Upload:** `<32hex>.narinfo` (в корне репо) + `nar/<32hex>.nar.xz|.nar`.
-  Прочие пути — 400. Хеш store path — 32 hex-символа (`[0-9a-f]{32}`,
-  контракт адаптера; реальный nix использует base32-подобное кодирование,
-  несматченные пути уходят в conservative mutable — pull-through работает,
-  но hit-rate immutable-кеша ниже).
+- **Upload:** `<32 nix-base32>.narinfo` (в корне репо; хеш store path) +
+  `nar/<52 nix-base32 fileHash>.nar.xz|.nar` (sha256 сжатого файла,
+  (256−1)/5+1 = 52 символа — сессия 47). Прочие пути — 400. Алфавит
+  nix-base32 — канонический nix (`[0-9a-z]` без `e`/`o`/`t`/`u`; hex
+  с `e` ими не является).
 - **Индексы (reindex):** narinfo **переподписываются** Sig ключом инстанса
   (ed25519, формат «name:pubkey:signature»). Это единственное место в
   проекте, где мы МЕНЯЕМ чужой файл: только поле Sig заменяется, остальное

@@ -405,18 +405,21 @@ stale_served,negative_hits,upstream_errors}_total`,
   immutable-кеш. Полное зеркало `cache.nixos.org` (десятки ТБ) не
   поддерживается — только pull-through; `Enumerate` возвращает
   `*domain.UnsupportedError` («зеркало по использованию»: narinfo → nar
-  через `WantNar` — задел для будущего префетча). Классификация:
-  `nar/<32hex>.nar.xz` и `nar/<32hex>.nar` — immutable (навсегда);
-  `<32hex>.narinfo` — mutable{TTL 1h} (маленький, byte-exact, реиспоуз
-  и патчи путей невозможны); `nix-cache-info` — mutable{TTL 1h};
-  `log/<…>` — immutable; прочее — conservative mutable{TTL 1m}.
-  Инвариант nix: narinfo содержит `URL: nar/…` и `Sig: <key>:…` — НЕ
-  переписываем, отдаём побайтово (подписи остаются валидными, если клиент
-  доверяет ключу upstream; `trusted-public-keys` остаётся от upstream).
-  404 на narinfo — штатная ситуация nix-клиента (перебор substituter'ов):
-  negative-cache движка (сессия 06) отдаёт корректный 404 (не 502) и
-  быстро. Парсер narinfo (строки `key: value` + валидатор 32-hex) —
-  `mod/ecosystem/nix/parse.go`, фаззинг `FuzzParseNarinfo` (без паники,
+   через `WantNar` — задел для будущего префетча). Классификация:
+   `nar/<52 nix-base32 fileHash>.nar.xz` и `nar/<52 nix-base32
+   fileHash>.nar` — immutable (навсегда; sha256 сжатого файла,
+   (256−1)/5+1 = 52 символа — сессия 47); `<32 nix-base32>.narinfo` —
+   mutable{TTL 1h} (маленький, byte-exact, реиспоуз
+   и патчи путей невозможны); `nix-cache-info` — mutable{TTL 1h};
+   `log/<…>` — immutable; прочее — conservative mutable{TTL 1m}.
+   Инвариант nix: narinfo содержит `URL: nar/…` и `Sig: <key>:…` — НЕ
+   переписываем, отдаём побайтово (подписи остаются валидными, если клиент
+   доверяет ключу upstream; `trusted-public-keys` остаётся от upstream).
+   404 на narinfo — штатная ситуация nix-клиента (перебор substituter'ов):
+   negative-cache движка (сессия 06) отдаёт корректный 404 (не 502) и
+   быстро. Парсер narinfo (строки `key: value` + валидатор nix-base32:
+   narinfo — 32, nar — 52) —
+   `mod/ecosystem/nix/parse.go`, фаззинг `FuzzParseNarinfo` (без паники,
   размер записи < 16KiB, пути в `URL:`-поле валидны относительно `/nar/`
   или запись отброшена). `Remote.Include` для nix не используется.
 

@@ -59,6 +59,11 @@ import (
 // матчатся классификацией сессии 33).
 const nixHash = "x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y"
 
+// nixFileHash — синтетический 52-символьный nix-base32 fileHash
+// nar-архива (sha256 сжатого файла, (256−1)/5+1 = 52; сессия 47:
+// nar именуется fileHash'ом, не хешем store path).
+const nixFileHash = nixHash + nixHash[:20]
+
 // nixUpstream — httptest-сервер с мини-nix-binary-cache: narinfo,
 // nar.xz и nix-cache-info. Считает запросы к upstream.
 type nixUpstream struct {
@@ -75,9 +80,10 @@ func newNixUpstream(t *testing.T) *nixUpstream {
 		nar:       []byte("NIX-NAR-CONTENT-100-bytes-padding-padding-padding-padding!"),
 		cacheInfo: []byte("StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 40\n"),
 	}
-	// narinfo реального вида: 5 полей + Sig. URL ссылает на nar/<hash>.nar.xz.
+	// narinfo реального вида: 5 полей + Sig. URL ссылает на
+	// nar/<52 nix-base32 fileHash>.nar.xz (сессия 47).
 	u.narinfo = []byte("StorePath: /nix/store/" + nixHash + "-hello-2.12.1\n" +
-		"URL: nar/" + nixHash + ".nar.xz\n" +
+		"URL: nar/" + nixFileHash + ".nar.xz\n" +
 		"Compression: xz\n" +
 		"FileHash: sha256:" + nixHash + nixHash + "\n" +
 		"FileSize: 100\n" +
@@ -98,7 +104,7 @@ func (u *nixUpstream) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Header().Set("ETag", `"narinfo-v1"`)
 		_, _ = w.Write(u.narinfo)
-	case "/cache/nar/" + nixHash + ".nar.xz":
+	case "/cache/nar/" + nixFileHash + ".nar.xz":
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write(u.nar)
 	case "/cache/nix-cache-info":
@@ -155,7 +161,7 @@ func TestNixProxyByteExactAndCache(t *testing.T) {
 	// nar.xz (immutable): первый запрос — upstream-промах, второй — HIT.
 	narSHA := sha256.Sum256(up.nar)
 	wantNarHex := hex.EncodeToString(narSHA[:])
-	narPath := "/nix/cache/nar/" + nixHash + ".nar.xz"
+	narPath := "/nix/cache/nar/" + nixFileHash + ".nar.xz"
 	rec = nixGet(t, h, narPath)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("nar первый: код %d", rec.Code)

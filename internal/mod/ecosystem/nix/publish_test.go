@@ -86,12 +86,12 @@ func hexEncode(b []byte) string {
 	return string(out)
 }
 
-// narinfoForTest — валидный narinfo (URL указывает на nar/<32 nix-
-// base32>.nar.xz); refs — содержимое References-строки (bare-имена,
+// narinfoForTest — валидный narinfo (URL указывает на nar/<52 nix-
+// base32 fileHash>.nar.xz); refs — содержимое References-строки (bare-имена,
 // как в реальном narinfo; fingerprint восстановит полные пути).
 func narinfoForTest(extraSig string, refs ...string) []byte {
 	s := "StorePath: /nix/store/" + narHash32 + "-hello-2.12.1\n" +
-		"URL: nar/" + narHash32 + ".nar.xz\n" +
+		"URL: nar/" + narFileHash52 + ".nar.xz\n" +
 		"Compression: xz\n" +
 		"FileHash: sha256:" + strings.Repeat("0", 64) + "\n" +
 		"FileSize: 1024\n" +
@@ -306,7 +306,7 @@ func TestResignSignsFingerprint_RealEd25519(t *testing.T) {
 	// Tamper-гвард: подпись по строкам файла не совпадает.
 	linesMsg := strings.Join([]string{
 		"StorePath: /nix/store/" + narHash32 + "-hello-2.12.1",
-		"URL: nar/" + narHash32 + ".nar.xz",
+		"URL: nar/" + narFileHash52 + ".nar.xz",
 	}, "\n")
 	if bytes.Equal(ed25519.Sign(priv, []byte(linesMsg)), sigBytes) {
 		t.Fatal("подпись совпала с подписью по строкам файла — подписывается не fingerprint")
@@ -343,15 +343,18 @@ func TestValidateObjectPath(t *testing.T) {
 		want bool
 	}{
 		{narHash32 + ".narinfo", true},
-		{"nar/" + narHash32 + ".nar.xz", true},
-		{"nar/" + narHash32 + ".nar", true},
-		{"foo.narinfo", false},                   // не хеш
-		{"nar/foo.nar.xz", false},                // не хеш
-		{"sub/" + narHash32 + ".narinfo", false}, // не в корне
-		{"nar/" + narHash32 + ".nar.gz", false},  // неверный суффикс
+		{"nar/" + narFileHash52 + ".nar.xz", true},
+		{"nar/" + narFileHash52 + ".nar", true},
+		{"foo.narinfo", false},                      // не хеш
+		{"nar/foo.nar.xz", false},                   // не хеш
+		{"sub/" + narHash32 + ".narinfo", false},    // не в корне
+		{"nar/" + narFileHash52 + ".nar.gz", false}, // неверный суффикс
 		// hex с 'e' — не nix-base32 (реальные nix-хеши иного алфавита).
 		{"0123456789abcdef0123456789abcdef.narinfo", false},
-		{"nar/0123456789abcdef0123456789abcdef.nar.xz", false},
+		{"nar/0123456789abcdef0123456789abcdef0123456789abcdef01234567.nar.xz", false},
+		// 32-символьный nar — хеш store path, а не fileHash.
+		{"nar/" + narHash32 + ".nar.xz", false},
+		{"nar/" + narHash32 + ".nar", false},
 		// другой валидный nix-base32 хеш.
 		{"0123456789abcdfghijklmnpqrsvwxyz.narinfo", true},
 		{"", false},

@@ -26,9 +26,9 @@
 // Инвариант nix: narinfo содержит URL: nar/… и Sig: <key>:… — НЕ
 // переписываем, отдаём побайтово (подписи остаются валидными, если
 // клиент доверяет ключу upstream). Классификация только по пути:
-// nar/<32 nix-base32>.nar.xz|.nar — immutable (навсегда); <32 nix-
-// base32>.narinfo — mutable{TTL 1h} (маленький, byte-exact, реиспоуз
-// и патчи путей невозможны); nix-cache-info — mutable{TTL 1h};
+// nar/<52 nix-base32 fileHash>.nar.xz|.nar — immutable (навсегда);
+// <32 nix-base32>.narinfo — mutable{TTL 1h} (маленький, byte-exact,
+// реиспоуз и патчи путей невозможны); nix-cache-info — mutable{TTL 1h};
 // log/<…> — immutable.
 //
 // 404 на narinfo — штатная ситуация nix-клиента (перебор
@@ -150,16 +150,16 @@ func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 }
 
 // Classify делит объекты nix binary cache по изменчивости. nar-файлы
-// (nar/<32 nix-base32>.nar.xz|.nar) и log/<…> — immutable
+// (nar/<52 nix-base32 fileHash>.nar.xz|.nar) и log/<…> — immutable
 // (content-addressed, кешируются навсегда); <32 nix-base32>.narinfo —
 // mutable{TTL 1h} (маленький, byte-exact, подписи upstream валидны);
 // nix-cache-info — mutable{TTL 1h}; прочее — conservative
 // mutable{TTL 1m}. Пустой путь — ошибка валидации.
 //
-// Хеш store path валидируется как 32 символа nix-base32
-// ([0123456789abcdfghijklmnpqrsvwxyz]{32} — канонический алфавит nix,
+// narinfo валидируется как 32 символа nix-base32, nar — как 52
+// ([0123456789abcdfghijklmnpqrsvwxyz] — канонический алфавит nix,
 // libutil/hash.cc, без e/o/t/u): так кодирует хеши реальный nix, и
-// именно такой хеш допускает upload в личные репо (publish.go).
+// именно такие хеши допускает upload в личные репо (publish.go).
 // Ранний контракт (сессия 13) требовал 32 hex — реальные narinfo/nar
 // не матчились и падали в conservative mutable{TTL 1m} (реиспейс
 // каждую минуту вместо immutable-кеша).
@@ -270,18 +270,19 @@ type rawRule struct {
 }
 
 // classifyRules — таблица классификации nix как данные. Порядок —
-// от специфичного к общему; первый матч выигрывает. nar/narinfo
-// валидируют 32-символьный nix-base32 хеш store path регексом
-// (content-addressed; алфавит nix — без e/o/t/u).
+// от специфичного к общему; первый матч выигрывает. nar валидирует
+// 52-символьный nix-base32 fileHash (sha256 сжатого файла; алфавит
+// nix — без e/o/t/u), narinfo — 32-символьный хеш store path.
 func classifyRules() []rawRule {
 	immutable := domain.Immutable()
 	narinfoMutable := domain.Mutable(mutableNarinfoTTL)
 	cacheInfoMutable := domain.Mutable(mutableCacheInfoTTL)
 	return []rawRule{
-		// Immutable: nar-архивы (content-addressed по хешу store path).
+		// Immutable: nar-архивы (content-addressed по fileHash — sha256
+		// сжатого файла, 52 симв. base32; НЕ хеш store path).
 		// nar.xz — сжатый (основной формат); nar — несжатый (редко).
-		{"", `^nar/[0123456789abcdfghijklmnpqrsvwxyz]{32}\.nar\.xz$`, immutable},
-		{"", `^nar/[0123456789abcdfghijklmnpqrsvwxyz]{32}\.nar$`, immutable},
+		{"", `^nar/[0123456789abcdfghijklmnpqrsvwxyz]{52}\.nar\.xz$`, immutable},
+		{"", `^nar/[0123456789abcdfghijklmnpqrsvwxyz]{52}\.nar$`, immutable},
 		// Mutable{TTL 1h}: narinfo — метаданные пути (маленький, byte-exact,
 		// подписи upstream валидны). Реиспоуз и патчи путей невозможны.
 		{"", `^[0123456789abcdfghijklmnpqrsvwxyz]{32}\.narinfo$`, narinfoMutable},

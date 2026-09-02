@@ -19,8 +19,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 # nix (binary cache)
 
 URL-префикс — `nix`. Кеш-прокси narinfo + nar.xz: контент адресован —
-идеальный immutable-кеш (`nar/<32hex>.nar.xz` кешируется навсегда,
-`<32hex>.narinfo` ревалидируется раз в час).
+идеальный immutable-кеш (`nar/<52 nix-base32>.nar.xz` кешируется
+навсегда, `<32 nix-base32>.narinfo` ревалидируется раз в час).
 
 ## Remote
 
@@ -70,10 +70,11 @@ nix-клиента (перебор substituter'ов): отдаётся корр�
 
 ## Личное репо
 
-Upload: `<хеш>.narinfo` (в корне репо) + `nar/<хеш>.nar.xz|.nar`, где
+Upload: `<хеш>.narinfo` (в корне репо) + `nar/<fileHash>.nar.xz|.nar`:
 хеш — 32 символа nix-base32 (канонический алфавит nix: цифры и латиница
-без `e`/`o`/`t`/`u` — так кодирует хеши store path сам nix); прочие
-пути — 400.
+без `e`/`o`/`t`/`u` — так кодирует хеши store path сам nix);
+fileHash — 52 символа nix-base32 (sha256 сжатого файла,
+`(256−1)/5+1 = 52` — сессия 47); прочие пути — 400.
 
 Reindex **переподписывает** narinfo: поле `Sig` заменяется ключом
 инстанса (ed25519, формат `name:pubkey:signature`), остальное —
@@ -94,22 +95,21 @@ trusted-public-keys = khrazhevnik:<pubkey-b64> cache.nixos.org-1:6NCHbD9f...
 
 ## Классификация объектов
 
-| Путь upstream          | Класс    | TTL      |
-|------------------------|----------|----------|
-| `nar/<32hex>.nar.xz`   | immutable| навсегда |
-| `nar/<32hex>.nar`      | immutable| навсегда |
-| `<32hex>.narinfo`      | mutable  | 1h       |
-| `nix-cache-info`       | mutable  | 1h       |
-| `log/<…>`              | immutable| навсегда |
-| прочее                 | mutable  | 1m       |
+| Путь upstream                 | Класс    | TTL      |
+|-------------------------------|----------|----------|
+| `nar/<52 nix-base32>.nar.xz`  | immutable| навсегда |
+| `nar/<52 nix-base32>.nar`     | immutable| навсегда |
+| `<32 nix-base32>.narinfo`     | mutable  | 1h       |
+| `nix-cache-info`              | mutable  | 1h       |
+| `log/<…>`                     | immutable| навсегда |
+| прочее                        | mutable  | 1m       |
 
 ## Ограничения
 
 - Только pull-through; фоновый sync не поддерживается.
-- Личные репо валидируют хеш store path как 32 символа nix-base32;
-  прокси-классификация пока матчит 32 hex — несматченные nar/narinfo
-  с nix-base32 хешами уходят в conservative mutable{TTL 1m},
-  pull-through работает, но hit-rate immutable-кеша ниже.
+- Личные репо валидируют narinfo как 32 символа nix-base32, nar —
+  как 52 (fileHash, сессия 47); прокси-классификация использует те
+  же длины, несматченные пути уходят в conservative mutable{TTL 1m}.
 - Narinfo отдаётся byte-exact; переподпись и патчи путей невозможны
   (подписи upstream должны быть валидны) — кроме личных репо, где
   переподпись и есть функция.

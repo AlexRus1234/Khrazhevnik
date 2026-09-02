@@ -18,7 +18,7 @@
 // Формат: текстовые строки «key: value» (с пробелом после двоеточия),
 // одна запись на файл (один narinfo = один store path). Нас интересует
 // поле URL: путь к nar-архиву относительно корня кеша
-// (nar/<32 nix-base32>.nar.xz). narinfo содержит Sig: <key>:… — НЕ
+// (nar/<52 nix-base32 fileHash>.nar.xz). narinfo содержит Sig: <key>:… — НЕ
 // переписываем, отдаём побайтово; парсер нужен только для
 // Enumerate-задела «зеркало по использованию» (сессия 16 не требует):
 // WantNar достаёт nar-путь из narinfo для будущего префетча, а
@@ -28,8 +28,9 @@
 // Защита от adversarial-ввода (фаззинг FuzzParseNarinfo): потолок
 // размера 16KiB (narinfo маленький — единицы КБ; запас кратный),
 // tolerant к неизвестным ключам (forward-compat), без паники на битом
-// тексте. Валидатор путей: 32-символьный nix-base32 хеш store path —
-// так кодирует реальные nix-хеши nix сам; пути в URL:-поле валидны
+// тексте. Валидатор путей: narinfo — 32-символьный nix-base32 хеш
+// store path, nar — 52-символьный fileHash — так кодирует реальные
+// nix-хеши nix сам; пути в URL:-поле валидны
 // относительно /nar/ (nar/<hash>.nar[.xz]) или запись отбрасывается
 // (WantNar возвращает пустую строку).
 
@@ -181,19 +182,16 @@ func splitFields(s string) []string {
 	return out
 }
 
-// isNixBase32 проверяет, что s — ровно 32 символа алфавита nix-base32:
-// хеш store path в путях narinfo/nar. Ранний контракт (сессия 13)
-// требовал 32 hex — синтетические тестовые данные использовали hex,
-// из-за чего настоящие narinfo/nar получали 400 на upload и ломали
-// resign. Алфавит — канонический nix (libutil/hash.cc): цифры и
-// латиница БЕЗ e, o, t, u (32 символа); hex с 'e' им не соответствует —
-// и не является валидным nix-хешем.
+// Алфавит nix-base32 (libutil/hash.cc): цифры и латиница БЕЗ
+// e, o, t, u (32 символа). Ранний контракт (сессия 13) требовал
+// 32 hex — синтетические тестовые данные использовали hex, из-за чего
+// настоящие narinfo/nar получали 400 на upload и ломали resign. Hex с
+// 'e' алфавиту не соответствует — и не является валидным nix-хешем.
 const nixBase32Chars = "0123456789abcdfghijklmnpqrsvwxyz"
 
-func isNixBase32(s string) bool {
-	if len(s) != 32 {
-		return false
-	}
+// isNixBase32Alphabet проверяет алфавит без ограничения длины: длины
+// nix-хешей разные и проверяются на местах вызова.
+func isNixBase32Alphabet(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if strings.IndexByte(nixBase32Chars, s[i]) < 0 {
 			return false
@@ -202,9 +200,21 @@ func isNixBase32(s string) bool {
 	return true
 }
 
+// narFileHashLen — длина fileHash nar-архива в nix-base32: sha256
+// сжатого файла кодируется (256−1)/5+1 = 52 символами (nix
+// binary-cache-store.cc: «nar/» + fileHash->to_string(Nix32, …)).
+const narFileHashLen = 52
+
+// isNixBase32 проверяет 32-символьный nix-base32 хеш store path
+// (имя narinfo).
+func isNixBase32(s string) bool {
+	return len(s) == 32 && isNixBase32Alphabet(s)
+}
+
 // validNarName проверяет, что имя файла в URL: — nar/<hash>.nar[.xz]
 // (без префикса nar/, только имя). Суффикс .nar.xz (сжатый, основной)
-// или .nar (несжатый, редко). Хеш — 32 символа nix-base32.
+// или .nar (несжатый, редко). Хеш — fileHash (sha256 сжатого файла) в
+// nix-base32, 52 символа — НЕ хеш store path (32, как у narinfo).
 func validNarName(name string) bool {
 	var hash string
 	switch {
@@ -215,13 +225,14 @@ func validNarName(name string) bool {
 	default:
 		return false
 	}
-	return isNixBase32(hash)
+	return len(hash) == narFileHashLen && isNixBase32Alphabet(hash)
 }
 
 // WantNar достаёт upstream-путь nar-архива из narinfo (поле URL:).
 // Возвращает путь с ведущим «/» (конвенция Enumerate/StorageKey, как в
 // apt/rpmmmd/pacman/apk) — «/nar/<hash>.nar.xz» или «/nar/<hash>.nar»
-// (hash — 32 символа nix-base32). Запись отбрасывается (пустая строка),
+// (hash — 52 символа nix-base32, fileHash). Запись отбрасывается
+// (пустая строка),
 // если URL отсутствует или невалиден относительно /nar/: фаззинг-
 // инвариант — все пути в URL:-поле валидны или запись отброшена. Задел
 // для будущего префетча «зеркало по использованию»; интеграции с зеркалом нет.

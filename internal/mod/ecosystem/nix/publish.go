@@ -69,9 +69,10 @@ func (g *Generator) SetNarSigner(s port.NarSigner) { g.nar = s }
 // Name — имя экосистемы, совпадает с Adapter.Name.
 func (g *Generator) Name() string { return Name }
 
-// ValidateObjectPath принимает <hash>.narinfo (в корне репо) и
-// nar/<hash>.nar.xz|.nar, где hash — 32 символа nix-base32 (реальные
-// хеши store path; hex с 'e' ими не являются). Прочие пути —
+// ValidateObjectPath принимает <hash>.narinfo (в корне репо; hash —
+// 32 символа nix-base32, хеш store path) и nar/<hash>.nar.xz|.nar
+// (hash — 52 символа nix-base32, fileHash; реальные хеши store path —
+// только 32, hex с 'e' ими не является). Прочие пути —
 // ValidationError (маппится в 400). nar-файлы immutable, проходят без
 // генерации; narinfo переподписывается.
 func (g *Generator) ValidateObjectPath(p string) error {
@@ -80,7 +81,7 @@ func (g *Generator) ValidateObjectPath(p string) error {
 		if validNarName(rest) {
 			return nil
 		}
-		return &domain.ValidationError{What: "путь nix-репо", Value: p, Reason: "nar/<32 nix-base32>.nar[.xz] ожидается"}
+		return &domain.ValidationError{What: "путь nix-репо", Value: p, Reason: "nar/<52 nix-base32 fileHash>.nar[.xz] ожидается"}
 	}
 	// <hash>.narinfo в корне (без ведущего «/»).
 	if strings.HasSuffix(p, ".narinfo") {
@@ -89,7 +90,7 @@ func (g *Generator) ValidateObjectPath(p string) error {
 			return nil
 		}
 	}
-	return &domain.ValidationError{What: "путь nix-репо", Value: p, Reason: "ожидался <32 nix-base32>.narinfo или nar/<32 nix-base32>.nar[.xz]"}
+	return &domain.ValidationError{What: "путь nix-репо", Value: p, Reason: "ожидался <32 nix-base32>.narinfo или nar/<52 nix-base32 fileHash>.nar[.xz]"}
 }
 
 // GenerateIndexes обходит .narinfo в репо, валидирует каждый (парсер +
@@ -195,7 +196,7 @@ func resignNarinfo(ctx context.Context, storage port.Storage, key string, signer
 		return err
 	}
 	if WantNar(n) == "" {
-		return fmt.Errorf("%w: нет валидного URL (nar/<32 nix-base32>.nar[.xz])", ErrBadNarinfo)
+		return fmt.Errorf("%w: нет валидного URL (nar/<52 nix-base32 fileHash>.nar[.xz])", ErrBadNarinfo)
 	}
 	out := resignNarinfoBytes(content, n, signer)
 	// Если Sig не изменился (например, уже наш) — не пишем (no-op).

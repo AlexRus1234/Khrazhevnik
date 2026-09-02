@@ -29,7 +29,7 @@ import (
 //   - без паники на любом вводе;
 //   - размер записи < 16KiB: ввод > лимита → ErrNarinfoTooLarge;
 //   - все пути в URL:-поле валидны относительно /nar/ или запись
-//     отброшена: WantNar либо пусто, либо /nar/<32 nix-base32>.nar[.xz];
+//     отброшена: WantNar либо пусто, либо /nar/<52 nix-base32>.nar[.xz];
 //   - детерминизм: повторный разбор тех же байт даёт тот же результат.
 func FuzzParseNarinfo(f *testing.F) {
 	// Посев-корпус: золотой narinfo + синтетика + битые варианты.
@@ -41,14 +41,16 @@ func FuzzParseNarinfo(f *testing.F) {
 		{0},
 		[]byte(""),
 		[]byte("garbage not a narinfo"),
-		[]byte("URL: nar/" + narHash32 + ".nar.xz\n"),
-		[]byte("URL: nar/ffffffffffffffffffffffffffffffff.nar\nSig: k:v==\n"),
-		[]byte("URL: pool/" + narHash32 + ".nar.xz\n"),  // чужой префикс
-		[]byte("URL: nar/foo.nar.xz\n"),                 // невалидный хеш
-		[]byte("FileSize: not-a-number\nNarSize: 5\n"),  // битое число
-		[]byte("no colons here at all\njust text"),      // без «:»
-		[]byte("Sig: cache.example.org-1:abcdef==\n"),   // вторая «:»
-		[]byte("URL: nar/" + narHash32 + ".nar.xz\r\n"), // CRLF
+		[]byte("URL: nar/" + narFileHash52 + ".nar.xz\n"),
+		[]byte("URL: nar/" + strings.Repeat("f", 52) + ".nar\nSig: k:v==\n"),
+		// 32-символьный nar — не fileHash: WantNar обязан отбросить.
+		[]byte("URL: nar/" + narHash32 + ".nar\n"),
+		[]byte("URL: pool/" + narFileHash52 + ".nar.xz\n"),  // чужой префикс
+		[]byte("URL: nar/foo.nar.xz\n"),                     // невалидный хеш
+		[]byte("FileSize: not-a-number\nNarSize: 5\n"),      // битое число
+		[]byte("no colons here at all\njust text"),          // без «:»
+		[]byte("Sig: cache.example.org-1:abcdef==\n"),       // вторая «:»
+		[]byte("URL: nar/" + narFileHash52 + ".nar.xz\r\n"), // CRLF
 		golden,
 	}
 	// граничный корпус: ровно лимит и лимит+1.
@@ -79,7 +81,7 @@ func FuzzParseNarinfo(f *testing.F) {
 			return
 		}
 		// Инвариант путей: WantNar либо пусто (запись отброшена), либо
-		// валидный /nar/<32 nix-base32>.nar[.xz] — никаких мусорных
+		// валидный /nar/<52 nix-base32>.nar[.xz] — никаких мусорных
 		// путей наружу.
 		nar := WantNar(first)
 		if nar == "" {
@@ -111,7 +113,7 @@ func FuzzResignNarinfo(f *testing.F) {
 		{0},
 		[]byte(""),
 		[]byte("garbage"),
-		[]byte("URL: nar/" + narHash32 + ".nar.xz\n"),
+		[]byte("URL: nar/" + narFileHash52 + ".nar.xz\n"),
 		[]byte("Sig: k:v==\n"),
 		[]byte("A: x\nB: y\nSig: old\nC: z\n"),
 		golden,
