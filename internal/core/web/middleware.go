@@ -129,13 +129,32 @@ func LogRequests(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
+// methodLabel — allowlist значений лейбла method: net/http принимает
+// любой RFC-7230 token, а chi гоняет Use-стек до method-роутинга, поэтому
+// каждый уникальный токен вида «X-FROB/1a2b» создал бы вечного ребёнка
+// HistogramVec — кардинальность лейбла росла бы без границ (медленный
+// memory-DoS на :29202). Всё вне фиксированного списка — "other":
+// кардинальность ограничена константой независимо от трафика.
+func methodLabel(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodOptions,
+		http.MethodConnect, http.MethodTrace:
+		return method
+	default:
+		return "other"
+	}
+}
+
 // ObserveMetrics наполняет гистограмму khrazhevnik_request_duration_seconds
 // {method,status} (аудит 2026-08-30: до сих пор Observe звался только из
-// тестов, гистограмма была вечно пустой). Статус пишет тот же тип
-// statusRecorder, что и лог запросов — третьей обёртки не плодим; elapsed —
-// от старта middleware (web-доставка, time.Now здесь разрешён). nil-Handler
-// (метрики выключены/деградация) — no-op без обёртки. Ставится НАРУЖУ
-// Recoverer: паника хендлера = 500 от Recoverer — тоже наблюдение.
+// тестов, гистограмма была вечно пустой). Метод проходит allowlist
+// methodLabel (лейбл-кардинальность), статус — strconv, оба набора
+// ограничены. Статус пишет тот же тип statusRecorder, что и лог запросов —
+// третьей обёртки не плодим; elapsed — от старта middleware (web-доставка,
+// time.Now здесь разрешён). nil-Handler (метрики выключены/деградация) —
+// no-op без обёртки. Ставится НАРУЖУ Recoverer: паника хендлера = 500 от
+// Recoverer — тоже наблюдение.
 func ObserveMetrics(h *metrics.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if h == nil {
@@ -145,7 +164,7 @@ func ObserveMetrics(h *metrics.Handler) func(http.Handler) http.Handler {
 			start := time.Now()
 			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			defer func() {
-				h.ObserveRequestLatency(r.Method, strconv.Itoa(rec.status), time.Since(start).Seconds())
+				h.ObserveRequestLatency(methodLabel(r.Method), strconv.Itoa(rec.status), time.Since(start).Seconds())
 			}()
 			next.ServeHTTP(rec, r)
 		})
