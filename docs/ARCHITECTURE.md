@@ -241,7 +241,8 @@ type MetaFetcher interface {
   (подписи самого Release — circular). Публичный ключ — `GET /repo/<name>/key.asc`
   на :29202. v1 — ключ один на все репо; per-repo ключи и per-repo
   `signed=false` — не-цели (KISS). nix narinfo-подпись (ed25519, формат
-  `name:pubkey:sig`) — `port.NarSigner` (живёт вне `port.Signer`: своя,
+  `name:signature` — 2 поля: имя ключа и base64-подпись fingerprint'а
+  PathInfo) — `port.NarSigner` (живёт вне `port.Signer`: своя,
   более простая модель подписи), внедряется в nix RepoAdapter через
   `port.NarSignerInjector` (сессия 16): narinfo переподписывается по
   строгим правилам (только поле Sig заменяется, остальное байт-точно;

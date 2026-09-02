@@ -77,7 +77,9 @@ fileHash — 52 символа nix-base32 (sha256 сжатого файла,
 `(256−1)/5+1 = 52` — сессия 47); прочие пути — 400.
 
 Reindex **переподписывает** narinfo: поле `Sig` заменяется ключом
-инстанса (ed25519, формат `name:pubkey:signature`), остальное —
+инстанса (ed25519, формат `name:signature` — 2 поля: имя ключа и
+base64-подпись; подписывается fingerprint PathInfo
+«1;StorePath;NarHash;NarSize;Refs», а не байты файла), остальное —
 байт-точно. Это единственное место в проекте, где меняется чужой
 файл; nar-файлы immutable, не трогаются. Клиент:
 
@@ -88,8 +90,11 @@ trusted-public-keys = khrazhevnik:<pubkey-b64> cache.nixos.org-1:6NCHbD9f...
 
 `<pubkey-b64>` = `GET /repo/<name>/nix-key.asc` — одна строка
 `khrazhevnik:<base64>` (формат nix, НЕ armored OpenPGP — у nix своя
-модель подписи). Без NarSigner (деградированный режим) narinfo
-отдаются как есть — подписи upstream валидны, если клиент им доверяет.
+модель подписи). Без NarSigner (деградированный режим — только для
+мягких ошибок инициализации: модуль не слинкован, keygen-сбой на
+пустом keys_dir) narinfo отдаются как есть — подписи upstream валидны,
+если клиент им доверяет; битый ключевой материал
+(`domain.KeyMaterialError`) фатален — старт падает (сессия 40).
 
 Подробности — [personal-repos.md](../personal-repos.md).
 

@@ -195,8 +195,12 @@ Upload пакетов пользователями, генерация apt-ме�
 `signing.keys_dir` на первом старте, грузится на повторных; после
 `Release` генератор эмитит `InRelease` (cleartext) и `Release.gpg`
 (detached, бинарный). v1 — ключ один на все репо; per-repo ключи и
-per-repo `signed=false` — не-цели (KISS). Если инициализация подписчика
-не удалась — репо работают без подписи (`apt` с `trusted=yes`).
+per-repo `signed=false` — не-цели (KISS). Деградация подписи — только
+для мягких ошибок инициализации (модуль не слинкован, keygen-сбой на
+пустом `signing.keys_dir`): репо работают без подписи (`apt` с
+`trusted=yes`). Битый ключевой материал — `domain.KeyMaterialError`
+(порченый файл, публичный вместо приватного, нечитается; сессия 40) —
+фатален: старт падает, а не деградирует.
 
 Публичный ключ раздаётся на публичном порту:
 
@@ -420,13 +424,17 @@ stale_served,negative_hits,upstream_errors}_total`,
    mutable{TTL 1h} (маленький, byte-exact, реиспоуз
    и патчи путей невозможны); `nix-cache-info` — mutable{TTL 1h};
    `log/<…>` — immutable; прочее — conservative mutable{TTL 1m}.
-   Инвариант nix: narinfo содержит `URL: nar/…` и `Sig: <key>:…` — НЕ
+   Инвариант nix: narinfo содержит `URL: nar/…` и `Sig:
+   name:signature` (2 поля: имя ключа и base64 ed25519) — в прокси НЕ
    переписываем, отдаём побайтово (подписи остаются валидными, если клиент
-   доверяет ключу upstream; `trusted-public-keys` остаётся от upstream).
+   доверяет ключу upstream; `trusted-public-keys` остаётся от upstream);
+   единственное исключение — личные репо, где reindex переподписывает
+   `Sig` ключом инстанса в том же формате `name:signature`
+   (`nix-key.asc` = `name:pubkey-b64`).
    404 на narinfo — штатная ситуация nix-клиента (перебор substituter'ов):
    negative-cache движка (сессия 06) отдаёт корректный 404 (не 502) и
-   быстро. Парсер narinfo (строки `key: value` + валидатор nix-base32:
-   narinfo — 32, nar — 52) —
+   быстро. Парсер narinfo (строки `key: value` + валидатор nix-base32
+   (алфавит `[0-9a-z]` без `e`/`o`/`t`/`u`): narinfo — 32, nar — 52) —
    `mod/ecosystem/nix/parse.go`, фаззинг `FuzzParseNarinfo` (без паники,
   размер записи < 16KiB, пути в `URL:`-поле валидны относительно `/nar/`
   или запись отброшена). `Remote.Include` для nix не используется.
