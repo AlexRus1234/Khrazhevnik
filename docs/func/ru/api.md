@@ -54,19 +54,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 | POST  | `/api/v1/auth/login`| —    | 200/401   | `{username,password}` → `{token}` (JWT; TTL — `auth.session_ttl`); rate-limit 10/min |
 | POST  | `/api/v1/auth/logout`| session | 204    | Персистентный отзыв JWT (переживает рестарт; сбой каталога — 503) |
 
+Сноска кодов: `setup`/`login` сверх лимита 10/min с IP — 429; пароль
+длиннее 72 байт (граница bcrypt) — 413 `too_large` на `setup`/`login`/
+`POST /users`.
+
 ## Пользователи и API-токены (admin)
 
 | Метод | Путь                                      | Код       | Назначение             |
 |-------|-------------------------------------------|-----------|------------------------|
 | GET   | `/api/v1/users`                           | 200       | Список пользователей   |
-| POST  | `/api/v1/users`                           | 201/400   | `{username,password}`  |
+| POST  | `/api/v1/users`                           | 201/400   | `{username,password,role?}` (role — `admin`/`user`, по умолчанию `user`) |
 | DELETE| `/api/v1/users/{id}`                      | 204/404   | Удаление (токены умирают через token_version) |
-| POST  | `/api/v1/users/{id}/api-tokens`           | 201       | `{name,scopes[]}` → токен показывается **один раз** |
+| POST  | `/api/v1/users/{id}/api-tokens`           | 201/400   | `{name,scopes[],ttl}` → `{token,id,name,scopes,expires_at}`; токен показывается **один раз** |
 | GET   | `/api/v1/users/{id}/api-tokens`           | 200       | Список токенов (без секретов) |
 | DELETE| `/api/v1/users/{id}/api-tokens/{tokenID}` | 204/404   | Отзыв токена           |
 
 Скоупы токенов: `admin` (всё), `repo:<id>:write` (upload/delete/
 reindex/листинг конкретного репо).
+
+`ttl` — duration: 0/отсутствие = бессрочный токен (нулевой
+`expires_at`), отрицательное — 400 `validation_error`.
 
 ## Remotes — upstream'ы (admin)
 
@@ -94,7 +101,7 @@ reindex/листинг конкретного репо).
 | GET   | `/api/v1/repos`                      | 200                  | Список репо              |
 | POST  | `/api/v1/repos`                      | 201/400/409          | `{name,ecosystem,owner_id,quota}` |
 | GET   | `/api/v1/repos/{id}`                 | 200/404              | Данные репо              |
-| PATCH | `/api/v1/repos/{id}`                 | 200/404/409          | Имя/квота/владелец       |
+| PATCH | `/api/v1/repos/{id}`                 | 200/400/404/409      | Имя/квота/владелец (400 — неизвестная экосистема, смена экосистемы) |
 | DELETE| `/api/v1/repos/{id}`                 | 204/404              | Удаление с правами       |
 | GET   | `/api/v1/repos/{id}/perms`           | 200/404              | Права на запись          |
 | POST  | `/api/v1/repos/{id}/perms`           | 204/400/404          | Выдать право (`{user_id}`) |
@@ -104,7 +111,7 @@ reindex/листинг конкретного репо).
 | DELETE| `/api/v1/repos/{id}/objects/*`       | 204/404              | Удаление объекта         |
 | POST  | `/api/v1/repos/{id}/reindex`         | 202/409/429          | Задача генерации индексов |
 
-`quota` — `{bytes, files}`, нулевое поле = без лимита. Upload:
+`quota` — `{max_bytes, max_objects}`, нулевое поле = без лимита. Upload:
 перезапись существующего ключа → 409 `conflict` (параметр `force=true`
 — только админ-сессия: scoped-токен и владелец получают 403
 `admin_required`); превышение квоты → 413 `quota_exceeded`; лимит
@@ -145,7 +152,7 @@ sync-задач — в `sync_jobs` (одна на remote).
 
 | Метод | Путь                | Код  | Назначение                                |
 |-------|---------------------|------|-------------------------------------------|
-| GET   | `/api/v1/cache/stats` | 200 | `{hits, misses, hit_ratio, bytes}`      |
+| GET   | `/api/v1/cache/stats` | 200 | `{hits, misses, hit_ratio, stale_served, negative_hits, upstream_errors, bytes_from_upstream, bytes_to_clients}` |
 | GET   | `/api/v1/audit`     | 200  | Аудит, keyset-пагинация `?after_id=&limit=` |
 
 ## Коды ошибок

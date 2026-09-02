@@ -167,6 +167,10 @@ enabled = true
 | POST  | `/api/v1/auth/login`       | —           | 200/401 | Выдача JWT; rate-limit 10/min      |
 | POST  | `/api/v1/auth/logout`      | session     | 204 | Персистентный отзыв JWT (переживает рестарт; сбой каталога — 503) |
 
+Сноска кодов: `setup`/`login` сверх лимита 10/min с IP — 429; пароль
+длиннее 72 байт (граница bcrypt) — 413 `too_large` на `setup`/`login`/
+создании пользователя.
+
 ### Управление upstream'ами
 
 | Метод | Путь                       | Auth        | Код | Назначение                          |
@@ -214,7 +218,7 @@ http://<хражевник>:29202/repo/<name>/key.asc`).
 | GET   | `/api/v1/repos`                           | admin                             | 200 | Список репозиториев                 |
 | POST  | `/api/v1/repos`                           | admin                             | 201/400/409 | Создание репо (`name`, `ecosystem`, `owner_id`, `quota`) |
 | GET   | `/api/v1/repos/{id}`                      | admin                             | 200/404 | Данные одного репо             |
-| PATCH | `/api/v1/repos/{id}`                      | admin                             | 200/404/409 | Изменение имени/квоты/владельца |
+| PATCH | `/api/v1/repos/{id}`                      | admin                             | 200/400/404/409 | Изменение имени/квоты/владельца (400 — неизвестная экосистема, смена экосистемы) |
 | DELETE| `/api/v1/repos/{id}`                      | admin                             | 204/404 | Удаление репо (права каскадом) |
 | GET   | `/api/v1/repos/{id}/perms`                | admin                             | 200/404 | Список прав на запись          |
 | POST  | `/api/v1/repos/{id}/perms`                | admin                             | 204/400/404 | Выдать право записи (`user_id`) |
@@ -226,7 +230,7 @@ http://<хражевник>:29202/repo/<name>/key.asc`).
 
 Поля repo: `name` (slug), `ecosystem` (`apt` — единственный с
 генератором в M3), `owner_id` (существующий пользователь), `quota`
-(`{bytes, files}`, нулевое поле = без лимита). Загрузка: путь после
+(`{max_bytes, max_objects}`, нулевое поле = без лимита). Загрузка: путь после
 `/objects/` — ключ внутри `repo/<id>/<eco>/...` (apt принимает только
 `pool/*` с известными расширениями; `dists/*` генерируются reindex).
 
@@ -245,7 +249,7 @@ RBAC: admin — везде; владелец репо — upload/delete/reindex/
 
 Инвариант квоты: сумма `Storage.List("repo/<id>/")` считается при
 каждом upload (KISS v1: репо обычно единицы-десятки файлов); при
-превышении `quota.bytes`/`quota.objects` — 413 `quota_exceeded`.
+превышении `quota.max_bytes`/`quota.max_objects` — 413 `quota_exceeded`.
 При force-перезаписи старый размер объекта вычитается из used, а
 число объектов не растёт (без вычета — двойной счёт и ложный отказ).
 Квота перепроверяется по фактическому размеру тела после загрузки в
@@ -323,7 +327,7 @@ in-memory, не персистится; персистентное состоя�
 
 | Метод | Путь                       | Auth        | Код | Назначение                          |
 |-------|----------------------------|-------------|-----|-------------------------------------|
-| GET   | `/api/v1/cache/stats`      | admin       | 200 | hits/misses/hit_ratio/bytes         |
+| GET   | `/api/v1/cache/stats`      | admin       | 200 | hits/misses/hit_ratio/stale_served/negative_hits/upstream_errors/bytes_from_upstream/bytes_to_clients |
 | GET   | `/api/v1/audit`            | admin       | 200 | keyset-пагинация: `after_id`, `limit`|
 | GET   | `/metrics`                 | admin (session или `admin`-scoped токен) | 200 | Prometheus exposition |
 
