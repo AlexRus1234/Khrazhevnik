@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -75,12 +76,6 @@ func TestNewRejectsEmpty(t *testing.T) {
 	}
 }
 
-// emptyUploadsXML — пустой ListMultipartUploads-ответ фейка.
-const emptyUploadsXML = `<?xml version="1.0" encoding="UTF-8"?>
-<ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-<IsTruncated>false</IsTruncated>
-</ListMultipartUploadsResult>`
-
 // startFakeS3 поднимает локальный HTTP-фейк S3 и возвращает endpoint
 // (host:port) для конфига/клиента: New теперь ходит списком multipart
 // на старте, внешний endpoint в юнитах повис бы на сети.
@@ -93,7 +88,7 @@ func startFakeS3(t *testing.T, f *fakeS3) string {
 
 func TestNewCreatesSpoolAndClient(t *testing.T) {
 	dir := t.TempDir()
-	endpoint := startFakeS3(t, &fakeS3{uploadsXML: emptyUploadsXML})
+	endpoint := startFakeS3(t, &fakeS3{})
 	s, err := New(config.S3Storage{
 		Endpoint: endpoint, Region: "us-east-1",
 		Bucket: "khrazhevnik", AccessKeyID: "id", SecretAccessKey: "key",
@@ -111,7 +106,7 @@ func TestNewCreatesSpoolAndClient(t *testing.T) {
 // Commit/Abort) вычищаются на старте: живых writers не бывает.
 func TestNewSweepsSpool(t *testing.T) {
 	dir := t.TempDir()
-	endpoint := startFakeS3(t, &fakeS3{uploadsXML: emptyUploadsXML})
+	endpoint := startFakeS3(t, &fakeS3{})
 	orphaned := filepath.Join(dir, "orphaned-spool")
 	if err := os.WriteFile(orphaned, []byte("dead body"), 0o644); err != nil {
 		t.Fatal(err)
@@ -255,12 +250,35 @@ func TestWriterCommitAfterWriteFailure(t *testing.T) {
 	}
 }
 
+// fakeUpload — incomplete-загрузка фейкового bucket.
+type fakeUpload struct {
+	Key      string
+	UploadID string
+}
+
 // fakeS3 — локальный HTTP-фейк S3 для sweep-multipart: GET ?uploads
-// отдаёт фиксированный XML листинга, GET ?location — us-east-1,
-// DELETE ?uploadId считается абортом. Сети и контейнеров не нужно.
+// отдаёт листинг, отфильтрованный по запрошенному prefix (запросы
+// журналируются — тест проверяет, что sweep листит только наши корни),
+// GET ?location — us-east-1, DELETE ?uploadId — аборт (журнал id).
+// Сети и контейнеров не нужно.
 type fakeS3 struct {
-	uploadsXML string
-	aborts     atomic.Int32
+	uploads []fakeUpload
+	aborts  atomic.Int32
+	mu      sync.Mutex
+	listed  []string
+	aborted []string
+}
+
+func (f *fakeS3) listedPrefixes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.listed...)
+}
+
+func (f *fakeS3) abortedIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.aborted...)
 }
 
 func (f *fakeS3) handler(w http.ResponseWriter, r *http.Request) {
@@ -270,7 +288,20 @@ func (f *fakeS3) handler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
 		switch {
 		case q.Has("uploads"):
-			_, _ = w.Write([]byte(f.uploadsXML))
+			prefix := q.Get("prefix")
+			f.mu.Lock()
+			f.listed = append(f.listed, prefix)
+			var b strings.Builder
+			b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n" +
+				`<ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">` + "\n")
+			for _, u := range f.uploads {
+				if strings.HasPrefix(u.Key, prefix) {
+					b.WriteString("<Upload><Key>" + u.Key + "</Key><UploadId>" + u.UploadID + "</UploadId></Upload>\n")
+				}
+			}
+			b.WriteString("<IsTruncated>false</IsTruncated>\n</ListMultipartUploadsResult>")
+			f.mu.Unlock()
+			_, _ = w.Write([]byte(b.String()))
 		case q.Has("location"):
 			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>` +
 				`<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">us-east-1</LocationConstraint>`))
@@ -278,6 +309,9 @@ func (f *fakeS3) handler(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	case http.MethodDelete:
+		f.mu.Lock()
+		f.aborted = append(f.aborted, q.Get("uploadId"))
+		f.mu.Unlock()
 		f.aborts.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -297,7 +331,7 @@ func newFakeClient(t *testing.T, f *fakeS3) *minio.Client {
 // TestSweepMultipartEmptyNoOp — пустой ListMultipartUploads: sweep
 // завершается без аборта.
 func TestSweepMultipartEmptyNoOp(t *testing.T) {
-	f := &fakeS3{uploadsXML: emptyUploadsXML}
+	f := &fakeS3{}
 	cli := newFakeClient(t, f)
 	sweepMultipart(context.Background(), cli, "khrazhevnik")
 	if n := f.aborts.Load(); n != 0 {
@@ -309,17 +343,50 @@ func TestSweepMultipartEmptyNoOp(t *testing.T) {
 // после SIGKILL, абортится startup-sweep'ом (сессия 44: осколки
 // multipart не должны копиться в bucket вечно).
 func TestSweepMultipartAbortsOrphan(t *testing.T) {
-	f := &fakeS3{uploadsXML: `<?xml version="1.0" encoding="UTF-8"?>
-<ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-<IsTruncated>false</IsTruncated>
-<Upload>
-<Key>cache/orphan.deb</Key>
-<UploadId>u1</UploadId>
-</Upload>
-</ListMultipartUploadsResult>`}
+	f := &fakeS3{uploads: []fakeUpload{
+		{Key: "cache/orphan.deb", UploadID: "u1"},
+	}}
 	cli := newFakeClient(t, f)
 	sweepMultipart(context.Background(), cli, "khrazhevnik")
 	if n := f.aborts.Load(); n != 1 {
 		t.Fatalf("абортов после sweep: %d, хочу 1", n)
 	}
+}
+
+// TestSweepMultipartScopesToKeyRoots — sweep листит только корни
+// cache/ и repo/ (сессия 51): осколки в них абортятся, чужая
+// загрузка вне корней (соседний инстанс общего bucket) — не тронута.
+// Запрос префикса "" (весь bucket) — регресс сессии-44 и фейл.
+func TestSweepMultipartScopesToKeyRoots(t *testing.T) {
+	f := &fakeS3{uploads: []fakeUpload{
+		{Key: "cache/orphan.deb", UploadID: "u1"},
+		{Key: "repo/personal/deb/pool/x.deb", UploadID: "u2"},
+		{Key: "foreign/neighbor-instance/upload.bin", UploadID: "u3"},
+	}}
+	cli := newFakeClient(t, f)
+	sweepMultipart(context.Background(), cli, "khrazhevnik")
+	if n := f.aborts.Load(); n != 2 {
+		t.Fatalf("абортов после sweep: %d, хочу 2", n)
+	}
+	for _, id := range []string{"u1", "u2"} {
+		if !containsID(f.abortedIDs(), id) {
+			t.Fatalf("осколок %s не абортнут, журнал %v", id, f.abortedIDs())
+		}
+	}
+	if containsID(f.abortedIDs(), "u3") {
+		t.Fatal("чужая загрузка foreign/ абортнута — sweep вне своих корней")
+	}
+	got := f.listedPrefixes()
+	if len(got) != 2 || got[0] != "cache/" || got[1] != "repo/" {
+		t.Fatalf("List вызывался с префиксами %v, хочу [cache/ repo/]", got)
+	}
+}
+
+func containsID(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }

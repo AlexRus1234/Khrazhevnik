@@ -126,21 +126,34 @@ func sweepSpool(spoolDir string) error {
 	return nil
 }
 
-// sweepMultipart абортит incomplete multipart-загрузки в bucket: крах
-// процесса посреди multipart (SIGKILL) оставляет осколки навсегда —
-// minio-go абортит их только при возврате ошибки, не при гибели
-// процесса. Безопасно на старте: легитимных multipart-загрузок в этот
-// момент нет — единственный писатель bucket — сам процесс. Ошибки
-// логируются и не валят старт: деградация «без s3» хуже мусора.
+// sweepMultipart абортит incomplete multipart-загрузки в нашем
+// пространстве ключей: крах процесса посреди multipart (SIGKILL)
+// оставляет осколки навсегда — minio-go абортит их только при возврате
+// ошибки, не при гибели процесса. Листинг не по всему bucket (""), а
+// перечислением корней StorageKey (порт Target: cache/<eco>/… —
+// прокси/зеркало, repo/<id>/… — личные репо): bucket бывает общим
+// с соседними инстансами (прод, storage-db.md), их идущие загрузки
+// вне наших корней наш рестарт не трогает. Новый корневой namespace
+// StorageKey — добавить сюда. Фильтр возраста осколков не нужен:
+// sweep выполняется до поднятия слушателей нашего процесса, легитимных
+// multipart-загрузок в этот момент нет (v1-граница — один инстанс на
+// корни cache//repo/). Ошибки логируются и не валят старт: деградация
+// «без s3» хуже мусора.
 func sweepMultipart(ctx context.Context, cli *minio.Client, bucket string) {
 	log := slog.Default().With("bucket", bucket)
-	for info := range cli.ListIncompleteUploads(ctx, bucket, "", true) {
-		if info.Err != nil {
-			log.Warn("s3: sweep multipart: листинг осколков", "err", info.Err)
-			continue
-		}
-		if err := cli.RemoveIncompleteUpload(ctx, bucket, info.Key); err != nil {
-			log.Warn("s3: sweep multipart: аборт осколка", "key", info.Key, "err", err)
+	// Прямой AbortMultipartUpload по известному info.UploadID (Core-метод):
+	// RemoveIncompleteUpload внутри перелистывал бы uploads — лишний
+	// List-раунд на каждую сироту.
+	core := minio.Core{Client: cli}
+	for _, root := range []string{"cache/", "repo/"} {
+		for info := range cli.ListIncompleteUploads(ctx, bucket, root, true) {
+			if info.Err != nil {
+				log.Warn("s3: sweep multipart: листинг осколков", "prefix", root, "err", info.Err)
+				continue
+			}
+			if err := core.AbortMultipartUpload(ctx, bucket, info.Key, info.UploadID); err != nil {
+				log.Warn("s3: sweep multipart: аборт осколка", "key", info.Key, "err", err)
+			}
 		}
 	}
 }
