@@ -238,6 +238,10 @@ RBAC: admin — везде; владелец репо — upload/delete/reindex/
 сгенерированных индексов напрямую из Storage с `ETag`/`ModTime` от
 хранилища. Иммутабельные пакеты кешируются клиентами. `GET /repo/<name>/key.asc`
 — публичный ключ инстанса (сессия 15); `Cache-Control: public, max-age=3600`.
+Сбой носителя (fs PathError вне ENOENT; S3 без ответа endpoint'а) или
+каталога БД при lookup — 503 `storage unavailable`: 502 зарезервирован
+за сбоем upstream, мониторинг различает «сломан upstream» и «сломан
+инстанс» (сессия 50).
 
 Инвариант квоты: сумма `Storage.List("repo/<id>/")` считается при
 каждом upload (KISS v1: репо обычно единицы-десятки файлов); при

@@ -19,6 +19,7 @@ package fs
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -129,6 +130,30 @@ func TestDeleteNonEmptyDirPassesThrough(t *testing.T) {
 	var nf *domain.NotFoundError
 	if errors.As(err, &nf) {
 		t.Fatalf("Delete непустого каталога замаскирован под NotFound: %v", err)
+	}
+}
+
+// TestMapPathErrorClasses — классификация ошибок носителя (сессия 50):
+// ENOENT — NotFound, прочие PathError — UnavailableError с сохранённой
+// причиной (503 «мы сломаны», а не 502 «виноват upstream»). Синтетические
+// ошибки: маппинг — чистая функция, FS-семантика не тестируется.
+func TestMapPathErrorClasses(t *testing.T) {
+	var nf *domain.NotFoundError
+	enoent := &fs.PathError{Op: "open", Path: "x", Err: os.ErrNotExist}
+	if err := mapPathError(enoent, "cache/x"); !errors.As(err, &nf) || nf.Key != "cache/x" {
+		t.Fatalf("ENOENT → хочу NotFoundError, получено %v", err)
+	}
+	var un *domain.UnavailableError
+	eio := &fs.PathError{Op: "read", Path: "x", Err: errors.New("input/output error")}
+	err := mapPathError(eio, "cache/x")
+	if !errors.As(err, &un) {
+		t.Fatalf("сбой носителя → хочу UnavailableError, получено %v", err)
+	}
+	if !errors.Is(err, eio) {
+		t.Fatalf("причина потеряна: %v", err)
+	}
+	if err := mapPathError(errors.New("без PathError"), "cache/x"); errors.As(err, &un) {
+		t.Fatal("ошибка без PathError не должна превращаться в UnavailableError")
 	}
 }
 

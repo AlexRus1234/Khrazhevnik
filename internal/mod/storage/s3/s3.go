@@ -286,14 +286,20 @@ func metaFrom(key string, info minio.ObjectInfo) port.Meta {
 	}
 }
 
-// mapS3Error переводит ошибки носителя: NoSuchKey — NotFound объекта.
+// mapS3Error переводит ошибки носителя: NoSuchKey/NoSuchBucket — NotFound
+// объекта; ошибка без S3-ответа (сеть/endpoint недоступен, по образцу
+// authStoreError) — недоступность хранилища: на публичном порту она
+// отдавалась как 502 «виноват upstream» (сессия 50).
 func mapS3Error(err error, key string) error {
 	if err == nil {
 		return nil
 	}
 	resp := minio.ToErrorResponse(err)
-	if resp.Code == minio.NoSuchKey || resp.Code == minio.NoSuchBucket {
+	switch resp.Code {
+	case minio.NoSuchKey, minio.NoSuchBucket:
 		return &domain.NotFoundError{What: "объект", Key: key}
+	case "":
+		return &domain.UnavailableError{What: "хранилище", Reason: "S3 недоступен", Err: err}
 	}
 	return err
 }

@@ -17,6 +17,7 @@
 package web
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -59,6 +60,28 @@ func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 	return rec
+}
+
+// unavailableStorage — фейк storage с отказом чтения/записи: имитация
+// ENOSPC/EIO-класса сбоя адаптера (сессия 50) без FS-семантики носителя.
+type unavailableStorage struct {
+	*testutil.FakeStorage
+}
+
+func unavailable() error {
+	return &domain.UnavailableError{What: "хранилище", Reason: "сбой носителя"}
+}
+
+func (unavailableStorage) Get(context.Context, string) (port.Object, error) {
+	return port.Object{}, unavailable()
+}
+
+func (unavailableStorage) Stat(context.Context, string) (port.Meta, error) {
+	return port.Meta{}, unavailable()
+}
+
+func (unavailableStorage) Put(context.Context, string) (port.Writer, error) {
+	return nil, unavailable()
 }
 
 func TestProxyUnknownEcosystem(t *testing.T) {
@@ -146,6 +169,20 @@ func TestProxyErrorCodes(t *testing.T) {
 		}
 		if body := rec.Body.String(); !strings.Contains(body, "unavailable") {
 			t.Errorf("тело = %q, хочу текст storage unavailable", body)
+		}
+	})
+	t.Run("сбой storage при отдаче → 503 сквозь движок", func(t *testing.T) {
+		// Полный путь (сессия 50): UnavailableError от адаптера проходит
+		// сквозь движок кеша без заворота и доходит до клиента как 503,
+		// а не падает в default-ветку 502.
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
+		t.Cleanup(up.Close)
+		clock := testutil.NewManualClock(time.Unix(0, 0))
+		engine := cacheengine.New(unavailableStorage{}, testutil.NewFakeObjectIndex(), up.Client(), clock, cacheengine.Config{}, nil)
+		eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL}
+		h := BuildPublicRouter(Deps{Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}})
+		if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("код = %d, хочу 503", rec.Code)
 		}
 	})
 }

@@ -259,10 +259,17 @@ func metaFrom(key string, st os.FileInfo) port.Meta {
 	return port.Meta{Key: key, Size: st.Size(), ModTime: st.ModTime()}
 }
 
-// mapPathError переводит ошибки носителя: отсутствующий файл — NotFound.
+// mapPathError переводит ошибки носителя: отсутствующий файл — NotFound,
+// прочие PathError (ENOSPC/EIO/EROFS, …) — недоступность хранилища:
+// сырая OS-ошибка на публичном порту падала в default-ветку writeProxyError
+// и отдавалась как 502 «виноват upstream» (сессия 50).
 func mapPathError(err error, key string) error {
 	if os.IsNotExist(err) {
 		return &domain.NotFoundError{What: "объект", Key: key}
+	}
+	var perr *fs.PathError
+	if errors.As(err, &perr) {
+		return &domain.UnavailableError{What: "хранилище", Reason: "сбой носителя", Err: err}
 	}
 	return err
 }

@@ -196,6 +196,24 @@ func TestMapS3ErrorNotFound(t *testing.T) {
 	}
 }
 
+// TestMapS3ErrorUnavailable — ошибка без S3-ответа (сеть/endpoint) —
+// недоступность хранилища (сессия 50): 503 «мы сломаны», а не 502
+// «виноват upstream». S3-ответы с кодом класс не меняют.
+func TestMapS3ErrorUnavailable(t *testing.T) {
+	var un *domain.UnavailableError
+	netErr := errors.New("dial tcp 10.0.0.1:9000: connection refused")
+	err := mapS3Error(netErr, "cache/x")
+	if !errors.As(err, &un) {
+		t.Fatalf("сетевой сбой → хочу UnavailableError, получено %v", err)
+	}
+	if !errors.Is(err, netErr) {
+		t.Fatalf("причина потеряна: %v", err)
+	}
+	if err := mapS3Error(minio.ErrorResponse{Code: "InternalError"}, "cache/x"); errors.As(err, &un) {
+		t.Fatal("S3-ответ с кодом не должен превращаться в UnavailableError")
+	}
+}
+
 func TestMetaFrom(t *testing.T) {
 	m := metaFrom("cache/x", minio.ObjectInfo{
 		ETag: "\"abc\"", Size: 42, ContentType: "text/plain",

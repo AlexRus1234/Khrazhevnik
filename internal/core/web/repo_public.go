@@ -50,12 +50,11 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 		}
 		repo, err := d.Repos.RepoByName(r.Context(), name)
 		if err != nil {
-			var nf *domain.NotFoundError
-			if errors.As(err, &nf) {
+			if isNotFound(err) {
 				http.NotFound(w, r)
 				return
 			}
-			writeProxyError(w, err)
+			writeProxyError(w, publicCatalogError(err))
 			return
 		}
 		rest := chi.URLParam(r, "*")
@@ -169,12 +168,11 @@ func handleRepoKey(d Deps) http.HandlerFunc {
 			return
 		}
 		if _, err := d.Repos.RepoByName(r.Context(), name); err != nil {
-			var nf *domain.NotFoundError
-			if errors.As(err, &nf) {
+			if isNotFound(err) {
 				http.NotFound(w, r)
 				return
 			}
-			writeProxyError(w, err)
+			writeProxyError(w, publicCatalogError(err))
 			return
 		}
 		if d.Signer == nil {
@@ -209,12 +207,11 @@ func handleRepoNixKey(d Deps) http.HandlerFunc {
 			return
 		}
 		if _, err := d.Repos.RepoByName(r.Context(), name); err != nil {
-			var nf *domain.NotFoundError
-			if errors.As(err, &nf) {
+			if isNotFound(err) {
 				http.NotFound(w, r)
 				return
 			}
-			writeProxyError(w, err)
+			writeProxyError(w, publicCatalogError(err))
 			return
 		}
 		if d.NarSigner == nil {
@@ -230,4 +227,19 @@ func handleRepoNixKey(d Deps) http.HandlerFunc {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		_, _ = w.Write([]byte(body))
 	}
+}
+
+// isNotFound — проверка NotFound для публичных lookup'ов.
+func isNotFound(err error) bool {
+	var nf *domain.NotFoundError
+	return errors.As(err, &nf)
+}
+
+// publicCatalogError заворачивает сбой каталога БД (всё, что не NotFound)
+// в UnavailableError → 503 «мы сломаны»: сырая ошибка драйвера падала в
+// default-ветку writeProxyError и отдавалась как 502 «виноват upstream»
+// (сессия 50). Обёртка точечно для публичных вызовов: админ-API
+// классифицирует ошибки каталога через validate.go.
+func publicCatalogError(err error) error {
+	return &domain.UnavailableError{What: "каталог", Reason: "чтение репозитория", Err: err}
 }

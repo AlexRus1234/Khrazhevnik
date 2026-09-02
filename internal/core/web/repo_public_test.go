@@ -17,14 +17,34 @@
 package web
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"khrazhevnik/internal/core/domain"
+	"khrazhevnik/internal/core/port"
+	"khrazhevnik/internal/testutil"
 )
+
+// failingRepoStore — обёртка store'а репо с инжектируемым сбоем
+// RepoByName: connection-error каталога (сессия 50). err=nil возвращает
+// обычное поведение фейка (NotFound/успех).
+type failingRepoStore struct {
+	port.RepoStore
+	err error
+}
+
+func (s *failingRepoStore) RepoByName(ctx context.Context, name string) (domain.Repo, error) {
+	if s.err != nil {
+		return domain.Repo{}, s.err
+	}
+	return s.RepoStore.RepoByName(ctx, name)
+}
 
 // uploadRepoObject — upload через admin-API (как делает реальный
 // публикующий пользователь) и возврат сохранённых байт для сверки
@@ -198,6 +218,34 @@ func TestPublicRepoCacheControlImmutable(t *testing.T) {
 		if got := rec.Header().Get("Cache-Control"); got != want {
 			t.Errorf("Cache-Control %s = %q, хочу %q", path, got, want)
 		}
+	}
+}
+
+// TestPublicRepoCatalogUnavailable503 — сбой каталога БД на публичном
+// роутере (сессия 50): ошибка соединения (не NotFound) → 503 «мы
+// сломаны», а не 502 «виноват upstream». Фейк-обёртка инжектит сбой в
+// boundary, errno носителя не имитируется.
+func TestPublicRepoCatalogUnavailable503(t *testing.T) {
+	repos := &failingRepoStore{RepoStore: testutil.NewFakeRepoStore(), err: errors.New("dial tcp 10.0.0.9:5432: connection refused")}
+	storage := testutil.NewFakeStorage(testutil.FixedClock(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)))
+	h := BuildPublicRouter(Deps{Storage: storage, Repos: repos, Signer: &fakeKeySigner{}, NarSigner: &fakeNarKeySigner{}})
+	for _, path := range []string{
+		"/repo/alice/pool/main/a/foo.deb",
+		"/repo/alice/key.asc",
+		"/repo/alice/nix-key.asc",
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("GET %s при сбое каталога = %d, хочу 503", path, rec.Code)
+		}
+	}
+	// 404-путь не изменился: отсутствие репо — не сбой каталога.
+	repos.err = nil
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repo/ghost/pool/main/a/foo.deb", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET несуществующего репо = %d, хочу прежний 404", rec.Code)
 	}
 }
 
