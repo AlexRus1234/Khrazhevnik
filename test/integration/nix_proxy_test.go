@@ -62,7 +62,7 @@ const nixHash = "x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9y"
 // nixFileHash — синтетический 52-символьный nix-base32 fileHash
 // nar-архива (sha256 сжатого файла, (256−1)/5+1 = 52; сессия 47:
 // nar именуется fileHash'ом, не хешем store path).
-const nixFileHash = nixHash + nixHash[:20]
+const nixFileHash = "x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9yx0vm1mkfnqrq3hxjcp2w"
 
 // nixUpstream — httptest-сервер с мини-nix-binary-cache: narinfo,
 // nar.xz и nix-cache-info. Считает запросы к upstream.
