@@ -456,6 +456,31 @@ func TestEnumerateRpmMdGzPrimary(t *testing.T) {
 	}
 }
 
+// TestEnumerateRpmMdGzZipBomb — сессия 54: gzip-бомба вместо
+// primary.xml.gz. Разжатый поток ~2 GiB обязан упереться в
+// декомпресс-лимит 1 GiB и дать ErrDecompressTooLarge, а не крутить
+// декомпрессию вечно. Члены бомбы — валидный primary-фрагмент ~512 KiB
+// (один package + chardata-пад): мелкие пакеты упёрлись бы в потолок
+// парсера раньше декомпресс-капа и путь 1 GiB не тестировался бы.
+// Конкатенация gzip-членов — multistream, валидна по RFC 1952; вся
+// бомба в сжатом виде ~2 МБ.
+func TestEnumerateRpmMdGzZipBomb(t *testing.T) {
+	pad := bytes.Repeat([]byte("x"), 512<<10) // 512 KiB на член
+	member := newGz(t, append(append([]byte("<package><name>n</name><location href=\"p/x.rpm\"/></package><pad>"), pad...), []byte("</pad>")...))
+	bomb := bytes.Repeat(member, 4096) // 4096 × 512 KiB ≈ 2 GiB разжатых
+	a := newEnumerateAdapter(t)
+	meta := fakeMeta{files: map[string][]byte{
+		"/rpm/fedora/repodata/repomd.xml":     []byte(`<?xml version="1.0"?><repomd xmlns="http://linux.duke.edu/metadata/repo"><data type="primary"><location href="repodata/primary.xml.gz"/></data></repomd>`),
+		"/rpm/fedora/repodata/primary.xml.gz": bomb,
+	}}
+	_, err := a.Enumerate(context.Background(), domain.Remote{
+		ID: 1, Name: "fedora", Ecosystem: Name,
+	}, meta)
+	if !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидалась ErrDecompressTooLarge от gzip-бомбы, получено %v", err)
+	}
+}
+
 func TestEnumerateRpmMdUnsupportedPrimary(t *testing.T) {
 	// primary в сжатиях вне whitelist: Enumerate обязана упасть с
 	// честной причиной (формат назван) до fetch'а primary — раньше

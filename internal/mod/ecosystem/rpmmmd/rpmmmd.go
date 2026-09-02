@@ -30,6 +30,7 @@ package rpmmmd
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -60,6 +61,12 @@ const (
 	remoteCacheTTL    = 30 * time.Second
 	mutableIndexTTL   = 5 * time.Minute
 	mutableUnknownTTL = 1 * time.Minute
+
+	// maxDecompressedRpmMd — лимит на разжатый primary.xml.gz-поток
+	// (zip-bomb guard, та же константа-семантика, что apt/pacman/apk —
+	// сессии 34/54; злонамеренный upstream крутит CPU/bandwidth, но не
+	// процесс).
+	maxDecompressedRpmMd = int64(1 << 30) // 1 GiB
 )
 
 func init() {
@@ -284,7 +291,10 @@ func unsupportedPrimaryErr(href string) error {
 
 // unwrapGzIfNeeded оборачивает body в gzip.Reader, если имя файла
 // заканчивается на .gz; иначе отдаёт как есть. Имя берётся из href,
-// потому что Content-Type у репозиторев часто absent или «text/plain».
+// потому что Content-Type у репозиториев часто absent или «text/plain».
+// Поток ограничен maxDecompressedRpmMd (паттерн apt/pacman/apk):
+// gzip-бомба вместо primary.xml.gz валит sync одного remote с
+// ErrDecompressTooLarge, а не крутит декомпрессию вечно.
 func unwrapGzIfNeeded(body io.Reader, href string) (io.Reader, error) {
 	if !strings.HasSuffix(href, ".gz") {
 		return body, nil
@@ -293,7 +303,32 @@ func unwrapGzIfNeeded(body io.Reader, href string) (io.Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rpm-md: unpack primary.xml.gz: %w", err)
 	}
-	return gz, nil
+	return &limitedReader{r: gz, limit: maxDecompressedRpmMd}, nil
+}
+
+// ErrDecompressTooLarge — разжатый primary.xml.gz превысил лимит
+// (zip-bomb guard). Сравнение через errors.Is.
+var ErrDecompressTooLarge = errors.New("rpm-md: декомпрессия превысила лимит")
+
+// limitedReader — обёртка, считающая байты и возвращающая
+// ErrDecompressTooLarge при превышении лимита (паттерн apt/pacman/apk):
+// лимит проверяется в процессе чтения, а не после полного буфера.
+type limitedReader struct {
+	r     io.Reader
+	n     int64
+	limit int64
+}
+
+func (l *limitedReader) Read(p []byte) (int, error) {
+	if l.n >= l.limit {
+		return 0, ErrDecompressTooLarge
+	}
+	n, err := l.r.Read(p)
+	l.n += int64(n)
+	if l.n > l.limit {
+		return n, ErrDecompressTooLarge
+	}
+	return n, err
 }
 
 // lookupRemote возвращает Remote по имени из кеша; при истечении TTL
