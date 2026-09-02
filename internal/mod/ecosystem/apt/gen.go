@@ -641,11 +641,24 @@ func readControlTar(r io.Reader) (*Stanza, error) {
 // (28 b5 2f fd); xz не поддерживается — в whitelist нет xz-либы
 // (мини-читатель достаточно покрывает .deb с gz/zstd-компрессией, что
 // генерируют dpkg-deb и наши фикстуры). Вызывающий обязан Close.
+//
+// Декомпрессия ограничена maxDecompressedControl (верификация
+// 2026-09-02): crafted .deb с control-бомбой из бесконечных
+// «A<n>: x» отсекается лимитером до роста stanza-карты, reindex
+// одной задачи падает с ErrDecompressTooLarge, а не процесс.
 func decompressControl(r io.Reader) (io.ReadCloser, error) {
 	br := bufio.NewReader(r)
 	peek, err := br.Peek(4)
 	if err != nil && err != io.EOF {
 		return nil, err
+	}
+	// limitClose навешивает счётный лимит, сохраняя Close исходного
+	// ридера (zstd-декодер держит worker-горутины до Close).
+	limitClose := func(rc io.ReadCloser) io.ReadCloser {
+		return &limitedReadCloser{
+			limitedReader: &limitedReader{r: rc, limit: maxDecompressedControl},
+			closer:        rc,
+		}
 	}
 	switch {
 	case len(peek) >= 2 && peek[0] == 0x1f && peek[1] == 0x8b:
@@ -653,18 +666,35 @@ func decompressControl(r io.Reader) (io.ReadCloser, error) {
 		if gzErr != nil {
 			return nil, fmt.Errorf("apt.deb: gzip: %w", gzErr)
 		}
-		return gz, nil
+		return limitClose(gz), nil
 	case len(peek) >= 4 && peek[0] == 0x28 && peek[1] == 0xb5 && peek[2] == 0x2f && peek[3] == 0xfd:
 		zr, gzErr := zstd.NewReader(br)
 		if gzErr != nil {
 			return nil, fmt.Errorf("apt.deb: zstd: %w", gzErr)
 		}
-		return zstdReadCloser{zr}, nil
+		return limitClose(zstdReadCloser{zr}), nil
 	}
 	// Несжатый tar — редкость, но поддержим (контроль-секция
 	// маленькая, peek достаточен).
-	return io.NopCloser(br), nil
+	return io.NopCloser(&limitedReader{r: br, limit: maxDecompressedControl}), nil
 }
+
+// maxDecompressedControl — лимит разжатой control-секции одного .deb
+// на reindex-пути. Реальная control-секция — единицы КиБ (deb822-поля
+// и мейнтейнерские скрипты); 16 МиБ — запас на три порядка, при этом
+// на два порядка меньше maxDecompressedApt: контроль неPackages,
+// целиком резидентен в памяти на время парсинга stanza.
+const maxDecompressedControl = int64(16 << 20)
+
+// limitedReadCloser — limitedReader с Close исходного ридера: лимит
+// считается на Read, Close пробрасывается (см. readControl про
+// zstd-горутины).
+type limitedReadCloser struct {
+	*limitedReader
+	closer io.Closer
+}
+
+func (l *limitedReadCloser) Close() error { return l.closer.Close() }
 
 // zstdReadCloser адаптирует *zstd.Decoder к io.ReadCloser: Close у
 // декодера безвозвратный и без error, контракт io.Closer требует error.

@@ -237,6 +237,29 @@ func TestStanzasFieldTooLong(t *testing.T) {
 	}
 }
 
+func TestStanzasTotalBytesCap(t *testing.T) {
+	// верификация 2026-09-02: число полей в записи по отдельности не
+	// ограничено — бесконечные «A<n>: x» без пустой строки росли бы
+	// картой неограниченно. Суммарный потолок field*stanzas (здесь
+	// 8*4=32 байта) — ErrFieldTooLong на превышении. Маленькие лимиты,
+	// как в TestStanzasTooMany: реальный потолок 1 ТиБ в тесте не
+	// набрать и не нужно.
+	var b strings.Builder
+	for i := 0; i < 20; i++ {
+		b.WriteString("F0: vvvv\n")
+	}
+	var lastErr error
+	for _, err := range stanzas(strings.NewReader(b.String()), limits{stanzas: 4, field: 8, name: 8}) {
+		if err != nil {
+			lastErr = err
+			break
+		}
+	}
+	if !errors.Is(lastErr, ErrFieldTooLong) {
+		t.Fatalf("ожидалась ErrFieldTooLong, получено %v", lastErr)
+	}
+}
+
 func TestStanzasTooMany(t *testing.T) {
 	// потолок числа записей: маленький лимит, на (lim+1)-й записи
 	// парсер отказывает. Реальный лимит — 1 млн; гонять его в тесте

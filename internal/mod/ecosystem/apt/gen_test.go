@@ -289,6 +289,111 @@ func TestReadControlDecompressError(t *testing.T) {
 	}
 }
 
+// controlBombGz строит control.tar.gz-бомбу: валидный tar с ./control
+// заявленного размера huge, внутри — бесконечные «A<n>: x» без пустой
+// строки (stanza никогда не завершается, до фикса карта росла бы на
+// каждую строку — вектор верификации 2026-09-02). На диске — килобайты,
+// в разжатом виде — больше капа.
+func controlBombGz(t *testing.T, huge int64) []byte {
+	t.Helper()
+	var raw bytes.Buffer
+	gz := gzip.NewWriter(&raw)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: "./control", Mode: 0o644, Size: huge, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatalf("tw.WriteHeader: %v", err)
+	}
+	var written int64
+	line := []byte("A0: x\n")
+	for written+int64(len(line)) <= huge {
+		if _, err := tw.Write(line); err != nil {
+			t.Fatalf("tw.Write: %v", err)
+		}
+		written += int64(len(line))
+	}
+	if rest := huge - written; rest > 0 {
+		if _, err := tw.Write(bytes.Repeat([]byte{' '}, int(rest))); err != nil {
+			t.Fatalf("tw.Write rest: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tw.Close: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gz.Close: %v", err)
+	}
+	return raw.Bytes()
+}
+
+// buildDebWithControlGz собирает .deb с заданным control.tar.gz-телом.
+func buildDebWithControlGz(t *testing.T, controlGz []byte) []byte {
+	t.Helper()
+	var ar bytes.Buffer
+	ar.WriteString("!<arch>\n")
+	writeArMember(&ar, "debian-binary", []byte("2.0\n"))
+	writeArMember(&ar, "control.tar.gz", controlGz)
+	writeArMember(&ar, "data.tar.gz", []byte("fake"))
+	return ar.Bytes()
+}
+
+// TestReadControlDecompressBomb — верификация 2026-09-02: control-бомба
+// (разжатых > maxDecompressedControl) — ErrDecompressTooLarge сразу за
+// лимитом, а не OOM. Счётчик лимитера доказывает отказ в процессе
+// чтения: разжато ≤ кап + буфер, бомба не дочитана.
+func TestReadControlDecompressBomb(t *testing.T) {
+	deb := buildDebWithControlGz(t, controlBombGz(t, maxDecompressedControl+(1<<20)))
+	if _, err := readControl(bytes.NewReader(deb)); !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
+	}
+
+	dr, err := decompressControl(bytes.NewReader(controlBombGz(t, maxDecompressedControl+(1<<20))))
+	if err != nil {
+		t.Fatalf("decompressControl: %v", err)
+	}
+	defer dr.Close()
+	lr, ok := dr.(*limitedReadCloser)
+	if !ok {
+		t.Fatalf("decompressControl вернул %T, хочу *limitedReadCloser", dr)
+	}
+	if _, err := io.ReadAll(dr); !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидали ErrDecompressTooLarge на чтении, получили %v", err)
+	}
+	if want := maxDecompressedControl + 8192; lr.n > want {
+		t.Errorf("разжато %d байт, хочу не более ~%d (кап + буфер)", lr.n, want)
+	}
+}
+
+// TestGenerateIndexesControlBomb — reindex с бомбой в control-секции:
+// задача failed с ошибкой декомресс-лимита, индексы не закоммичены
+// (пишутся только после успешного прохода всех .deb).
+func TestGenerateIndexesControlBomb(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	deb := buildDebWithControlGz(t, controlBombGz(t, maxDecompressedControl+(1<<20)))
+	key := port.RepoPrefix(repo) + "/pool/main/b/bomb.deb"
+	w, err := storage.Put(context.Background(), key)
+	if err != nil {
+		t.Fatalf("storage.Put %s: %v", key, err)
+	}
+	if _, err := w.Write(deb); err != nil {
+		t.Fatalf("w.Write: %v", err)
+	}
+	if err := w.Commit(context.Background()); err != nil {
+		t.Fatalf("w.Commit: %v", err)
+	}
+
+	err = (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil)
+	if !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
+	}
+	for meta, err := range storage.List(context.Background(), port.RepoPrefix(repo)+"/dists") {
+		if err != nil {
+			t.Fatalf("List dists: %v", err)
+		}
+		t.Errorf("индекс не должен быть закоммичен: %s", meta.Key)
+	}
+}
+
 func TestGenerateIndexesContextCanceled(t *testing.T) {
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))

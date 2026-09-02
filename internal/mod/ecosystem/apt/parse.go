@@ -126,11 +126,25 @@ func stanzas(r io.Reader, lim limits) iter.Seq2[*Stanza, error] {
 		cur := newStanza()
 		var lastName string
 		count := 0
+		// Суммарный потолок байт на вызов (верификация 2026-09-02):
+		// число записей и размер поля ограничены по отдельности, но
+		// число полей в записи — нет, и бесконечные «A<n>: x» без
+		// пустой строки росли бы картой без потолка. Планка
+		// field*stanzas — верхняя граница легитимного ввода (каждая
+		// запись не длиннее field, записей не больше stanzas); после
+		// неё ErrFieldTooLong, а не неограниченный рост карты.
+		total := 0
+		maxTotal := lim.field * lim.stanzas
 		for {
 			line, err := readLine(br, lim.field+lim.name+2)
 			eof := errors.Is(err, io.EOF)
 			if err != nil && !eof {
 				_ = yield(nil, err)
+				return
+			}
+			total += len(line) + 1
+			if total > maxTotal {
+				_ = yield(nil, ErrFieldTooLong)
 				return
 			}
 			cont, stop := processLine(line, cur, &lastName, lim)
