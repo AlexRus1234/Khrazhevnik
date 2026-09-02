@@ -93,8 +93,16 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 		}
 		// Immutable-объекты (пакеты) — публичный кеш-клиент.
 		// apt/dnf советуют Cache-Control: immutable для content-addressed.
+		// Исключение — nix narinfo: единственный объект, который инстанс
+		// сам переписывает (reindex переподписывает Sig под тем же
+		// ключом), поэтому предпосылка «никогда не меняется» ложна:
+		// клиент, запинивший pre-resign байты на год, после resign не
+		// проходит проверку подписи. no-cache — реиспейт каждый раз
+		// (narinfo мал, дёшево); nar/* при этом остаётся immutable.
 		if isImmutableRepoObject(repo.Ecosystem, rest) {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else if repo.Ecosystem == "nix" && strings.HasSuffix(rest, ".narinfo") {
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		if obj.Meta.Size >= 0 {
 			w.Header().Set("Content-Length", formatInt(obj.Meta.Size))
@@ -107,12 +115,15 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 
 // isImmutableRepoObject решает, выставить ли Cache-Control: immutable.
 // Пакеты всех экосистем content-addressed (apt pool/* по имя+версия;
-// rpm-md .rpm/.drpm/.src.rpm; pacman .pkg.tar.*; apk .apk; nix nar/* и
-// <32 nix-base32>.narinfo) — генераторы всех пяти экосистем с сессии
-// 16, клиентам незачем реиспейсить их на каждый проход (аудит
-// 2026-08-30). Индексы (dists/*, repodata/, *.db, APKINDEX.tar.gz) —
-// перегенерируются, mutable. Список зеркалит ValidateObjectPath
-// адаптеров (mod/ecosystem/*/gen.go).
+// rpm-md .rpm/.drpm/.src.rpm; pacman .pkg.tar.*; apk .apk; nix nar/*) —
+// генераторы всех пяти экосистем с сессии 16, клиентам незачем
+// реиспейсить их на каждый проход (аудит 2026-08-30). Индексы
+// (dists/*, repodata/, *.db, APKINDEX.tar.gz) — перегенерируются,
+// mutable. Список зеркалит ValidateObjectPath адаптеров
+// (mod/ecosystem/*/gen.go), кроме nix narinfo: валидатор его принимает,
+// но reindex переписывает narinfo под тем же ключом (resign-on-reindex
+// меняет байты один раз) — он не immutable, см. ветку no-cache в
+// handleRepoFile.
 func isImmutableRepoObject(ecosystem, path string) bool {
 	switch ecosystem {
 	case "apt":
@@ -124,7 +135,7 @@ func isImmutableRepoObject(ecosystem, path string) bool {
 	case "apk":
 		return strings.HasSuffix(path, ".apk")
 	case "nix":
-		return strings.HasPrefix(path, "nar/") || strings.HasSuffix(path, ".narinfo")
+		return strings.HasPrefix(path, "nar/")
 	default:
 		return false
 	}

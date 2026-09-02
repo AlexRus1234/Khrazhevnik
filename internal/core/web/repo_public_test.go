@@ -154,8 +154,12 @@ func TestPublicNoSniffOnEveryResponse(t *testing.T) {
 // экосистем получают Cache-Control immutable (сессия 45: раньше —
 // только apt pool/, клиенты dnf/pacman/apk/nix реиспейсили пакеты
 // понапрасну); индексы (repodata/, dists/) — без него: mutable.
-// Репо rpm-md создаётся напрямую в store: env.Ecosystems реестра —
-// про upload-гейт админ-API, публичная раздача смотрит repo.Ecosystem.
+// Исключение сессии 48 — nix narinfo: resign-on-reindex переписывает
+// его под тем же ключом, поэтому no-cache, а не immutable; nar/*
+// остаётся immutable (байты реально content-addressed).
+// Репо rpm-md и nix создаются напрямую в store: env.Ecosystems
+// реестра — про upload-гейт админ-API, публичная раздача смотрит
+// repo.Ecosystem.
 func TestPublicRepoCacheControlImmutable(t *testing.T) {
 	env := newRepoEnv(t)
 	rpmRepo, err := env.repos.CreateRepo(t.Context(), domain.Repo{Name: "fedora", OwnerID: 2, Ecosystem: "rpm-md", CreatedAt: env.clock.Now()})
@@ -167,13 +171,25 @@ func TestPublicRepoCacheControlImmutable(t *testing.T) {
 	aptRepoID := createRepoViaAPI(t, env, "alice", 2)
 	uploadRepoObject(t, env, aptRepoID, "pool/main/a/foo.deb", []byte("deb"))
 	uploadRepoObject(t, env, aptRepoID, "dists/stable/Release", []byte("rel"))
+	nixRepo, err := env.repos.CreateRepo(t.Context(), domain.Repo{Name: "nixcache", OwnerID: 2, Ecosystem: "nix", CreatedAt: env.clock.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Алфавит nix-base32 (без e/o/t/u): hash32 — хеш store path
+	// narinfo, fileHash52 — хеш файла nar-архива (сессия 47).
+	const hash32 = "0123456789abcdfghijklmnpqrsvwxyz"
+	const fileHash52 = "0123456789abcdfghijklmnpqrsvwxyz0123456789abcd"
+	uploadRepoObject(t, env, nixRepo.ID, hash32+".narinfo", []byte("narinfo"))
+	uploadRepoObject(t, env, nixRepo.ID, "nar/"+fileHash52+".nar.xz", []byte("nar"))
 
 	const immutable = "public, max-age=31536000, immutable"
 	for path, want := range map[string]string{
-		"/repo/fedora/packages/f/foo-1.0-1.rpm": immutable,
-		"/repo/fedora/repodata/repomd.xml":      "",
-		"/repo/alice/pool/main/a/foo.deb":       immutable,
-		"/repo/alice/dists/stable/Release":      "",
+		"/repo/fedora/packages/f/foo-1.0-1.rpm":        immutable,
+		"/repo/fedora/repodata/repomd.xml":             "",
+		"/repo/alice/pool/main/a/foo.deb":              immutable,
+		"/repo/alice/dists/stable/Release":             "",
+		"/repo/nixcache/" + hash32 + ".narinfo":        "no-cache",
+		"/repo/nixcache/nar/" + fileHash52 + ".nar.xz": immutable,
 	} {
 		rec := getPublic(t, env, path)
 		if rec.Code != http.StatusOK {
