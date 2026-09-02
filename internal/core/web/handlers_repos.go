@@ -255,6 +255,10 @@ func handleListPerms(d Deps) http.HandlerFunc {
 // «успех» (аудит 2026-08-30). Двойная выборка на редкой админ-
 // операции — плата за честный 404; вариант с Kind в ConflictError
 // отклонён: трогал бы домен и все три драйвера ради одного хендлера.
+// Pre-check не закрывает race-окно (юзер удалён между User() и
+// Grant()): отличаем unique-дубль от FK по Reason — mapWrite всех
+// трёх драйверов (сессия 21) оставляет Reason пустым ТОЛЬКО у
+// unique-нарушений, FK/NOT NULL/CHECK получают непустой.
 func handleGrantPerm(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseInt64URLParam(w, r, "id")
@@ -283,7 +287,15 @@ func handleGrantPerm(d Deps) http.HandlerFunc {
 		if err != nil {
 			var conf *domain.ConflictError
 			if errors.As(err, &conf) {
-				w.WriteHeader(http.StatusNoContent)
+				// Пустой Reason — genuine unique-дубль: идемпотентный
+				// 204. Непустой (FK и пр.) — юзер/репо исчезли в
+				// окне после пред-проверки: 404, как и pre-check-путь,
+				// а не ложный «успех» с аудитом ok.
+				if conf.Reason == "" {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				writeErr(w, &domain.NotFoundError{What: "пользователь", Key: strconv.FormatInt(in.UserID, 10)})
 				return
 			}
 			writeErr(w, err)

@@ -546,6 +546,75 @@ func TestRepoGrantPermConflictBeforeGrant(t *testing.T) {
 	}
 }
 
+// grantFKConflictRepoStore — фейк, чей Grant возвращает ConflictError
+// с непустым Reason — контракт mapWrite всех драйверов для FK-
+// нарушений (сессия 21). Имитация race-окна: юзер удалён между
+// пред-проверкой хендлера и INSERT.
+type grantFKConflictRepoStore struct {
+	*testutil.FakeRepoStore
+	grants int
+}
+
+func (s *grantFKConflictRepoStore) Grant(_ context.Context, _ domain.Perm) error {
+	s.grants++
+	return &domain.ConflictError{What: "право", Key: "stub", Reason: "нарушение внешнего ключа"}
+}
+
+// TestRepoGrantPermFKConflict404 — TOCTOU-хвост сессии 49: FK-конфликт
+// после пред-проверки → 404 (не ложный идемпотентный 204).
+func TestRepoGrantPermFKConflict404(t *testing.T) {
+	env := newRepoEnv(t)
+	fk := &grantFKConflictRepoStore{FakeRepoStore: env.repos}
+	tasks := NewTaskRegistry(2, env.clock)
+	adminH := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Repos: fk, Storage: env.storage, Audit: env.audit,
+		Tasks: tasks, Publish: env.publish, Clock: env.clock,
+	})
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/repos/"+itoaRepo(repoID)+"/perms", strings.NewReader(`{"user_id":3}`))
+	req.RemoteAddr = "10.0.0.9:1"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	adminH.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("грант при FK-конфликте = %d, want 404 (тело %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not_found") {
+		t.Errorf("код ошибки = %s, хочу not_found", rec.Body.String())
+	}
+	if fk.grants != 1 {
+		t.Errorf("Grant вызван %d раз, want 1 — конфликт дошёл до INSERT", fk.grants)
+	}
+}
+
+// TestRepoGrantPermUniqueConflict204 — пустой Reason (unique-нарушение,
+// контракт mapWrite сессии 21) за пред-проверкой → идемпотентный 204.
+func TestRepoGrantPermUniqueConflict204(t *testing.T) {
+	env := newRepoEnv(t)
+	conflict := &grantConflictRepoStore{FakeRepoStore: env.repos}
+	tasks := NewTaskRegistry(2, env.clock)
+	adminH := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Repos: conflict, Storage: env.storage, Audit: env.audit,
+		Tasks: tasks, Publish: env.publish, Clock: env.clock,
+	})
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/repos/"+itoaRepo(repoID)+"/perms", strings.NewReader(`{"user_id":3}`))
+	req.RemoteAddr = "10.0.0.9:1"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	adminH.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("грант при unique-дубле = %d, want 204 (тело %s)", rec.Code, rec.Body.String())
+	}
+	if conflict.grants != 1 {
+		t.Errorf("Grant вызван %d раз, want 1", conflict.grants)
+	}
+}
+
 // Публичный роутер: раздача объектов репо.
 func TestPublicRepoFile(t *testing.T) {
 	env := newRepoEnv(t)
