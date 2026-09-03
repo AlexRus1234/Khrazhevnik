@@ -148,7 +148,7 @@ func BuildPublicRouter(d Deps) http.Handler {
 		// /repo/<name>/key.asc — публичный ключ инстанса для apt-клиентов
 		// (signed-by). Отдан вне wildcard-роута выше, т.к. ключ не лежит
 		// в Storage репо, а берётся из Signer напрямую. nil-Signer — роут
-	// не регистрируется (404 от wildcard).
+		// не регистрируется (404 от wildcard).
 		if d.Signer != nil {
 			r.Get("/repo/{name}/key.asc", handleRepoKey(d))
 		}
