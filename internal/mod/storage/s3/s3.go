@@ -204,7 +204,7 @@ func (s *Storage) Put(ctx context.Context, key string) (port.Writer, error) {
 	spoolPath := filepath.Join(s.spoolDir, uuid)
 	f, err := os.OpenFile(spoolPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
-		return nil, fmt.Errorf("s3: создание спула: %w", err)
+		return nil, spoolUnavailable(fmt.Errorf("s3: создание спула: %w", err))
 	}
 	return &writer{
 		storage:     s,
@@ -300,9 +300,11 @@ func metaFrom(key string, info minio.ObjectInfo) port.Meta {
 }
 
 // mapS3Error переводит ошибки носителя: NoSuchKey/NoSuchBucket — NotFound
-// объекта; ошибка без S3-ответа (сеть/endpoint недоступен, по образцу
-// authStoreError) — недоступность хранилища: на публичном порту она
-// отдавалась как 502 «виноват upstream» (сессия 50).
+// объекта; всё остальное — недоступность хранилища: и сеть без S3-ответа
+// (endpoint недоступен, по образцу authStoreError), и ответы S3 с кодом
+// ошибки (AccessDenied, SignatureDoesNotMatch, InternalError, SlowDown,
+// …) — это сбои НАШЕГО хранилища, на публичном порту они отдавались как
+// 502 «виноват upstream» (сессии 50, 60).
 func mapS3Error(err error, key string) error {
 	if err == nil {
 		return nil
@@ -314,7 +316,14 @@ func mapS3Error(err error, key string) error {
 	case "":
 		return &domain.UnavailableError{What: "хранилище", Reason: "S3 недоступен", Err: err}
 	}
-	return err
+	return &domain.UnavailableError{What: "хранилище", Reason: "S3-ответ " + resp.Code, Err: err}
+}
+
+// spoolUnavailable — сбой локального спула (диск кончился, каталог
+// пропал) — недоступность хранилища, а не upstream: иначе сырая
+// OS-ошибка уходила бы в 502 (сессия 60).
+func spoolUnavailable(err error) error {
+	return &domain.UnavailableError{What: "хранилище", Reason: "сбой спула", Err: err}
 }
 
 // splitEndpoint разбирает endpoint конфига: «https://host[:port]» →
@@ -366,6 +375,9 @@ func (w *writer) Write(p []byte) (int, error) {
 	if err != nil {
 		w.failed = true
 		w.writeErr = err
+		// движок не заворачивает UnavailableError в UpstreamError —
+		// ENOSPC при копировании тела дойдёт до клиента как 503
+		return n, spoolUnavailable(fmt.Errorf("s3: запись спула %q: %w", w.key, err))
 	}
 	return n, err
 }
@@ -383,21 +395,21 @@ func (w *writer) Commit(ctx context.Context) error {
 	if w.failed {
 		_ = w.file.Close()
 		_ = os.Remove(w.spoolPath)
-		return fmt.Errorf("s3: фиксация %q после сбоя записи: %w", w.key, w.writeErr)
+		return spoolUnavailable(fmt.Errorf("s3: фиксация %q после сбоя записи: %w", w.key, w.writeErr))
 	}
 	if err := w.file.Close(); err != nil {
 		_ = os.Remove(w.spoolPath)
-		return fmt.Errorf("s3: закрытие спула: %w", err)
+		return spoolUnavailable(fmt.Errorf("s3: закрытие спула: %w", err))
 	}
 	st, err := os.Stat(w.spoolPath)
 	if err != nil {
 		_ = os.Remove(w.spoolPath)
-		return fmt.Errorf("s3: размер спула %q: %w", w.key, err)
+		return spoolUnavailable(fmt.Errorf("s3: размер спула %q: %w", w.key, err))
 	}
 	f, err := os.Open(w.spoolPath)
 	if err != nil {
 		_ = os.Remove(w.spoolPath)
-		return fmt.Errorf("s3: чтение спула: %w", err)
+		return spoolUnavailable(fmt.Errorf("s3: чтение спула: %w", err))
 	}
 	defer func() { _ = f.Close(); _ = os.Remove(w.spoolPath) }()
 	if _, err := w.storage.client.PutObject(ctx, w.storage.bucket, w.key, f, st.Size(),

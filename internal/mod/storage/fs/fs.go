@@ -30,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"khrazhevnik/internal/core/config"
 	"khrazhevnik/internal/core/domain"
@@ -147,7 +148,7 @@ func (s *Storage) Put(ctx context.Context, key string) (port.Writer, error) {
 	tmpPath := filepath.Join(s.root, tmpDir, uuid)
 	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
-		return nil, fmt.Errorf("fs: создание временного файла: %w", err)
+		return nil, mapWriteError(fmt.Errorf("fs: создание временного файла: %w", err))
 	}
 	return &writer{storage: s, key: key, tmpPath: tmpPath, file: f}, nil
 }
@@ -176,7 +177,7 @@ func (s *Storage) List(ctx context.Context, prefix string) iter.Seq2[port.Meta, 
 		}
 		_ = filepath.WalkDir(s.root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
-				yield(port.Meta{}, fmt.Errorf("fs: обход %s: %w", path, err))
+				yield(port.Meta{}, mapWriteError(fmt.Errorf("fs: обход %s: %w", path, err)))
 				return fs.SkipAll
 			}
 			if ctx.Err() != nil {
@@ -201,7 +202,7 @@ func (s *Storage) List(ctx context.Context, prefix string) iter.Seq2[port.Meta, 
 				info, err := d.Info()
 				if err != nil {
 					// файл исчез между ReadDir и Info — листинг неполон
-					yield(port.Meta{}, fmt.Errorf("fs: метаданные %s: %w", path, err))
+					yield(port.Meta{}, mapWriteError(fmt.Errorf("fs: метаданные %s: %w", path, err)))
 					return fs.SkipAll
 				}
 				if !yield(metaFrom(key, info), nil) || ctx.Err() != nil {
@@ -259,17 +260,42 @@ func metaFrom(key string, st os.FileInfo) port.Meta {
 	return port.Meta{Key: key, Size: st.Size(), ModTime: st.ModTime()}
 }
 
-// mapPathError переводит ошибки носителя: отсутствующий файл — NotFound,
-// прочие PathError (ENOSPC/EIO/EROFS, …) — недоступность хранилища:
-// сырая OS-ошибка на публичном порту падала в default-ветку writeProxyError
-// и отдавалась как 502 «виноват upstream» (сессия 50).
+// storageUnavailable — недоступность хранилища с сохранённой причиной:
+// сбой носителя — «мы сломаны» (503), а не «виноват upstream» (502).
+func storageUnavailable(err error) error {
+	return &domain.UnavailableError{What: "хранилище", Reason: "сбой носителя", Err: err}
+}
+
+// mapPathError — read-путь (Get/Stat/Delete): «объекта нет» — NotFound,
+// включая ENOTDIR (компонента пути — файл: ключ не существует как
+// объект — семантически 404); прочие PathError (ENOSPC/EIO/EROFS, …) —
+// недоступность хранилища: сырая OS-ошибка на публичном порту падала в
+// default-ветку writeProxyError и отдавалась как 502 «виноват upstream»
+// (сессии 50, 60). Write-путь классифицирует mapWriteError — там
+// «нет файла»/ENOTDIR не NotFound (объект ещё не создан, битые
+// префиксы не строим).
 func mapPathError(err error, key string) error {
-	if os.IsNotExist(err) {
+	if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
 		return &domain.NotFoundError{What: "объект", Key: key}
 	}
 	var perr *fs.PathError
 	if errors.As(err, &perr) {
-		return &domain.UnavailableError{What: "хранилище", Reason: "сбой носителя", Err: err}
+		return storageUnavailable(err)
+	}
+	return err
+}
+
+// mapWriteError — write-путь (Put/Write/Commit/List): любая ошибка
+// носителя — PathError (ENOSPC/EIO/EROFS/ENOENT-после-старта/ENOTDIR)
+// или LinkError rename — недоступность хранилища.
+func mapWriteError(err error) error {
+	var perr *fs.PathError
+	if errors.As(err, &perr) {
+		return storageUnavailable(err)
+	}
+	var lerr *os.LinkError
+	if errors.As(err, &lerr) {
+		return storageUnavailable(err)
 	}
 	return err
 }
@@ -288,7 +314,13 @@ func (w *writer) Write(p []byte) (int, error) {
 	if w.done {
 		return 0, fmt.Errorf("fs: запись после завершения Writer для %q", w.key)
 	}
-	return w.file.Write(p)
+	n, err := w.file.Write(p)
+	if err != nil {
+		// движок не заворачивает UnavailableError в UpstreamError —
+		// ENOSPC/EIO при копировании тела дойдёт до клиента как 503
+		return n, mapWriteError(fmt.Errorf("fs: запись тела %q: %w", w.key, err))
+	}
+	return n, nil
 }
 
 // Commit делает объект видимым: fsync данных → close → mkdir → rename
@@ -307,27 +339,27 @@ func (w *writer) Commit(ctx context.Context) error {
 	if err := w.file.Sync(); err != nil {
 		_ = w.file.Close()
 		_ = os.Remove(w.tmpPath)
-		return fmt.Errorf("fs: сброс буферов %q: %w", w.key, err)
+		return mapWriteError(fmt.Errorf("fs: сброс буферов %q: %w", w.key, err))
 	}
 	// Ошибки после done=true не могут рассчитывать на Abort (заблокирован
 	// контрактом «Abort после Commit») — tmp вычищается здесь, а не
 	// ждёт startup-sweep с окном утечки до рестарта.
 	if err := w.file.Close(); err != nil {
 		_ = os.Remove(w.tmpPath)
-		return fmt.Errorf("fs: закрытие временного файла: %w", err)
+		return mapWriteError(fmt.Errorf("fs: закрытие временного файла: %w", err))
 	}
 	final := filepath.Join(w.storage.root, filepath.FromSlash(w.key))
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
 		_ = os.Remove(w.tmpPath)
-		return fmt.Errorf("fs: создание каталога объекта: %w", err)
+		return mapWriteError(fmt.Errorf("fs: создание каталога объекта: %w", err))
 	}
 	if err := renameReplace(w.tmpPath, final); err != nil {
 		_ = os.Remove(w.tmpPath)
-		return fmt.Errorf("fs: фиксация %q: %w", w.key, err)
+		return mapWriteError(fmt.Errorf("fs: фиксация %q: %w", w.key, err))
 	}
 	// rename устойчив к выключению питания только после fsync каталога
 	if err := fsyncDir(filepath.Dir(final)); err != nil {
-		return fmt.Errorf("fs: fsync каталога %q: %w", w.key, err)
+		return mapWriteError(fmt.Errorf("fs: fsync каталога %q: %w", w.key, err))
 	}
 	return nil
 }

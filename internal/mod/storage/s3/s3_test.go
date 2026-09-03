@@ -191,9 +191,10 @@ func TestMapS3ErrorNotFound(t *testing.T) {
 	}
 }
 
-// TestMapS3ErrorUnavailable — ошибка без S3-ответа (сеть/endpoint) —
-// недоступность хранилища (сессия 50): 503 «мы сломаны», а не 502
-// «виноват upstream». S3-ответы с кодом класс не меняют.
+// TestMapS3ErrorUnavailable — и сеть без S3-ответа (сеть/endpoint,
+// сессия 50), и ответы S3 с кодом ошибки (сессия 60: AccessDenied,
+// InternalError, SlowDown, …) — недоступность хранилища: 503 «мы
+// сломаны», а не 502 «виноват upstream».
 func TestMapS3ErrorUnavailable(t *testing.T) {
 	var un *domain.UnavailableError
 	netErr := errors.New("dial tcp 10.0.0.1:9000: connection refused")
@@ -204,8 +205,14 @@ func TestMapS3ErrorUnavailable(t *testing.T) {
 	if !errors.Is(err, netErr) {
 		t.Fatalf("причина потеряна: %v", err)
 	}
-	if err := mapS3Error(minio.ErrorResponse{Code: "InternalError"}, "cache/x"); errors.As(err, &un) {
-		t.Fatal("S3-ответ с кодом не должен превращаться в UnavailableError")
+	for _, code := range []string{"AccessDenied", "SignatureDoesNotMatch", "InternalError", "SlowDown"} {
+		if err := mapS3Error(minio.ErrorResponse{Code: code}, "cache/x"); !errors.As(err, &un) {
+			t.Fatalf("S3-код %s → хочу UnavailableError, получено %v", code, err)
+		}
+	}
+	var nf *domain.NotFoundError
+	if err := mapS3Error(minio.ErrorResponse{Code: "InternalError"}, "cache/x"); errors.As(err, &nf) {
+		t.Fatal("S3-код ошибки замаскирован под NotFound")
 	}
 }
 
@@ -260,13 +267,17 @@ type fakeUpload struct {
 // отдаёт листинг, отфильтрованный по запрошенному prefix (запросы
 // журналируются — тест проверяет, что sweep листит только наши корни),
 // GET ?location — us-east-1, DELETE ?uploadId — аборт (журнал id).
-// Сети и контейнеров не нужно.
+// Сети и контейнеров не нужно. Объектные запросы (GET/HEAD/PUT) при
+// установленном s3Err отвечают ошибкой S3 с соответствующим статусом
+// (минio выводит код из статуса для ответов без тела) — проверка
+// маппинга кодов в доменные классы (сессия 60).
 type fakeS3 struct {
 	uploads []fakeUpload
 	aborts  atomic.Int32
 	mu      sync.Mutex
 	listed  []string
 	aborted []string
+	s3Err   string
 }
 
 func (f *fakeS3) listedPrefixes() []string {
@@ -306,8 +317,10 @@ func (f *fakeS3) handler(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>` +
 				`<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">us-east-1</LocationConstraint>`))
 		default:
-			w.WriteHeader(http.StatusNotFound)
+			f.objectError(w)
 		}
+	case http.MethodHead, http.MethodPut:
+		f.objectError(w)
 	case http.MethodDelete:
 		f.mu.Lock()
 		f.aborted = append(f.aborted, q.Get("uploadId"))
@@ -316,6 +329,20 @@ func (f *fakeS3) handler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// objectError — объектный запрос при установленном s3Err: статус с
+// пустым телом (NoSuchKey → 404, прочее → 403 AccessDenied по
+// header-fallback минio).
+func (f *fakeS3) objectError(w http.ResponseWriter) {
+	switch f.s3Err {
+	case "":
+		w.WriteHeader(http.StatusOK)
+	case minio.NoSuchKey:
+		w.WriteHeader(http.StatusNotFound)
+	default:
+		w.WriteHeader(http.StatusForbidden)
 	}
 }
 
@@ -389,4 +416,61 @@ func containsID(ids []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// newFakeStorage — хранилище поверх фейкового S3 (New выполняет и
+// startup-sweep — фейк отвечает на multipart-листинг).
+func newFakeStorage(t *testing.T, f *fakeS3) *Storage {
+	t.Helper()
+	endpoint := startFakeS3(t, f)
+	s, err := New(config.S3Storage{
+		Endpoint: endpoint, Region: "us-east-1",
+		Bucket: "khrazhevnik", AccessKeyID: "id", SecretAccessKey: "key",
+		SpoolDir: t.TempDir(),
+	}, testutil.FixedRand())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// TestGetWithAccessDeniedIsUnavailable — S3-ответ с кодом AccessDenied
+// (HEAD 403 без тела — минio выводит код из статуса) — недоступность
+// хранилища, 503-класс (сессия 60), а не сырая ошибка → 502.
+func TestGetWithAccessDeniedIsUnavailable(t *testing.T) {
+	s := newFakeStorage(t, &fakeS3{s3Err: minio.AccessDenied})
+	_, err := s.Get(context.Background(), "cache/x")
+	var un *domain.UnavailableError
+	if !errors.As(err, &un) {
+		t.Fatalf("Get при AccessDenied = %v, хочу UnavailableError", err)
+	}
+}
+
+// TestGetWithNoSuchKeyIsNotFound — NoSuchKey остаётся NotFound (404-класс).
+func TestGetWithNoSuchKeyIsNotFound(t *testing.T) {
+	s := newFakeStorage(t, &fakeS3{s3Err: minio.NoSuchKey})
+	_, err := s.Get(context.Background(), "cache/x")
+	var nf *domain.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("Get отсутствующего = %v, хочу NotFoundError", err)
+	}
+}
+
+// TestCommitWithAccessDeniedIsUnavailable — сбой PutObject при фиксации
+// (код AccessDenied) — недоступность хранилища (сессия 60).
+func TestCommitWithAccessDeniedIsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	s := newFakeStorage(t, &fakeS3{s3Err: minio.AccessDenied})
+	w, err := s.Put(ctx, "cache/y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	err = w.Commit(ctx)
+	var un *domain.UnavailableError
+	if !errors.As(err, &un) {
+		t.Fatalf("Commit при AccessDenied = %v, хочу UnavailableError", err)
+	}
 }

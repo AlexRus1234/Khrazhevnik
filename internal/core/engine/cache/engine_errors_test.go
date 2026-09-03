@@ -88,6 +88,87 @@ type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, errors.New("обрыв соединения") }
 
+// glitchStorage роняет следующие n вызовов Get/Stat заданной ошибкой:
+// сбойный HIT деградирует в MISS с refetch'ом (resilience, сессия 60).
+type glitchStorage struct {
+	*testutil.FakeStorage
+	mu   sync.Mutex
+	left int
+	err  error
+}
+
+func (s *glitchStorage) take() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.left > 0 {
+		s.left--
+		return true
+	}
+	return false
+}
+
+func (s *glitchStorage) Get(ctx context.Context, key string) (port.Object, error) {
+	if s.take() {
+		return port.Object{}, s.err
+	}
+	return s.FakeStorage.Get(ctx, key)
+}
+
+func (s *glitchStorage) Stat(ctx context.Context, key string) (port.Meta, error) {
+	if s.take() {
+		return port.Meta{}, s.err
+	}
+	return s.FakeStorage.Stat(ctx, key)
+}
+
+// unavailStorageWith — хранилище с отказом write-пути в заданной точке:
+// классифицированный UnavailableError (что теперь отдают fs/s3 на сбое
+// носителя, сессия 60). Чтение живёт.
+type unavailPoint string
+
+const (
+	unavailAtPut    unavailPoint = "put"
+	unavailAtWrite  unavailPoint = "write"
+	unavailAtCommit unavailPoint = "commit"
+)
+
+type unavailWriter struct{ point unavailPoint }
+
+func storageUnavailable() error {
+	return &domain.UnavailableError{What: "хранилище", Reason: "сбой носителя"}
+}
+
+func (w *unavailWriter) Write(p []byte) (int, error) {
+	if w.point == unavailAtWrite {
+		return 0, storageUnavailable()
+	}
+	return len(p), nil
+}
+
+func (w *unavailWriter) Commit(context.Context) error {
+	if w.point == unavailAtCommit {
+		return storageUnavailable()
+	}
+	return nil
+}
+
+func (*unavailWriter) Abort(context.Context) error { return nil }
+
+type unavailWriteStorage struct {
+	*testutil.FakeStorage
+	point unavailPoint
+}
+
+func (s unavailWriteStorage) Put(ctx context.Context, key string) (port.Writer, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.point == unavailAtPut {
+		return nil, storageUnavailable()
+	}
+	return &unavailWriter{point: s.point}, nil
+}
+
 // newEnvWith — окружение с подменёнными зависимостями.
 func newEnvWith(t *testing.T, cfg Config, h http.HandlerFunc, storage port.Storage, index port.ObjectIndex) *testEnv {
 	t.Helper()
@@ -330,6 +411,58 @@ func TestStorageFailures(t *testing.T) {
 			t.Fatalf("после падения Commit в хранилище %d объектов", objects)
 		}
 	})
+}
+
+// TestStorageWriteUnavailablePassThrough — write-путь (сессия 60):
+// классифицированный адаптером сбой носителя проходит сквозь движок без
+// заворота в UpstreamError — 503 «наш инстанс», а не 502 «виноват
+// upstream».
+func TestStorageWriteUnavailablePassThrough(t *testing.T) {
+	cases := []struct {
+		name  string
+		point unavailPoint
+	}{
+		{"Put отказал", unavailAtPut},
+		{"Write отказал", unavailAtWrite},
+		{"Commit отказал", unavailAtCommit},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			base := testutil.NewFakeStorage(testutil.NewManualClock(testStart))
+			env := newEnvWith(t, defaultConfig(), fixedHandler("x", "text/plain"), unavailWriteStorage{base, c.point}, nil)
+			_, _, err := fetch(t, env.engine, env.eco, "/t/pkg/a.deb")
+			var un *domain.UnavailableError
+			if !errors.As(err, &un) {
+				t.Fatalf("ошибка = %v, хочу UnavailableError", err)
+			}
+			var up *domain.UpstreamError
+			if errors.As(err, &up) {
+				t.Fatalf("сбой носителя замаскирован под upstream: %v", err)
+			}
+		})
+	}
+}
+
+// TestHITDegradesToMissOnStorageGlitch — сбой Get/Stat на тёплом кеше
+// деградирует в MISS: refetch с upstream возвращает объект клиенту
+// (resilience не сломана, сессия 60), а не обрывает раздачу.
+func TestHITDegradesToMissOnStorageGlitch(t *testing.T) {
+	base := testutil.NewFakeStorage(testutil.NewManualClock(testStart))
+	env := newEnvWith(t, defaultConfig(), fixedHandler("x", "text/plain"), base, nil)
+	if _, status, err := fetch(t, env.engine, env.eco, "/t/pkg/a.deb"); err != nil || status != "MISS" {
+		t.Fatalf("прогрев = %s %v", status, err)
+	}
+	env.engine.storage = &glitchStorage{
+		FakeStorage: base, left: 2,
+		err: &domain.UnavailableError{What: "хранилище", Reason: "сбой носителя"},
+	}
+	body, status, err := fetch(t, env.engine, env.eco, "/t/pkg/a.deb")
+	if err != nil || body != "x" || status != "MISS" {
+		t.Fatalf("после сбоя HIT = %q %s %v", body, status, err)
+	}
+	if got := env.up.count("/pkg/a.deb"); got != 2 {
+		t.Fatalf("upstream получил %d запросов, хочу 2 (прогрев + refetch)", got)
+	}
 }
 
 func TestNegativeDisabledByTTL(t *testing.T) {

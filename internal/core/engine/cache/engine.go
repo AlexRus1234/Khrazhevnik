@@ -322,6 +322,10 @@ func (e *Engine) fetchImmutable(ctx context.Context, target port.Target, class d
 	if err := e.negativeError(target.StorageKey); err != nil {
 		return port.Object{}, "", err
 	}
+	// resilience: refetch при сбойном HIT — сбой чтения кеша (в т.ч.
+	// недоступное хранилище) деградирует в MISS; лежащий целиком носитель
+	// вернёт UnavailableError с write-пути fetch'а (503), а не 503 на
+	// каждом чтении (сессия 60).
 	if obj, err := e.cached(ctx, target.StorageKey); err == nil {
 		m.Hits.Add(1)
 		return obj, statusHit, nil
@@ -354,6 +358,9 @@ type mutableResult struct {
 func (e *Engine) fetchMutable(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache) (port.Object, string, error) {
 	indexed, indexErr := e.index.ObjectMeta(ctx, target.StorageKey)
 	if indexErr == nil && !indexed.Expired(e.clock.Now()) {
+		// resilience: refetch при сбойном HIT — как в fetchImmutable
+		// (сессия 60): сбой чтения кеша деградирует в ревалидацию,
+		// а не обрывает раздачу.
 		if obj, err := e.cachedAt(ctx, indexed); err == nil {
 			m.Hits.Add(1)
 			return obj, statusHit, nil
@@ -662,6 +669,13 @@ func (e *Engine) copyBody(ctx context.Context, w port.Writer, body io.Reader, le
 	}
 	n, err := io.Copy(dst, src)
 	if err != nil {
+		// 502 = только upstream, 503 = наш носитель: классифицированную
+		// адаптером недоступность хранилища (сбой записи тела) не
+		// заворачиваем в UpstreamError (сессия 60).
+		var un *domain.UnavailableError
+		if errors.As(err, &un) {
+			return n, err
+		}
 		return n, &domain.UpstreamError{URL: url, Err: err}
 	}
 	if e.cfg.MaxObjectSize > 0 && n > e.cfg.MaxObjectSize {

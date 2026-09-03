@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"testing"
 
 	"khrazhevnik/internal/contract"
@@ -110,6 +111,12 @@ func TestCommitMkdirFailure(t *testing.T) {
 	if errors.As(err, &ike) {
 		t.Fatalf("ошибка Commit не должна быть InvalidKeyError: %v", err)
 	}
+	// Сбой фиксации — недоступность хранилища (write-путь, сессия 60):
+	// не upstream-класс и не сырая OS-ошибка.
+	var un *domain.UnavailableError
+	if !errors.As(err, &un) {
+		t.Fatalf("ошибка Commit поверх файла = %v, хочу UnavailableError", err)
+	}
 	// Ошибка фиксации после done не должна течь tmp до рестарта:
 	// Abort уже заблокирован, чистит сам Commit (сессия 44).
 	entries, err := os.ReadDir(filepath.Join(st.root, tmpDir))
@@ -143,6 +150,12 @@ func TestMapPathErrorClasses(t *testing.T) {
 	if err := mapPathError(enoent, "cache/x"); !errors.As(err, &nf) || nf.Key != "cache/x" {
 		t.Fatalf("ENOENT → хочу NotFoundError, получено %v", err)
 	}
+	// ENOTDIR (компонента пути — файл) на read-пути — тоже «объекта нет»
+	// (сессия 60, LOW L2): семантически 404, а не 503.
+	enotdir := &fs.PathError{Op: "lstat", Path: "pool", Err: syscall.ENOTDIR}
+	if err := mapPathError(enotdir, "pool/x"); !errors.As(err, &nf) || nf.Key != "pool/x" {
+		t.Fatalf("ENOTDIR на read-пути → хочу NotFoundError, получено %v", err)
+	}
 	var un *domain.UnavailableError
 	eio := &fs.PathError{Op: "read", Path: "x", Err: errors.New("input/output error")}
 	err := mapPathError(eio, "cache/x")
@@ -154,6 +167,48 @@ func TestMapPathErrorClasses(t *testing.T) {
 	}
 	if err := mapPathError(errors.New("без PathError"), "cache/x"); errors.As(err, &un) {
 		t.Fatal("ошибка без PathError не должна превращаться в UnavailableError")
+	}
+}
+
+// TestMapWriteErrorClasses — write-путь (сессия 60): любая PathError/
+// LinkError — UnavailableError. «Нет файла» на записи — не NotFound:
+// объект ещё не существует, а ENOENT при создании tmp/ — пропавший
+// каталог носителя, тоже сбой.
+func TestMapWriteErrorClasses(t *testing.T) {
+	var un *domain.UnavailableError
+	var nf *domain.NotFoundError
+	eio := &fs.PathError{Op: "write", Path: "x", Err: errors.New("input/output error")}
+	if err := mapWriteError(eio); !errors.As(err, &un) || !errors.Is(err, eio) {
+		t.Fatalf("EIO → хочу UnavailableError с причиной, получено %v", err)
+	}
+	enoent := &fs.PathError{Op: "create", Path: "tmp/u", Err: os.ErrNotExist}
+	if err := mapWriteError(enoent); !errors.As(err, &un) {
+		t.Fatalf("ENOENT на записи → хочу UnavailableError, получено %v", err)
+	}
+	lnk := &os.LinkError{Op: "rename", Old: "a", New: "b", Err: errors.New("cross-device link")}
+	if err := mapWriteError(lnk); !errors.As(err, &un) {
+		t.Fatalf("LinkError → хочу UnavailableError, получено %v", err)
+	}
+	if err := mapWriteError(errors.New("не носитель")); errors.As(err, &un) || errors.As(err, &nf) {
+		t.Fatal("ошибка без PathError/LinkError не должна переклассифицироваться")
+	}
+}
+
+// TestGetUnderFileIsNotFound — «компонента пути — файл» на read-пути
+// даёт 404, не 503 (сессия 60, LOW L2): объект-файл «pool», ключ
+// «pool/x» — доменный контракт NotFoundError (реализация errno не
+// ассертится — переносимость, правило 10).
+func TestGetUnderFileIsNotFound(t *testing.T) {
+	ctx := context.Background()
+	st := newTest(t)
+	putCommit(t, st, "pool", "файл")
+	_, err := st.Get(ctx, "pool/x")
+	var nf *domain.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("Get под файлом = %v, хочу NotFoundError", err)
+	}
+	if _, err := st.Stat(ctx, "pool/x"); !errors.As(err, &nf) {
+		t.Fatalf("Stat под файлом = %v, хочу NotFoundError", err)
 	}
 }
 

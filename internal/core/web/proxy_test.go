@@ -84,6 +84,17 @@ func (unavailableStorage) Put(context.Context, string) (port.Writer, error) {
 	return nil, unavailable()
 }
 
+// writeFailStorage — хранилище с живым чтением и отказом записи:
+// классифицированный UnavailableError (что теперь отдают fs/s3-адаптеры
+// на сбое носителя, сессия 60).
+type writeFailStorage struct {
+	*testutil.FakeStorage
+}
+
+func (writeFailStorage) Put(context.Context, string) (port.Writer, error) {
+	return nil, unavailable()
+}
+
 func TestProxyUnknownEcosystem(t *testing.T) {
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 	if rec := get(t, h, "/nosuch/pkg/a.deb"); rec.Code != http.StatusNotFound {
@@ -179,6 +190,20 @@ func TestProxyErrorCodes(t *testing.T) {
 		t.Cleanup(up.Close)
 		clock := testutil.NewManualClock(time.Unix(0, 0))
 		engine := cacheengine.New(unavailableStorage{}, testutil.NewFakeObjectIndex(), up.Client(), clock, cacheengine.Config{}, nil)
+		eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL}
+		h := BuildPublicRouter(Deps{Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}})
+		if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("код = %d, хочу 503", rec.Code)
+		}
+	})
+	t.Run("сбой носителя на write-пути (MISS-store) → 503", func(t *testing.T) {
+		// Полный путь записи (сессия 60): Put хранилища отказывает
+		// классифицированной недоступностью при качании MISS — клиент
+		// получает 503 «наш инстанс», а не 502 «виноват upstream».
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
+		t.Cleanup(up.Close)
+		clock := testutil.NewManualClock(time.Unix(0, 0))
+		engine := cacheengine.New(writeFailStorage{testutil.NewFakeStorage(clock)}, testutil.NewFakeObjectIndex(), up.Client(), clock, cacheengine.Config{}, nil)
 		eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL}
 		h := BuildPublicRouter(Deps{Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}})
 		if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusServiceUnavailable {
