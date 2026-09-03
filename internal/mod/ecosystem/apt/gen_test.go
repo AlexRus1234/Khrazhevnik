@@ -335,6 +335,54 @@ func buildDebWithControlGz(t *testing.T, controlGz []byte) []byte {
 	return ar.Bytes()
 }
 
+// controlBombZstd — то же, что controlBombGz, но компрессия zstd
+// (LOW L7, верификация 2026-09-03: zstd-ветка decompressControl без
+// прямого бомба-теста). Повторяющаяся строка жмётся в килобайты,
+// разжатое тело больше капа.
+func controlBombZstd(t *testing.T, huge int64) []byte {
+	t.Helper()
+	var raw bytes.Buffer
+	enc, err := zstd.NewWriter(&raw)
+	if err != nil {
+		t.Fatalf("zstd.NewWriter: %v", err)
+	}
+	tw := tar.NewWriter(enc)
+	if err := tw.WriteHeader(&tar.Header{Name: "./control", Mode: 0o644, Size: huge, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatalf("tw.WriteHeader: %v", err)
+	}
+	var written int64
+	line := []byte("A0: x\n")
+	for written+int64(len(line)) <= huge {
+		if _, err := tw.Write(line); err != nil {
+			t.Fatalf("tw.Write: %v", err)
+		}
+		written += int64(len(line))
+	}
+	if rest := huge - written; rest > 0 {
+		if _, err := tw.Write(bytes.Repeat([]byte{' '}, int(rest))); err != nil {
+			t.Fatalf("tw.Write rest: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tw.Close: %v", err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatalf("enc.Close: %v", err)
+	}
+	return raw.Bytes()
+}
+
+// buildDebWithControlZstd собирает .deb с заданным control.tar.zst-телом.
+func buildDebWithControlZstd(t *testing.T, controlZst []byte) []byte {
+	t.Helper()
+	var ar bytes.Buffer
+	ar.WriteString("!<arch>\n")
+	writeArMember(&ar, "debian-binary", []byte("2.0\n"))
+	writeArMember(&ar, "control.tar.zst", controlZst)
+	writeArMember(&ar, "data.tar.gz", []byte("fake"))
+	return ar.Bytes()
+}
+
 // TestReadControlDecompressBomb — верификация 2026-09-02: control-бомба
 // (разжатых > maxDecompressedControl) — ErrDecompressTooLarge сразу за
 // лимитом, а не OOM. Счётчик лимитера доказывает отказ в процессе
@@ -370,6 +418,65 @@ func TestGenerateIndexesControlBomb(t *testing.T) {
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
 	deb := buildDebWithControlGz(t, controlBombGz(t, maxDecompressedControl+(1<<20)))
+	key := port.RepoPrefix(repo) + "/pool/main/b/bomb.deb"
+	w, err := storage.Put(context.Background(), key)
+	if err != nil {
+		t.Fatalf("storage.Put %s: %v", key, err)
+	}
+	if _, err := w.Write(deb); err != nil {
+		t.Fatalf("w.Write: %v", err)
+	}
+	if err := w.Commit(context.Background()); err != nil {
+		t.Fatalf("w.Commit: %v", err)
+	}
+
+	err = (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil)
+	if !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
+	}
+	for meta, err := range storage.List(context.Background(), port.RepoPrefix(repo)+"/dists") {
+		if err != nil {
+			t.Fatalf("List dists: %v", err)
+		}
+		t.Errorf("индекс не должен быть закоммичен: %s", meta.Key)
+	}
+}
+
+// TestGenerateIndexesZstdControlBomb — LOW L7 (верификация 2026-09-03):
+// zstd-ветка decompressControl покрыта бомба-тестом напрямую (раньше
+// кап был структурным — общая обёртка). Валидный tar.zst с control'ом,
+// разжатое тело которого больше капа, отказывает ErrDecompressTooLarge.
+// Контрактный ассерт счётчика — «бомба не дочитана»: zstd-декодер
+// отдаёт блоками с упреждением (замер: ~0.9 МиБ за капом на 8-ядерной
+// dev-машине, зависит от числа ядер), поэтому точный «кап+δ» — только
+// в gz-тесте, где gzip синхронен. Плюс сквозной путь reindex: задача
+// failed, индексы не закоммичены.
+func TestGenerateIndexesZstdControlBomb(t *testing.T) {
+	// Бомба 2× капа: упреждение декодера (MiB-класс) на порядки меньше
+	// запаса, отказ обязан наступить задолго до конца тела.
+	const huge = 2 * maxDecompressedControl
+	dr, err := decompressControl(bytes.NewReader(controlBombZstd(t, huge)))
+	if err != nil {
+		t.Fatalf("decompressControl: %v", err)
+	}
+	lr, ok := dr.(*limitedReadCloser)
+	if !ok {
+		t.Fatalf("decompressControl вернул %T, хочу *limitedReadCloser", dr)
+	}
+	if _, err := io.ReadAll(dr); !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидали ErrDecompressTooLarge на чтении, получили %v", err)
+	}
+	if lr.n >= huge {
+		t.Errorf("разжато %d из %d байт — отказ обязан наступить до конца бомбы", lr.n, huge)
+	}
+	if err := dr.Close(); err != nil {
+		t.Fatalf("dr.Close: %v", err)
+	}
+
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
+	deb := buildDebWithControlZstd(t, controlBombZstd(t, huge))
 	key := port.RepoPrefix(repo) + "/pool/main/b/bomb.deb"
 	w, err := storage.Put(context.Background(), key)
 	if err != nil {

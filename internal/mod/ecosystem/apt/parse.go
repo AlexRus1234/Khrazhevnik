@@ -16,8 +16,8 @@
 
 // Stanza-парсер RFC822-style (deb822): Packages/Sources/Release.
 // Потоковый: не грузит файл целиком, отдаёт записи по одной через
-// iter.Seq2. Бесконечный ввод ограничен потолками числа записей и
-// размера поля — парсер не паникует и не зацикливается на
+// iter.Seq2. Бесконечный ввод ограничен потолками числа записей,
+// полей записи и размера поля — парсер не паникует и не зацикливается на
 // противоречивом/битом вводе (фаззинг — сессия 07). Без I/O: принимает
 // io.Reader, стримит через bufio; переиспользуется зеркалом (сессия
 // 11) и фаззингом.
@@ -40,6 +40,15 @@ const (
 	maxStanzas    = 1 << 20 // 1 млн записей
 	maxFieldValue = 1 << 20 // 1 МБ на одно значение
 	maxFieldName  = 1 << 14 // 16 КБ на имя поля (реальные — десятки байт)
+
+	// maxFieldsPerStanza — потолок уникальных полей одной записи
+	// (верификация 2026-09-03): поток уникальных коротких полей без
+	// пустой строки амплифицировал RAM ~10–20× от байтового капа
+	// вызывающего (1 ГиБ Packages на mirror-sync → multi-ГиБ карты,
+	// OOM-класс на homelab-железе). Реальные stanza невелики:
+	// Packages ~30 полей, Release ~15, control ~25 — 1024 на порядок
+	// выше честного ввода и убивает амплификацию.
+	maxFieldsPerStanza = 1 << 10
 )
 
 // Ошибки парсера — типизированные, чтобы фаззинг мог отличить
@@ -108,7 +117,7 @@ func (s *Stanza) Equal(o *Stanza) bool {
 // разделитель записей — пустая строка. CRLF срезается; невалидный
 // UTF-8 сохраняется в значении как raw bytes.
 func Stanzas(r io.Reader) iter.Seq2[*Stanza, error] {
-	return stanzas(r, limits{stanzas: maxStanzas, field: maxFieldValue, name: maxFieldName})
+	return stanzas(r, limits{stanzas: maxStanzas, field: maxFieldValue, name: maxFieldName, fields: maxFieldsPerStanza})
 }
 
 // limits — потолки парсера. Вынесены в структуру, чтобы тесты
@@ -118,6 +127,7 @@ type limits struct {
 	stanzas int
 	field   int
 	name    int
+	fields  int // уникальных полей на одну запись
 }
 
 func stanzas(r io.Reader, lim limits) iter.Seq2[*Stanza, error] {
@@ -126,25 +136,11 @@ func stanzas(r io.Reader, lim limits) iter.Seq2[*Stanza, error] {
 		cur := newStanza()
 		var lastName string
 		count := 0
-		// Суммарный потолок байт на вызов (верификация 2026-09-02):
-		// число записей и размер поля ограничены по отдельности, но
-		// число полей в записи — нет, и бесконечные «A<n>: x» без
-		// пустой строки росли бы картой без потолка. Планка
-		// field*stanzas — верхняя граница легитимного ввода (каждая
-		// запись не длиннее field, записей не больше stanzas); после
-		// неё ErrFieldTooLong, а не неограниченный рост карты.
-		total := 0
-		maxTotal := lim.field * lim.stanzas
 		for {
 			line, err := readLine(br, lim.field+lim.name+2)
 			eof := errors.Is(err, io.EOF)
 			if err != nil && !eof {
 				_ = yield(nil, err)
-				return
-			}
-			total += len(line) + 1
-			if total > maxTotal {
-				_ = yield(nil, ErrFieldTooLong)
 				return
 			}
 			cont, stop := processLine(line, cur, &lastName, lim)
@@ -277,6 +273,15 @@ func processLine(line string, cur *Stanza, lastName *string, lim limits) (bool, 
 		return false, ErrFieldTooLong
 	}
 	cur.Set(name, val)
+	// Потолок уникальных полей записи — после Set: перезапись
+	// существующего поля карту не растит и лимитом не считается;
+	// превышение — та же fail-closed семантика ErrFieldTooLong, что
+	// у длины значения. Каждый компонент роста карты (строка/поле/
+	// поля записи/записи) ограничен явно, суммарный байтовый потолок
+	// не нужен (верификация 2026-09-03).
+	if cur.Len() > lim.fields {
+		return false, ErrFieldTooLong
+	}
 	*lastName = name
 	return false, nil
 }

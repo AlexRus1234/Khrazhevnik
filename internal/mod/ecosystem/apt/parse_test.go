@@ -19,6 +19,7 @@ package apt
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -237,19 +238,17 @@ func TestStanzasFieldTooLong(t *testing.T) {
 	}
 }
 
-func TestStanzasTotalBytesCap(t *testing.T) {
-	// верификация 2026-09-02: число полей в записи по отдельности не
-	// ограничено — бесконечные «A<n>: x» без пустой строки росли бы
-	// картой неограниченно. Суммарный потолок field*stanzas (здесь
-	// 8*4=32 байта) — ErrFieldTooLong на превышении. Маленькие лимиты,
-	// как в TestStanzasTooMany: реальный потолок 1 ТиБ в тесте не
-	// набрать и не нужно.
+func TestStanzasTooManyFields(t *testing.T) {
+	// M4-Р4 (верификация 2026-09-03): число УНИКАЛЬНЫХ полей записи
+	// ограничено — поток разных коротких полей без пустой строки
+	// отказывает на (fields+1)-м, а не растит карту до байтового капа
+	// вызывающего. Маленькие лимиты, как в TestStanzasTooMany.
 	var b strings.Builder
 	for i := 0; i < 20; i++ {
-		b.WriteString("F0: vvvv\n")
+		fmt.Fprintf(&b, "F%d: vvvv\n", i)
 	}
 	var lastErr error
-	for _, err := range stanzas(strings.NewReader(b.String()), limits{stanzas: 4, field: 8, name: 8}) {
+	for _, err := range stanzas(strings.NewReader(b.String()), limits{stanzas: 4, field: 8, name: 8, fields: 4}) {
 		if err != nil {
 			lastErr = err
 			break
@@ -257,6 +256,47 @@ func TestStanzasTotalBytesCap(t *testing.T) {
 	}
 	if !errors.Is(lastErr, ErrFieldTooLong) {
 		t.Fatalf("ожидалась ErrFieldTooLong, получено %v", lastErr)
+	}
+
+	// Перезапись одного и того же поля карту не растит — лимит не
+	// срабатывает, в конце отдаётся одна запись с одним полем.
+	var repeated strings.Builder
+	for i := 0; i < 20; i++ {
+		repeated.WriteString("F0: vvvv\n")
+	}
+	var got []*Stanza
+	var lastErr2 error
+	for s, err := range stanzas(strings.NewReader(repeated.String()), limits{stanzas: 4, field: 8, name: 8, fields: 4}) {
+		if err != nil {
+			lastErr2 = err
+			break
+		}
+		got = append(got, s)
+	}
+	if lastErr2 != nil || len(got) != 1 || got[0].Len() != 1 {
+		t.Fatalf("перезапись поля не должна отказывать: записей=%d err=%v", len(got), lastErr2)
+	}
+}
+
+// TestStanzasMillionUniqueFields — вектор верификации 2026-09-03
+// (амплификация карты): сотни тысяч уникальных коротких полей без
+// пустой строки. Отказ на (maxFieldsPerStanza+1)-м поле; счётчик
+// ридера доказывает bounded-память — из входа взято ~тысячу строк,
+// а не всё (теперь фантомный total = field×stanzas = 1 ТиБ удалён).
+func TestStanzasMillionUniqueFields(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 100_000; i++ {
+		fmt.Fprintf(&b, "A%d: x\n", i)
+	}
+	cr := &countingReader{r: strings.NewReader(b.String())}
+	_, err := readAllErr(t, cr)
+	if !errors.Is(err, ErrFieldTooLong) {
+		t.Fatalf("ожидалась ErrFieldTooLong, получено %v", err)
+	}
+	// ~1025 строк × ≤10 байт + буфер bufio; вход ~800 КиБ — отказ
+	// обязан наступить на порядки раньше полного прочтения.
+	if want := int64(maxFieldsPerStanza+1)*10 + 8192; int64(cr.n) > want {
+		t.Errorf("прочитано %d байт, хочу не более ~%d (1025 полей + буфер bufio)", cr.n, want)
 	}
 }
 
@@ -271,7 +311,7 @@ func TestStanzasTooMany(t *testing.T) {
 	}
 	var got []*Stanza
 	var lastErr error
-	for s, err := range stanzas(strings.NewReader(b.String()), limits{stanzas: lim, field: maxFieldValue, name: maxFieldName}) {
+	for s, err := range stanzas(strings.NewReader(b.String()), limits{stanzas: lim, field: maxFieldValue, name: maxFieldName, fields: maxFieldsPerStanza}) {
 		if err != nil {
 			lastErr = err
 			break

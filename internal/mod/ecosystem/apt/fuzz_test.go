@@ -62,7 +62,7 @@ func FuzzParseStanzas(f *testing.F) {
 	// чтобы за отведённое время покрыть больше входов, а не вязнуть в
 	// одном гигантском массиве. Локальная переменная, а не package var:
 	// фазз-инвариант к размеру, а производство гоняет Stanzas (дефолт).
-	lim := limits{stanzas: 1024, field: 1 << 14, name: 256}
+	lim := limits{stanzas: 1024, field: 1 << 14, name: 256, fields: 256}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		first, firstErr := collect(stanzas(bytes.NewReader(data), lim))
