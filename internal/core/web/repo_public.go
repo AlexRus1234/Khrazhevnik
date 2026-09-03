@@ -114,7 +114,7 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 
 // isImmutableRepoObject решает, выставить ли Cache-Control: immutable.
 // Пакеты всех экосистем content-addressed (apt pool/* по имя+версия;
-// rpm-md .rpm/.drpm/.src.rpm; pacman .pkg.tar.*; apk .apk; nix nar/*) —
+// rpm-md .rpm/.drpm/.src.rpm; pacman .pkg.tar.{zst,xz,gz}; apk .apk; nix nar/*) —
 // генераторы всех пяти экосистем с сессии 16, клиентам незачем
 // реиспейсить их на каждый проход (аудит 2026-08-30). Индексы
 // (dists/*, repodata/, *.db, APKINDEX.tar.gz) — перегенерируются,
@@ -130,7 +130,14 @@ func isImmutableRepoObject(ecosystem, path string) bool {
 	case "rpm-md":
 		return strings.HasSuffix(path, ".rpm") || strings.HasSuffix(path, ".drpm")
 	case "pacman":
-		return strings.Contains(path, ".pkg.tar.")
+		// Суффиксы, не Contains(".pkg.tar."): slug репо разрешает
+		// точки, репо «x.pkg.tar.y» давало генерируемый ключ
+		// x.pkg.tar.y.db, матчившийся как пакет (immutable на
+		// мутируемый .db — протухшие списки после reindex;
+		// сессия 62).
+		return strings.HasSuffix(path, ".pkg.tar.zst") ||
+			strings.HasSuffix(path, ".pkg.tar.xz") ||
+			strings.HasSuffix(path, ".pkg.tar.gz")
 	case "apk":
 		return strings.HasSuffix(path, ".apk")
 	case "nix":

@@ -85,7 +85,7 @@ func TestParseNarinfoFirstFieldWins(t *testing.T) {
 	// дубль поля — первое значение выигрывает (дубли игнорируются).
 	n, err := ParseNarinfo(bytes.NewReader([]byte(
 		"URL: nar/" + narFileHash52 + ".nar.xz\n" +
-			"URL: nar/ffffffffffffffffffffffffffffffff.nar.xz\n")))
+			"URL: nar/" + narFileHash52[:51] + "y.nar.xz\n")))
 	if err != nil {
 		t.Fatalf("ParseNarinfo: %v", err)
 	}

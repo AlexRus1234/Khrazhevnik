@@ -196,9 +196,11 @@ func TestPublicRepoCacheControlImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Алфавит nix-base32 (без e/o/t/u): hash32 — хеш store path
-	// narinfo, fileHash52 — хеш файла nar-архива (сессия 47).
+	// narinfo, fileHash52 — хеш файла nar-архива (сессия 47);
+	// литерал — по образцу narFileHash52 nix-парсера
+	// (mod/ecosystem/nix/parse_test.go), 52 символа по контракту.
 	const hash32 = "0123456789abcdfghijklmnpqrsvwxyz"
-	const fileHash52 = "0123456789abcdfghijklmnpqrsvwxyz0123456789abcd"
+	const fileHash52 = "x0vm1mkfnqrq3hxjcp2wsz5l8h4cgd9yx0vm1mkfnqrq3hxjcp2w"
 	uploadRepoObject(t, env, nixRepo.ID, hash32+".narinfo", []byte("narinfo"))
 	uploadRepoObject(t, env, nixRepo.ID, "nar/"+fileHash52+".nar.xz", []byte("nar"))
 
@@ -210,6 +212,36 @@ func TestPublicRepoCacheControlImmutable(t *testing.T) {
 		"/repo/alice/dists/stable/Release":             "",
 		"/repo/nixcache/" + hash32 + ".narinfo":        "no-cache",
 		"/repo/nixcache/nar/" + fileHash52 + ".nar.xz": immutable,
+	} {
+		rec := getPublic(t, env, path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, хочу 200", path, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != want {
+			t.Errorf("Cache-Control %s = %q, хочу %q", path, got, want)
+		}
+	}
+}
+
+// TestPublicRepoPacmanSuffixImmutable — суффиксный pacman-предикат
+// (сессия 62): прежний Contains(".pkg.tar.") матчил slug репо — репо
+// с точками в имени «x.pkg.tar.y» давало генерируемый ключ
+// x.pkg.tar.y.db, отдающийся immutable (годовой пин мутируемого
+// индекса). Теперь .db не иммутабелен ни при каком имени репо, а
+// реальный пакет .pkg.tar.zst — иммутабелен.
+func TestPublicRepoPacmanSuffixImmutable(t *testing.T) {
+	env := newRepoEnv(t)
+	repo, err := env.repos.CreateRepo(t.Context(), domain.Repo{Name: "x.pkg.tar.y", OwnerID: 2, Ecosystem: "pacman", CreatedAt: env.clock.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadRepoObject(t, env, repo.ID, "x.pkg.tar.y.db", []byte("db"))
+	uploadRepoObject(t, env, repo.ID, "pkg-any.pkg.tar.zst", []byte("pkg"))
+
+	const immutable = "public, max-age=31536000, immutable"
+	for path, want := range map[string]string{
+		"/repo/x.pkg.tar.y/x.pkg.tar.y.db":      "",
+		"/repo/x.pkg.tar.y/pkg-any.pkg.tar.zst": immutable,
 	} {
 		rec := getPublic(t, env, path)
 		if rec.Code != http.StatusOK {

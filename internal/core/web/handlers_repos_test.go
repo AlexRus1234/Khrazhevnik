@@ -561,7 +561,9 @@ func (s *grantFKConflictRepoStore) Grant(_ context.Context, _ domain.Perm) error
 }
 
 // TestRepoGrantPermFKConflict404 — TOCTOU-хвост сессии 49: FK-конфликт
-// после пред-проверки → 404 (не ложный идемпотентный 204).
+// после пред-проверки → 404 (не ложный идемпотентный 204). Текст —
+// без виновного (сессия 62): FK стоит и на repo_id, удалён мог быть
+// и репозиторий, хендлер этого не знает.
 func TestRepoGrantPermFKConflict404(t *testing.T) {
 	env := newRepoEnv(t)
 	fk := &grantFKConflictRepoStore{FakeRepoStore: env.repos}
@@ -586,6 +588,18 @@ func TestRepoGrantPermFKConflict404(t *testing.T) {
 	}
 	if fk.grants != 1 {
 		t.Errorf("Grant вызван %d раз, want 1 — конфликт дошёл до INSERT", fk.grants)
+	}
+	// Тело API несёт только not_found-код (i18n на фронте), честный
+	// текст гонки виден оператору в трейле — detail записи репо.
+	entries, err := env.audit.AuditEntries(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Action == "repo.perm.grant" && e.Result == "404" &&
+			!strings.Contains(e.Detail, "пользователь или репозиторий") {
+			t.Errorf("detail FK-404 = %q, хочу текст без виновного («пользователь или репозиторий»)", e.Detail)
+		}
 	}
 }
 

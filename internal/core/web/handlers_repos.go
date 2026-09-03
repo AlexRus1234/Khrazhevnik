@@ -300,7 +300,13 @@ func handleGrantPerm(d Deps) http.HandlerFunc {
 					w.WriteHeader(http.StatusNoContent)
 					return
 				}
-				writeErr(w, &domain.NotFoundError{What: "пользователь", Key: strconv.FormatInt(in.UserID, 10)})
+				// Текст не называет виновного: FK стоит и на user_id,
+				// и на repo_id (migrations 0001), хендлер не знает,
+				// какая из двух сущностей исчезла (сессия 62). Тело
+				// API несёт только not_found-код (i18n на фронте),
+				// честный текст — в detail аудита для оператора.
+				*r = *r.WithContext(WithAuditDetail(r.Context(), "пользователь или репозиторий исчез во время выдачи права (гонка удаления)"))
+				writeErr(w, &domain.NotFoundError{What: "пользователь или репозиторий исчез во время выдачи права (гонка удаления)", Key: strconv.FormatInt(in.UserID, 10)})
 				return
 			}
 			writeErr(w, err)
