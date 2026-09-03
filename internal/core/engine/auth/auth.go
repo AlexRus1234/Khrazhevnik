@@ -50,6 +50,12 @@ const maxRevokedMemory = 10000
 // сброс (потеря троттлинга до следующего touch — не уязвимость).
 const maxTouchMemory = 10000
 
+// loginAuditTimeout — потолок записи auth.login: WithoutCancel не
+// наследует ни отмену соединения, ни дедлайны запроса, поэтому свой
+// короткий предел (по образцу web/audit.go; вынести константу в общее
+// место нельзя — domain без time).
+const loginAuditTimeout = 5 * time.Second
+
 // Config wires authentication to persistence and deterministic system ports.
 type Config struct {
 	Users  port.UserStore
@@ -265,6 +271,11 @@ func (s *Service) VerifyPassword(ctx context.Context, username, password string)
 
 // Login verifies credentials, issues a session and records the result.
 func (s *Service) Login(ctx context.Context, username, password string) (string, error) {
+	// Записи auth.login не зависят от живости соединения: обрыв на
+	// POST /auth/login (типично для брутфорс-скриптов) рвал request-ctx
+	// вместе с записью — brute-force-детекторы слепли.
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), loginAuditTimeout)
+	defer cancel()
 	u, err := s.VerifyPassword(ctx, username, password)
 	if err != nil {
 		// Причина в аудите различает «не подошли» и «каталог недоступен»:
@@ -274,15 +285,15 @@ func (s *Service) Login(ctx context.Context, username, password string) (string,
 		if errors.As(err, &unavail) {
 			detail = "catalog_unavailable"
 		}
-		s.audit(ctx, username, "auth.login", "user:"+username, domain.AuditError, detail)
+		s.audit(actx, username, "auth.login", "user:"+username, domain.AuditError, detail)
 		return "", err
 	}
 	token, err := s.IssueSession(ctx, u)
 	if err != nil {
-		s.audit(ctx, username, "auth.login", "user:"+username, domain.AuditError, "session_issue")
+		s.audit(actx, username, "auth.login", "user:"+username, domain.AuditError, "session_issue")
 		return "", err
 	}
-	s.audit(ctx, username, "auth.login", "user:"+username, domain.AuditOK, "")
+	s.audit(actx, username, "auth.login", "user:"+username, domain.AuditOK, "")
 	return token, nil
 }
 

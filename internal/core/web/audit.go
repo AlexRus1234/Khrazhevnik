@@ -43,6 +43,12 @@ type auditActionKey struct{}
 // если каталог тормозит (аудит 2026-08-30).
 const auditRecordTimeout = 5 * time.Second
 
+// panicAuditTimeout — сокращённый потолок паник-ветки: запись идёт
+// после смерти хендлера и ждать её некому — баланс «не потерять запись
+// паники» против «не держать соединение» (клиент ждёт 500 от
+// Recoverer'а).
+const panicAuditTimeout = time.Second
+
 // WithAuditDetail кладёт в контекст detail, который audit middleware
 // добавит к автоматической записи. Возвращает новый context.
 func WithAuditDetail(ctx context.Context, detail string) context.Context {
@@ -106,14 +112,14 @@ func AuditMiddleware(log port.AuditLog, clock port.Clock) func(http.Handler) htt
 					// 2026-08-30). re-panic прокидывает стек в Recoverer.
 					if err := recover(); err != nil {
 						rec.status = http.StatusInternalServerError
-						recordAudit(log, clock, r, rec.status)
+						recordAudit(log, clock, r, rec.status, panicAuditTimeout)
 						panic(err)
 					}
 				}
 			}()
 			next.ServeHTTP(rec, r)
 			panicked = false
-			recordAudit(log, clock, r, rec.status)
+			recordAudit(log, clock, r, rec.status, auditRecordTimeout)
 		})
 	}
 }
@@ -147,8 +153,9 @@ func (r *auditRecorder) Unwrap() http.ResponseWriter {
 // WithoutCancel: контекст запроса умирает вместе с соединением, а аудит
 // мутации не должен зависеть от живости клиента — оборванный upload
 // всё равно обязан оставить запись (аудит 2026-08-30). Таймаут — свой
-// короткий, не наследует дедлайны запроса.
-func recordAudit(log port.AuditLog, clock port.Clock, r *http.Request, status int) {
+// короткий (обычный или сокращённый в паник-ветке), не наследует
+// дедлайны запроса.
+func recordAudit(log port.AuditLog, clock port.Clock, r *http.Request, status int, timeout time.Duration) {
 	if log == nil {
 		return
 	}
@@ -180,7 +187,7 @@ func recordAudit(log port.AuditLog, clock port.Clock, r *http.Request, status in
 		Result: auditResultForStatus(status),
 		Detail: detail,
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditRecordTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), timeout)
 	defer cancel()
 	if err := log.Record(ctx, entry); err != nil {
 		// Не ломаем ответ; пишем в slog, чтобы потеря аудита была видна.

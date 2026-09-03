@@ -615,6 +615,34 @@ func TestRepoGrantPermUniqueConflict204(t *testing.T) {
 	}
 }
 
+// TestRepoGrantPermDuplicateAuditAction — повторный грант (идемпотентный
+// дубль-204) пишется в аудит под тем же repo.perm.grant: action
+// ставится до Grant, иначе дубль уходил под fallback create.repos.perms
+// и трейл показывал два имени одной операции.
+func TestRepoGrantPermDuplicateAuditAction(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	for i := 0; i < 2; i++ {
+		rec := callRepo(env, http.MethodPost, "/api/v1/repos/"+itoaRepo(repoID)+"/perms", `{"user_id":3}`, env.jwtAdmin)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("грант #%d = %d, want 204 (тело %s)", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	entries, err := env.audit.AuditEntries(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := 0
+	for _, e := range entries {
+		if e.Action == "repo.perm.grant" {
+			grants++
+		}
+	}
+	if grants != 2 {
+		t.Fatalf("записей repo.perm.grant = %d, хочу 2 — дубль ушёл под fallback-имя", grants)
+	}
+}
+
 // Публичный роутер: раздача объектов репо.
 func TestPublicRepoFile(t *testing.T) {
 	env := newRepoEnv(t)

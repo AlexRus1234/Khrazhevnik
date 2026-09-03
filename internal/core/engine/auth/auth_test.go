@@ -506,6 +506,52 @@ func TestNewRejectsIncompleteConfig(t *testing.T) {
 	}
 }
 
+// ctxAwareAuditLog — фейк, отказавший в записи при мёртвом ctx:
+// имитация честного store (до фикса Login писал в request-ctx —
+// обрыв соединения терял auth.login).
+type ctxAwareAuditLog struct {
+	testutil.FakeAuditLog
+}
+
+func (l *ctxAwareAuditLog) Record(ctx context.Context, e domain.AuditEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return l.FakeAuditLog.Record(ctx, e)
+}
+
+// Обрыв соединения на POST /auth/login до Record (request-ctx мёртв)
+// не должен терять запись auth.login — Login пишет аудит через
+// WithoutCancel + свой таймаут (по образцу web-аудита, сессия 37).
+func TestLoginAuditSurvivesCancelledContext(t *testing.T) {
+	log := &ctxAwareAuditLog{}
+	a, err := New(Config{Users: testutil.NewFakeUserStore(), Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, Audit: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.CreateUser(context.Background(), "alice", "correct", domain.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := a.Login(ctx, "alice", "correct"); err != nil {
+		t.Fatalf("логин с оборванным соединением: %v", err)
+	}
+	entries, _ := log.AuditEntries(context.Background(), 0, 10)
+	found := 0
+	for _, e := range entries {
+		if e.Action == "auth.login" {
+			found++
+			if e.Result != domain.AuditOK {
+				t.Errorf("auth.login result = %q, хочу ok", e.Result)
+			}
+		}
+	}
+	if found != 1 {
+		t.Fatalf("записей auth.login = %d, хочу 1 — обрыв соединения потерял запись", found)
+	}
+}
+
 // Транзиентный сбой каталога на пути аутентификации — UnavailableError
 // (web мапит в 503), отсутствие записи — по-прежнему Forbidden.
 // Проглатывание ошибки БД превращало любой сбой в «неверные учётные

@@ -283,6 +283,11 @@ func handleGrantPerm(d Deps) http.HandlerFunc {
 			writeErr(w, err)
 			return
 		}
+		// Action ставится ДО Grant: идемпотентный дубль-204 (пустой
+		// Reason) пишется под тем же repo.perm.grant, а не под
+		// fallback-именем метода+пути — два имени одной операции
+		// ломали однообразие трейла.
+		*r = *r.WithContext(WithAuditAction(r.Context(), "repo.perm.grant"))
 		err := d.Repos.Grant(r.Context(), domain.Perm{RepoID: id, UserID: in.UserID, CreatedAt: d.clock().Now()})
 		if err != nil {
 			var conf *domain.ConflictError
@@ -301,7 +306,6 @@ func handleGrantPerm(d Deps) http.HandlerFunc {
 			writeErr(w, err)
 			return
 		}
-		*r = *r.WithContext(WithAuditAction(r.Context(), "repo.perm.grant"))
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

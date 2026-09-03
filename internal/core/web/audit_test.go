@@ -233,6 +233,45 @@ func TestAuditMiddlewareRecordsPanic(t *testing.T) {
 	}
 }
 
+// hangingAuditLog — фейк, чей Record держит 5s при живом контексте:
+// имитация висящего каталога (уважающий ctx медленный store).
+type hangingAuditLog struct {
+	testutil.FakeAuditLog
+}
+
+func (h *hangingAuditLog) Record(ctx context.Context, e domain.AuditEntry) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(5 * time.Second):
+		return h.FakeAuditLog.Record(ctx, e)
+	}
+}
+
+// Паника при висящем каталоге: сокращённый паник-таймаут (1s) отвечает
+// клиенту (500 от Recoverer'а) существенно раньше обычного 5s-потолка —
+// после смерти хендлера ждать запись некому.
+func TestAuditPanicRecordTimeoutShort(t *testing.T) {
+	log := &hangingAuditLog{}
+	clock := testutil.NewManualClock(time.Unix(1000, 0))
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	})
+	h := AuditMiddleware(log, clock)(next)
+	start := time.Now()
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("middleware проглотил панику — Recoverer выше не ответит 500")
+			}
+		}()
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/v1/x", nil))
+	}()
+	if elapsed := time.Since(start); elapsed >= auditRecordTimeout {
+		t.Fatalf("паника держала ответ %v — паник-ветка пишет с обычным 5s-потолком", elapsed)
+	}
+}
+
 // TestAuditActorFromRejectedAuth — actor опознан-но-отклонён:
 // WithAuditActor (кладут auth-middleware при 403) виден recordAudit'у
 // и перекрывает остаточный auth-контекст (reject-ветки затирают user

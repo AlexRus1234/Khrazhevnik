@@ -88,12 +88,12 @@ func NewHandler(cache *Cache, registry *prometheus.Registry) *Handler {
 		ecoBytesToCli:     prometheus.NewDesc("khrazhevnik_cache_ecosystem_bytes_to_clients_total", "Bytes to clients per ecosystem.", []string{"ecosystem"}, nil),
 		requestLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "khrazhevnik_request_duration_seconds",
-			Help:    "Public request latency in seconds.",
+			Help:    "Request latency in seconds across both public and admin listeners.",
 			Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10},
 		}, []string{"method", "status"}),
 		objectBytes: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "khrazhevnik_object_bytes",
-			Help:    "Size of objects served to clients.",
+			Help:    "Size of objects served by the cache proxy (repo delivery is not covered).",
 			Buckets: []float64{1 << 10, 1 << 16, 1 << 20, 10 << 20, 100 << 20, 1 << 30},
 		}, []string{"ecosystem"}),
 	}
