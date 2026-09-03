@@ -14,7 +14,10 @@
 # JWT-секрет прокидывается как env через Podman Secret, не в файле.
 
 [Container]
-Image=ghcr.io/alexrus1234/khrazhevnik:v0.1.0
+# CI пушит образ только во внутренний registry (build.yml, oci-job);
+# ghcr.io — не пушится (публичное зеркало — future). Без тега — :latest;
+# при релизе тегируем (RELEASE.md) и пинуем сюда тег.
+Image=git.yadr00.internal/build/khrazhevnik
 ContainerName=khrazhevnik
 PublishPort=29202:29202
 PublishPort=127.0.0.1:30202:30202

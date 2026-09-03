@@ -207,6 +207,7 @@ per-repo `signed=false` — не-цели (KISS). Деградация подп�
 | Метод | Путь                          | Auth | Код | Назначение                          |
 |-------|-------------------------------|------|-----|-------------------------------------|
 | GET   | `/repo/{name}/key.asc`        | —    | 200/404 | Armored публичный ключ инстанса (для `signed-by` в `sources.list`) |
+| GET   | `/repo/{name}/nix-key.asc`    | —    | 200/404 | Публичный nix-ключ, одна строка `name:pubkey-b64` (для `trusted-public-keys`; см. [ecosystems/nix.md](func/ru/ecosystems/nix.md)) |
 
 404 — репо с таким именем не существует **или** подписчик не
 инициализирован: роут `/key.asc` регистрируется только при успешной
@@ -340,7 +341,10 @@ stale_served,negative_hits,upstream_errors}_total`,
 `khrazhevnik_cache_bytes_{from_upstream,to_clients}_total` — глобально
 и по экосистемам (`ecosystem` лейбл, суффикс `_ecosystem_`); две
 гистограммы — `khrazhevnik_request_duration_seconds` (method, status)
-и `khrazhevnik_object_bytes` (ecosystem).
+и `khrazhevnik_object_bytes` (ecosystem); счётчик
+`khrazhevnik_cache_background_panics_total` — паники, recover'нутые
+в фоновых операциях кеша; плюс runtime-коллекторы Go
+(`go_*` — heap/goroutines/GC) и процесса (`process_*` — CPU/fd/uptime).
 
 ### Коды ошибок
 

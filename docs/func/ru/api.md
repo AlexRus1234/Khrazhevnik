@@ -42,7 +42,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 | Метод | Путь                    | Auth | Код    | Назначение                    |
 |-------|-------------------------|------|--------|-------------------------------|
-| GET   | `:29202/healthz`        | —    | 200    | Liveness (`ok`)               |
+| GET   | `/healthz` (оба порта)  | —    | 200    | Liveness (`ok`)               |
 | GET   | `/api/v1/`              | —    | 200    | JSON-описание сервиса         |
 | GET   | `/metrics`              | admin| 200    | Prometheus exposition         |
 
