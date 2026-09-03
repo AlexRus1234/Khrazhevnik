@@ -552,6 +552,45 @@ func TestLoginAuditSurvivesCancelledContext(t *testing.T) {
 	}
 }
 
+// Обрыв соединения на POST /users и DELETE /users/{id} до Record
+// (request-ctx мёртв) не теряет записи user.create/user.delete:
+// все точки аудита движка пишут через auditCtx (по образцу login-
+// теста сессии 58).
+func TestUserAuditSurvivesCancelledContext(t *testing.T) {
+	log := &ctxAwareAuditLog{}
+	a, err := New(Config{Users: testutil.NewFakeUserStore(), Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, Audit: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := a.CreateUser(ctx, "alice", "correct", domain.RoleAdmin); err != nil {
+		t.Fatalf("создание при оборванном соединении: %v", err)
+	}
+	if err := a.DeleteUser(ctx, 1); err != nil {
+		t.Fatalf("удаление при оборванном соединении: %v", err)
+	}
+	entries, _ := log.AuditEntries(context.Background(), 0, 10)
+	var created, deleted bool
+	for _, e := range entries {
+		switch e.Action {
+		case "user.create":
+			created = true
+			if e.Result != domain.AuditOK {
+				t.Errorf("user.create result = %q, хочу ok", e.Result)
+			}
+		case "user.delete":
+			deleted = true
+			if e.Result != domain.AuditOK {
+				t.Errorf("user.delete result = %q, хочу ok", e.Result)
+			}
+		}
+	}
+	if !created || !deleted {
+		t.Fatalf("user.create=%v user.delete=%v — обрыв соединения потерял запись", created, deleted)
+	}
+}
+
 // Транзиентный сбой каталога на пути аутентификации — UnavailableError
 // (web мапит в 503), отсутствие записи — по-прежнему Forbidden.
 // Проглатывание ошибки БД превращало любой сбой в «неверные учётные

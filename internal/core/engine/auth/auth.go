@@ -50,11 +50,19 @@ const maxRevokedMemory = 10000
 // сброс (потеря троттлинга до следующего touch — не уязвимость).
 const maxTouchMemory = 10000
 
-// loginAuditTimeout — потолок записи auth.login: WithoutCancel не
+// engineAuditTimeout — потолок записи аудита движка: WithoutCancel не
 // наследует ни отмену соединения, ни дедлайны запроса, поэтому свой
 // короткий предел (по образцу web/audit.go; вынести константу в общее
 // место нельзя — domain без time).
-const loginAuditTimeout = 5 * time.Second
+const engineAuditTimeout = 5 * time.Second
+
+// auditCtx — контекст записи аудита для всех точек движка: живучий
+// (WithoutCancel — обрыв соединения не теряет запись) и ограниченный
+// своим таймаутом. Инлайн до ответа: при висящем каталоге это до 5s
+// к latency — осознанный выбор в пользу сохранности записи аудита.
+func auditCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), engineAuditTimeout)
+}
 
 // Config wires authentication to persistence and deterministic system ports.
 type Config struct {
@@ -135,7 +143,9 @@ func (s *Service) DeleteUser(ctx context.Context, id int64) error {
 	}
 	err = s.cfg.Users.DeleteUser(ctx, id)
 	if err == nil {
-		s.audit(ctx, u.Username, "user.delete", fmt.Sprintf("user:%d", id), domain.AuditOK, "")
+		actx, cancel := auditCtx(ctx)
+		defer cancel()
+		s.audit(actx, u.Username, "user.delete", fmt.Sprintf("user:%d", id), domain.AuditOK, "")
 	}
 	return err
 }
@@ -161,7 +171,9 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, rol
 	}
 	u, err := s.cfg.Users.CreateUser(ctx, domain.User{Username: username, PasswordHash: string(hash), Role: role, TokenVersion: 1, CreatedAt: s.cfg.Clock.Now()})
 	if err == nil {
-		s.audit(ctx, username, "user.create", "user:"+username, domain.AuditOK, "")
+		actx, cancel := auditCtx(ctx)
+		defer cancel()
+		s.audit(actx, username, "user.create", "user:"+username, domain.AuditOK, "")
 	}
 	return u, err
 }
@@ -183,7 +195,9 @@ func (s *Service) EnsureFirstAdmin(ctx context.Context, username, password strin
 		Role: domain.RoleAdmin, TokenVersion: 1, CreatedAt: s.cfg.Clock.Now(),
 	})
 	if err == nil && created {
-		s.audit(ctx, username, "setup", "user:"+username, domain.AuditOK, "")
+		actx, cancel := auditCtx(ctx)
+		defer cancel()
+		s.audit(actx, username, "setup", "user:"+username, domain.AuditOK, "")
 	}
 	return u, created, err
 }
@@ -273,8 +287,10 @@ func (s *Service) VerifyPassword(ctx context.Context, username, password string)
 func (s *Service) Login(ctx context.Context, username, password string) (string, error) {
 	// Записи auth.login не зависят от живости соединения: обрыв на
 	// POST /auth/login (типично для брутфорс-скриптов) рвал request-ctx
-	// вместе с записью — brute-force-детекторы слепли.
-	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), loginAuditTimeout)
+	// вместе с записью — brute-force-детекторы слепли. Инлайн до ответа:
+	// до 5s к latency при сбойном каталоге; выбор в пользу сохранности
+	// записи аудита.
+	actx, cancel := auditCtx(ctx)
 	defer cancel()
 	u, err := s.VerifyPassword(ctx, username, password)
 	if err != nil {

@@ -362,12 +362,16 @@ func handleCreateUser(d Deps) http.HandlerFunc {
 		if in.Role == "" {
 			in.Role = domain.RoleUser
 		}
+		// Action ставится ДО вызова движка (паттерн гранта, сессия 58):
+		// движок пишет user.create сам, middleware-строка — под тем же
+		// именем, иначе трейл показывал два имени одной операции
+		// (user.create и fallback create.users).
+		*r = *r.WithContext(WithAuditAction(r.Context(), "user.create"))
 		u, err := d.Auth.CreateUser(r.Context(), in.Username, in.Password, in.Role)
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
-		*r = *r.WithContext(WithAuditAction(r.Context(), "user.create"))
 		writeJSON(w, http.StatusCreated, userOut(u))
 	}
 }
@@ -379,11 +383,13 @@ func handleDeleteUser(d Deps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		// Action до движка — как в handleCreateUser: единое имя
+		// user.delete для движковой и middleware-записи.
+		*r = *r.WithContext(WithAuditAction(r.Context(), "user.delete"))
 		if err := d.Auth.DeleteUser(r.Context(), id); err != nil {
 			writeErr(w, err)
 			return
 		}
-		*r = *r.WithContext(WithAuditAction(r.Context(), "user.delete"))
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

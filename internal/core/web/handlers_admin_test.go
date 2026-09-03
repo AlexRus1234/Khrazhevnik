@@ -667,3 +667,81 @@ func itoa64(n int64) string {
 	}
 	return string(b[i:])
 }
+
+// TestUserAuditActionsUnified — сессия 63: движок и middleware пишут
+// операцию под одним именем. Action ставится до вызова движка (паттерн
+// гранта, сессия 58): отклонённая мутация уходила под fallback
+// create.users и трейл показывал два имени одной операции.
+func TestUserAuditActionsUnified(t *testing.T) {
+	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	auditLog := testutil.NewFakeAuditLog()
+	a, err := auth.New(auth.Config{
+		Users: testutil.NewFakeUserStore(), Tokens: &handlerTokens{}, Audit: auditLog,
+		Revocations: testutil.NewFakeRevocations(), Clock: clock,
+		Rand: testutil.FixedRand("44444444-4444-4444-8444-444444444444"),
+		JWTSecret: "secret", SessionTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := a.CreateUser(t.Context(), "admin", "password", domain.RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwtAdmin, err := a.IssueSession(t.Context(), admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: a, SetupToken: "setup",
+		Audit: auditLog, Clock: clock,
+	})
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+jwtAdmin)
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := call(http.MethodPost, "/api/v1/users", `{"username":"bob","password":"password","role":"user"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("POST /users = %d, хочу 201 (тело %s)", rec.Code, rec.Body.String())
+	}
+	// Отклонённая мутация тоже под user.create (с кодом результата),
+	// не под fallback create.users.
+	if rec := call(http.MethodPost, "/api/v1/users", `{"username":"bad name","password":"password"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /users (кривое имя) = %d, хочу 400 (тело %s)", rec.Code, rec.Body.String())
+	}
+	if rec := call(http.MethodDelete, "/api/v1/users/2", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /users/2 = %d, хочу 204 (тело %s)", rec.Code, rec.Body.String())
+	}
+	entries, err := auditLog.AuditEntries(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Объект различает писца: «user:bob»/«user:2» у движка, путь запроса
+	// у middleware.
+	want := map[[3]string]bool{
+		{"user.create", "user:bob", domain.AuditOK}:        false,
+		{"user.create", "/api/v1/users", domain.AuditOK}:   false,
+	// 400 вне статус-словаря (аудит 2026-08-30) → result=error.
+		{"user.create", "/api/v1/users", domain.AuditError}:  false,
+		{"user.delete", "user:2", domain.AuditOK}:          false,
+		{"user.delete", "/api/v1/users/2", domain.AuditOK}: false,
+	}
+	for _, e := range entries {
+		key := [3]string{e.Action, e.Object, e.Result}
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+		if e.Action == "create.users" || e.Action == "delete.users" {
+			t.Errorf("fallback-имя %q в трейле: %+v", e.Action, e)
+		}
+	}
+	for key, seen := range want {
+		if !seen {
+			t.Errorf("нет записи %v — операция ушла под другое имя", key)
+		}
+	}
+}
