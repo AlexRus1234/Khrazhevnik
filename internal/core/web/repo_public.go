@@ -175,10 +175,6 @@ func handleRepoKey(d Deps) http.HandlerFunc {
 			writeProxyError(w, publicCatalogError(err))
 			return
 		}
-		if d.Signer == nil {
-			http.Error(w, "signing unavailable", http.StatusServiceUnavailable)
-			return
-		}
 		pub, err := d.Signer.PublicKey()
 		if err != nil {
 			writeProxyError(w, err)
@@ -212,10 +208,6 @@ func handleRepoNixKey(d Deps) http.HandlerFunc {
 				return
 			}
 			writeProxyError(w, publicCatalogError(err))
-			return
-		}
-		if d.NarSigner == nil {
-			http.Error(w, "nix signing unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		// Формат trusted-public-keys: «name:pubkey-b64» (pubkey — base64

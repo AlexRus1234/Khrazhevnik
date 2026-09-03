@@ -735,7 +735,7 @@ func TestPublicRepoKey_UnknownRepo404(t *testing.T) {
 	}
 }
 
-func TestPublicRepoKey_NilSigner503(t *testing.T) {
+func TestPublicRepoKey_NilSigner404(t *testing.T) {
 	// Без Signer (деградированный режим) /key.asc не регистрируется
 	// вообще — BuildPublicRouter пропускает роут. Проверяем что роут
 	// отсутствует: запрос уходит в 404 (chi default), а не в handler.

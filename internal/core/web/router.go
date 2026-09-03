@@ -74,12 +74,14 @@ type Deps struct {
 	Publish PublishAPI
 	// Signer — подписчик метаданных личных репозиториев (сессия 15):
 	// отдаёт публичный ключ через GET /repo/<name>/key.asc на публичном
-	// порту :29202. nil в деградированном режиме — /key.asc отдаёт 503.
+	// порту :29202. nil в деградированном режиме — роут /key.asc не
+	// регистрируется, wildcard отдаёт 404.
 	Signer port.Signer
 	// NarSigner — nix narinfo-подписчик (ed25519, сессия 16): отдаёт
 	// публичный ключ (формат «name:pubkey-b64») через GET /repo/<name>/nix-key.asc
-	// на публичном порту :29202. nil в деградированном режиме —
-	// /nix-key.asc отдаёт 503. Живёт вне port.Signer (своя модель подписи).
+	// на публичном порту :29202. nil в деградированном режиме — роут
+	// не регистрируется, wildcard отдаёт 404. Живёт вне port.Signer
+	// (своя модель подписи).
 	NarSigner port.NarSigner
 	// MetricsHandler — /metrics (Prometheus); nil, если метрики
 	// отключены конфигом.
@@ -136,7 +138,8 @@ func BuildPublicRouter(d Deps) http.Handler {
 		// (формат «name:pubkey-b64», сессия 16) для nix-клиентов
 		// (trusted-public-keys). Отдан вне wildcard-роута, т.к. ключ не
 		// лежит в Storage репо, а берётся из NarSigner напрямую.
-		// nil-NarSigner → 503. Регистрируется ДО /key.asc: chi v5
+		// nil-NarSigner — роут не регистрируется (404 от wildcard).
+		// Регистрируется ДО /key.asc: chi v5
 		// приоритезирует статичные роуты над wildcard по порядку
 		// регистрации — более специфичные первыми.
 		if d.NarSigner != nil {
@@ -144,7 +147,8 @@ func BuildPublicRouter(d Deps) http.Handler {
 		}
 		// /repo/<name>/key.asc — публичный ключ инстанса для apt-клиентов
 		// (signed-by). Отдан вне wildcard-роута выше, т.к. ключ не лежит
-		// в Storage репо, а берётся из Signer напрямую. nil-Signer → 503.
+		// в Storage репо, а берётся из Signer напрямую. nil-Signer — роут
+	// не регистрируется (404 от wildcard).
 		if d.Signer != nil {
 			r.Get("/repo/{name}/key.asc", handleRepoKey(d))
 		}

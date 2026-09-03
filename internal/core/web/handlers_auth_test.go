@@ -210,7 +210,8 @@ func TestTokenTTLAndRevokePathContract(t *testing.T) {
 	}
 }
 
-// TestSetupAtomicBootstrap — 20 параллельных POST /setup в// bootstrap-окне: ровно один 201, остальные 403 setup_already_done,
+// TestSetupAtomicBootstrap — 20 параллельных POST /setup в
+// bootstrap-окне: ровно один 201, остальные 403 setup_already_done,
 // в таблице один пользователь (аудит 2026-08-27). RemoteAddr у каждой
 // горутины свой — тестируем атомарность, а не rate limiter.
 func TestSetupAtomicBootstrap(t *testing.T) {
