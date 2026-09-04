@@ -37,6 +37,12 @@ func NewGETRequest(ctx context.Context, url string, headers map[string]string) (
 	if err != nil {
 		return nil, err
 	}
+	// Явный identity (история L9, сессия 69): DisableCompression лишь
+	// не добавляет Accept-Encoding сам — некомплаентный upstream/CDN
+	// может сжать ответ вопреки; gzip лёг бы в кеш byte-exact без
+	// Content-Encoding в ObjectMeta и ушёл бы клиенту мусором.
+	// Проксирование Content-Encoding upstream'а — пост-v1 (схема).
+	req.Header.Set("Accept-Encoding", "identity")
 	for name, value := range headers {
 		req.Header.Set(name, value)
 	}

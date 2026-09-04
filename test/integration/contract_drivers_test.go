@@ -51,6 +51,51 @@ import (
 
 // --- Каталог: sqlite (всегда) ---
 
+// TestSetupConcurrentOneAdmin — барьер-тест /setup-гонки (сессия 69):
+// 50 писателей стартуют одновременно по close-каналу; на каждом
+// драйвере создаётся ровно один админ, проигравшие — created=false
+// без ошибки. Обычный контрактный прогон зависит от таймингов
+// планировщика; барьер закрывает MEDIUM-заявление внешнего ревью
+// 2026-09-03 о mariadb gap-локах фактом, а не рассуждением.
+func TestSetupConcurrentOneAdmin(t *testing.T) {
+	t.Run("sqlite", func(t *testing.T) {
+		st, err := sqlite.Open(config.Database{DSN: filepath.Join(t.TempDir(), "barrier.db")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		contract.FirstUserBarrierSuite(t, contract.Catalog{Users: st})
+	})
+
+	t.Run("postgres", func(t *testing.T) {
+		dsn := os.Getenv("KHRZ_TEST_POSTGRES_DSN")
+		if dsn == "" {
+			t.Skip("KHRZ_TEST_POSTGRES_DSN не задан — пропуск postgres-барьера")
+		}
+		resetPostgresSchema(t, dsn)
+		st, err := postgres.Open(config.Database{DSN: dsn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		contract.FirstUserBarrierSuite(t, contract.Catalog{Users: st})
+	})
+
+	t.Run("mariadb", func(t *testing.T) {
+		dsn := os.Getenv("KHRZ_TEST_MARIADB_DSN")
+		if dsn == "" {
+			t.Skip("KHRZ_TEST_MARIADB_DSN не задан — пропуск mariadb-барьера")
+		}
+		resetMariaDB(t, dsn)
+		st, err := mariadb.Open(config.Database{DSN: dsn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		contract.FirstUserBarrierSuite(t, contract.Catalog{Users: st})
+	})
+}
+
 func TestCatalogContractSQLite(t *testing.T) {
 	contract.CatalogSuite(t, func(t *testing.T) contract.Catalog {
 		st, err := sqlite.Open(config.Database{DSN: filepath.Join(t.TempDir(), "contract.db")})

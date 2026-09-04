@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -226,4 +227,98 @@ func TestAptProxyPlusTildeKey(t *testing.T) {
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// TestProxyHitHeadersIdentityEncoding — E2E-контракт заголовков HIT
+// (сессия 69): первый запрос — MISS, второй — HIT; Content-Type,
+// Content-Length и ETag от upstream совпадают побайтово между MISS
+// и HIT (ObjectMeta переживает круг через каталог); Content-Encoding
+// в ответе нет — upstream получил явный Accept-Encoding: identity
+// (комплаентный upstream не жмёт), а кеш не декларирует кодировку,
+// которой не несёт.
+func TestProxyHitHeadersIdentityEncoding(t *testing.T) {
+	body := []byte("HEADER-CONTRACT-64-bytes-padding-padding-padding-padding!!")
+	var sawAcceptEncoding atomic.Value
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAcceptEncoding.Store(r.Header.Get("Accept-Encoding"))
+		w.Header().Set("Content-Type", "application/x-contract")
+		w.Header().Set("ETag", `"hdr-v1"`)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(up.Close)
+
+	storage := testutil.NewFakeStorage(testutil.NewManualClock(aptTestStart))
+	index := testutil.NewFakeObjectIndex()
+	clock := testutil.NewManualClock(aptTestStart)
+	remotes := testutil.NewFakeRemoteStore()
+	if _, err := remotes.CreateRemote(t.Context(), domain.Remote{
+		ID: 7, Name: "debian", Ecosystem: "apt",
+		BaseURL: up.URL + "/debian", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := apt.New(remotes, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := cacheengine.New(storage, index, up.Client(), clock,
+		cacheengine.Config{StaleIfError: true, NegativeTTL404: 5 * time.Minute, NegativeTTL5xx: 30 * time.Second},
+		metrics.NewCache())
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := web.BuildPublicRouter(web.Deps{
+		Log: log, Version: "test", Cache: engine,
+		Ecosystems: map[string]port.Ecosystem{"apt": adapter},
+	})
+	const path = "/apt/debian/headers/obj.bin"
+	wantSHA := sha256Hex(body)
+
+	rec := aptGet(t, h, path)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("первый запрос: код %d, тело %q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Cache"); got != "MISS" {
+		t.Fatalf("первый X-Cache = %q, хочу MISS", got)
+	}
+	if got := sha256Hex(rec.Body.Bytes()); got != wantSHA {
+		t.Fatalf("первый sha256 = %s, хочу %s", got, wantSHA)
+	}
+	if got := sawAcceptEncoding.Load(); got != "identity" {
+		t.Errorf("upstream видел Accept-Encoding = %q, хочу identity", got)
+	}
+	missHeaders := map[string]string{
+		"Content-Type":   rec.Header().Get("Content-Type"),
+		"Content-Length": rec.Header().Get("Content-Length"),
+		"ETag":           rec.Header().Get("ETag"),
+	}
+	if missHeaders["Content-Type"] != "application/x-contract" {
+		t.Errorf("MISS Content-Type = %q", missHeaders["Content-Type"])
+	}
+	if missHeaders["Content-Length"] != strconv.Itoa(len(body)) {
+		t.Errorf("MISS Content-Length = %q, хочу %d", missHeaders["Content-Length"], len(body))
+	}
+	if missHeaders["ETag"] != `"hdr-v1"` {
+		t.Errorf("MISS ETag = %q", missHeaders["ETag"])
+	}
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Errorf("MISS Content-Encoding = %q, хочу пусто", got)
+	}
+
+	rec = aptGet(t, h, path)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("второй запрос: код %d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Cache"); got != "HIT" {
+		t.Fatalf("второй X-Cache = %q, хочу HIT", got)
+	}
+	if got := sha256Hex(rec.Body.Bytes()); got != wantSHA {
+		t.Fatalf("второй sha256 = %s, хочу %s", got, wantSHA)
+	}
+	for name, miss := range missHeaders {
+		if got := rec.Header().Get(name); got != miss {
+			t.Errorf("HIT %s = %q, MISS дал %q (заголовки не совпали побайтово)", name, got, miss)
+		}
+	}
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Errorf("HIT Content-Encoding = %q, хочу пусто", got)
+	}
 }

@@ -20,6 +20,7 @@
 package port_test
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"testing"
@@ -43,4 +44,18 @@ func TestConformance(t *testing.T) {
 	var _ port.JobStore = testutil.NewFakeJobStore()
 	var _ port.AuditLog = testutil.NewFakeAuditLog()
 	var _ port.Doer = (*http.Client)(nil)
+}
+
+// TestNewGETRequestIdentity — исходящий upstream-запрос обязан явно
+// объявлять Accept-Encoding: identity (сессия 69, история L9): иначе
+// некомплаентный upstream/CDN сжимает вопреки, gzip ложится в кеш
+// byte-exact без Content-Encoding в ObjectMeta.
+func TestNewGETRequestIdentity(t *testing.T) {
+	req, err := port.NewGETRequest(context.Background(), "http://up.example/pkg.deb", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("Accept-Encoding"); got != "identity" {
+		t.Fatalf("Accept-Encoding = %q, хочу identity", got)
+	}
 }

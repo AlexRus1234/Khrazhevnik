@@ -15,9 +15,10 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // Byte-exact инвариант против прозрачного gzip: outbound-клиент собран
-// с DisableCompression (как в wire.outboundHTTPClient), поэтому
-// Accept-Encoding не подмешивается, а в кеш пишутся ровно те байты,
-// что отдал upstream — сжатые, если сервер сжал, и с родным ETag.
+// с DisableCompression (как в wire.outboundHTTPClient), а движок явно
+// объявляет Accept-Encoding: identity (сессия 69, история L9) —
+// в кеш пишутся ровно те байты, что отдал upstream: сжатые, если
+// некомплаентный сервер сжал вопреки, с родным ETag.
 
 package cache
 
@@ -46,13 +47,12 @@ func TestGzipUpstreamByteExact(t *testing.T) {
 	}
 	gzipBody := buf.Bytes()
 
-	var sawAcceptEncoding atomic.Bool
+	var sawAcceptEncoding atomic.Value
 	up := newTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		// DisableCompression-клиент не шлёт Accept-Encoding: сервер,
-		// жмущий «динамически», сжал бы тело только при его наличии.
-		if r.Header.Get("Accept-Encoding") != "" {
-			sawAcceptEncoding.Store(true)
-		}
+		// Движок обязан явно объявлять identity (L9): комплаентный
+		// сервер не жмёт, а транспорт без DisableCompression подмесил
+		// бы gzip — та же ловушка, но уже за спиной движка.
+		sawAcceptEncoding.Store(r.Header.Get("Accept-Encoding"))
 		w.Header().Set("Content-Type", "application/deb")
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Set("ETag", `"gz"`)
@@ -74,8 +74,8 @@ func TestGzipUpstreamByteExact(t *testing.T) {
 	if body != string(gzipBody) {
 		t.Fatalf("тело из кеша != байтам upstream-ответа (%d vs %d байт)", len(body), len(gzipBody))
 	}
-	if sawAcceptEncoding.Load() {
-		t.Fatal("outbound-клиент подмешал Accept-Encoding — транспорт жмёт/расживает за спиной кеша")
+	if got, _ := sawAcceptEncoding.Load().(string); got != "identity" {
+		t.Fatalf("outbound Accept-Encoding = %q, хочу %q", got, "identity")
 	}
 
 	// В хранилище лежат ровно байты upstream-ответа (golden-сравнение).

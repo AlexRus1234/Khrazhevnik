@@ -198,6 +198,62 @@ func firstUserAtomicSuite(t *testing.T, c Catalog) {
 	}
 }
 
+// FirstUserBarrierSuite — барьерная форма firstUserAtomicSuite
+// (сессия 69): все N писателей стартуют одновременно по close-каналу,
+// максимально перекрывая окно INSERT..SELECT..WHERE NOT EXISTS.
+// Обычная гонка зависит от таймингов планировщика — зелёный ничего
+// не доказывает; барьер превращает спор внешнего ревью 2026-09-03
+// о mariadb gap-локах в факт. Ассерт: создан ровно один админ,
+// прочие — created=false без ошибки (в т.ч. без ConflictError;
+// ретраи 1213/1205 не должны выходить наружу).
+func FirstUserBarrierSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	const writers = 50
+	start := make(chan struct{})
+	type outcome struct {
+		name    string
+		created bool
+	}
+	outcomes := make(chan outcome, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			name := fmt.Sprintf("barrier-%02d", i)
+			_, created, err := c.Users.EnsureFirstUser(ctx, domain.User{
+				Username: name, PasswordHash: "h", Role: domain.RoleAdmin,
+				TokenVersion: 1, CreatedAt: fixed,
+			})
+			if err != nil {
+				t.Errorf("EnsureFirstUser(%s): %v (хочу created=false без ошибки)", name, err)
+				return
+			}
+			outcomes <- outcome{name: name, created: created}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(outcomes)
+	var winners []string
+	for o := range outcomes {
+		if o.created {
+			winners = append(winners, o.name)
+		}
+	}
+	if len(winners) != 1 {
+		t.Fatalf("победителей барьер-гонки %d, хочу ровно 1: %v", len(winners), winners)
+	}
+	all, err := c.Users.Users(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Username != winners[0] {
+		t.Fatalf("после барьер-гонки в таблице %d записей, хочу единственного %q", len(all), winners[0])
+	}
+}
+
 func tokenSuite(t *testing.T, c Catalog) {
 	ctx := context.Background()
 	u, _ := c.Users.CreateUser(ctx, domain.User{Username: "alice", PasswordHash: "h", CreatedAt: fixed})
