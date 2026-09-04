@@ -16,7 +16,7 @@
 
 // Порт nix narinfo-подписи (ed25519). Живёт ВНЕ port.Signer (тот заточен
 // под OpenPGP/cleartext apt: InRelease + Release.gpg) — у nix своя, более
-// простая модель: sig-строка «name:pubkey:signature» (raw ed25519 +
+// простая модель: sig-строка «name:signature» (raw ed25519 +
 // base64, не OpenPGP). Реализация — mod/sign/ed25519 (сессия 15);
 // инъекция в nix RepoAdapter — через NarSignerInjector (как SignerInjector
 // для apt). wire (cmd) type-assert'ит адаптер к NarSignerInjector и

@@ -21,7 +21,8 @@
 // NarSize;References» (libstore PathInfo::fingerprint) — как делает
 // сам nix. nar-файлы (nar/<hash>.nar.xz) — immutable, проходят byte-exact
 // без генерации (загружены и раздаются как есть). Пользователь загружает
-// <hash>.narinfo + nar/<hash>.nar.xz (hash — 32 символа nix-base32);
+// <hash>.narinfo (hash — 32 символа nix-base32, хеш store path) +
+// nar/<fileHash>.nar.xz (fileHash — 52 символа nix-base32);
 // сервис валидирует narinfo (парсер parse.go, WantNar) и переподписывает
 // Sig по строгим правилам: только поле Sig добавляется/заменяется,
 // остальное байт-точно (golden-тест на дифф). Публичный ключ —

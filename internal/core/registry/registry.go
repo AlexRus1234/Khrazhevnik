@@ -81,12 +81,13 @@ type RepoAdapterFactory = func() (port.RepoAdapter, error)
 // port.Clock»). Единственный продакшен-подписчик v1 —
 // openpgp (ed25519 для nix — сессия 16, живёт вне port.Signer). nil
 // от фабрики или отсутствие регистрации — publish работает без
-// подписи (apt с trusted=yes; /key.asc отдаёт 503).
+// подписи (apt с trusted=yes; /key.asc отдаёт 404 через
+// wildcard-раздачу репо — ключа нет).
 type SignerFactory = func(cfg config.Signing, clock port.Clock) (port.Signer, error)
 
 // NarSignerFactory создаёт nix narinfo-подписчик (mod/sign/ed25519 —
 // сессия 16, живёт вне port.Signer: своя, более простая модель подписи
-// «name:pubkey:signature»). cfg — секция [signing]: keys_dir (ключ
+// «name:signature»). cfg — секция [signing]: keys_dir (ключ
 // ed25519 персистится рядом с openpgp, отдельным файлом). nil от фабрики
 // или отсутствие регистрации — nix narinfo не переподписывается.
 type NarSignerFactory = func(cfg config.Signing) (port.NarSigner, error)

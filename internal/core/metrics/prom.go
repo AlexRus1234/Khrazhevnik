@@ -34,8 +34,9 @@ import (
 // старта, попадают в вывод по факту.
 //
 // Помимо счётчиков кеша Handler держит две гистограммы, заполняемые
-// web-слоем через Observe*: latency публичных запросов и размер
-// отданных объектов. Гистограммы — настоящие prometheus.Histogram
+// web-слоем через Observe*: latency запросов обоих слушателей
+// (публичный и админский) и размер отданных объектов. Гистограммы —
+// настоящие prometheus.Histogram
 // (а не const-metric), потому что значения накапливаются между scrape.
 type Handler struct {
 	cache    *Cache
@@ -152,8 +153,8 @@ func (h *Handler) MetricsHandler() http.Handler {
 	return promhttp.HandlerFor(h.registry, promhttp.HandlerOpts{})
 }
 
-// ObserveRequestLatency фиксирует длительность публичного запроса.
-// method/status — лейблы (GET/200, GET/404, ...). Вызов из web-слоя
+// ObserveRequestLatency фиксирует длительность запроса (оба слушателя:
+// публичный и админский). method/status — лейблы (GET/200, GET/404, ...). Вызов из web-слоя
 // после завершения хендлера; секунды — в float, как требует Prom.
 func (h *Handler) ObserveRequestLatency(method, status string, seconds float64) {
 	if h.requestLatency == nil {

@@ -102,13 +102,14 @@ blank-import'ом в `cmd/khrazhevnik/wire.go` и выбираются TOML-ко
 - **Homelab / один узел**: `fs` + `sqlite` (defaults). Один writable
   volume `/var/lib/khrazhevnik`, бэкап — снимок каталога. См.
   `deploy/quadlet/khrazhevnik.container`.
-- **Прод / несколько инстансов**: `s3` + `postgres` (или `mariadb`).
+- **Прод / масштабирование**: `s3` + `postgres` (или `mariadb`).
   Объекты в S3 (масштабируется независимо), каталог в внешней БД
   (репликация/бэкап — средствами СУБД). Спул — единственный writable
-  volume. См. `deploy/quadlet/khrazhevnik-s3.container`. Стартовый
-  sweep неполных multipart-загрузок чистит только пространство
-  `cache/` и `repo/` самого инстанса — чужие ключи общего bucket
-  (в т.ч. идущие загрузки соседних инстансов) не абортятся.
+  volume. См. `deploy/quadlet/khrazhevnik-s3.container`. Граница v1 —
+  **один инстанс на bucket**: корни `cache/` и `repo/` общие для
+  процесса, и стартовый sweep неполных multipart-загрузок абортит всё
+  под этими корнями — параллельный инстанс в том же bucket (в т.ч.
+  его идущие загрузки) под sweep попадает.
 - **Смешивать нельзя**: `storage.driver` и `database.driver` независимы
   (можно `fs`+`postgres` или `s3`+`sqlite`), но `s3`+`sqlite` для прода
   не рекомендуется — sqlite не переживает конкурентную запись из

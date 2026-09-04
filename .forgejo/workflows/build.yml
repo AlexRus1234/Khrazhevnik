@@ -18,7 +18,8 @@
 # build workflow (workflow_dispatch + inputs, fedora:44 runner, Nora
 # proxy, step-ca, Go tarball). Project-specific additions: services block
 # (postgres/mariadb/minio для контрактных suite сессии 17) и отдельная
-# oci job (сборка образа + smoke + push в ghcr.io — Хражевник контейнерный
+# oci job (сборка образа + push в git.yadr00.internal/build/khrazhevnik —
+# Хражевник контейнерный
 # сервис, в отличие от CLI-бинарника lentovodec).
 
 name: Build and Test Hrazhevnik
