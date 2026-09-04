@@ -172,7 +172,7 @@ func urlParam(r *http.Request, name string) string {
 
 // validateRemoteInput проверяет поля remote из запроса. name — slug
 // (domain.ValidateUsername с теми же правилами, что и имя юзера:
-// remote-имя живёт в URL и путях кеша,的限制 одинаковые). base_url —
+// remote-имя живёт в URL и путях кеша, правила одинаковые). base_url —
 // обязательно http(s)://. mode — proxy|mirror. sync_interval —
 // положительная duration (0 = только вручную).
 type remoteInput struct {

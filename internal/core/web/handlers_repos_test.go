@@ -139,7 +139,7 @@ func newRepoEnv(t *testing.T) *repoEnv {
 	storage := testutil.NewFakeStorage(clock)
 	publish := newPublishStub(storage)
 	auditLog := testutil.NewFakeAuditLog()
-	tasks := NewTaskRegistry(2, clock)
+	tasks := NewTaskRegistry(2, clock, nil)
 	adminH := BuildAdminRouter(Deps{
 		Log: nil, Version: "test", Auth: a, SetupToken: "setup",
 		// Ecosystems — реестр для ecosystem-гейта POST/PATCH /repos
@@ -525,7 +525,7 @@ func TestRepoGrantPermConflictBeforeGrant(t *testing.T) {
 	conflict := &grantConflictRepoStore{FakeRepoStore: env.repos}
 	// Подменим store в собранном роутере нельзя — пересоберём env
 	// вручную: те же фейки, Repos = conflict.
-	tasks := NewTaskRegistry(2, env.clock)
+	tasks := NewTaskRegistry(2, env.clock, nil)
 	adminH := BuildAdminRouter(Deps{
 		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
 		Repos: conflict, Storage: env.storage, Audit: env.audit,
@@ -567,7 +567,7 @@ func (s *grantFKConflictRepoStore) Grant(_ context.Context, _ domain.Perm) error
 func TestRepoGrantPermFKConflict404(t *testing.T) {
 	env := newRepoEnv(t)
 	fk := &grantFKConflictRepoStore{FakeRepoStore: env.repos}
-	tasks := NewTaskRegistry(2, env.clock)
+	tasks := NewTaskRegistry(2, env.clock, nil)
 	adminH := BuildAdminRouter(Deps{
 		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
 		Repos: fk, Storage: env.storage, Audit: env.audit,
@@ -608,7 +608,7 @@ func TestRepoGrantPermFKConflict404(t *testing.T) {
 func TestRepoGrantPermUniqueConflict204(t *testing.T) {
 	env := newRepoEnv(t)
 	conflict := &grantConflictRepoStore{FakeRepoStore: env.repos}
-	tasks := NewTaskRegistry(2, env.clock)
+	tasks := NewTaskRegistry(2, env.clock, nil)
 	adminH := BuildAdminRouter(Deps{
 		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
 		Repos: conflict, Storage: env.storage, Audit: env.audit,

@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io/fs"
 	"iter"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -413,8 +414,15 @@ func (cryptoRand) Int64(max int64) int64 {
 	}
 	n := int64(b[0])<<56 | int64(b[1])<<48 | int64(b[2])<<40 | int64(b[3])<<32 |
 		int64(b[4])<<24 | int64(b[5])<<16 | int64(b[6])<<8 | int64(b[7])
+	// clamp перед abs: -MinInt64 в дополнительном коде == MinInt64 —
+	// без зажима модульная арифметика дала бы отрицательный результат
+	// (ревью 2026-09-03).
 	if n < 0 {
-		n = -n
+		if n == math.MinInt64 {
+			n = math.MaxInt64
+		} else {
+			n = -n
+		}
 	}
 	return n % max
 }

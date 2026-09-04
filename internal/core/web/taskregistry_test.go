@@ -33,7 +33,7 @@ import (
 func newTestRegistry(t *testing.T, workers int) (*TaskRegistry, *testutil.ManualClock) {
 	t.Helper()
 	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
-	return NewTaskRegistry(workers, clock), clock
+	return NewTaskRegistry(workers, clock, nil), clock
 }
 
 // awaitState опрашивает задачу, пока не увидит want (или таймаут).
@@ -489,17 +489,28 @@ func TestTaskRegistryHistoryBounded(t *testing.T) {
 
 func TestNewTaskRegistryDefaults(t *testing.T) {
 	// workers <= 0 → 1; nil clock → системный (не паникует).
-	r := NewTaskRegistry(0, nil)
+	r := NewTaskRegistry(0, nil, nil)
 	if _, err := r.Start("t", "x", func(context.Context, Progress) error { return nil }); err != nil {
 		t.Fatalf("Start с дефолтным лимитом: %v", err)
 	}
 	_ = r.WaitAll(context.Background())
 }
 
+func TestTaskIDInjectedRand(t *testing.T) {
+	// port.Rand инжект: FixedRand (счётчик UUID) даёт детерминированный
+	// ID (первые 8 hex UUID4 без дефисов); раньше crypto/rand был
+	// недоступен для подмены (ревью 2026-09-03).
+	r := NewTaskRegistry(1, nil, testutil.FixedRand("11111111-1111-4111-8111-111111111111"))
+	if got := r.newTaskID("sync"); got != "sync-11111111" {
+		t.Fatalf("инжектированный rand → %q, хочу sync-11111111", got)
+	}
+}
+
 func TestNewTaskIDUniqueness(t *testing.T) {
+	r := NewTaskRegistry(1, nil, testutil.RealRand())
 	seen := make(map[string]struct{}, 100)
 	for range 100 {
-		id := newTaskID("sync")
+		id := r.newTaskID("sync")
 		if id == "" || !contains(id, "sync-") {
 			t.Fatalf("неверный формат id: %q", id)
 		}

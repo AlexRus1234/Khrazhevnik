@@ -136,7 +136,7 @@ func TestMirrorSchedulerPicksUpRemoteViaAPI(t *testing.T) {
 	}
 	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, up.Client(), clock,
 		cacheengine.Config{}, metrics.NewCache())
-	tasks := web.NewTaskRegistry(2, clock)
+	tasks := web.NewTaskRegistry(2, clock, nil)
 	// экосистема «t»: enumerate отдаёт один пакет; upstream выше
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, EnumeratePaths: []string{"/a.deb"}}
 	ecos := map[string]port.Ecosystem{"t": eco}

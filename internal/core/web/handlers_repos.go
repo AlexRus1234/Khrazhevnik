@@ -203,8 +203,9 @@ func handleUpdateRepo(d Deps) http.HandlerFunc {
 
 // handleDeleteRepo — DELETE /api/v1/repos/{id}. Права каскадом (FK
 // ON DELETE CASCADE); объекты storage остаются — v1 не делает batch-
-// delete по префиксу (документируем как расхождение; чистит фоновая
-// чистка или ручной delete).
+// delete по префиксу (документируем как расхождение: осиротевшие
+// repo/<id>/ накапливаются, выметающей чистки в v1 нет — см. ROADMAP;
+// убрать можно только ручным delete).
 func handleDeleteRepo(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseInt64URLParam(w, r, "id")

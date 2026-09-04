@@ -94,6 +94,10 @@ type Deps struct {
 	// Clock — для автоматического аудита и хендлеров, где нужно
 	// «сейчас» (создание remote, запуск sync). Тесты подменяют.
 	Clock port.Clock
+	// Rand — порт случайности web-слоя: request-id middleware и ID
+	// фоновых задач (правило «случайность — через port.Rand», инжект
+	// в тестах). nil — системная реализация.
+	Rand port.Rand
 }
 
 // MirrorSync — тонкий срез mirror.Engine, нужный API-хендлеру sync:
@@ -123,7 +127,7 @@ type PublishAPI interface {
 // и upstream-ответов прокси (аудит 2026-08-30).
 func BuildPublicRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
-	r.Use(RequestID)
+	r.Use(RequestID(d.rand()))
 	r.Use(LogRequests(d.logger()))
 	r.Use(ObserveMetrics(d.Metrics))
 	r.Use(chimw.Recoverer)
@@ -132,8 +136,12 @@ func BuildPublicRouter(d Deps) http.Handler {
 	if d.Storage != nil && d.Repos != nil {
 		// /repo/<name>/<путь...> — публичная раздача объектов личного
 		// репо (пакеты + сгенерированные индексы). RepoByName — lookup
-		// по имени (не id) для красивых URL клиентов.
-		r.Get("/repo/{name}/*", handleRepoFile(d))
+		// по имени (не id) для красивых URL клиентов. HEAD рядом с GET:
+		// CDN-пробы получали 405, а net/http сам отбрасывает тело на
+		// HEAD — handler тот же (внешнее ревью 2026-09-03).
+		repoFile := handleRepoFile(d)
+		r.Get("/repo/{name}/*", repoFile)
+		r.Head("/repo/{name}/*", repoFile)
 		// /repo/<name>/nix-key.asc — публичный narinfo-ключ инстанса
 		// (формат «name:pubkey-b64», сессия 16) для nix-клиентов
 		// (trusted-public-keys). Отдан вне wildcard-роута, т.к. ключ не
@@ -143,20 +151,27 @@ func BuildPublicRouter(d Deps) http.Handler {
 		// приоритезирует статичные роуты над wildcard по порядку
 		// регистрации — более специфичные первыми.
 		if d.NarSigner != nil {
-			r.Get("/repo/{name}/nix-key.asc", handleRepoNixKey(d))
+			nixKey := handleRepoNixKey(d)
+			r.Get("/repo/{name}/nix-key.asc", nixKey)
+			r.Head("/repo/{name}/nix-key.asc", nixKey)
 		}
 		// /repo/<name>/key.asc — публичный ключ инстанса для apt-клиентов
 		// (signed-by). Отдан вне wildcard-роута выше, т.к. ключ не лежит
 		// в Storage репо, а берётся из Signer напрямую. nil-Signer — роут
 		// не регистрируется (404 от wildcard).
 		if d.Signer != nil {
-			r.Get("/repo/{name}/key.asc", handleRepoKey(d))
+			key := handleRepoKey(d)
+			r.Get("/repo/{name}/key.asc", key)
+			r.Head("/repo/{name}/key.asc", key)
 		}
 	}
 	if d.Cache != nil {
 		// wildcard в синтаксисе chi — «/*»; имя из {path...} (gin/echo)
-		// chi не понимает. Путь достаётся URLParam(r, "*").
-		r.Get("/{eco}/*", handleProxy(d))
+		// chi не понимает. Путь достаётся URLParam(r, "*"). HEAD — как у
+		// repo-файлов выше: HEAD-пробы по пакетам не должны ловить 405.
+		proxy := handleProxy(d)
+		r.Get("/{eco}/*", proxy)
+		r.Head("/{eco}/*", proxy)
 	}
 	return r
 }
@@ -167,7 +182,7 @@ func BuildPublicRouter(d Deps) http.Handler {
 // и фрейминга админской поверхности (аудит 2026-08-27).
 func BuildAdminRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
-	r.Use(RequestID)
+	r.Use(RequestID(d.rand()))
 	r.Use(LogRequests(d.logger()))
 	r.Use(ObserveMetrics(d.Metrics))
 	r.Use(chimw.Recoverer)
@@ -330,4 +345,13 @@ func (d Deps) clock() port.Clock {
 		return d.Clock
 	}
 	return systemWebClock{}
+}
+
+// rand — порт случайности депсов или системная реализация
+// (nil-безопасность, как clock).
+func (d Deps) rand() port.Rand {
+	if d.Rand != nil {
+		return d.Rand
+	}
+	return systemWebRand{}
 }

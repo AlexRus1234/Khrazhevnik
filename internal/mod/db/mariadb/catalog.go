@@ -669,7 +669,10 @@ func (s *Store) DeleteJob(ctx context.Context, id int64) error {
 	return s.exec(ctx, sqlJobDelete, "sync-задача", strconv.FormatInt(id, 10), id)
 }
 
-// scanJob читает строку sync_jobs.
+// scanJob читает строку sync_jobs. Valid у lastRun/updatedAt не
+// проверяется: обе колонки NOT NULL в схеме (миграция 0001), NULL сюда
+// не доходит; Int64 при NULL дал бы нулевое время, не панику. Хрупкость
+// принята осознанно (ревью 2026-09-03).
 func scanJob(row interface{ Scan(dest ...any) error }) (domain.SyncJob, error) {
 	var j domain.SyncJob
 	var state string

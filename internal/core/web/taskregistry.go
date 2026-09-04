@@ -27,13 +27,12 @@ package web
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -256,18 +255,24 @@ type TaskRegistry struct {
 	sem      chan struct{}       // семафор параллелизма (буфер N)
 	wg       sync.WaitGroup
 	clock    port.Clock
+	rand     port.Rand
 	shutdown context.Context
 	cancel   context.CancelFunc
 }
 
 // NewTaskRegistry создаёт реестр с лимитом workers параллельных задач.
 // workers <= 0 заменяется на 1: нулевой лимит означал бы мёртвый реестр.
-func NewTaskRegistry(workers int, clock port.Clock) *TaskRegistry {
+// rand — источник ID задач (nil — системная реализация; тесты подменяют
+// портом, чтобы ID были детерминированы).
+func NewTaskRegistry(workers int, clock port.Clock, rand port.Rand) *TaskRegistry {
 	if workers < 1 {
 		workers = 1
 	}
 	if clock == nil {
 		clock = systemWebClock{}
+	}
+	if rand == nil {
+		rand = systemWebRand{}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &TaskRegistry{
@@ -276,6 +281,7 @@ func NewTaskRegistry(workers int, clock port.Clock) *TaskRegistry {
 		claims:   make(map[string]struct{}),
 		sem:      make(chan struct{}, workers),
 		clock:    clock,
+		rand:     rand,
 		shutdown: ctx,
 		cancel:   cancel,
 	}
@@ -304,7 +310,7 @@ func (r *TaskRegistry) Start(kind, label string, fn func(ctx context.Context, p 
 		return "", ErrTaskLimit
 	}
 	task := &Task{
-		ID:        newTaskID(kind),
+		ID:        r.newTaskID(kind),
 		Kind:      kind,
 		Label:     label,
 		state:     taskRunning,
@@ -471,17 +477,20 @@ func (r *TaskRegistry) WaitAll(ctx context.Context) error {
 	}
 }
 
-// newTaskID — идентификатор вида "<kind>-<8hex>" из crypto/rand; при
-// отказе энтропии — по таймеру (уникальность важнее случайности).
-func newTaskID(kind string) string {
-	buf := make([]byte, 4)
-	if _, err := rand.Read(buf); err != nil {
+// newTaskID — идентификатор вида "<kind>-<8hex>" через port.Rand
+// (первые 8 hex UUID4 — те же 8 случайных байта, инжект в тестах); при
+// отказе источника — по таймеру (уникальность важнее случайности).
+func (r *TaskRegistry) newTaskID(kind string) string {
+	u, err := r.rand.UUID4()
+	if err != nil {
 		return fmt.Sprintf("%s-%08d", kind, time.Now().UnixNano()%1e8)
 	}
-	return kind + "-" + hex.EncodeToString(buf)
+	return kind + "-" + strings.ReplaceAll(u, "-", "")[:8]
 }
 
 // humanBytes — компактное человекочитаемое число байт для лога задачи.
+// Дубликат mirror.humanBytes легален: границы слоёв (engine не знает о
+// web, mod→web импорт запрещён) — по образцу writeAtomic сессии 40.
 func humanBytes(n int64) string {
 	switch {
 	case n >= 1<<30:

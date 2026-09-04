@@ -128,7 +128,7 @@ func publishIntegrationEnv(t *testing.T, signer port.Signer) (*web.Server, strin
 		}
 		ecosystems[name] = adapter
 	}
-	tasks := web.NewTaskRegistry(2, clock)
+	tasks := web.NewTaskRegistry(2, clock, nil)
 	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, clock, wireRepoAdaptersForTest(signer, clock))
 	publishAPI := publishSyncerTest{engine: publishEngine, repos: catalog.Repos, tasks: tasks}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

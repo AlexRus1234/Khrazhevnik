@@ -683,7 +683,10 @@ func (s *Store) DeleteJob(ctx context.Context, id int64) error {
 	return s.exec(ctx, sqlJobDelete, "sync-задача", strconv.FormatInt(id, 10), id)
 }
 
-// scanJob читает строку sync_jobs.
+// scanJob читает строку sync_jobs. Valid у lastRun/updatedAt не
+// проверяется: обе колонки NOT NULL в схеме (миграция 0001), NULL сюда
+// не доходит; Int64 при NULL дал бы нулевое время, не панику. Хрупкость
+// принята осознанно (ревью 2026-09-03).
 func scanJob(row interface{ Scan(dest ...any) error }) (domain.SyncJob, error) {
 	var j domain.SyncJob
 	var state string
@@ -847,7 +850,9 @@ func mapRead(err error, what, key string) error {
 // mapWrite переводит ошибки записи в доменные, единообразно с
 // sqlite/mariadb (таблица паритета — docs/func/ru/storage-db.md):
 // SQLSTATE 23505 (unique) — «уже существует», 23503 (FK), 23502 (not
-// null), 23514 (check) — конфликты с причиной.
+// null), 23514 (check) — конфликты с причиной; 22001 (string data
+// right truncation — длиннее колонки, как 1406 у mariadb) —
+// InvalidKeyError (defence-in-depth: ValidateKey режет раньше).
 func mapWrite(err error, what, key string) error {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
@@ -862,6 +867,8 @@ func mapWrite(err error, what, key string) error {
 		return &domain.ConflictError{What: what, Key: key, Reason: "нарушение NOT NULL"}
 	case "23514":
 		return &domain.ConflictError{What: what, Key: key, Reason: "нарушение CHECK-ограничения"}
+	case "22001":
+		return &domain.InvalidKeyError{Key: key, Reasons: []error{errors.New("длиннее лимита колонки")}}
 	}
 	return err
 }

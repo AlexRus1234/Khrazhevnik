@@ -68,6 +68,11 @@ const (
 	defaultRetryMax         = 3
 	defaultErrorThreshold   = 0.05
 	defaultProgressInterval = 2 * time.Second
+	// maxTrackedErrors — потолок среза причин ошибок в downloadResult:
+	// отчёт задачи берёт топ-10 агрегатом, копить все строки (по одной
+	// на каждый сбойный путь огромного sync) — рост памяти без пользы.
+	// Потолок с запасом больше отчёта (ревью 2026-09-03).
+	maxTrackedErrors = 100
 )
 
 // DefaultRetryMax — экспортируемая копия для wire (конфиг там собирается
@@ -96,6 +101,11 @@ type Engine struct {
 	clock   port.Clock
 	ecos    map[string]port.Ecosystem
 	cfg     Config
+	// ErrorHook — опциональный репортёр ошибок финализации sync_jobs:
+	// проглоченный сбой финального UpdateJob оставлял задачу навсегда
+	// в running молча (ревью 2026-09-03). Ставится в wire, как
+	// Scheduler.ErrorHook; nil — тесты.
+	ErrorHook func(error)
 	// limiter — общая корзина полосы на все sync движка; nil — безлимит.
 	// Потоковый: платёж идёт внутри копирования (cache.PrefetchThrottled),
 	// не пост-фактум — объекты крупнее burst больше не валят sync.
@@ -157,6 +167,16 @@ func (e *Engine) throttle() cacheengine.Throttle {
 	}
 }
 
+// reportJobWrite — последняя линия для финального статуса sync_jobs:
+// ошибка финального UpdateJob не возвращается наверх (синхронизация уже
+// завершена/прервана), но молча терять её нельзя — задача осталась бы
+// в running навсегда. Репорт в ErrorHook (nil — тесты).
+func (e *Engine) reportJobWrite(err error) {
+	if err != nil && e.ErrorHook != nil {
+		e.ErrorHook(err)
+	}
+}
+
 // Sync синхронизирует remote: enumerate → diff → worker pool prefetch.
 // Блокирует до завершения; вызывающий — воркер TaskRegistry. Прогресс
 // пишется в p (кадры) и sync_jobs (батч по ProgressInterval). Отмена ctx
@@ -191,10 +211,10 @@ func (e *Engine) Sync(ctx context.Context, remote domain.Remote, p Progress) err
 		var uns *domain.UnsupportedError
 		if errors.As(err, &uns) {
 			p.Log(fmt.Sprintf("enumerate не поддерживается: %v", err))
-			_ = e.failJob(job, err)
+			e.reportJobWrite(e.failJob(job, err))
 			return err
 		}
-		_ = e.failJob(job, err)
+		e.reportJobWrite(e.failJob(job, err))
 		return fmt.Errorf("mirror: enumerate: %w", err)
 	}
 	p.Log(fmt.Sprintf("enumerate: %d путей", len(paths)))
@@ -203,12 +223,12 @@ func (e *Engine) Sync(ctx context.Context, remote domain.Remote, p Progress) err
 	p.Update("diff", fmt.Sprintf("%s: %d путей", remote.Name, len(paths)), 0, int64(len(paths)))
 	dr, err := e.diff(ctx, eco, remote, paths)
 	if err != nil {
-		_ = e.failJob(job, err)
+		e.reportJobWrite(e.failJob(job, err))
 		return fmt.Errorf("mirror: diff: %w", err)
 	}
 	p.Log(fmt.Sprintf("diff: %d к скачиванию, %d пропущено", len(dr.toSync), dr.skipped))
 	if len(dr.toSync) == 0 {
-		_ = e.succeedJob(job, 0, 0)
+		e.reportJobWrite(e.succeedJob(job, 0, 0))
 		p.Update("done", remote.Name, 0, 0)
 		p.Log("sync завершён: нечего скачивать")
 		return nil
@@ -233,18 +253,18 @@ func (e *Engine) Sync(ctx context.Context, remote domain.Remote, p Progress) err
 	// записывалась бы succeeded, а мониторинг врал бы (interrupted ≠
 	// succeeded; верификация сессии 23).
 	if ctx.Err() != nil {
-		_ = e.failJobInterrupted(job, res.done, res.bytes)
+		e.reportJobWrite(e.failJobInterrupted(job, res.done, res.bytes))
 		p.Log("sync прерван: " + ctx.Err().Error())
 		return ctx.Err()
 	}
 
 	if res.failed > 0 && float64(res.failed)/float64(len(dr.toSync)) > e.cfg.ErrorThreshold {
 		err := fmt.Errorf("sync: %d из %d путей упали (>%.0f%%)", res.failed, len(dr.toSync), e.cfg.ErrorThreshold*100)
-		_ = e.failJob(job, err)
+		e.reportJobWrite(e.failJob(job, err))
 		p.Log("sync завершён ошибкой: " + err.Error())
 		return err
 	}
-	_ = e.succeedJob(job, res.done, res.bytes)
+	e.reportJobWrite(e.succeedJob(job, res.done, res.bytes))
 	p.Update("done", remote.Name, int64(res.done), int64(len(dr.toSync)))
 	p.Log("sync завершён успешно")
 	return nil
@@ -300,7 +320,11 @@ func (e *Engine) download(ctx context.Context, eco port.Ecosystem, remote domain
 		switch {
 		case pr.err != nil:
 			res.failed++
-			res.errors = append(res.errors, pr.path+": "+pr.err.Error())
+			// потолок среза: топ-10 агрегату хватает выборки, весь
+			// сбойный путь-список копить — память без пользы
+			if len(res.errors) < maxTrackedErrors {
+				res.errors = append(res.errors, pr.path+": "+pr.err.Error())
+			}
 		case pr.stale:
 			// объект отдан из кеша при сбойном upstream — деградация,
 			// не сбой: в failed не попадает и ErrorThreshold не растит
@@ -520,7 +544,9 @@ type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
 
-// humanBytes — компактное число байт для лога задачи.
+// humanBytes — компактное число байт для лога задачи. Дубликат
+// web.humanBytes легален: границы слоёв (engine не знает о web) — по
+// образцу writeAtomic сессии 40.
 func humanBytes(n int64) string {
 	switch {
 	case n >= 1<<30:

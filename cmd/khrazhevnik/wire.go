@@ -29,6 +29,7 @@ import (
 	"io"
 	"iter"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"time"
@@ -168,13 +169,17 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	}
 	httpClient := outboundHTTPClient()
 	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, httpClient, systemClock{}, cacheengine.Config{StaleIfError: cfg.Cache.StaleIfError, MaxObjectSize: cfg.Cache.MaxObjectSize.Bytes, NegativeTTL404: cfg.Cache.NegativeTTL404.Duration, NegativeTTL5xx: cfg.Cache.NegativeTTL5xx.Duration}, metrics.NewCache())
-	tasks := web.NewTaskRegistry(cfg.Mirror.Workers, systemClock{})
+	tasks := web.NewTaskRegistry(cfg.Mirror.Workers, systemClock{}, uuidRand{})
 	mirrorEngine := mirrorengine.New(mirrorengine.Config{
 		Workers:        cfg.Mirror.Workers,
 		MaxBandwidth:   cfg.Mirror.MaxBandwidth.Bytes,
 		RetryMax:       mirrorengine.DefaultRetryMax,
 		ErrorThreshold: mirrorengine.DefaultErrorThreshold,
 	}, cacheEngine, storage, catalog.ObjIndex, catalog.Remotes, catalog.Jobs, systemClock{}, ecosystems)
+	// Сбой финального UpdateJob sync_jobs не всплывает наверх (sync уже
+	// завершён) — без хука статус терялся бы молча (задача в running
+	// навсегда); тот же приём, что у Scheduler.ErrorHook ниже.
+	mirrorEngine.ErrorHook = func(err error) { log.Error("mirror sync_jobs", "err", err) }
 	// recovery sync_jobs: записи, зависшие в running после рестарта
 	// процесса, помечаются failed — живых воркеров для них больше нет.
 	// Сбой каталога не блокирует старт: retry произойдёт на следующем
@@ -585,8 +590,15 @@ func (uuidRand) Int64(max int64) int64 {
 	}
 	n := int64(b[0])<<56 | int64(b[1])<<48 | int64(b[2])<<40 | int64(b[3])<<32 |
 		int64(b[4])<<24 | int64(b[5])<<16 | int64(b[6])<<8 | int64(b[7])
+	// clamp перед abs: -MinInt64 в дополнительном коде == MinInt64 —
+	// без зажима модульная арифметика дала бы отрицательный jitter
+	// (ревью 2026-09-03).
 	if n < 0 {
-		n = -n
+		if n == math.MinInt64 {
+			n = math.MaxInt64
+		} else {
+			n = -n
+		}
 	}
 	return n % max
 }

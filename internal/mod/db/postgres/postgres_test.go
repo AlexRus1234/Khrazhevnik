@@ -113,4 +113,11 @@ func TestMapWrite(t *testing.T) {
 	if err := mapWrite(errors.New("иное"), "x", "y"); err == nil {
 		t.Fatal("иная ошибка не должна стать nil")
 	}
+	// 22001 (string data right truncation) → InvalidKeyError — паритет
+	// с mariadb 1406 (docs/func/ru/storage-db.md)
+	err := mapWrite(&pgconn.PgError{Code: "22001"}, "объект", "k")
+	var ik *domain.InvalidKeyError
+	if !errors.As(err, &ik) {
+		t.Fatalf("22001 → InvalidKeyError, получено %v", err)
+	}
 }

@@ -25,6 +25,8 @@ import (
 	"testing"
 
 	chimw "github.com/go-chi/chi/v5/middleware"
+
+	"khrazhevnik/internal/testutil"
 )
 
 // TestRecovererTurnsPanicInto500 — паника хендлера отдаёт 500, процесс
@@ -34,7 +36,7 @@ import (
 func TestRecovererTurnsPanicInto500(t *testing.T) {
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewTextHandler(buf, nil))
-	h := RequestID(LogRequests(log)(chimw.Recoverer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+	h := RequestID(nil)(LogRequests(log)(chimw.Recoverer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		panic("boom")
 	}))))
 	rec := httptest.NewRecorder()
@@ -132,9 +134,22 @@ func TestRequestIDFromContext(t *testing.T) {
 	h := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		fromCtx = RequestIDFromContext(r.Context())
 	})
-	RequestID(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	RequestID(nil)(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if fromCtx == "" {
 		t.Error("request id не попал в контекст")
+	}
+}
+
+func TestRequestIDInjectedRand(t *testing.T) {
+	// port.Rand инжект: FixedRand даёт детерминированный ID (UUID4 без
+	// дефисов = те же 32 hex-символа из 16 байт); раньше crypto/rand был
+	// недоступен для подмены (ревью 2026-09-03).
+	h := RequestID(testutil.FixedRand("11111111-1111-4111-8111-111111111111"))(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if got, want := rec.Header().Get(RequestIDHeader), "11111111111141118111111111111111"; got != want {
+		t.Fatalf("инжектированный rand → %q, хочу %q", got, want)
 	}
 }
 
@@ -174,7 +189,7 @@ func TestLogRequests(t *testing.T) {
 
 	r := BuildPublicRouter(Deps{})
 	_ = r // роутеры уже несут middleware; тестируем сам middleware
-	logged := RequestID(LogRequests(log)(h))
+	logged := RequestID(nil)(LogRequests(log)(h))
 
 	logged.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ok", nil))
 	logged.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/boom", nil))

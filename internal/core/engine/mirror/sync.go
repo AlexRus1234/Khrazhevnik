@@ -150,6 +150,9 @@ func (e *Engine) touchJob(ctx context.Context, remote domain.Remote, files int64
 }
 
 // findJobByRemote ищет sync_job по remote_id. NotFound, если нет.
+// Полный обход Jobs — осознанно: v1-масштаб (remotes — единицы-десятки)
+// делает индекс по remote_id лишним; завести при росте — пост-v1
+// (ревью 2026-09-03).
 func (e *Engine) findJobByRemote(ctx context.Context, remoteID int64) (domain.SyncJob, error) {
 	jobs, err := e.jobs.Jobs(ctx)
 	if err != nil {

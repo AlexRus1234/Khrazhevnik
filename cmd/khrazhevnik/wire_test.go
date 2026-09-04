@@ -47,7 +47,7 @@ func TestAppWaitTasksDegradedStagesStillRun(t *testing.T) {
 	sched := mirrorengine.NewScheduler(nil, testutil.NewFakeRemoteStore(), nil, testClock, 0)
 	sched.Start(context.Background())
 
-	tasks := web.NewTaskRegistry(1, testClock)
+	tasks := web.NewTaskRegistry(1, testClock, nil)
 	hangTaskDone := make(chan struct{})
 	started := make(chan struct{})
 	if _, err := tasks.Start("sync", "remote-a", func(ctx context.Context, _ web.Progress) error {
@@ -95,7 +95,7 @@ func TestAppWaitTasksAllStagesSucceed(t *testing.T) {
 	sched := mirrorengine.NewScheduler(nil, testutil.NewFakeRemoteStore(), nil, testClock, 0)
 	sched.Start(context.Background())
 
-	tasks := web.NewTaskRegistry(1, testClock)
+	tasks := web.NewTaskRegistry(1, testClock, nil)
 	done := make(chan struct{})
 	if _, err := tasks.Start("sync", "remote-b", func(ctx context.Context, _ web.Progress) error {
 		defer close(done)

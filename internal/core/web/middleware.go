@@ -19,13 +19,15 @@ package web
 import (
 	"context"
 	crand "crypto/rand"
-	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"khrazhevnik/internal/core/metrics"
+	"khrazhevnik/internal/core/port"
 )
 
 // RequestIDHeader — заголовок сквозного идентификатора запроса.
@@ -36,17 +38,24 @@ type requestIDKey struct{}
 
 // RequestID гарантирует сквозной X-Request-Id: валидный входящий
 // сохраняется, иначе генерируется новый (16 байт hex). Идентификатор
-// кладётся в контекст и в заголовок ответа.
-func RequestID(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := sanitizeRequestID(r.Header.Get(RequestIDHeader))
-		if id == "" {
-			id = newRequestID()
-		}
-		w.Header().Set(RequestIDHeader, id)
-		ctx := context.WithValue(r.Context(), requestIDKey{}, id)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+// кладётся в контекст и в заголовок ответа. rand — порт случайности
+// (инжект из Deps: подмена в тестах даёт детерминированные ID); nil —
+// системная реализация.
+func RequestID(rand port.Rand) func(http.Handler) http.Handler {
+	if rand == nil {
+		rand = systemWebRand{}
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id := sanitizeRequestID(r.Header.Get(RequestIDHeader))
+			if id == "" {
+				id = newRequestID(rand)
+			}
+			w.Header().Set(RequestIDHeader, id)
+			ctx := context.WithValue(r.Context(), requestIDKey{}, id)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }
 
 // RequestIDFromContext достаёт идентификатор запроса ("" — нет).
@@ -72,14 +81,51 @@ func sanitizeRequestID(id string) string {
 	return id
 }
 
-// newRequestID — 16 случайных байт hex; при исчерпании энтропии —
-// метка времени base36 (тоже валидна по формату).
-func newRequestID() string {
-	var b [16]byte
-	if _, err := crand.Read(b[:]); err != nil {
+// newRequestID — 16 случайных байт hex через port.Rand: UUID4 без
+// дефисов — те же 32 hex-символа из 16 байт (случайность — через порт,
+// инжект в тестах). При отказе источника — метка времени base36 (тоже
+// валидна по формату).
+func newRequestID(rand port.Rand) string {
+	u, err := rand.UUID4()
+	if err != nil {
 		return strconv.FormatInt(time.Now().UnixNano(), 36)
 	}
-	return hex.EncodeToString(b[:])
+	return strings.ReplaceAll(u, "-", "")
+}
+
+// systemWebRand — port.Rand поверх crypto/rand: web-случайность
+// (request-id, task ID) без явного Rand (тесты подменяют) получает
+// системную реализацию, не дёргая wire. Реализационное использование
+// crypto/rand, как systemWebClock поверх time.Now.
+type systemWebRand struct{}
+
+// UUID4 генерирует канонический UUID v4 (8-4-4-4-12, lowercase).
+func (systemWebRand) UUID4() (string, error) {
+	var b [16]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("web: чтение crypto/rand: %w", err)
+	}
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
+}
+
+// Int64 возвращает неотрицательное число в [0, max) из 8 байт
+// crypto/rand (контракт порта; сам web Int64 не использует).
+func (systemWebRand) Int64(max int64) int64 {
+	if max <= 0 {
+		return 0
+	}
+	var b [8]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return 0
+	}
+	n := int64(b[0])<<56 | int64(b[1])<<48 | int64(b[2])<<40 | int64(b[3])<<32 |
+		int64(b[4])<<24 | int64(b[5])<<16 | int64(b[6])<<8 | int64(b[7])
+	if n < 0 {
+		n = -n
+	}
+	return n % max
 }
 
 // statusRecorder запоминает статус ответа для лога.

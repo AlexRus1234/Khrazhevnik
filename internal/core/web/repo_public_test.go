@@ -306,3 +306,85 @@ func TestPublicProxyContentTypePassthroughWithNoSniff(t *testing.T) {
 		t.Errorf("прокси тело = %q, хочу byte-exact %q", rec.Body.String(), html)
 	}
 }
+
+// TestPublicHeadRoutes — сессия 68: HEAD-роуты раздачи :29202 отдают
+// 200 с теми же заголовками, что GET, и пустым телом — раньше HEAD
+// ловил 405 (CDN-пробы). Реальный HTTP-стек обязателен: тело на HEAD
+// отбрасывает сам net/http, httptest.Recorder записал бы запись
+// хендлера как «тело».
+func TestPublicHeadRoutes(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	uploadRepoObject(t, env, repoID, "pool/main/a/foo.deb", []byte("deb"))
+	proxyH, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/deb")
+		w.Header().Set("ETag", `"e1"`)
+		_, _ = io.WriteString(w, "payload")
+	})
+
+	request := func(h http.Handler, method, path string) (*http.Response, string) {
+		t.Helper()
+		srv := httptest.NewServer(h)
+		t.Cleanup(srv.Close)
+		req, err := http.NewRequest(method, srv.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { resp.Body.Close() })
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp, string(body)
+	}
+
+	cases := []struct {
+		name       string
+		handler    http.Handler
+		path       string
+		bodyPrefix string // ожидаемое тело GET (префикс; "" — не проверять)
+		warm       bool   // прогрев кеша перед сверкой: X-Cache GET/HEAD должны совпасть (HIT/HIT)
+		headers    []string
+	}{
+		{"repo-файл", env.public, "/repo/alice/pool/main/a/foo.deb", "deb", false,
+			[]string{"Content-Type", "Content-Length", "Cache-Control", "X-Content-Type-Options"}},
+		{"repo-ключ", env.public, "/repo/alice/key.asc", "-----BEGIN", false,
+			[]string{"Content-Type", "Cache-Control", "X-Content-Type-Options"}},
+		{"прокси", proxyH, "/t/pkg/a.deb", "payload", true,
+			[]string{"Content-Type", "Content-Length", "ETag", "X-Cache", "X-Content-Type-Options"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.warm {
+				// прогрев: первый GET — MISS, HEAD после него — HIT;
+				// сверяем заголовки в одинаковом состоянии кеша
+				if rec := get(t, tc.handler, tc.path); rec.Code != http.StatusOK {
+					t.Fatalf("прогрев GET %s = %d, хочу 200", tc.path, rec.Code)
+				}
+			}
+			getResp, getBody := request(tc.handler, http.MethodGet, tc.path)
+			if getResp.StatusCode != http.StatusOK {
+				t.Fatalf("GET %s = %d, хочу 200", tc.path, getResp.StatusCode)
+			}
+			if tc.bodyPrefix != "" && !strings.HasPrefix(getBody, tc.bodyPrefix) {
+				t.Fatalf("GET %s тело = %q, хочу префикс %q", tc.path, getBody, tc.bodyPrefix)
+			}
+			headResp, headBody := request(tc.handler, http.MethodHead, tc.path)
+			if headResp.StatusCode != http.StatusOK {
+				t.Fatalf("HEAD %s = %d, хочу 200 (раньше был 405)", tc.path, headResp.StatusCode)
+			}
+			if len(headBody) != 0 {
+				t.Errorf("HEAD %s отдал тело %q, хочу пусто", tc.path, headBody)
+			}
+			for _, hname := range tc.headers {
+				if got, want := headResp.Header.Get(hname), getResp.Header.Get(hname); got != want {
+					t.Errorf("HEAD %s: %s = %q, у GET %q", tc.path, hname, got, want)
+				}
+			}
+		})
+	}
+}

@@ -81,7 +81,7 @@ func newAdminEnv(t *testing.T) *adminEnv {
 	}
 	remotes := testutil.NewFakeRemoteStore()
 	auditLog := testutil.NewFakeAuditLog()
-	tasks := NewTaskRegistry(2, clock)
+	tasks := NewTaskRegistry(2, clock, nil)
 	// mirrorStub — web.MirrorSync для тестов: запускает задачу sync,
 	// которая сразу завершается (не настоящий движок зеркала — он
 	// тестируется в internal/core/engine/mirror). Хватает проверить
@@ -581,7 +581,7 @@ func TestAuditScopedTokenForbiddenOnForeignRepo(t *testing.T) {
 	h := BuildAdminRouter(Deps{
 		Log: nil, Version: "test", Auth: a, SetupToken: "setup",
 		Repos: testutil.NewFakeRepoStore(), Audit: auditLog,
-		Tasks: NewTaskRegistry(2, clock), Publish: nil, Clock: clock,
+		Tasks: NewTaskRegistry(2, clock, nil), Publish: nil, Clock: clock,
 	})
 	// Санити: admin-токен и scoped различимы (разные SHA256).
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/repos/2/objects/pool/x.deb", strings.NewReader("x"))
@@ -736,6 +736,54 @@ func TestUserAuditActionsUnified(t *testing.T) {
 			want[key] = true
 		}
 		if e.Action == "create.users" || e.Action == "delete.users" {
+			t.Errorf("fallback-имя %q в трейле: %+v", e.Action, e)
+		}
+	}
+	for key, seen := range want {
+		if !seen {
+			t.Errorf("нет записи %v — операция ушла под другое имя", key)
+		}
+	}
+}
+
+// TestRemoteAuditActionsUnified — сессия 68: remote.* action ставится
+// до вызова каталога (паттерн user.create, сессия 63): отклонённая
+// мутация писалась бы middleware под fallback-именем create.remotes —
+// два имени одной операции в трейле.
+func TestRemoteAuditActionsUnified(t *testing.T) {
+	env := newAdminEnv(t)
+	body := `{"name":"debian","ecosystem":"apt","base_url":"https://deb.debian.org/debian","mode":"proxy"}`
+	if rec := callAdmin(env, http.MethodPost, "/api/v1/remotes", body, env.jwtAdmin); rec.Code != http.StatusCreated {
+		t.Fatalf("POST /remotes = %d, хочу 201 (тело %s)", rec.Code, rec.Body.String())
+	}
+	// Дубль имени → 409: запись под remote.create (result=409),
+	// не под fallback create.remotes.
+	if rec := callAdmin(env, http.MethodPost, "/api/v1/remotes", body, env.jwtAdmin); rec.Code != http.StatusConflict {
+		t.Fatalf("повторный POST /remotes = %d, хочу 409 (тело %s)", rec.Code, rec.Body.String())
+	}
+	if rec := callAdmin(env, http.MethodDelete, "/api/v1/remotes/1", "", env.jwtAdmin); rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /remotes/1 = %d, хочу 204 (тело %s)", rec.Code, rec.Body.String())
+	}
+	// Удаление несуществующего → 404 под тем же remote.delete.
+	if rec := callAdmin(env, http.MethodDelete, "/api/v1/remotes/1", "", env.jwtAdmin); rec.Code != http.StatusNotFound {
+		t.Fatalf("повторный DELETE /remotes/1 = %d, хочу 404 (тело %s)", rec.Code, rec.Body.String())
+	}
+	entries, err := env.audit.AuditEntries(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[[2]string]bool{
+		{"remote.create", domain.AuditOK}: false,
+		{"remote.create", "409"}:          false,
+		{"remote.delete", domain.AuditOK}: false,
+		{"remote.delete", "404"}:          false,
+	}
+	for _, e := range entries {
+		key := [2]string{e.Action, e.Result}
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+		if e.Action == "create.remotes" || e.Action == "delete.remotes" {
 			t.Errorf("fallback-имя %q в трейле: %+v", e.Action, e)
 		}
 	}

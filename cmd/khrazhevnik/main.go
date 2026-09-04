@@ -95,7 +95,7 @@ func run(ctx context.Context, configPath string) error {
 
 	srv := &web.Server{
 		PublicAddr:    cfg.Server.PublicListen,
-		PublicHandler: web.BuildPublicRouter(web.Deps{Log: log, Version: Version, Cache: app.Cache, Ecosystems: app.Ecosystems, Storage: app.Storage, Repos: app.Catalog.Repos, Signer: app.Signer, NarSigner: app.NarSigner, Metrics: app.Metrics}),
+		PublicHandler: web.BuildPublicRouter(web.Deps{Log: log, Version: Version, Cache: app.Cache, Ecosystems: app.Ecosystems, Storage: app.Storage, Repos: app.Catalog.Repos, Signer: app.Signer, NarSigner: app.NarSigner, Metrics: app.Metrics, Rand: app.Rand}),
 		AdminAddr:     cfg.Server.AdminListen,
 		AdminHandler: web.BuildAdminRouter(web.Deps{
 			Log:              log,
@@ -116,6 +116,7 @@ func run(ctx context.Context, configPath string) error {
 			MetricsHandler:   app.MetricsHandler,
 			Metrics:          app.Metrics,
 			Clock:            app.Clock,
+			Rand:             app.Rand,
 		}),
 		Log:       log,
 		WaitTasks: app.WaitTasks,

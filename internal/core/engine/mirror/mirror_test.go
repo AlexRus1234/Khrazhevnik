@@ -900,3 +900,75 @@ func jobIDForRemote(env *mirrorEnv, remoteID int64) int64 {
 	}
 	return 0
 }
+
+// failFinalJobStore — обёртка JobStore с отказом финального UpdateJob
+// (state succeeded/failed): имитация сбоя БД на записи итогового
+// статуса — сбой должен уходить в ErrorHook, а не теряться молча
+// (сессия 68). Промежуточные touchJob-записи идут в базовый фейк.
+type failFinalJobStore struct {
+	port.JobStore
+	calls atomic.Int32
+}
+
+func (s *failFinalJobStore) UpdateJob(ctx context.Context, j domain.SyncJob) error {
+	if j.State == domain.StateSucceeded || j.State == domain.StateFailed {
+		s.calls.Add(1)
+		return errors.New("dial tcp 10.0.0.9:5432: connection refused")
+	}
+	return s.JobStore.UpdateJob(ctx, j)
+}
+
+// TestSyncFinalStatusErrorHook — сессия 68: сбой финального UpdateJob
+// sync_jobs репортится в ErrorHook. Раньше `_ = e.succeedJob/failJob`
+// терял статус молча — задача оставалась в running навсегда без единой
+// строки в логе.
+func TestSyncFinalStatusErrorHook(t *testing.T) {
+	env := newMirrorEnv(t)
+	final := &failFinalJobStore{JobStore: env.jobs}
+	env.mirror.jobs = final
+	var mu sync.Mutex
+	var got []error
+	env.mirror.ErrorHook = func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, err)
+	}
+	p := &recordingProgress{}
+	if err := env.mirror.Sync(context.Background(), env.remote, p); err != nil {
+		t.Fatalf("успешный sync при сбое финальной записи: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if final.calls.Load() == 0 {
+		t.Fatal("финальный UpdateJob не выполнялся — тест не на том пути")
+	}
+	if len(got) == 0 {
+		t.Fatal("ErrorHook не вызван — финальный статус потерян молча")
+	}
+}
+
+// TestSyncErrorsSliceCapped — срез причин в downloadResult растёт до
+// потолка maxTrackedErrors, а не со всеми сбойными путями огромного
+// sync (отчёт задачи берёт топ-10 агрегатом; сессия 68).
+func TestSyncErrorsSliceCapped(t *testing.T) {
+	env := newMirrorEnv(t)
+	// 150 путей, все отсутствуют upstream'ом (404 → не ретрятся):
+	// 150 сбоев, срез — не больше потолка.
+	const total = 150
+	paths := make([]string, 0, total)
+	for i := range total {
+		paths = append(paths, fmt.Sprintf("/t/pkg/gone-%d.deb", i))
+	}
+	eco := env.mirror.ecos["t"]
+	p := &recordingProgress{}
+	res := env.mirror.download(context.Background(), eco, env.remote, paths, p)
+	if res.failed != total {
+		t.Fatalf("failed = %d, хочу %d", res.failed, total)
+	}
+	if len(res.errors) != maxTrackedErrors {
+		t.Fatalf("срез причин = %d, хочу потолок %d", len(res.errors), maxTrackedErrors)
+	}
+	if len(topErrors(res.errors, 10)) != 10 {
+		t.Fatal("агрегат топ-10 по кепнутому срезу сломан")
+	}
+}

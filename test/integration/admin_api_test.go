@@ -105,7 +105,7 @@ func adminIntegrationEnv(t *testing.T) (*web.Server, *registry.CatalogSet, *web.
 	}
 	// Первый admin через /setup (без setup_token в конфиге — просто).
 	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, http.DefaultClient, clock, cacheengine.Config{}, metrics.NewCache())
-	tasks := web.NewTaskRegistry(2, clock)
+	tasks := web.NewTaskRegistry(2, clock, nil)
 	metricsHandler := metrics.NewHandler(cacheEngine.Metrics(), prometheus.NewRegistry()).MetricsHandler()
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

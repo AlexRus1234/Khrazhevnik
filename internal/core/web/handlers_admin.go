@@ -90,6 +90,11 @@ func handleCreateRemote(d Deps) http.HandlerFunc {
 		if in.Enabled != nil {
 			enabled = *in.Enabled
 		}
+		// Action ставится ДО вызова каталога (паттерн user.create,
+		// сессия 63): отклонённая мутация иначе писалась бы middleware
+		// под fallback-именем метода+пути (create.remotes), а успешная —
+		// под remote.create; два имени одной операции ломали трейл.
+		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.create"))
 		rem, err := d.Remotes.CreateRemote(r.Context(), domain.Remote{
 			Name: in.Name, Ecosystem: in.Ecosystem, BaseURL: in.BaseURL,
 			Mode: domain.RemoteMode(in.Mode), Enabled: enabled, Include: in.Include,
@@ -100,8 +105,6 @@ func handleCreateRemote(d Deps) http.HandlerFunc {
 			writeErr(w, err)
 			return
 		}
-		// Аудит: action по умолчанию «create.remotes», object — имя.
-		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.create"))
 		d.notifyRemotesChanged()
 		writeJSON(w, http.StatusCreated, remoteOutFrom(rem))
 	}
@@ -141,11 +144,13 @@ func handleUpdateRemote(d Deps) http.HandlerFunc {
 			Enabled: enabled, Include: in.Include, SyncInterval: in.SyncInterval,
 			CreatedAt: existing.CreatedAt,
 		}
+		// Action до каталога — как в handleCreateRemote: единое имя
+		// remote.update для middleware-записи при любом исходе.
+		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.update"))
 		if err := d.Remotes.UpdateRemote(r.Context(), updated); err != nil {
 			writeErr(w, err)
 			return
 		}
-		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.update"))
 		d.notifyRemotesChanged()
 		writeJSON(w, http.StatusOK, remoteOutFrom(updated))
 	}
@@ -158,11 +163,13 @@ func handleDeleteRemote(d Deps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		// Action до каталога — как в handleCreateRemote: единое имя
+		// remote.delete для middleware-записи при любом исходе.
+		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.delete"))
 		if err := d.Remotes.DeleteRemote(r.Context(), id); err != nil {
 			writeErr(w, err)
 			return
 		}
-		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.delete"))
 		d.notifyRemotesChanged()
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -187,12 +194,14 @@ func handleSyncRemote(d Deps) http.HandlerFunc {
 			writeErrCode(w, http.StatusServiceUnavailable, "mirror_unavailable")
 			return
 		}
+		// Action до движка (паттерн сессии 63): 409 дубликата и 429
+		// лимита записываются под remote.sync, а не fallback-именем.
+		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.sync"))
 		taskID, err := d.Mirror.Sync(r.Context(), id)
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
-		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.sync"))
 		d.notifyRemotesChanged()
 		writeJSON(w, http.StatusAccepted, map[string]string{"task_id": taskID})
 	}
