@@ -69,6 +69,8 @@ func TestClassifyTable(t *testing.T) {
 		{"x86_64/foo-1.0-r0.apk", domain.KindImmutable, 0},
 		{"pool/x86_64/bar-2.3-r4.apk", domain.KindImmutable, 0},
 		{"aarch64/baz-0.1-r1.apk", domain.KindImmutable, 0},
+		// Реальное имя с «+» (сессия 65): исторические gtk+ пакеты Alpine.
+		{"x86_64/gtk+2.0-2.24.33-r0.apk", domain.KindImmutable, 0},
 		// Mutable{TTL 5m}: APKINDEX и его подписи.
 		{"x86_64/APKINDEX.tar.gz", domain.KindMutable, mutableIndexTTL},
 		{"aarch64/APKINDEX.tar.gz", domain.KindMutable, mutableIndexTTL},

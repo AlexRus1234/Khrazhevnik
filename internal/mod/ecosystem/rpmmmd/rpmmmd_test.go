@@ -74,6 +74,8 @@ func TestClassifyTable(t *testing.T) {
 		{"Packages/f/foo-1.0-1.src.rpm", domain.KindImmutable, 0},
 		{"Packages/d/drpm/foo-1.0-1_1.1-1.x86_64.drpm", domain.KindImmutable, 0},
 		{"foo-1.0-1.aarch64.rpm", domain.KindImmutable, 0},
+		// Реальное мейнстрим-имя с «+» (сессия 65): libstdc++.
+		{"Packages/l/libstdc++/libstdc++-13.2.1-7.fc40.x86_64.rpm", domain.KindImmutable, 0},
 		// repomd.xml — корневой индекс, mutable{TTL 5m}.
 		{"repodata/repomd.xml", domain.KindMutable, mutableIndexTTL},
 		// подписи индекса — mutable, byte-exact (инвариант кеша).

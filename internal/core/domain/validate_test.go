@@ -34,6 +34,11 @@ func TestValidateKey(t *testing.T) {
 		"cache/apt/1/pool/Foo.deb",
 		"Cache/UPPER",
 		"cache/apt/1/dists/stable/Packages.gz",
+		// «+»/«~» — реальные имена пакетов (сессия 65): g++/libstdc++,
+		// security ~deb12u1 и backports ~bpo12u1 версии Debian/RPM.
+		"cache/apt/1/pool/main/g/g++_13.2.0-7_amd64.deb",
+		"cache/apt/1/pool/main/g/gcc-13/libstdc++6_13.2.0-7~deb12u1_amd64.deb",
+		"cache/rpm/2/Packages/l/libstdc++/libstdc++-13.2.1-7.fc40.x86_64.rpm",
 	}
 	for _, key := range valid {
 		if err := ValidateKey(key); err != nil {

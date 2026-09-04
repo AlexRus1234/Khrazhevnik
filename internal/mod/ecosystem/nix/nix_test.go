@@ -88,6 +88,9 @@ func TestClassifyTable(t *testing.T) {
 		// Immutable: логи сборки (адресованы хешем store path).
 		{"log/" + hash32 + ".drv", domain.KindImmutable, 0},
 		{"log/" + hash32 + ".narinfo", domain.KindImmutable, 0},
+		// Реальный формат логов: <hash>-<имя>.drv, имя несёт «+»/«~»
+		// (сессия 65): libstdc++, версии с ~rc.
+		{"log/" + hash32 + "-libstdc++-13.2.0~rc1.drv", domain.KindImmutable, 0},
 		// Unknown → conservative Mutable{TTL 1m}.
 		{"some/random/path.dat", domain.KindMutable, mutableUnknownTTL},
 		{"nar/not-a-hash.nar.xz", domain.KindMutable, mutableUnknownTTL},

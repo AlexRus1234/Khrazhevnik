@@ -58,6 +58,10 @@ func commitGetStatListDelete(t *testing.T, st port.Storage) {
 	put(t, st, "cache/apt/1/pool/main/a/a.deb", "aaa")
 	put(t, st, "cache/apt/1/pool/main/b/b.deb", "bbbb")
 	put(t, st, "repo/2/apt/x.pkg", "xx")
+	// Реальные имена пакетов: «+» в g++, «~» в security/backports-версиях
+	// (сессия 65) — ключ целиком, как его строит адаптер из upstream-пути.
+	plusTilde := "cache/apt/1/pool/main/g/g++_13.2.0-7~deb12u1_amd64.deb"
+	put(t, st, plusTilde, "g++")
 
 	obj, err := st.Get(ctx, "cache/apt/1/pool/main/a/a.deb")
 	if err != nil {
@@ -71,6 +75,18 @@ func commitGetStatListDelete(t *testing.T, st port.Storage) {
 	if string(body) != "aaa" || obj.Size != 3 {
 		t.Fatalf("Get = %q (%d байт)", body, obj.Size)
 	}
+	gobj, err := st.Get(ctx, plusTilde)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gbody, err := io.ReadAll(gobj.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = gobj.Body.Close()
+	if string(gbody) != "g++" || gobj.Size != 3 {
+		t.Fatalf("Get(%s) = %q (%d байт)", plusTilde, gbody, gobj.Size)
+	}
 	meta, err := st.Stat(ctx, "cache/apt/1/pool/main/a/a.deb")
 	if err != nil || meta.Key != "cache/apt/1/pool/main/a/a.deb" || meta.Size != 3 {
 		t.Fatalf("Stat = %+v, %v", meta, err)
@@ -79,10 +95,10 @@ func commitGetStatListDelete(t *testing.T, st port.Storage) {
 		t.Fatal("ModTime не заполнен")
 	}
 	got := keys(ctx, st, "cache/apt/1/")
-	if len(got) != 2 || got[0] != "cache/apt/1/pool/main/a/a.deb" || got[1] != "cache/apt/1/pool/main/b/b.deb" {
+	if len(got) != 3 || got[0] != "cache/apt/1/pool/main/a/a.deb" || got[1] != "cache/apt/1/pool/main/b/b.deb" || got[2] != plusTilde {
 		t.Fatalf("List = %v", got)
 	}
-	if all := keys(ctx, st, ""); len(all) != 3 {
+	if all := keys(ctx, st, ""); len(all) != 4 {
 		t.Fatalf("List всех = %v", all)
 	}
 	if err := st.Delete(ctx, "cache/apt/1/pool/main/a/a.deb"); err != nil {

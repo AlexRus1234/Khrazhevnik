@@ -81,6 +81,11 @@ func TestClassifyTable(t *testing.T) {
 		{"pool/main/a/app/app_1.0.tar.xz", domain.KindImmutable, 0},
 		{"pool/main/a/app/app_1.0.tar.lzma", domain.KindImmutable, 0},
 		{"pool/contrib/b/pkg/pkg_2.0.ddeb", domain.KindImmutable, 0},
+		// Реальные мейнстрим-имена с «+»/«~» (сессия 65): g++/libstdc++,
+		// security-версии ~deb12u1, backports ~bpo12u1.
+		{"pool/main/g/gcc-13/g++_13.2.0-7_amd64.deb", domain.KindImmutable, 0},
+		{"pool/main/g/gcc-13/libstdc++6_13.2.0-7~deb12u1_amd64.deb", domain.KindImmutable, 0},
+		{"pool/main/b/boost1.81/libboost1.81-dev_1.81.0-1~bpo12u1_amd64.deb", domain.KindImmutable, 0},
 		// by-hash — content-addressed индексы
 		{"dists/stable/main/binary-amd64/by-hash/SHA256/abc123", domain.KindImmutable, 0},
 		{"dists/stable/main/binary-amd64/by-hash/SHA512/def", domain.KindImmutable, 0},

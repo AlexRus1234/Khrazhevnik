@@ -73,6 +73,8 @@ func TestClassifyTable(t *testing.T) {
 		{"core/os/x86_64/foo-1.0-1-x86_64.pkg.tar.zst.sig", domain.KindImmutable, 0},
 		{"foo-1.0-1-x86_64.pkg.tar.xz.sig", domain.KindImmutable, 0},
 		{"foo-1.0-1-x86_64.pkg.tar.gz.sig", domain.KindImmutable, 0},
+		// Реальное имя с «+» в версии (сессия 65): openjdk-сборки.
+		{"core/os/x86_64/jdk17-openjdk-17.0.8.1+1-1-x86_64.pkg.tar.zst", domain.KindImmutable, 0},
 		// Mutable{TTL 5m}: репозитарные базы и их подписи.
 		{"core/os/x86_64/core.db", domain.KindMutable, mutableDBTTL},
 		{"core/os/x86_64/core.files", domain.KindMutable, mutableDBTTL},
