@@ -678,7 +678,7 @@ func TestUserAuditActionsUnified(t *testing.T) {
 	a, err := auth.New(auth.Config{
 		Users: testutil.NewFakeUserStore(), Tokens: &handlerTokens{}, Audit: auditLog,
 		Revocations: testutil.NewFakeRevocations(), Clock: clock,
-		Rand: testutil.FixedRand("44444444-4444-4444-8444-444444444444"),
+		Rand:      testutil.FixedRand("44444444-4444-4444-8444-444444444444"),
 		JWTSecret: "secret", SessionTTL: time.Hour,
 	})
 	if err != nil {
@@ -723,12 +723,12 @@ func TestUserAuditActionsUnified(t *testing.T) {
 	// Объект различает писца: «user:bob»/«user:2» у движка, путь запроса
 	// у middleware.
 	want := map[[3]string]bool{
-		{"user.create", "user:bob", domain.AuditOK}:        false,
-		{"user.create", "/api/v1/users", domain.AuditOK}:   false,
-	// 400 вне статус-словаря (аудит 2026-08-30) → result=error.
-		{"user.create", "/api/v1/users", domain.AuditError}:  false,
-		{"user.delete", "user:2", domain.AuditOK}:          false,
-		{"user.delete", "/api/v1/users/2", domain.AuditOK}: false,
+		{"user.create", "user:bob", domain.AuditOK}:      false,
+		{"user.create", "/api/v1/users", domain.AuditOK}: false,
+		// 400 вне статус-словаря (аудит 2026-08-30) → result=error.
+		{"user.create", "/api/v1/users", domain.AuditError}: false,
+		{"user.delete", "user:2", domain.AuditOK}:           false,
+		{"user.delete", "/api/v1/users/2", domain.AuditOK}:  false,
 	}
 	for _, e := range entries {
 		key := [3]string{e.Action, e.Object, e.Result}
