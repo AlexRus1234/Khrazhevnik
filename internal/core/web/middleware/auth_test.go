@@ -146,6 +146,43 @@ func TestAuthMiddlewareUnauthorizedAndAdmin(t *testing.T) {
 	}
 }
 
+// Даунгрейд владельца admin-scope токена (сессия 67): запрос с этим
+// токеном отклоняется. Отлуп — 401 по контракту authReject (Forbidden
+// от VerifyAPIToken не раскрывает валидность токена; 403 здесь был бы
+// сигналом «токен жив»), в отличие от 403 RequireAdmin для опознанной
+// сессии.
+func TestRequireAPITokenAdminScopeAfterOwnerDowngrade(t *testing.T) {
+	ctx := context.Background()
+	users := testutil.NewFakeUserStore()
+	a, err := auth.New(auth.Config{Users: users, Tokens: &middlewareTokens{}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("22222222-2222-4222-8222-222222222222"), JWTSecret: "secret", SessionTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := a.CreateUser(ctx, "admin", "password", domain.RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := a.IssueAPIToken(ctx, admin, "ci", []domain.Scope{domain.ScopeAdmin}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	w := httptest.NewRecorder()
+	RequireAPIToken(a)(next).ServeHTTP(w, middlewareRequest(raw))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("admin-токен у админа = %d, хочу 204", w.Code)
+	}
+	admin.Role = domain.RoleUser
+	if err := users.UpdateUser(ctx, admin); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	RequireAPIToken(a)(next).ServeHTTP(w, middlewareRequest(raw))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("admin-токен после даунгрейда владельца = %d, хочу 401", w.Code)
+	}
+}
+
 func TestAPIMiddlewareAndScopeMatrix(t *testing.T) {
 	a, _, jwtRaw, apiRaw := middlewareAuth(t)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })

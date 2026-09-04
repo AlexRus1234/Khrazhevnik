@@ -151,7 +151,10 @@ enabled = true
 Админ-API (порт :30202) под корнем `/api/v1`. Аутентификация — JWT-
 сессии (`Authorization: Bearer <jwt>`) или scoped API-токены
 (`Bearer khz_...`); role/`token_version` сверяются с БД на каждом
-запросе. Ошибки хендлеров — JSON `{"error":"snake_case_code"}`; фронт
+запросе. Scope `admin` API-токена требует текущую admin-роль
+владельца: смена роли гасит admin-токены немедленно, repo-токены —
+нет (права репо сверяются живьём на каждом запросе). Ошибки
+хендлеров — JSON `{"error":"snake_case_code"}`; фронт
 маппит в i18n (сессия 18). Исключение — 401/403 из auth-middleware
 (и 503 при сбое БД в нём же): отдаются plain text (`unauthorized`,
 `forbidden`), не JSON. Мутации (не-GET) автоматом пишутся в аудит-лог

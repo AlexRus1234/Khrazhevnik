@@ -480,6 +480,22 @@ func (s *Service) IssueAPIToken(ctx context.Context, u domain.User, name string,
 	return t, raw, nil
 }
 
+// adminScopeRequiresLiveAdmin — admin-scope токен требует живую
+// admin-роль владельца: роль загружена из БД на этом же запросе и
+// сверяется со scope токена (инвариант «роли не доверяем из токенов»;
+// внешнее ревью 2026-09-03). Каскад через token_version отвергнут:
+// бамп версии при смене пароля гасил бы и repo-токены CI-агентов —
+// неожидаемый побочный эффект; права repo-scope и так сверяются
+// живьём через RequireRepoAccess.
+func adminScopeRequiresLiveAdmin(t domain.APIToken, u domain.User) bool {
+	for _, sc := range t.Scopes {
+		if sc == domain.ScopeAdmin && u.Role != domain.RoleAdmin {
+			return true
+		}
+	}
+	return false
+}
+
 // VerifyAPIToken authenticates a raw khz token and touches its usage time.
 func (s *Service) VerifyAPIToken(ctx context.Context, raw string) (domain.APIToken, domain.User, error) {
 	parts := strings.Split(raw, "_")
@@ -497,6 +513,9 @@ func (s *Service) VerifyAPIToken(ctx context.Context, raw string) (domain.APITok
 	if err != nil {
 		return domain.APIToken{}, domain.User{}, authStoreError(err, "каталог", "недействительный API-токен")
 	}
+	if adminScopeRequiresLiveAdmin(t, u) {
+		return domain.APIToken{}, domain.User{}, &domain.ForbiddenError{Reason: "токен admin-scope у не-администратора (роль владельца изменена)"}
+	}
 	if s.touchThrottled(t.ID) {
 		return t, u, nil
 	}
@@ -508,14 +527,21 @@ func (s *Service) VerifyAPIToken(ctx context.Context, raw string) (domain.APITok
 		return t, u, nil
 	}
 	if s.cfg.TouchInterval > 0 {
-		s.touchMu.Lock()
-		if len(s.lastTouch) >= maxTouchMemory {
-			s.lastTouch = make(map[int64]time.Time)
-		}
-		s.lastTouch[t.ID] = s.cfg.Clock.Now()
-		s.touchMu.Unlock()
+		s.recordTouch(t.ID)
 	}
 	return t, u, nil
+}
+
+// recordTouch пишет last_touch после успешной проверки: переполнение
+// карты — полный сброс (потеря троттлинга до следующего touch — не
+// уязвимость, потолок защищает от роста без границ).
+func (s *Service) recordTouch(id int64) {
+	s.touchMu.Lock()
+	defer s.touchMu.Unlock()
+	if len(s.lastTouch) >= maxTouchMemory {
+		s.lastTouch = make(map[int64]time.Time)
+	}
+	s.lastTouch[id] = s.cfg.Clock.Now()
 }
 
 // touchThrottled сообщает, что last_used для токена уже писалось недавно

@@ -70,7 +70,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 | DELETE| `/api/v1/users/{id}/api-tokens/{tokenID}` | 204/404   | Отзыв токена           |
 
 Скоупы токенов: `admin` (всё), `repo:<id>:write` (upload/delete/
-reindex/листинг конкретного репо).
+reindex/листинг конкретного репо). Scope `admin` требует текущую
+admin-роль владельца: смена роли гасит admin-токены немедленно,
+repo-токены — нет.
 
 `ttl` — duration: 0/отсутствие = бессрочный токен (нулевой
 `expires_at`), отрицательное — 400 `validation_error`.

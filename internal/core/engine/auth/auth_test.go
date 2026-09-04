@@ -702,6 +702,46 @@ func TestSessionValidationClaimsAlgorithmRevocationAndExpiry(t *testing.T) {
 	}
 }
 
+// Даунгрейд владельца до user гасит admin-scope токен немедленно:
+// роль сверяется с БД на каждом запросе (внешнее ревью 2026-09-03).
+// repo-токены не затронуты — права репо и так сверяются живьём
+// (RequireRepoAccess), делегирование не ломаем.
+func TestAdminScopeTokenRequiresLiveAdminRole(t *testing.T) {
+	ctx := context.Background()
+	a, _ := newTestAuth(t)
+	u, err := a.User(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, adminRaw, err := a.IssueAPIToken(ctx, u, "ci", []domain.Scope{domain.ScopeAdmin}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// другой сид Rand — иначе raw обоих токенов совпадает и Verify
+	// находит в каталоге admin-токен вместо repo-токена
+	a.cfg.Rand = testutil.FixedRand("22222222-2222-4222-8222-222222222222")
+	_, repoRaw, err := a.IssueAPIToken(ctx, u, "push", []domain.Scope{domain.Scope("repo:7:write")}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.VerifyAPIToken(ctx, adminRaw); err != nil {
+		t.Fatalf("admin-токен у админа отклонён: %v", err)
+	}
+	if _, _, err := a.VerifyAPIToken(ctx, repoRaw); err != nil {
+		t.Fatalf("repo-токен у админа отклонён: %v", err)
+	}
+	u.Role = domain.RoleUser
+	if err := a.cfg.Users.UpdateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.VerifyAPIToken(ctx, adminRaw); !errors.Is(err, &domain.ForbiddenError{}) {
+		t.Fatalf("admin-токен после даунгрейда владельца: %v, хочу ForbiddenError", err)
+	}
+	if _, _, err := a.VerifyAPIToken(ctx, repoRaw); err != nil {
+		t.Fatalf("repo-токен не должен гаситься даунгрейдом: %v", err)
+	}
+}
+
 func TestAPITokenExpiryInvalidTouchAndScopeErrors(t *testing.T) {
 	a, tf := newTestAuth(t)
 	u, _ := a.User(context.Background(), 1)
