@@ -55,6 +55,12 @@ const (
 	mutableUnknownTTL = 1 * time.Minute
 )
 
+// remoteReloadTimeout — шапка на DB-вызов reloadLocked под write-lock'ом:
+// зависший каталог не держит hot-path дольше шапки. Дубль константы в
+// каждом пакете легален — mod→mod импорты запрещены depguard'ом (по
+// образцу writeAtomic сессии 40).
+const remoteReloadTimeout = 5 * time.Second
+
 func init() {
 	registry.RegisterEcosystem(Name, func(_ config.Ecosystem, deps registry.EcosystemDeps) (port.Ecosystem, error) {
 		return New(deps.Remotes, deps.Clock)
@@ -68,9 +74,10 @@ type Adapter struct {
 	rules   []compiledRule
 	sums    *checksumIndex
 
-	mu          sync.RWMutex
-	remoteCache map[string]remoteEntry
-	cacheLoaded time.Time
+	mu            sync.RWMutex
+	remoteCache   map[string]remoteEntry
+	cacheLoaded   time.Time
+	reloadTimeout time.Duration
 }
 
 // remoteEntry — кеш одной записи RemoteStore по имени: remote и момент
@@ -92,11 +99,12 @@ func New(remotes port.RemoteStore, clock port.Clock) (*Adapter, error) {
 		return nil, fmt.Errorf("apk: Clock обязателен")
 	}
 	return &Adapter{
-		remotes:     remotes,
-		clock:       clock,
-		rules:       compileRules(),
-		sums:        newChecksumIndex(),
-		remoteCache: map[string]remoteEntry{},
+		remotes:       remotes,
+		clock:         clock,
+		rules:         compileRules(),
+		sums:          newChecksumIndex(),
+		remoteCache:   map[string]remoteEntry{},
+		reloadTimeout: remoteReloadTimeout,
 	}, nil
 }
 
@@ -269,6 +277,11 @@ func (a *Adapter) enumerateArch(ctx context.Context, meta port.MetaFetcher, remo
 
 // lookupRemote возвращает Remote по имени из кеша; при истечении TTL
 // перечитывает весь список remotes (KISS: remotes обычно единицы).
+// Reload выполняется под write-lock'ом — простота двойной проверки без
+// свапа снапшота; ограничение — таймаут DB-вызова (5s): зависшая БД
+// задерживает hot-path лишь на шапку, а не навсегда. Вынос reload
+// наружу со свапом — пост-v1: требует ревизии консистентности кеша
+// между RLock/Lock-фазами.
 func (a *Adapter) lookupRemote(name string) (domain.Remote, error) {
 	now := a.clock.Now()
 	a.mu.RLock()
@@ -284,8 +297,12 @@ func (a *Adapter) lookupRemote(name string) (domain.Remote, error) {
 	defer a.mu.Unlock()
 	if now.Sub(a.cacheLoaded) >= remoteCacheTTL {
 		// TTL истёк — перечитываем remotes. Двойная проверка после
-		// захвата write-lock: конкурент мог уже обновить кеш.
-		if err := a.reloadLocked(context.Background()); err != nil {
+		// захвата write-lock: конкурент мог уже обновить кеш. Шапка на
+		// DB-вызов (см. выше); ошибка по таймауту не отличима от прочих
+		// — «старый кеш лучше пустого» ниже обрабатывает её так же.
+		ctx, cancel := context.WithTimeout(context.Background(), a.reloadTimeout)
+		defer cancel()
+		if err := a.reloadLocked(ctx); err != nil {
 			// старый кеш лучше пустого: отдаём то, что есть
 			if e, ok := a.remoteCache[name]; ok {
 				return e.remote, e.err

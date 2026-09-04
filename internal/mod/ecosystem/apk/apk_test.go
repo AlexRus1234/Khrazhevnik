@@ -230,6 +230,98 @@ func TestResolveTraversalRemoteName(t *testing.T) {
 	}
 }
 
+// blockingRemotes — RemoteStore, чей Remotes() висит до отмены ctx:
+// имитирует зависшее соединение с каталогом.
+type blockingRemotes struct {
+	fakeRemotes
+	block bool
+}
+
+func (b *blockingRemotes) Remotes(ctx context.Context) ([]domain.Remote, error) {
+	if b.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return b.fakeRemotes.Remotes(ctx)
+}
+
+// countingRemotes — RemoteStore со счётчиком вызовов Remotes().
+type countingRemotes struct {
+	fakeRemotes
+	calls int
+}
+
+func (c *countingRemotes) Remotes(ctx context.Context) ([]domain.Remote, error) {
+	c.calls++
+	return c.fakeRemotes.Remotes(ctx)
+}
+
+func TestLookupRemoteReloadBoundedByTimeout(t *testing.T) {
+	// Зависший каталог не держит hot-path дольше шапки: reload
+	// срывается по таймауту, отдаётся stale-кеш («старый кеш лучше
+	// пустого»).
+	store := &blockingRemotes{fakeRemotes: fakeRemotes{rs: []domain.Remote{
+		{ID: 5, Name: "alpine", Ecosystem: "apk", BaseURL: "https://dl-cdn.alpinelinux.org/alpine", Enabled: true},
+	}}}
+	clock := testutil.NewManualClock(time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC))
+	a, err := New(store, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.reloadTimeout = 50 * time.Millisecond
+	if _, ok := a.Resolve("/apk/alpine/x86_64/APKINDEX.tar.gz"); !ok {
+		t.Fatal("первый Resolve не нашёл remote")
+	}
+	store.block = true
+	clock.Advance(remoteCacheTTL)
+	done := make(chan bool, 1)
+	go func() {
+		_, ok := a.Resolve("/apk/alpine/x86_64/APKINDEX.tar.gz")
+		done <- ok
+	}()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("reload по таймауту упал, но stale-копия из кеша не отдана")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Resolve висит на зависшем каталоге — шапка reload не работает")
+	}
+}
+
+func TestLookupRemoteReloadCounting(t *testing.T) {
+	// Свежий кеш (TTL не истёк) не обращается к RemoteStore вовсе;
+	// после истечения TTL — ровно один reload, подхватывающий новые
+	// записи.
+	store := &countingRemotes{fakeRemotes: fakeRemotes{rs: []domain.Remote{
+		{ID: 5, Name: "alpine", Ecosystem: "apk", BaseURL: "https://dl-cdn.alpinelinux.org/alpine", Enabled: true},
+	}}}
+	clock := testutil.NewManualClock(time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC))
+	a, err := New(store, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.Resolve("/apk/alpine/x86_64/APKINDEX.tar.gz"); !ok {
+		t.Fatal("первый Resolve не нашёл remote")
+	}
+	if _, ok := a.Resolve("/apk/alpine/x86_64/APKINDEX.tar.gz"); !ok {
+		t.Fatal("второй Resolve не нашёл remote")
+	}
+	if store.calls != 1 {
+		t.Fatalf("свежий кеш не должен обращаться к RemoteStore; calls=%d", store.calls)
+	}
+	store.rs = append(store.rs, domain.Remote{
+		ID: 6, Name: "edge", Ecosystem: "apk", BaseURL: "https://dl-cdn.alpinelinux.org/edge", Enabled: true,
+	})
+	clock.Advance(remoteCacheTTL)
+	if _, ok := a.Resolve("/apk/edge/x86_64/APKINDEX.tar.gz"); !ok {
+		t.Fatal("после TTL reload не подхватил новый remote")
+	}
+	if store.calls != 2 {
+		t.Errorf("после TTL должен быть ровно один reload; calls=%d", store.calls)
+	}
+}
+
 func TestResolvePicksUpNewRemote(t *testing.T) {
 	store := testutil.NewFakeRemoteStore()
 	clock := testutil.NewManualClock(time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC))
