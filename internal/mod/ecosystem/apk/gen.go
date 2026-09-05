@@ -172,7 +172,7 @@ func appendIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix 
 	h := sha1.New()
 	cr := &countReader{r: obj.Body}
 	tee := io.TeeReader(cr, h)
-	pi, err := readPkgInfoFromPackage(tee)
+	pi, err := readPkgInfoFromPackage(ctx, tee)
 	if err != nil {
 		return err
 	}

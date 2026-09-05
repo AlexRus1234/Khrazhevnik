@@ -18,6 +18,7 @@ package apk
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -169,7 +170,7 @@ func TestParsePkgInfoTooLarge(t *testing.T) {
 
 func TestReadPkgInfoFromPackageGzip(t *testing.T) {
 	apk := buildApkTarGz(t, pkginfoText)
-	pi, err := readPkgInfoFromPackage(bytes.NewReader(apk))
+	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(apk))
 	if err != nil {
 		t.Fatalf("readPkgInfoFromPackage gzip: %v", err)
 	}
@@ -180,7 +181,7 @@ func TestReadPkgInfoFromPackageGzip(t *testing.T) {
 
 func TestReadPkgInfoFromPackageZstd(t *testing.T) {
 	apk := buildApkTarZst(t, pkginfoText)
-	pi, err := readPkgInfoFromPackage(bytes.NewReader(apk))
+	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(apk))
 	if err != nil {
 		t.Fatalf("readPkgInfoFromPackage zstd: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestReadPkgInfoFromTarMissing(t *testing.T) {
 	tw := tar.NewWriter(&tarBuf)
 	_ = tw.WriteHeader(&tar.Header{Name: "usr/bin/foo", Typeflag: tar.TypeReg, Mode: 0o755, Size: 0})
 	_ = tw.Close()
-	_, err := readPkgInfoFromTar(bytes.NewReader(tarBuf.Bytes()))
+	_, err := readPkgInfoFromTar(context.Background(), bytes.NewReader(tarBuf.Bytes()))
 	if !errors.Is(err, ErrBadApk) {
 		t.Fatalf("ожидали ErrBadApk для tar без .PKGINFO, got %v", err)
 	}
@@ -620,5 +621,108 @@ func TestGenerateIndexesNoDependenciesOmitsLines(t *testing.T) {
 		if strings.Contains(text, banned+"\n") || strings.Contains(text, "\n"+banned) {
 			t.Errorf("APKINDEX содержит %q без зависимостей в пакете:\n%s", banned, text)
 		}
+	}
+}
+
+// apkBombGz строит .apk-бомбу (gzip-вариант — его формат): tar с одним
+// членом объявленного размера huge, набитым повторами (сжимается в
+// килобайты, разжимается больше капа). Запись потоковая через компрессор
+// — память теста ограничена буфером, а не размером бомбы (по образцу
+// apt controlBombGz).
+func apkBombGz(t *testing.T, huge int64) []byte {
+	t.Helper()
+	var raw bytes.Buffer
+	gz := gzip.NewWriter(&raw)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: "bomb", Mode: 0o644, Size: huge, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatalf("tw.WriteHeader: %v", err)
+	}
+	chunk := bytes.Repeat([]byte{'A'}, 64<<10)
+	var written int64
+	for written+int64(len(chunk)) <= huge {
+		if _, err := tw.Write(chunk); err != nil {
+			t.Fatalf("tw.Write: %v", err)
+		}
+		written += int64(len(chunk))
+	}
+	if rest := huge - written; rest > 0 {
+		if _, err := tw.Write(bytes.Repeat([]byte{'A'}, int(rest))); err != nil {
+			t.Fatalf("tw.Write rest: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tw.Close: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gz.Close: %v", err)
+	}
+	return raw.Bytes()
+}
+
+// TestDecompressApkBomb — внешний ревью, раунд 5: reindex-путь apk
+// декомпрессии без капа (ParseAPKINDEX каплен, генератор нет). Бомба
+// (разжатых > maxDecompressedApk) — ErrDecompressTooLarge за лимитом,
+// а не OOM. Счётчик лимитера доказывает отказ в процессе чтения:
+// gzip синхронен, поэтому ассертим точный «кап+δ» (по образцу apt
+// gz-теста, δ = буфер одного чтения).
+func TestDecompressApkBomb(t *testing.T) {
+	const huge = maxDecompressedApk + (1 << 20) // 1 GiB + 1 MiB
+	dr, err := decompressApk(bufio.NewReader(bytes.NewReader(apkBombGz(t, huge))))
+	if err != nil {
+		t.Fatalf("decompressApk: %v", err)
+	}
+	defer dr.Close()
+	lr, ok := dr.(*limitedReadCloser)
+	if !ok {
+		t.Fatalf("decompressApk вернул %T, хочу *limitedReadCloser", dr)
+	}
+	if _, err := io.ReadAll(dr); !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидали ErrDecompressTooLarge на чтении, получили %v", err)
+	}
+	if want := maxDecompressedApk + 8192; lr.n > want {
+		t.Errorf("разжато %d байт, хочу не более ~%d (кап + буфер)", lr.n, want)
+	}
+}
+
+// TestGenerateIndexesApkBomb — reindex с бомбой-пакетом: задача failed
+// с ошибкой декомпресс-лимита, индексы не закоммичены (пишутся только
+// после успешного прохода всех .apk).
+func TestGenerateIndexesApkBomb(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	bomb := apkBombGz(t, maxDecompressedApk+(1<<20))
+	key := port.RepoPrefix(repo) + "/x86_64/bomb-1.0-r0.apk"
+	w, err := storage.Put(context.Background(), key)
+	if err != nil {
+		t.Fatalf("storage.Put %s: %v", key, err)
+	}
+	if _, err := w.Write(bomb); err != nil {
+		t.Fatalf("w.Write: %v", err)
+	}
+	if err := w.Commit(context.Background()); err != nil {
+		t.Fatalf("w.Commit: %v", err)
+	}
+
+	err = (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil)
+	if !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
+	}
+	if _, err := storage.Get(context.Background(), "repo/1/apk/apkindex.tar.gz"); err == nil {
+		t.Error("индекс не должен быть закоммичен")
+	}
+}
+
+// TestReadPkgInfoCancelDuringDecompress — отмена reindex-задачи гасит
+// декомпрессию: ctx.Err() проверяется на каждом члене tar-потока, а не
+// только между пакетами (раунд 5). Честный пакет с отменённым контекстом
+// отказывается до первого tr.Next.
+func TestReadPkgInfoCancelDuringDecompress(t *testing.T) {
+	apk := buildApkTarGz(t, pkginfoText)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := readPkgInfoFromPackage(ctx, bytes.NewReader(apk))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ожидали context.Canceled, получили %v", err)
 	}
 }

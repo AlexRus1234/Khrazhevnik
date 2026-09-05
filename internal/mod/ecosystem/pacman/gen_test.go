@@ -199,7 +199,7 @@ func TestParsePkgInfoDeterminism(t *testing.T) {
 
 func TestReadPkgInfoFromPackage(t *testing.T) {
 	pkg := buildPkgTarZst(t, pkginfoText)
-	pi, err := readPkgInfoFromPackage(bytes.NewReader(pkg))
+	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(pkg))
 	if err != nil {
 		t.Fatalf("readPkgInfoFromPackage: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestReadPkgInfoFromTarMissing(t *testing.T) {
 	tw := tar.NewWriter(&tarBuf)
 	_ = tw.WriteHeader(&tar.Header{Name: "usr/bin/foo", Typeflag: tar.TypeReg, Mode: 0o755, Size: 0})
 	_ = tw.Close()
-	_, err := readPkgInfoFromTar(bytes.NewReader(tarBuf.Bytes()))
+	_, err := readPkgInfoFromTar(context.Background(), bytes.NewReader(tarBuf.Bytes()))
 	if err == nil || !strings.Contains(err.Error(), ".PKGINFO") {
 		t.Fatalf("ожидали ошибку отсутствия .PKGINFO, got %v", err)
 	}
@@ -689,5 +689,119 @@ func extractDescFromDB(dbBytes []byte, dir string) (string, error) {
 			}
 			return string(b), nil
 		}
+	}
+}
+
+// pkgBombZst строит .pkg.tar.zst-бомбу: tar с одним членом объявленного
+// размера huge, набитым повторами (сжимается в килобайты, разжимается
+// больше капа). Запись потоковая через компрессор — память теста
+// ограничена буфером, а не размером бомбы (по образцу apt controlBombGz).
+func pkgBombZst(t *testing.T, huge int64) []byte {
+	t.Helper()
+	var raw bytes.Buffer
+	zw, err := zstd.NewWriter(&raw, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	if err != nil {
+		t.Fatalf("zstd.NewWriter: %v", err)
+	}
+	tw := tar.NewWriter(zw)
+	if err := tw.WriteHeader(&tar.Header{Name: "bomb", Mode: 0o644, Size: huge, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatalf("tw.WriteHeader: %v", err)
+	}
+	chunk := bytes.Repeat([]byte{'A'}, 64<<10)
+	var written int64
+	for written+int64(len(chunk)) <= huge {
+		if _, err := tw.Write(chunk); err != nil {
+			t.Fatalf("tw.Write: %v", err)
+		}
+		written += int64(len(chunk))
+	}
+	if rest := huge - written; rest > 0 {
+		if _, err := tw.Write(bytes.Repeat([]byte{'A'}, int(rest))); err != nil {
+			t.Fatalf("tw.Write rest: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tw.Close: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	return raw.Bytes()
+}
+
+// TestReadPkgInfoDecompressBomb — внешний ревью, раунд 5: reindex-путь
+// декомпрессии без капа (Enumerate каплен, генератор нет). Бомба
+// (разжатых > maxDecompressed) — ErrDecompressTooLarge за лимитом,
+// а не OOM. Счётчик лимитера доказывает отказ в процессе чтения:
+// zstd-декодер отдаёт блоками с упреждением (замер на apt: ~0.9 МиБ за
+// капом), поэтому точный «кап+δ» не ассертим — ассертим «бомба не
+// дочитана». Плюс полный путь readPkgInfoFromPackage на той же бомбе.
+func TestReadPkgInfoDecompressBomb(t *testing.T) {
+	const huge = maxDecompressed + (1 << 20) // 1 GiB + 1 MiB
+	bomb := pkgBombZst(t, huge)
+
+	dr, err := decompressPkg(bytes.NewReader(bomb))
+	if err != nil {
+		t.Fatalf("decompressPkg: %v", err)
+	}
+	lr, ok := dr.(*limitedReadCloser)
+	if !ok {
+		t.Fatalf("decompressPkg вернул %T, хочу *limitedReadCloser", dr)
+	}
+	if _, err := io.ReadAll(dr); !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидали ErrDecompressTooLarge на чтении, получили %v", err)
+	}
+	if lr.n >= huge {
+		t.Errorf("разжато %d из %d байт — отказ обязан наступить до конца бомбы", lr.n, huge)
+	}
+	if err := dr.Close(); err != nil {
+		t.Fatalf("dr.Close: %v", err)
+	}
+
+	if _, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(bomb)); !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("readPkgInfoFromPackage: ожидали ErrDecompressTooLarge, получили %v", err)
+	}
+}
+
+// TestGenerateIndexesPkgBomb — reindex с бомбой-пакетом: задача failed
+// с ошибкой декомпресс-лимита, индексы не закоммичены (пишутся только
+// после успешного прохода всех пакетов).
+func TestGenerateIndexesPkgBomb(t *testing.T) {
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	bomb := pkgBombZst(t, maxDecompressed+(1<<20))
+	key := port.RepoPrefix(repo) + "/bomb-1.0-1-x86_64.pkg.tar.zst"
+	w, err := storage.Put(context.Background(), key)
+	if err != nil {
+		t.Fatalf("storage.Put %s: %v", key, err)
+	}
+	if _, err := w.Write(bomb); err != nil {
+		t.Fatalf("w.Write: %v", err)
+	}
+	if err := w.Commit(context.Background()); err != nil {
+		t.Fatalf("w.Commit: %v", err)
+	}
+
+	err = (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil)
+	if !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
+	}
+	if _, err := storage.Get(context.Background(), "repo/1/pacman/alice.db"); err == nil {
+		t.Error("индекс не должен быть закоммичен")
+	}
+}
+
+// TestReadPkgInfoCancelDuringDecompress — отмена reindex-задачи гасит
+// декомпрессию: ctx.Err() проверяется на каждом члене tar-потока, а не
+// только между пакетами (раунд 5). Честный пакет с отменённым контекстом
+// отказывается до первого tr.Next.
+func TestReadPkgInfoCancelDuringDecompress(t *testing.T) {
+	pkg := buildPkgTarZst(t, pkginfoText)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := readPkgInfoFromPackage(ctx, bytes.NewReader(pkg))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ожидали context.Canceled, получили %v", err)
 	}
 }

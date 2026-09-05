@@ -30,6 +30,7 @@ import (
 	"archive/tar"
 	"bufio"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -163,30 +164,41 @@ func setOnceInt(p *int64, v string) {
 }
 
 // readPkgInfoFromPackage читает .PKGINFO из .apk одним проходом:
-// определение компрессии (gzip/zstd по сигнатуре) → tar → первый член
+// ограниченная декомпрессия (decompressApk) → tar → первый член
 // .PKGINFO → ParsePkgInfo. r — сырые байты .apk (генератор tee'ит через
 // sha1, поэтому читает ровно столько, сколько нужно для .PKGINFO, а
 // остаток дочитывает вызывающий для хеша — как apt/pacman/rpm генераторы).
-func readPkgInfoFromPackage(r io.Reader) (*PkgInfo, error) {
+func readPkgInfoFromPackage(ctx context.Context, r io.Reader) (*PkgInfo, error) {
 	br := bufio.NewReader(r)
 	dr, err := decompressApk(br)
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		if c, ok := dr.(io.Closer); ok {
-			_ = c.Close()
-		}
-	}()
-	return readPkgInfoFromTar(dr)
+	defer dr.Close()
+	return readPkgInfoFromTar(ctx, dr)
 }
 
 // decompressApk распознаёт формат по сигнатуре: gzip (1f 8b) или zstd
-// (28 b5 2f fd); иначе — несжатый tar (редкость, но поддержим).
-func decompressApk(br *bufio.Reader) (io.Reader, error) {
+// (28 b5 2f fd); иначе — несжатый tar (редкость, но поддержим). Любая
+// ветка ограничена maxDecompressedApk (1 GiB) — тем же декомпресс-
+// инвариантом, что и ParseAPKINDEX (parse.go: zip-bomb guard). Раньше
+// кап стоял только в Enumerate, а reindex-генератор (appendIndexEntry)
+// decompress'ил без лимита: publish.max_object_size меряет СЖАТЫЕ
+// байты, поэтому crafted .apk (килобайты на диске, гигабайты tar-мусора
+// до .PKGINFO) рвал reindex-задачу памятью. Сентинел — ErrDecompressTooLarge
+// напрямую: errors.Is работает через любые %w-обёртки tar-уровня без
+// ручной трансляции. Вызывающий обязан Close (zstd-декодер держит
+// worker-горутины до Close).
+func decompressApk(br *bufio.Reader) (io.ReadCloser, error) {
 	peek, err := br.Peek(4)
 	if err != nil && err != io.EOF {
 		return nil, fmt.Errorf("%w: peek: %w", ErrBadApk, err)
+	}
+	limit := func(rc io.ReadCloser) io.ReadCloser {
+		return &limitedReadCloser{
+			limitedReader: &limitedReader{r: rc, limit: maxDecompressedApk, sentinel: ErrDecompressTooLarge},
+			closer:        rc,
+		}
 	}
 	switch {
 	case len(peek) >= 2 && peek[0] == 0x1f && peek[1] == 0x8b:
@@ -194,22 +206,44 @@ func decompressApk(br *bufio.Reader) (io.Reader, error) {
 		if gzErr != nil {
 			return nil, fmt.Errorf("%w: gzip: %w", ErrBadApk, gzErr)
 		}
-		return gz, nil
+		return limit(gz), nil
 	case len(peek) >= 4 && peek[0] == 0x28 && peek[1] == 0xb5 && peek[2] == 0x2f && peek[3] == 0xfd:
 		zr, gzErr := zstd.NewReader(br)
 		if gzErr != nil {
 			return nil, fmt.Errorf("%w: zstd: %w", ErrBadApk, gzErr)
 		}
-		return zr, nil
+		return limit(zstdReadCloser{zr}), nil
 	}
-	return br, nil
+	return io.NopCloser(&limitedReader{r: br, limit: maxDecompressedApk, sentinel: ErrDecompressTooLarge}), nil
 }
 
+// limitedReadCloser — limitedReader с Close исходного ридера: лимит
+// считается на Read, Close пробрасывается (см. decompressApk про
+// zstd-горутины).
+type limitedReadCloser struct {
+	*limitedReader
+	closer io.Closer
+}
+
+func (l *limitedReadCloser) Close() error { return l.closer.Close() }
+
+// zstdReadCloser адаптирует *zstd.Decoder к io.ReadCloser: Close у
+// декодера безвозвратный и без error, контракт io.Closer требует error.
+type zstdReadCloser struct{ *zstd.Decoder }
+
+func (z zstdReadCloser) Close() error { z.Decoder.Close(); return nil }
+
 // readPkgInfoFromTar ищет .PKGINFO в tar-потоке и парсит его. Вынесено
-// для тестирования без декомпрессии (фаззинг гоняет tar-уровень).
-func readPkgInfoFromTar(r io.Reader) (*PkgInfo, error) {
+// для тестирования без декомпрессии (фаззинг гоняет tar-уровень). ctx.Err()
+// проверяется на каждом члене: отмена reindex-задачи раньше работала
+// только между пакетами, а декомпрессия внутри пакета крутилась до
+// конца потока (внешнее ревью, раунд 5).
+func readPkgInfoFromTar(ctx context.Context, r io.Reader) (*PkgInfo, error) {
 	tr := tar.NewReader(r)
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("apk.pkg: отмена reindex: %w", err)
+		}
 		hdr, err := tr.Next()
 		if err != nil {
 			if errors.Is(err, io.EOF) {

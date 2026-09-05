@@ -29,6 +29,7 @@ package pacman
 
 import (
 	"archive/tar"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -168,28 +169,67 @@ func setOnceInt(p *int64, v string) {
 }
 
 // readPkgInfoFromPackage читает .PKGINFO из .pkg.tar.zst одним проходом:
-// zstd-декомпрессия → tar → первый член .PKGINFO → ParsePkgInfo.
-// r — сырые байты .pkg.tar.zst (генератор tee'ит через SHA256, поэтому
-// readPkgInfoFromPackage читает ровно столько, сколько нужно для .PKGINFO,
-// а остаток дочитывает вызывающий для хеша — как apt/rpm генераторы).
-func readPkgInfoFromPackage(r io.Reader) (*PkgInfo, error) {
+// ограниченная zstd-декомпрессия (decompressPkg) → tar → первый член
+// .PKGINFO → ParsePkgInfo. r — сырые байты .pkg.tar.zst (генератор
+// tee'ит через SHA256, поэтому readPkgInfoFromPackage читает ровно
+// столько, сколько нужно для .PKGINFO, а остаток дочитывает вызывающий
+// для хеша — как apt/rpm генераторы).
+func readPkgInfoFromPackage(ctx context.Context, r io.Reader) (*PkgInfo, error) {
+	dr, err := decompressPkg(r)
+	if err != nil {
+		return nil, err
+	}
+	defer dr.Close()
+	return readPkgInfoFromTar(ctx, dr)
+}
+
+// decompressPkg возвращает разжатый tar-поток пакета, ограниченный
+// maxDecompressed (1 GiB) — тем же декомпресс-инвариантом, что и
+// Enumerate-парсер (parse.go: zstd-декомпрессия останавливается на
+// пороге). Раньше кап стоял только в Enumerate, а reindex-генератор
+// (buildDescEntry) decompress'ил без лимита: publish.max_object_size
+// меряет СЖАТЫЕ байты, поэтому crafted .pkg.tar.zst (килобайты на диске,
+// гигабайты tar-мусора до .PKGINFO) рвал reindex-задачу памятью.
+// Сентинел ограничителя — ErrDecompressTooLarge напрямую: errors.Is
+// работает через любые %w-обёртки tar-уровня без ручной трансляции.
+func decompressPkg(r io.Reader) (io.ReadCloser, error) {
 	zr, err := zstd.NewReader(r)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrBadZstd, err)
 	}
-	defer zr.Close()
-	pi, err := readPkgInfoFromTar(zr)
-	if err != nil {
-		return nil, err
-	}
-	return pi, nil
+	return &limitedReadCloser{
+		limitedReader: &limitedReader{r: zr, limit: maxDecompressed, sentinel: ErrDecompressTooLarge},
+		closer:        zstdReadCloser{zr},
+	}, nil
 }
 
+// limitedReadCloser — limitedReader с Close исходного ридера: лимит
+// считается на Read, Close пробрасывается (см. decompressPkg про
+// zstd-горутины).
+type limitedReadCloser struct {
+	*limitedReader
+	closer io.Closer
+}
+
+func (l *limitedReadCloser) Close() error { return l.closer.Close() }
+
+// zstdReadCloser адаптирует *zstd.Decoder к io.ReadCloser: Close у
+// декодера безвозвратный и без error, контракт io.Closer требует error.
+type zstdReadCloser struct{ *zstd.Decoder }
+
+func (z zstdReadCloser) Close() error { z.Decoder.Close(); return nil }
+
 // readPkgInfoFromTar ищет .PKGINFO в tar-потоке и парсит его. Вынесено
-// для тестирования без zstd (фаззинг гоняет tar-уровень).
-func readPkgInfoFromTar(r io.Reader) (*PkgInfo, error) {
+// для тестирования без zstd (фаззинг гоняет tar-уровень). ctx.Err()
+// проверяется на каждом члене: отмена reindex-задачи раньше работала
+// только между пакетами, а декомпрессия внутри пакета крутилась до
+// конца потока (внешнее ревью, раунд 5).
+func readPkgInfoFromTar(ctx context.Context, r io.Reader) (*PkgInfo, error) {
 	tr := tar.NewReader(r)
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("pacman.pkg: отмена reindex: %w", err)
+		}
 		hdr, err := tr.Next()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
