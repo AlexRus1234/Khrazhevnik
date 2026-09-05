@@ -32,11 +32,18 @@ import (
 )
 
 // failingRepoStore — обёртка store'а репо с инжектируемым сбоем
-// RepoByName: connection-error каталога (сессия 50). err=nil возвращает
-// обычное поведение фейка (NotFound/успех).
+// Repo/RepoByName: connection-error каталога (сессия 50). err=nil
+// возвращает обычное поведение фейка (NotFound/успех).
 type failingRepoStore struct {
 	port.RepoStore
 	err error
+}
+
+func (s *failingRepoStore) Repo(ctx context.Context, id int64) (domain.Repo, error) {
+	if s.err != nil {
+		return domain.Repo{}, s.err
+	}
+	return s.RepoStore.Repo(ctx, id)
 }
 
 func (s *failingRepoStore) RepoByName(ctx context.Context, name string) (domain.Repo, error) {

@@ -23,7 +23,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"khrazhevnik/internal/core/domain"
+	"khrazhevnik/internal/core/engine/auth"
 	authmw "khrazhevnik/internal/core/web/middleware"
 	"khrazhevnik/internal/testutil"
 )
@@ -303,5 +306,64 @@ func TestAuditActorFromRejectedAuth(t *testing.T) {
 	}
 	if entries[1].Actor != "token:deadbeef" {
 		t.Errorf("actor после затирания user = %q, хочу token:deadbeef", entries[1].Actor)
+	}
+}
+
+// TestRepoAccessOutageAudits503 — сбой каталога в owner-ветке
+// RequireRepoAccess (сессия 80): ответ 503, audit-запись result=503,
+// actor — опознанная сессия (аутентификация прошла; 503 — не отказ
+// в правах, «403 от alice» дезинформировал бы трейл).
+func TestRepoAccessOutageAudits503(t *testing.T) {
+	users := testutil.NewFakeUserStore()
+	a, err := auth.New(auth.Config{
+		Users: users, Tokens: &handlerTokens{}, Audit: nil,
+		Revocations: testutil.NewFakeRevocations(),
+		Clock:       testutil.NewManualClock(time.Unix(1000, 0)),
+		Rand:        testutil.FixedRand("55555555-5555-4555-8555-555555555555"),
+		JWTSecret:   "secret", SessionTTL: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := a.CreateUser(context.Background(), "alice", "password", domain.RoleUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwtUser, err := a.IssueSession(context.Background(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos := &failingRepoStore{
+		RepoStore: testutil.NewFakeRepoStore(),
+		err:       &domain.UnavailableError{What: "каталог", Reason: "сбой БД"},
+	}
+	log := testutil.NewFakeAuditLog()
+	reached := false
+	h := AuditMiddleware(log, testutil.NewManualClock(time.Unix(1000, 0)))(
+		authmw.RequireRepoAccess(a, repos)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			reached = true
+		})))
+	r := httptest.NewRequest(http.MethodPut, "/api/v1/repos/1/objects/pkg.deb", nil)
+	r.Header.Set("Authorization", "Bearer "+jwtUser)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "1")
+	r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("сбой каталога = %d, хочу 503", rec.Code)
+	}
+	if reached {
+		t.Fatal("хендлер выполнился при сбое каталога")
+	}
+	entries, _ := log.AuditEntries(context.Background(), 0, 10)
+	if len(entries) != 1 {
+		t.Fatalf("записей аудита = %d, хочу 1", len(entries))
+	}
+	if entries[0].Result != "503" {
+		t.Errorf("result = %q, хочу 503", entries[0].Result)
+	}
+	if entries[0].Actor != "alice" {
+		t.Errorf("actor = %q, хочу alice", entries[0].Actor)
 	}
 }

@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/engine/auth"
+	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/testutil"
 )
 
@@ -255,5 +258,68 @@ func TestAPIMiddlewareAndScopeMatrix(t *testing.T) {
 	RequireScope("repo:1:write")(next).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
 	if w.Code != 403 {
 		t.Fatalf("missing context = %d", w.Code)
+	}
+}
+
+// failingRepoStore — store репо с инжектируемой ошибкой Repo:
+// сбой каталога или NotFound для owner-ветки RequireRepoAccess.
+type failingRepoStore struct {
+	*testutil.FakeRepoStore
+	err error
+}
+
+func (s *failingRepoStore) Repo(context.Context, int64) (domain.Repo, error) {
+	return domain.Repo{}, s.err
+}
+
+// repoAccessRequest — запрос с chi-роут-контекстом {id}, как если бы
+// запрос шёл через /api/v1/repos/{id}/objects/*.
+func repoAccessRequest(raw, id string) *http.Request {
+	r := middlewareRequest(raw)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", id)
+	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
+}
+
+// TestRequireRepoAccessCatalogFailure — сбой каталога в owner-ветке
+// RequireRepoAccess (сессия 80): валидная сессия при лежащей БД
+// получает 503, а не 403; NotFound остаётся 403 (репо нет — прежний
+// контракт), владелец проходит, чужое репо — 403.
+func TestRequireRepoAccessCatalogFailure(t *testing.T) {
+	a, users, _, _ := middlewareAuth(t)
+	user, err := users.User(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwtUser, err := a.IssueSession(context.Background(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos := testutil.NewFakeRepoStore()
+	if _, err := repos.CreateRepo(context.Background(), domain.Repo{Name: "mine", OwnerID: user.ID, Ecosystem: "apt"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repos.CreateRepo(context.Background(), domain.Repo{Name: "other", OwnerID: 3, Ecosystem: "apt"}); err != nil {
+		t.Fatal(err)
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	for _, tc := range []struct {
+		name  string
+		id    string
+		store port.RepoStore
+		want  int
+	}{
+		{"outage", "1", &failingRepoStore{FakeRepoStore: repos, err: &domain.UnavailableError{What: "каталог", Reason: "сбой БД"}}, 503},
+		{"not-found", "1", &failingRepoStore{FakeRepoStore: repos, err: &domain.NotFoundError{What: "репозиторий", Key: "1"}}, 403},
+		{"owner", "1", repos, 204},
+		{"foreign", "2", repos, 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			RequireRepoAccess(a, tc.store)(next).ServeHTTP(w, repoAccessRequest(jwtUser, tc.id))
+			if w.Code != tc.want {
+				t.Fatalf("%s = %d, хочу %d", tc.name, w.Code, tc.want)
+			}
+		})
 	}
 }

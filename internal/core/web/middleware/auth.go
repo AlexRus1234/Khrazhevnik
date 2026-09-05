@@ -251,6 +251,14 @@ func RequireRepoAccess(a *auth.Service, repos port.RepoStore) func(http.Handler)
 				return
 			}
 			repo, err := repos.Repo(r.Context(), repoID)
+			var unavail *domain.UnavailableError
+			if errors.As(err, &unavail) {
+				// Сбой каталога — не «нет прав» (сессия 80): 503, как
+				// RequireSession/RequireAPIToken; 403 дезинформировал бы
+				// брутфорс-детекторы и писал в audit-трейл ложный отказ.
+				authReject(w, err)
+				return
+			}
 			if err == nil && repo.OwnerID == u.ID {
 				next.ServeHTTP(w, r)
 				return
