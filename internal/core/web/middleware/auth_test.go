@@ -183,6 +183,47 @@ func TestRequireAPITokenAdminScopeAfterOwnerDowngrade(t *testing.T) {
 	}
 }
 
+// Матрица «владелец × scopes × композиция» (сессия 75): RequireAPIToken
+// кладёт владельца в userKey, и админ-роль владельца не авторизует
+// токен — решают только scopes. Раньше role-фастпас в RequireScope
+// стоял до проверки scopes и пускал repo-scoped токен админа на весь
+// admin-API (RequireAdminOrAPIToken = /users, /remotes, /repos CRUD,
+// /tasks, /audit, /metrics).
+func TestRequireAdminOrAPITokenTokenScopesNotOwnerRole(t *testing.T) {
+	a, users, jwtRaw, _ := middlewareAuth(t)
+	admin, err := users.User(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	w := httptest.NewRecorder()
+	RequireAdminOrAPIToken(a)(next).ServeHTTP(w, middlewareRequest(jwtRaw))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("admin-session = %d, хочу 204", w.Code)
+	}
+	// Фейк-хранилище хранит один токен, а FixedRand даёт всем выпускам
+	// одинаковый secret — выпуск и проверка идут парой, следующий
+	// IssueAPIToken затирает предыдущий в хранилище.
+	_, repoToken, err := a.IssueAPIToken(context.Background(), admin, "ci", []domain.Scope{"repo:7:write"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	RequireAdminOrAPIToken(a)(next).ServeHTTP(w, middlewareRequest(repoToken))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("admin-token-repo-scope = %d, хочу 403", w.Code)
+	}
+	_, adminToken, err := a.IssueAPIToken(context.Background(), admin, "ops", []domain.Scope{domain.ScopeAdmin}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	RequireAdminOrAPIToken(a)(next).ServeHTTP(w, middlewareRequest(adminToken))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("admin-token-admin-scope = %d, хочу 204", w.Code)
+	}
+}
+
 func TestAPIMiddlewareAndScopeMatrix(t *testing.T) {
 	a, _, jwtRaw, apiRaw := middlewareAuth(t)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })

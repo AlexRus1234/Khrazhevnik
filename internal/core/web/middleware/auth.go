@@ -159,25 +159,32 @@ func RequireAdmin(next http.Handler) http.Handler {
 
 // RequireScope checks an API token scope, or the admin role for sessions.
 // Отклонённый, но валидный токен аудируется своим префиксом.
+//
+// Ветка токена первична и решается ТОЛЬКО scopes. RequireAPIToken кладёт
+// в контекст и владельца токена (userKey), и сам токен (tokenKey); без
+// разделения веток админ-роль владельца авторизовала бы repo-scoped
+// токен на всём admin-API. Токен авторизует ровно тем, что в нём
+// заявлено, а не правами владельца (least-privilege: утечка CI-токена
+// publish-агента не должна стоить инстанса; внешнее ревью 2026-09-04,
+// раунд 5). Роль admin значима только для сессий — «for sessions» only.
 func RequireScope(scope domain.Scope) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if t, ok := TokenFromContext(r.Context()); ok {
+				for _, got := range t.Scopes {
+					if got == scope || (scope != domain.ScopeAdmin && got == domain.ScopeAdmin) {
+						next.ServeHTTP(w, r)
+						return
+					}
+				}
+				*r = *r.WithContext(WithAuditActor(r.Context(), "token:"+t.Prefix))
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 			if u, ok := UserFromContext(r.Context()); ok && u.Role == domain.RoleAdmin {
 				next.ServeHTTP(w, r)
 				return
 			}
-			t, ok := TokenFromContext(r.Context())
-			if !ok {
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return
-			}
-			for _, got := range t.Scopes {
-				if got == scope || (scope != domain.ScopeAdmin && got == domain.ScopeAdmin) {
-					next.ServeHTTP(w, r)
-					return
-				}
-			}
-			*r = *r.WithContext(WithAuditActor(r.Context(), "token:"+t.Prefix))
 			http.Error(w, "forbidden", http.StatusForbidden)
 		})
 	}
