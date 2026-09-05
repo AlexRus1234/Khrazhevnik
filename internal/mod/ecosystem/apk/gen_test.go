@@ -664,7 +664,9 @@ func apkBombGz(t *testing.T, huge int64) []byte {
 // (разжатых > maxDecompressedApk) — ErrDecompressTooLarge за лимитом,
 // а не OOM. Счётчик лимитера доказывает отказ в процессе чтения:
 // gzip синхронен, поэтому ассертим точный «кап+δ» (по образцу apt
-// gz-теста, δ = буфер одного чтения).
+// gz-теста, δ = буфер одного чтения). Чтение — io.Copy(io.Discard):
+// ReadAll копил бы гигабайты разжатой бомбы в памяти самого теста
+// (OOM-килл на CI-runner'е с 8 ГБ, см. pacman-замер VmHWM 13 GiB).
 func TestDecompressApkBomb(t *testing.T) {
 	const huge = maxDecompressedApk + (1 << 20) // 1 GiB + 1 MiB
 	dr, err := decompressApk(bufio.NewReader(bytes.NewReader(apkBombGz(t, huge))))
@@ -676,7 +678,7 @@ func TestDecompressApkBomb(t *testing.T) {
 	if !ok {
 		t.Fatalf("decompressApk вернул %T, хочу *limitedReadCloser", dr)
 	}
-	if _, err := io.ReadAll(dr); !errors.Is(err, ErrDecompressTooLarge) {
+	if _, err := io.Copy(io.Discard, dr); !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидали ErrDecompressTooLarge на чтении, получили %v", err)
 	}
 	if want := maxDecompressedApk + 8192; lr.n > want {

@@ -735,7 +735,10 @@ func pkgBombZst(t *testing.T, huge int64) []byte {
 // а не OOM. Счётчик лимитера доказывает отказ в процессе чтения:
 // zstd-декодер отдаёт блоками с упреждением (замер на apt: ~0.9 МиБ за
 // капом), поэтому точный «кап+δ» не ассертим — ассертим «бомба не
-// дочитана». Плюс полный путь readPkgInfoFromPackage на той же бомбе.
+// дочитана». Чтение — io.Copy(io.Discard): ReadAll копил бы гигабайты
+// разжатой бомбы в памяти самого теста (замер VmHWM на Linux: 13 GiB
+// пик под -race — OOM-килл на CI-runner'е с 8 ГБ). Плюс полный путь
+// readPkgInfoFromPackage на той же бомбе.
 func TestReadPkgInfoDecompressBomb(t *testing.T) {
 	const huge = maxDecompressed + (1 << 20) // 1 GiB + 1 MiB
 	bomb := pkgBombZst(t, huge)
@@ -748,7 +751,7 @@ func TestReadPkgInfoDecompressBomb(t *testing.T) {
 	if !ok {
 		t.Fatalf("decompressPkg вернул %T, хочу *limitedReadCloser", dr)
 	}
-	if _, err := io.ReadAll(dr); !errors.Is(err, ErrDecompressTooLarge) {
+	if _, err := io.Copy(io.Discard, dr); !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидали ErrDecompressTooLarge на чтении, получили %v", err)
 	}
 	if lr.n >= huge {
