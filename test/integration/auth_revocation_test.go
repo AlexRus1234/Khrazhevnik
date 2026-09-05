@@ -61,10 +61,10 @@ func TestLogoutRevocationSurvivesRestart(t *testing.T) {
 	}
 
 	a1 := open(t, "11111111-1111-4111-8111-111111111111")
-	if _, err := a1.CreateUser(ctx, "alice", "correct", domain.RoleAdmin); err != nil {
+	if _, err := a1.CreateUser(ctx, "alice", "correct-horse", domain.RoleAdmin); err != nil {
 		t.Fatal(err)
 	}
-	token, err := a1.Login(ctx, "alice", "correct")
+	token, err := a1.Login(ctx, "alice", "correct-horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestLogoutRevocationSurvivesRestart(t *testing.T) {
 		t.Fatalf("отозванная сессия пережила рестарт: %v", err)
 	}
 	// Живой токен после рестарта работает (отзыв не перекосил валидацию).
-	live, err := a2.Login(ctx, "alice", "correct")
+	live, err := a2.Login(ctx, "alice", "correct-horse")
 	if err != nil {
 		t.Fatal(err)
 	}

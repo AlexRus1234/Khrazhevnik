@@ -131,6 +131,20 @@ func callAdmin(env *adminEnv, method, path, body, bearer string) *httptest.Respo
 	return rec
 }
 
+// TestCreateUserPasswordMinimumLength — POST /users с пустым паролем
+// даёт 400 validation_error от движка (отдельной валидации в хендлере
+// нет — движок единственная точка), а не 500/201.
+func TestCreateUserPasswordMinimumLength(t *testing.T) {
+	env := newAdminEnv(t)
+	rec := callAdmin(env, http.MethodPost, "/api/v1/users", `{"username":"bob","password":"","role":"user"}`, env.jwtAdmin)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /users (пустой пароль) = %d, хочу 400 (тело %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "validation_error") {
+		t.Fatalf("тело %s, хочу validation_error", rec.Body.String())
+	}
+}
+
 func TestAdminRemotesCRUD(t *testing.T) {
 	env := newAdminEnv(t)
 

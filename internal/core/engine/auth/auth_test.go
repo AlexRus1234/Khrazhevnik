@@ -125,10 +125,32 @@ func newTestAuth(t *testing.T) (*Service, *tokenFake) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.CreateUser(context.Background(), "alice", "correct", domain.RoleAdmin); err != nil {
+	if _, err := a.CreateUser(context.Background(), "alice", "correct-horse", domain.RoleAdmin); err != nil {
 		t.Fatal(err)
 	}
 	return a, tf
+}
+
+func TestMinPasswordLength(t *testing.T) {
+	a, _ := newTestAuth(t)
+	ctx := context.Background()
+	if _, err := a.CreateUser(ctx, "short", "", domain.RoleUser); !errors.Is(err, &domain.ValidationError{}) {
+		t.Fatalf("пустой пароль принят: %v", err)
+	}
+	if _, err := a.CreateUser(ctx, "short", "1234567", domain.RoleUser); !errors.Is(err, &domain.ValidationError{}) {
+		t.Fatalf("7-байтный пароль принят: %v", err)
+	}
+	if _, _, err := a.EnsureFirstAdmin(ctx, "boot", "1234567"); !errors.Is(err, &domain.ValidationError{}) {
+		t.Fatalf("bootstrap принял короткий пароль: %v", err)
+	}
+	if _, err := a.CreateUser(ctx, "ok", "12345678", domain.RoleUser); err != nil {
+		t.Fatalf("8-байтный пароль отклонён: %v", err)
+	}
+	// Логин — путь сравнения, не создания: пустой пароль даёт
+	// Forbidden (401 invalid_credentials), тайминг-паритет сохранён.
+	if _, err := a.Login(ctx, "alice", ""); err == nil || !errors.Is(err, &domain.ForbiddenError{}) {
+		t.Fatalf("логин с пустым паролем: %v", err)
+	}
 }
 
 func TestPasswordGuardAndSessionVersion(t *testing.T) {
@@ -136,7 +158,7 @@ func TestPasswordGuardAndSessionVersion(t *testing.T) {
 	if _, err := a.CreateUser(context.Background(), "long", string(make([]byte, 73)), domain.RoleUser); err == nil {
 		t.Fatal("73-byte password accepted")
 	}
-	u, err := a.VerifyPassword(context.Background(), "alice", "correct")
+	u, err := a.VerifyPassword(context.Background(), "alice", "correct-horse")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +255,7 @@ func TestLoginAndIssueFailures(t *testing.T) {
 	if _, err := a.Login(context.Background(), "alice", "wrong"); err == nil {
 		t.Fatal("bad login accepted")
 	}
-	if token, err := a.Login(context.Background(), "alice", "correct"); err != nil || token == "" {
+	if token, err := a.Login(context.Background(), "alice", "correct-horse"); err != nil || token == "" {
 		t.Fatalf("login: %v", err)
 	}
 	if _, err := a.IssueSession(context.Background(), domain.User{}); err != nil {
@@ -261,7 +283,7 @@ func TestLoginAndIssueFailures(t *testing.T) {
 	}
 	a2, _ := newTestAuth(t)
 	a2.cfg.Rand = testutil.FailingRand(errors.New("rand"))
-	if _, err := a2.Login(context.Background(), "alice", "correct"); err == nil {
+	if _, err := a2.Login(context.Background(), "alice", "correct-horse"); err == nil {
 		t.Fatal("login issue failure lost")
 	}
 }
@@ -279,10 +301,10 @@ func TestBcryptCostConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.cfg.BcryptCost = 4
-	if _, err := a.CreateUser(ctx, "alice", "correct", domain.RoleAdmin); err != nil {
+	if _, err := a.CreateUser(ctx, "alice", "correct-horse", domain.RoleAdmin); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Login(ctx, "alice", "correct"); err != nil {
+	if _, err := a.Login(ctx, "alice", "correct-horse"); err != nil {
 		t.Fatalf("логин при cost=4: %v", err)
 	}
 	bad := cfg
@@ -322,7 +344,7 @@ func TestDummyHashTimingParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.CreateUser(ctx, "alice", "correct", domain.RoleAdmin); err != nil {
+	if _, err := a.CreateUser(ctx, "alice", "correct-horse", domain.RoleAdmin); err != nil {
 		t.Fatal(err)
 	}
 	// прогрев sync.Once dummy-хэша: сам тест меряет только сравнения
@@ -358,7 +380,7 @@ func TestTouchIntervalThrottle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.CreateUser(ctx, "alice", "correct", domain.RoleAdmin); err != nil {
+	if _, err := a.CreateUser(ctx, "alice", "correct-horse", domain.RoleAdmin); err != nil {
 		t.Fatal(err)
 	}
 	u, _ := a.User(ctx, 1)
@@ -422,7 +444,7 @@ func TestRevocationPersistsAcrossRestart(t *testing.T) {
 		return a
 	}
 	a1 := build(testutil.FixedRand("11111111-1111-4111-8111-111111111111"))
-	admin, err := a1.CreateUser(ctx, "alice", "correct", domain.RoleAdmin)
+	admin, err := a1.CreateUser(ctx, "alice", "correct-horse", domain.RoleAdmin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,12 +551,12 @@ func TestLoginAuditSurvivesCancelledContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.CreateUser(context.Background(), "alice", "correct", domain.RoleAdmin); err != nil {
+	if _, err := a.CreateUser(context.Background(), "alice", "correct-horse", domain.RoleAdmin); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := a.Login(ctx, "alice", "correct"); err != nil {
+	if _, err := a.Login(ctx, "alice", "correct-horse"); err != nil {
 		t.Fatalf("логин с оборванным соединением: %v", err)
 	}
 	entries, _ := log.AuditEntries(context.Background(), 0, 10)
@@ -564,7 +586,7 @@ func TestUserAuditSurvivesCancelledContext(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := a.CreateUser(ctx, "alice", "correct", domain.RoleAdmin); err != nil {
+	if _, err := a.CreateUser(ctx, "alice", "correct-horse", domain.RoleAdmin); err != nil {
 		t.Fatalf("создание при оборванном соединении: %v", err)
 	}
 	if err := a.DeleteUser(ctx, 1); err != nil {
@@ -603,7 +625,7 @@ func TestStoreFailuresSurfaceAsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	admin, err := a.CreateUser(ctx, "alice", "correct", domain.RoleAdmin)
+	admin, err := a.CreateUser(ctx, "alice", "correct-horse", domain.RoleAdmin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +640,7 @@ func TestStoreFailuresSurfaceAsUnavailable(t *testing.T) {
 
 	bad := &errorUserStore{FakeUserStore: users, byNameErr: errors.New("db down")}
 	a.cfg.Users = bad
-	_, err = a.VerifyPassword(ctx, "alice", "correct")
+	_, err = a.VerifyPassword(ctx, "alice", "correct-horse")
 	if !errors.Is(err, &domain.UnavailableError{}) {
 		t.Fatalf("транзиентный сбой: %v, хочу UnavailableError", err)
 	}

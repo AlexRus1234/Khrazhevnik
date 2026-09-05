@@ -50,20 +50,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 | Метод | Путь                | Auth | Код       | Назначение                       |
 |-------|---------------------|------|-----------|----------------------------------|
-| POST  | `/api/v1/setup`     | пустая таблица users (атомарно), опц. заголовок `X-Setup-Token`; rate-limit 10/min | 201/403 | Создать первого админа `{username,password}` |
+| POST  | `/api/v1/setup`     | пустая таблица users (атомарно), опц. заголовок `X-Setup-Token`; rate-limit 10/min | 201/400/403 | Создать первого админа `{username,password}` (пароль ≥ 8 байт) |
 | POST  | `/api/v1/auth/login`| —    | 200/401   | `{username,password}` → `{token}` (JWT; TTL — `auth.session_ttl`); rate-limit 10/min |
 | POST  | `/api/v1/auth/logout`| session | 204    | Персистентный отзыв JWT (переживает рестарт; сбой каталога — 503) |
 
 Сноска кодов: `setup`/`login` сверх лимита 10/min с IP — 429; пароль
 длиннее 72 байт (граница bcrypt) — 413 `too_large` на `setup`/`login`/
-`POST /users`.
+`POST /users`. Минимальная длина пароля — 8 байт: короче (в т.ч.
+пустой) — 400 `validation_error` на `setup` и `POST /users`; на
+`login` короткий пароль — обычный `401 invalid_credentials`.
 
 ## Пользователи и API-токены (admin)
 
 | Метод | Путь                                      | Код       | Назначение             |
 |-------|-------------------------------------------|-----------|------------------------|
 | GET   | `/api/v1/users`                           | 200       | Список пользователей   |
-| POST  | `/api/v1/users`                           | 201/400   | `{username,password,role?}` (role — `admin`/`user`, по умолчанию `user`) |
+| POST  | `/api/v1/users`                           | 201/400   | `{username,password,role?}` (role — `admin`/`user`, по умолчанию `user`); пароль ≥ 8 байт, иначе 400 `validation_error` |
 | DELETE| `/api/v1/users/{id}`                      | 204/404   | Удаление (токены умирают через token_version) |
 | POST  | `/api/v1/users/{id}/api-tokens`           | 201/400   | `{name,scopes[],ttl}` → `{token,id,name,scopes,expires_at}`; токен показывается **один раз** |
 | GET   | `/api/v1/users/{id}/api-tokens`           | 200       | Список токенов (без секретов) |

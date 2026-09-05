@@ -210,6 +210,34 @@ func TestTokenTTLAndRevokePathContract(t *testing.T) {
 	}
 }
 
+// TestSetupPasswordMinimumLength — /setup с пустым/коротким паролем
+// даёт 400 validation_error (движок отвергает до БД), 8 байт — 201;
+// слабую учётку в bootstrap-окне создать нельзя (внешнее ревью
+// раунд 5).
+func TestSetupPasswordMinimumLength(t *testing.T) {
+	a, _ := handlerAuth(t)
+	h := BuildAdminRouter(Deps{Auth: a})
+	for _, tc := range []struct {
+		password string
+		code     int
+	}{
+		{"", 400},
+		{"1234567", 400},
+		{"12345678", 201},
+	} {
+		w := callJSON(h, http.MethodPost, "/api/v1/setup", "10.0.0.1:1", `{"username":"admin","password":"`+tc.password+`"}`, "")
+		if w.Code != tc.code {
+			t.Fatalf("setup с паролем длины %d = %d, хочу %d", len(tc.password), w.Code, tc.code)
+		}
+		if tc.code == 400 {
+			m := responseMap(t, w)
+			if m["error"] != "validation_error" {
+				t.Fatalf("код ошибки = %v, хочу validation_error", m["error"])
+			}
+		}
+	}
+}
+
 // TestSetupAtomicBootstrap — 20 параллельных POST /setup в
 // bootstrap-окне: ровно один 201, остальные 403 setup_already_done,
 // в таблице один пользователь (аудит 2026-08-27). RemoteAddr у каждой

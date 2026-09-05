@@ -15,6 +15,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,13 @@ import (
 )
 
 const maxBcryptPassword = 72
+
+// minPasswordLen — минимальная длина пароля при создании учётки:
+// пустой/короткий пароль проходил bcrypt как валидный, а маршрута
+// смены пароля в API нет — слабость была бы перманентной (внешнее
+// ревью раунд 5). 8 — минимальный индустриальный; сложнее не нужно:
+// bcrypt-стоимость и rate-limit /login несут остальное.
+const minPasswordLen = 8
 
 // Границы стоимости bcrypt (параллельны валидации конфига): ниже 4
 // перебор слишком дешёв, выше 15 — логин на минуты.
@@ -202,9 +210,14 @@ func (s *Service) EnsureFirstAdmin(ctx context.Context, username, password strin
 	return u, created, err
 }
 
-// hashPassword validates the bcrypt size limit and hashes the value
+// hashPassword validates password size limits (both ends: empty/short
+// passwords must be impossible to create — there is no password-change
+// route yet, so a weak account would be permanent) and hashes the value
 // with the configured cost.
 func (s *Service) hashPassword(password string) ([]byte, error) {
+	if len([]byte(password)) < minPasswordLen {
+		return nil, &domain.ValidationError{What: "пароль", Value: strconv.Itoa(len([]byte(password))), Reason: fmt.Sprintf("короче %d байт", minPasswordLen)}
+	}
 	if len([]byte(password)) > maxBcryptPassword {
 		return nil, &domain.TooLargeError{Size: int64(len([]byte(password))), Limit: maxBcryptPassword}
 	}
