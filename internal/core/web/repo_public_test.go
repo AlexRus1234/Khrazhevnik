@@ -281,11 +281,13 @@ func TestPublicRepoCatalogUnavailable503(t *testing.T) {
 	}
 }
 
-// TestPublicProxyContentTypePassthroughWithNoSniff — прокси-путь
-// трогать нельзя: upstream-тип (в т.ч. text/html) передаётся как есть
-// из сохранённого meta (byte-exact-инвариант), а nosniff стоит и
-// здесь — браузеру запрещена переинтерпретация, но тип честный.
-func TestPublicProxyContentTypePassthroughWithNoSniff(t *testing.T) {
+// TestPublicProxyContentTypeAllowlistWithNoSniff — прокси-заголовок
+// живёт под allowlist (сессия 78 отменила passthrough сессии 36):
+// честно объявленный upstream'ом text/html больше не доходит до
+// браузера — прокси отвечает octet-stream, и рендер в origin зеркала
+// невозможен ни при каком upstream. nosniff стоит и здесь; ТЕЛО при
+// этом byte-exact — инвариант про байты, не про заголовок.
+func TestPublicProxyContentTypeAllowlistWithNoSniff(t *testing.T) {
 	const html = "<html><body>mirror index</body></html>"
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -296,8 +298,8 @@ func TestPublicProxyContentTypePassthroughWithNoSniff(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("прокси = %d, хочу 200", rec.Code)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
-		t.Errorf("прокси Content-Type = %q, хочу text/html из upstream meta (не сломали)", ct)
+	if ct := rec.Header().Get("Content-Type"); ct != "application/octet-stream" {
+		t.Errorf("прокси Content-Type = %q, хочу application/octet-stream (злой upstream-тип срезан)", ct)
 	}
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("прокси: X-Content-Type-Options = %q, хочу nosniff", got)

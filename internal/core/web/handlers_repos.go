@@ -420,9 +420,10 @@ func handlePutObject(d Deps) http.HandlerFunc {
 			writeErrCode(w, http.StatusForbidden, "admin_required")
 			return
 		}
-		// stallReader: ReadTimeout админ-сервера (30s) мерит от начала
-		// запроса и рвал бы upload большого пакета на медленном канале —
-		// каждый Read тела продлевает read-deadline (stream.go). Только
+		// stallReader: таймауты админ-сервера (30s) мерятся от начала
+		// запроса и рвали бы upload большого пакета на медленном канале
+		// (read, сессия 27) и ответ после него (write, сессия 78) —
+		// каждый Read тела продлевает оба дедлайна (stream.go). Только
 		// этот эндпоинт: остальные тела админ-API идут через decodeJSON
 		// и уже под MaxBytesReader 1 MiB (validate.go) — им окно не нужно.
 		if err := d.Publish.Upload(r.Context(), repo, objPath, size, newStallReader(w, r.Body), force); err != nil {

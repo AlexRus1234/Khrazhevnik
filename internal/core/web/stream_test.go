@@ -249,3 +249,48 @@ func TestUploadSlowStreamBreaksWithoutStallReader(t *testing.T) {
 		t.Fatal("upload прошёл (200), а должен был оборваться по ReadTimeout")
 	}
 }
+
+// writeTimeoutUploadServer — сервер с WriteTimeout=50ms (ReadTimeout
+// не задан): write-дедлайн stdlib ставит один раз при чтении заголовков
+// и абсолютен. Прод-конфиг (adminWriteTimeout=30s) моделируется
+// коротким окном — инжект вместо часового ожидания (сессия 78).
+func writeTimeoutUploadServer(t *testing.T, stall bool) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body io.Reader = r.Body
+		if stall {
+			body = newStallReader(w, r.Body)
+		}
+		if _, err := io.Copy(io.Discard, body); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.Config.WriteTimeout = 50 * time.Millisecond
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestUploadResponseSurvivesWriteTimeout — ответ upload'а доезжает,
+// когда тело отправлялось многократно дольше WriteTimeout сервера:
+// stallReader продлевает write-deadline каждым чтением тела. Без этого
+// 201 пишется в уже истёкший дедлайн — соединение обрывается без
+// статуса, а повтор upload без force даёт 409 (объект закоммичен;
+// ревью 2026-09-04, сессия 78).
+func TestUploadResponseSurvivesWriteTimeout(t *testing.T) {
+	srv := writeTimeoutUploadServer(t, true)
+	req, err := http.NewRequest(http.MethodPut, srv.URL, newDripReader(1<<20, 16, 100*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("ответ не доехал после долгого тела: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("статус = %d, хочу 200", resp.StatusCode)
+	}
+}

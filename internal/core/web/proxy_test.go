@@ -119,7 +119,10 @@ func TestProxyServesAndCaches(t *testing.T) {
 	if got := rec.Header().Get("X-Cache"); got != "MISS" {
 		t.Errorf("X-Cache первого = %q, хочу MISS", got)
 	}
-	if got := rec.Header().Get("Content-Type"); got != "application/deb" {
+	// Upstream-тип «application/deb» не проходит: .deb — пакетное
+	// расширение, ответ маппится allowlist'ом (сессия 78). Тело и
+	// остальные заголовки — byte-exact как прежде.
+	if got := rec.Header().Get("Content-Type"); got != "application/vnd.debian.binary-package" {
 		t.Errorf("Content-Type = %q", got)
 	}
 	if got := rec.Header().Get("ETag"); got != `"e1"` {
@@ -208,6 +211,51 @@ func TestProxyErrorCodes(t *testing.T) {
 		h := BuildPublicRouter(Deps{Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}})
 		if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusServiceUnavailable {
 			t.Fatalf("код = %d, хочу 503", rec.Code)
+		}
+	})
+}
+
+// TestProxyContentTypeAllowlist — Content-Type ответа прокси не
+// passthrough, а allowlist (сессия 78): рендеримые типы злого upstream
+// не доходят до браузера (фишинг/дефейс в origin зеркала), пакетные
+// расширения маппятся на честный тип, внестоловые расширения с честным
+// upstream-типом проходят (контракт MISS↔HIT идентичности заголовков,
+// сессия 69). nosniff ставится middleware поверх всех ответов.
+func TestProxyContentTypeAllowlist(t *testing.T) {
+	t.Run("злой text/html на индексе → octet-stream", func(t *testing.T) {
+		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(w, "<html><body>phishing</body></html>")
+		})
+		rec := get(t, h, "/t/idx/dists/stable/Release")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("код = %d, тело %q", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
+			t.Errorf("Content-Type = %q, хочу application/octet-stream", got)
+		}
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("X-Content-Type-Options = %q, хочу nosniff", got)
+		}
+	})
+	t.Run("deb-путь с честным типом → маппится, как заявлено", func(t *testing.T) {
+		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.debian.binary-package")
+			_, _ = io.WriteString(w, "deb-bytes")
+		})
+		rec := get(t, h, "/t/pkg/pool/main/a/apt/apt_1.0_amd64.deb")
+		if got := rec.Header().Get("Content-Type"); got != "application/vnd.debian.binary-package" {
+			t.Errorf("Content-Type = %q, хочу application/vnd.debian.binary-package", got)
+		}
+	})
+	t.Run("внестоловое расширение с честным типом проходит", func(t *testing.T) {
+		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/x-contract")
+			_, _ = io.WriteString(w, "x")
+		})
+		rec := get(t, h, "/t/idx/obj.bin")
+		if got := rec.Header().Get("Content-Type"); got != "application/x-contract" {
+			t.Errorf("Content-Type = %q, хочу application/x-contract", got)
 		}
 	})
 }

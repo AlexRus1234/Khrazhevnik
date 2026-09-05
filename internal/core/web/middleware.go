@@ -240,9 +240,11 @@ func SecurityHeaders(next http.Handler) http.Handler {
 }
 
 // NoSniff — X-Content-Type-Options: nosniff на всех ответах публичного
-// порта :29202 (аудит 2026-08-30): жёсткий Content-Type repo-объектов
-// не даёт браузеру переинтерпретировать тело, но nosniff закрывает и
-// прокси-ветку, где upstream-тип передаётся byte-exact, и healthz.
+// порта :29202 (аудит 2026-08-30). Сам по себе nosniff от честно
+// объявленного text/html НЕ защищает — потому тип задаётся allowlist'ом
+// в самих хендлерах (repoContentType, proxyContentType — сессия 78);
+// nosniff — второй слой: запрещает переинтерпретацию объявленного типа
+// и страхует пути без явного типа (healthz и будущие роуты).
 func NoSniff(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")

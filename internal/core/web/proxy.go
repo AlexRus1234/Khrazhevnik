@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -48,9 +49,16 @@ func handleProxy(d Deps) http.HandlerFunc {
 		if obj.Meta.ETag != "" {
 			w.Header().Set("ETag", obj.Meta.ETag)
 		}
-		if obj.Meta.ContentType != "" {
-			w.Header().Set("Content-Type", obj.Meta.ContentType)
-		}
+		// Content-Type — allowlist, не passthrough (ревью 2026-09-04,
+		// сессия 78): злой remote может объявить text/html на любом пути,
+		// и браузер отрендерит его в origin зеркала (фишинг/дефейс от
+		// имени доверенного домена); nosniff запрещает лишь переинтер-
+		// претацию объявленного типа, сам честно объявленный text/html
+		// он не чинит. Инвариант byte-exact — про байты ТЕЛА, не заголов-
+		// ка: заголовок ответа инстанс и так ставит сам (Content-Type,
+		// nosniff), а пакетным менеджерам тип безразличен — целостность
+		// они проверяют чексуммами и подписями в байтах.
+		w.Header().Set("Content-Type", proxyContentType(path, obj.Meta.ContentType))
 		if !obj.Meta.ModTime.IsZero() {
 			w.Header().Set("Last-Modified", obj.Meta.ModTime.UTC().Format(http.TimeFormat))
 		}
@@ -67,6 +75,45 @@ func handleProxy(d Deps) http.HandlerFunc {
 			d.Metrics.ObserveObjectBytes(eco.Name(), float64(n))
 		}
 	}
+}
+
+// proxyContentType — Content-Type ОТВЕТА прокси по allowlist (сессия
+// 78). Пакетные расширения получают честный тип независимо от upstream
+// (MISS и HIT обязаны дать одинаковый заголовок, а upstream может
+// солжёт по-разному); остальное — объявление upstream, ЕСЛИ оно не
+// рендерится браузером как активный контент; пустое или опасное —
+// application/octet-stream, fail closed к «скачиванию», не к «рендеру».
+// Отдельно от repoContentType потому, что у прокси есть честный
+// upstream-тип (контракт MISS↔HIT идентичности заголовков, сессия 69),
+// а у repo-объектов его нет в принципе.
+func proxyContentType(path, upstream string) string {
+	switch {
+	case strings.HasSuffix(path, ".deb"), strings.HasSuffix(path, ".udeb"):
+		return "application/vnd.debian.binary-package"
+	case strings.HasSuffix(path, ".rpm"): // .rpm, .src.rpm, .drpm
+		return "application/x-rpm"
+	}
+	if upstream != "" && !isRenderableType(upstream) {
+		return upstream
+	}
+	return "application/octet-stream"
+}
+
+// isRenderableType — типы, которые браузер исполняет как активный
+// контент на origin зеркала. Список сознательно короткий: nosniff
+// запрещает переинтерпретацию любого объявленного типа, так что опасен
+// только тот, что рендерится сам по себе — script в нём выполняется
+// без всякого сниффинга.
+func isRenderableType(contentType string) bool {
+	media := contentType
+	if i := strings.IndexByte(media, ';'); i >= 0 {
+		media = media[:i]
+	}
+	switch strings.ToLower(strings.TrimSpace(media)) {
+	case "text/html", "application/xhtml+xml", "image/svg+xml":
+		return true
+	}
+	return false
 }
 
 func formatInt(n int64) string {
