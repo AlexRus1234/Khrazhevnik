@@ -66,7 +66,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 |-------|-------------------------------------------|-----------|------------------------|
 | GET   | `/api/v1/users`                           | 200       | Список пользователей   |
 | POST  | `/api/v1/users`                           | 201/400   | `{username,password,role?}` (role — `admin`/`user`, по умолчанию `user`); пароль ≥ 8 байт, иначе 400 `validation_error` |
-| DELETE| `/api/v1/users/{id}`                      | 204/404   | Удаление (токены умирают через token_version) |
+| DELETE| `/api/v1/users/{id}`                      | 204/404   | Удаление; API-токены пользователя отзываются каскадом (FK ON DELETE CASCADE) и не возвращаются — счётчик их не возвращает |
 | POST  | `/api/v1/users/{id}/api-tokens`           | 201/400   | `{name,scopes[],ttl}` → `{token,id,name,scopes,expires_at}`; токен показывается **один раз** |
 | GET   | `/api/v1/users/{id}/api-tokens`           | 200       | Список токенов (без секретов) |
 | DELETE| `/api/v1/users/{id}/api-tokens/{tokenID}` | 204/404   | Отзыв токена           |

@@ -24,9 +24,11 @@ import (
 	"testing"
 	"time"
 
+	"khrazhevnik/internal/core/domain"
 	cacheengine "khrazhevnik/internal/core/engine/cache"
 	mirrorengine "khrazhevnik/internal/core/engine/mirror"
 	"khrazhevnik/internal/core/metrics"
+	"khrazhevnik/internal/core/registry"
 	"khrazhevnik/internal/core/web"
 	"khrazhevnik/internal/testutil"
 )
@@ -124,6 +126,30 @@ func TestAppWaitTasksEmpty(t *testing.T) {
 	app := &App{}
 	if err := app.WaitTasks(context.Background()); err != nil {
 		t.Fatalf("пустое приложение вернуло ошибку: %v", err)
+	}
+}
+
+// closeCountingAudit — фейк-каталог со счётчиком Close: стадия каскада
+// обязана закрыть пул БД после остановки задач (сессия 79).
+type closeCountingAudit struct{ closed bool }
+
+func (a *closeCountingAudit) Record(context.Context, domain.AuditEntry) error { return nil }
+func (a *closeCountingAudit) AuditEntries(context.Context, int64, int) ([]domain.AuditEntry, error) {
+	return nil, nil
+}
+func (a *closeCountingAudit) Close() error { a.closed = true; return nil }
+
+// TestAppWaitTasksClosesCatalog — финальная стадия WaitTasks закрывает
+// каталог (type-assertion на io.Closer, как в addremote.go): серверный
+// путь иначе никогда не звал db.Close().
+func TestAppWaitTasksClosesCatalog(t *testing.T) {
+	audit := &closeCountingAudit{}
+	app := &App{Catalog: registry.CatalogSet{Audit: audit}}
+	if err := app.WaitTasks(context.Background()); err != nil {
+		t.Fatalf("WaitTasks с фейк-каталогом: %v", err)
+	}
+	if !audit.closed {
+		t.Fatal("Close каталога не вызван хвостом WaitTasks")
 	}
 }
 

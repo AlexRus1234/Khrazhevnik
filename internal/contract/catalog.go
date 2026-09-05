@@ -72,6 +72,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	}
 	t.Run("users", func(t *testing.T) { userSuite(t, newCat(t)) })
 	t.Run("first_user_atomic", func(t *testing.T) { firstUserAtomicSuite(t, newCat(t)) })
+	t.Run("user_token_cascade", func(t *testing.T) { userTokenCascadeSuite(t, newCat(t)) })
 	t.Run("tokens", func(t *testing.T) { tokenSuite(t, newCat(t)) })
 	t.Run("repos", func(t *testing.T) { repoSuite(t, newCat(t)) })
 	t.Run("remotes", func(t *testing.T) { remoteSuite(t, newCat(t)) })
@@ -252,6 +253,35 @@ func FirstUserBarrierSuite(t *testing.T, c Catalog) {
 	if len(all) != 1 || all[0].Username != winners[0] {
 		t.Fatalf("после барьер-гонки в таблице %d записей, хочу единственного %q", len(all), winners[0])
 	}
+}
+
+// userTokenCascadeSuite — FK api_tokens.user_id → ON DELETE CASCADE
+// (сессия 79): DELETE пользователя с выданными API-токенами — успех,
+// а не FK-нарушение (409); строки токенов умирают вместе с владельцем
+// (VerifyAPIToken по хэшу больше ничего не находит). До миграции 0006
+// выпущенный токен делал владельца неудаляемым через API навсегда.
+func userTokenCascadeSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	u, err := c.Users.CreateUser(ctx, domain.User{Username: "carol", PasswordHash: "h", CreatedAt: fixed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Tokens.CreateToken(ctx, domain.APIToken{
+		UserID: u.ID, Name: "ci", Prefix: "khrz_cas",
+		SHA256: domain.HashToken("cascade-secret"), Scopes: []domain.Scope{domain.ScopeAdmin},
+		CreatedAt: fixed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Users.DeleteUser(ctx, u.ID); err != nil {
+		t.Fatalf("DeleteUser с токенами: %v (FK без CASCADE)", err)
+	}
+	if has, err := c.Users.HasUsers(ctx); err != nil || has {
+		t.Fatalf("HasUsers после удаления единственного пользователя = %v, %v", has, err)
+	}
+	_, err = c.Tokens.TokenBySHA256(ctx, domain.HashToken("cascade-secret"))
+	wantNotFound(t, err)
+	wantNotFound(t, c.Users.DeleteUser(ctx, u.ID))
 }
 
 func tokenSuite(t *testing.T, c Catalog) {

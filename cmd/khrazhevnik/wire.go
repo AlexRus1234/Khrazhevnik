@@ -523,6 +523,19 @@ func (a *App) WaitTasks(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("background deletes: %w", err))
 		}
 	}
+	// Закрытие каталога — хвост каскада: пул БД должен пережить всех
+	// потребителей (sqlite иначе выходил без WAL-checkpoint, postgres/
+	// mariadb — с висящими соединениями; внешнее ревью раунд 5). Close
+	// не в порту каталога (мало кому нужен в рантайме) — адаптеры
+	// реализуют io.Closer, type-assertion как в addremote.go. Деградация
+	// без модулей — Catalog нулевой, стадия пропускается.
+	if a.Catalog.Audit != nil {
+		if closer, ok := a.Catalog.Audit.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("catalog close: %w", err))
+			}
+		}
+	}
 	return errors.Join(errs...)
 }
 

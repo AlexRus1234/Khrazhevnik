@@ -141,6 +141,10 @@ func (s *Service) User(ctx context.Context, id int64) (domain.User, error) {
 }
 
 // DeleteUser removes an account after invalidating its sessions.
+// Порядок InvalidateUserSessions→Delete сохранён сознательно (сессия
+// 79): бамп token_version у пользователя, которого следом удаляет
+// FK-каскад (api_tokens ON DELETE CASCADE), безвреден — сверять версию
+// больше некому; физически токены гасит каскад в БД.
 func (s *Service) DeleteUser(ctx context.Context, id int64) error {
 	if err := s.InvalidateUserSessions(ctx, id); err != nil {
 		return err
