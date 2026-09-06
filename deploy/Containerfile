@@ -38,18 +38,19 @@ RUN npm run build
 
 FROM golang:1.26-alpine AS build
 # Корень step-ca до apk (chicken-and-egg: без него TLS к инстансу не
-# поднимется). Двойная укладка: аппенд в /etc/apk/certificates-bundle —
-# для самого apk; /usr/local/share/ca-certificates — чтобы
-# update-ca-certificates внутри apk add ca-certificates включил корень
-# в перегенерированный бандл (иначе стёр бы аппенд). В alpine
-# /etc/ssl/certs/ca-certificates.crt ведёт на этот бандл: закрыты apk,
-# go (GOPROXY→Nora) и curl одним движением.
-# sed repositories — apk ходит через Хражевник (ветка v3.x наследуется
-# от базового образа, remote покрывает весь корень dl-cdn).
+# поднимется). apk читает /etc/ssl/certs/ca-certificates.crt, НЕ
+# /etc/apk/certificates-bundle (CI-факт 2026-09-06: аппенд в bundle
+# доверия не дал). Порядок канонический: аппенд для бустрапа, копия в
+# /usr/local/share/ca-certificates (иначе update-ca-certificates корень
+# выкинет), apk add ca-certificates с дефолтных реп (публичный TLS),
+# перегенерация бандла с корнем — и только потом sed repositories:
+# git ставится уже через Хражевник.
 COPY deploy/certs/step-ca-root.pem /usr/local/share/ca-certificates/step-ca-root.crt
-RUN cat /usr/local/share/ca-certificates/step-ca-root.crt >> /etc/apk/certificates-bundle \
+RUN cat /usr/local/share/ca-certificates/step-ca-root.crt >> /etc/ssl/certs/ca-certificates.crt \
+    && apk add --no-cache ca-certificates \
+    && update-ca-certificates \
     && sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://khrazhevnik.panelka.yadr01.internal/apk/alpine#g' /etc/apk/repositories \
-    && apk add --no-cache ca-certificates git
+    && apk add --no-cache git
 # ca-certificates: scratch-образу нужен бандл доверенных CA, иначе
 # HTTPS-запросы к upstream-зеркалам упадут с x509. git — фолбэк версии
 # через git describe при локальной сборке без --build-arg VERSION.
