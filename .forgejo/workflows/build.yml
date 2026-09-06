@@ -708,7 +708,9 @@ jobs:
           apt-get update -qq && apt-get install -y -qq htop
           EOF
           podman cp /tmp/khrz-apt-setup.sh khrz-debian:/tmp/khrz-apt-setup.sh
-          podman exec khrz-debian sh /tmp/khrz-apt-setup.sh
+          # bash, не sh: sh в Debian — dash, pipefail не знает (CI-факт
+          # 2026-09-06: "set: Illegal option -o pipefail"); bash в базе есть.
+          podman exec khrz-debian bash /tmp/khrz-apt-setup.sh
 
       - name: Verify cache
         # HEAD-роут — сессия 68; запрос дважды: второй обязан HIT.
