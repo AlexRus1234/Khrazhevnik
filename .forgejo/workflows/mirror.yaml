@@ -72,6 +72,17 @@ jobs:
           esac
           git push https://AlexRus1234:${TOKEN_GITHUB}@github.com/AlexRus1234/Khrazhevnik.git --tags
 
+      - name: Отправка на Mos.Hub
+        continue-on-error: true
+        env:
+          TOKEN_MOSHUB: ${{ secrets.TOKEN_MOSHUB }}
+        run: |
+          echo "Синхронизация с Mos.Hub..."
+          case "$GITHUB_REF" in
+            refs/heads/*) git -c http.sslVerify=false push --force https://AlexRus1234:${TOKEN_MOSHUB}@hub.mos.ru/AlexRus1234/Khrazhevnik.git HEAD:main ;;
+          esac
+          git -c http.sslVerify=false push https://AlexRus1234:${TOKEN_MOSHUB}@hub.mos.ru/AlexRus1234/Khrazhevnik.git --tags
+
       - name: Отправка на Codeberg
         continue-on-error: true
         env:
