@@ -19,6 +19,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"sync"
@@ -347,6 +348,55 @@ func TestIndexWriteFailures(t *testing.T) {
 			t.Fatal("падение продления индекса не вернуло ошибку")
 		}
 	})
+}
+
+// TestOrphanBlobDeletedWhenMetaWriteFails — сбой записи меты mutable-
+// замены после необратимого Commit (ревью 2026-09-06): блоб новой
+// версии спланирован к фоновому удалению тем же механизмом, что и
+// сменённые версии; старая версия и индекс не тронуты.
+func TestOrphanBlobDeletedWhenMetaWriteFails(t *testing.T) {
+	env := newEnvWith(t, defaultConfig(), mutableHandler("one", `"v1"`), nil, nil)
+	if _, _, err := fetch(t, env.engine, env.eco, "/t/idx/Packages"); err != nil {
+		t.Fatal(err)
+	}
+	oldMeta, err := env.index.ObjectMeta(context.Background(), "cache/t/idx/Packages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.engine.index = errIndex{env.index.(*testutil.FakeObjectIndex)}
+	env.clock.Advance(41 * time.Second)
+	env.up.set(mutableHandler("two", `"v2"`))
+
+	_, _, err = fetch(t, env.engine, env.eco, "/t/idx/Packages")
+	if err == nil {
+		t.Fatal("падение записи индекса не вернуло ошибку")
+	}
+
+	// удаление сироты фоновое: дожидаемся очереди, затем сверяем
+	// сторадж — старая версия жива и читается, сирота выметена
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := env.engine.DrainBackgroundDeletes(ctx); err != nil {
+		t.Fatalf("Drain фоновых удалений: %v", err)
+	}
+	if _, err := env.engine.storage.Stat(context.Background(), oldMeta.StorageKey); err != nil {
+		t.Fatalf("старая версия повреждена: %v", err)
+	}
+	obj, err := env.engine.storage.Get(context.Background(), oldMeta.StorageKey)
+	if err != nil {
+		t.Fatalf("старая версия не читается: %v", err)
+	}
+	body, readErr := io.ReadAll(obj.Body)
+	_ = obj.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(body) != "one" {
+		t.Fatalf("старая версия = %q, хочу %q", body, "one")
+	}
+	if got := storageCountPrefix(t, env.engine.storage.(*testutil.FakeStorage), "cache/t/idx/"); got != 1 {
+		t.Fatalf("в хранилище %d блобов, хочу 1 (сирота выметена)", got)
+	}
 }
 
 func TestUpstreamOddStatuses(t *testing.T) {

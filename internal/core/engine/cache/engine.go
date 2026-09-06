@@ -567,6 +567,12 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 	if class.Kind == domain.KindMutable {
 		meta.ExpiresAt = e.clock.Now().Add(class.TTL)
 		if err := e.index.PutObjectMeta(ctx, meta); err != nil {
+			// Commit уже необратим: блоб записан в сторадж, а индекс
+			// остался на старой версии — без планирования удаления
+			// свежий блоб осиротеет навсегда (выметающей чистки в v1
+			// нет). Убираем его тем же механизмом, что и сменённые
+			// версии; deleteInBackground трогает только сторадж.
+			e.deleteInBackground(&meta)
 			return domain.ObjectMeta{}, false, err
 		}
 		if old != nil {
