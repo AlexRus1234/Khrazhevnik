@@ -87,6 +87,9 @@ func handleProxy(d Deps) http.HandlerFunc {
 // upstream-тип (контракт MISS↔HIT идентичности заголовков, сессия 69),
 // а у repo-объектов его нет в принципе.
 func proxyContentType(path, upstream string) string {
+	// ToLower перед таблицей: A.DEB — реальное имя пакета, а суффиксы
+	// пакетов зарегистрированы в нижнем регистре (верификация Р6, LOW).
+	path = strings.ToLower(path)
 	switch {
 	case strings.HasSuffix(path, ".deb"), strings.HasSuffix(path, ".udeb"):
 		return "application/vnd.debian.binary-package"
@@ -103,14 +106,18 @@ func proxyContentType(path, upstream string) string {
 // контент на origin зеркала. Список сознательно короткий: nosniff
 // запрещает переинтерпретацию любого объявленного типа, так что опасен
 // только тот, что рендерится сам по себе — script в нём выполняется
-// без всякого сниффинга.
+// без всякого сниффинга. XML-семейство рядом с HTML не случайно:
+// честно объявленный application/xml с PI <?xml-stylesheet href=…xsl?>
+// получает браузерный XSLT-рендер (класс XSLT-XSS, верификация Р6) —
+// nosniff здесь не помеха, тип-то легальный.
 func isRenderableType(contentType string) bool {
 	media := contentType
 	if i := strings.IndexByte(media, ';'); i >= 0 {
 		media = media[:i]
 	}
 	switch strings.ToLower(strings.TrimSpace(media)) {
-	case "text/html", "application/xhtml+xml", "image/svg+xml":
+	case "text/html", "application/xhtml+xml", "image/svg+xml",
+		"application/xml", "text/xml", "text/xsl":
 		return true
 	}
 	return false

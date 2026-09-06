@@ -258,6 +258,49 @@ func TestProxyContentTypeAllowlist(t *testing.T) {
 			t.Errorf("Content-Type = %q, хочу application/x-contract", got)
 		}
 	})
+	t.Run("злой text/xml с xml-stylesheet PI → octet-stream", func(t *testing.T) {
+		// XSLT-XSS (верификация Р6): честно объявленный text/xml с PI
+		// рендерится браузером как XSLT — тот же threat-model, что
+		// text/html, блокируется тем же блоклистом.
+		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+			_, _ = io.WriteString(w, `<?xml version="1.0"?><?xml-stylesheet type="text/xsl" href="evil.xsl"?><d/>`)
+		})
+		rec := get(t, h, "/t/idx/dists/stable/Release")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("код = %d, тело %q", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
+			t.Errorf("Content-Type = %q, хочу application/octet-stream", got)
+		}
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("X-Content-Type-Options = %q, хочу nosniff", got)
+		}
+	})
+	t.Run("честный text/xml на .xml-пути → тоже octet-stream", func(t *testing.T) {
+		// Единая точка защиты: renderable-блоклист гоняет тип в
+		// octet-stream независимо от расширения пути.
+		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/xml")
+			_, _ = io.WriteString(w, `<d/>`)
+		})
+		rec := get(t, h, "/t/idx/doc.xml")
+		if got := rec.Header().Get("Content-Type"); got != "application/octet-stream" {
+			t.Errorf("Content-Type = %q, хочу application/octet-stream", got)
+		}
+	})
+	t.Run("пакетное расширение в верхнем регистре маппится", func(t *testing.T) {
+		// A.DEB — реальное имя пакета: честный тип по ToLower-таблице,
+		// а не upstream-тип злого сервера.
+		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/x-evil")
+			_, _ = io.WriteString(w, "x")
+		})
+		rec := get(t, h, "/t/pkg/pool/PACKAGE_1.0_amd64.DEB")
+		if got := rec.Header().Get("Content-Type"); got != "application/vnd.debian.binary-package" {
+			t.Errorf("Content-Type = %q, хочу application/vnd.debian.binary-package", got)
+		}
+	})
 }
 
 func TestProxyStaleServedWithWarning(t *testing.T) {

@@ -631,9 +631,34 @@ func TestGenerateIndexesNoDependenciesOmitsLines(t *testing.T) {
 // apt controlBombGz).
 func apkBombGz(t *testing.T, huge int64) []byte {
 	t.Helper()
+	return apkBombCompressed(t, huge, true)
+}
+
+// apkBombZst — zstd-твин apkBombGz (верификация Р6: кап есть во всех
+// трёх ветвях decompressApk, а бомба-тест был только на gzip; apt
+// закрыл тот же гэп controlBombZstd — урок «фикс класса: твин-тест»).
+func apkBombZst(t *testing.T, huge int64) []byte {
+	t.Helper()
+	return apkBombCompressed(t, huge, false)
+}
+
+func apkBombCompressed(t *testing.T, huge int64, gz bool) []byte {
+	t.Helper()
 	var raw bytes.Buffer
-	gz := gzip.NewWriter(&raw)
-	tw := tar.NewWriter(gz)
+	var comp io.WriteCloser
+	if gz {
+		comp = gzip.NewWriter(&raw)
+	} else {
+		// SpeedFastest: бомба гигабайтного класса, дефолтный уровень
+		// сжатия делал бы сборку теста секундной (pacman pkgBombZst —
+		// тот же выбор).
+		enc, err := zstd.NewWriter(&raw, zstd.WithEncoderLevel(zstd.SpeedFastest))
+		if err != nil {
+			t.Fatalf("zstd.NewWriter: %v", err)
+		}
+		comp = enc
+	}
+	tw := tar.NewWriter(comp)
 	if err := tw.WriteHeader(&tar.Header{Name: "bomb", Mode: 0o644, Size: huge, Typeflag: tar.TypeReg}); err != nil {
 		t.Fatalf("tw.WriteHeader: %v", err)
 	}
@@ -653,8 +678,8 @@ func apkBombGz(t *testing.T, huge int64) []byte {
 	if err := tw.Close(); err != nil {
 		t.Fatalf("tw.Close: %v", err)
 	}
-	if err := gz.Close(); err != nil {
-		t.Fatalf("gz.Close: %v", err)
+	if err := comp.Close(); err != nil {
+		t.Fatalf("comp.Close: %v", err)
 	}
 	return raw.Bytes()
 }
@@ -715,6 +740,61 @@ func TestGenerateIndexesApkBomb(t *testing.T) {
 	}
 }
 
+// TestGenerateIndexesZstdBomb — верификация Р6: zstd-ветка decompressApk
+// без бомба-теста (кап есть во всех трёх ветвях, тест был только на
+// gzip; apt закрыл тот же гэп controlBombZstd — урок «фикс класса:
+// твин-тест»). Бомба 2× капа: упреждение zstd-декодера (MiB-класс,
+// замер на apt ~0.9 МиБ) на порядки меньше запаса, поэтому ассертим
+// «бомба не дочитана», а не точный «кап+δ» (тот честен только у
+// синхронного gzip). Чтение — io.Copy(io.Discard): ReadAll копил бы
+// гигабайты разжатой бомбы в памяти теста (OOM на CI-runner'е, см.
+// pacman-замер VmHWM). Плюс сквозной путь reindex: задача failed,
+// индексы не закоммичены.
+func TestGenerateIndexesZstdBomb(t *testing.T) {
+	const huge = 2 * maxDecompressedApk
+	dr, err := decompressApk(bufio.NewReader(bytes.NewReader(apkBombZst(t, huge))))
+	if err != nil {
+		t.Fatalf("decompressApk: %v", err)
+	}
+	lr, ok := dr.(*limitedReadCloser)
+	if !ok {
+		t.Fatalf("decompressApk вернул %T, хочу *limitedReadCloser", dr)
+	}
+	if _, err := io.Copy(io.Discard, dr); !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидали ErrDecompressTooLarge на чтении, получили %v", err)
+	}
+	if lr.n >= huge {
+		t.Errorf("разжато %d из %d байт — отказ обязан наступить до конца бомбы", lr.n, huge)
+	}
+	if err := dr.Close(); err != nil {
+		t.Fatalf("dr.Close: %v", err)
+	}
+
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	bomb := apkBombZst(t, huge)
+	key := port.RepoPrefix(repo) + "/x86_64/bomb-1.0-r0.apk"
+	w, err := storage.Put(context.Background(), key)
+	if err != nil {
+		t.Fatalf("storage.Put %s: %v", key, err)
+	}
+	if _, err := w.Write(bomb); err != nil {
+		t.Fatalf("w.Write: %v", err)
+	}
+	if err := w.Commit(context.Background()); err != nil {
+		t.Fatalf("w.Commit: %v", err)
+	}
+
+	err = (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil)
+	if !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
+	}
+	if _, err := storage.Get(context.Background(), "repo/1/apk/apkindex.tar.gz"); err == nil {
+		t.Error("индекс не должен быть закоммичен")
+	}
+}
+
 // TestReadPkgInfoCancelDuringDecompress — отмена reindex-задачи гасит
 // декомпрессию: ctx.Err() проверяется на каждом члене tar-потока, а не
 // только между пакетами (раунд 5). Честный пакет с отменённым контекстом
@@ -726,5 +806,68 @@ func TestReadPkgInfoCancelDuringDecompress(t *testing.T) {
 	_, err := readPkgInfoFromPackage(ctx, bytes.NewReader(apk))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ожидали context.Canceled, получили %v", err)
+	}
+}
+
+// gateReader отменяет ctx один раз после доставки gate байт и считает
+// отданное: cancel-барьер в середине tar-потока. После отмены байты
+// продолжают отдаваться — если код читает поток дальше, счётчик served
+// это покажет.
+type gateReader struct {
+	r      io.Reader
+	gate   int64
+	served int64
+	cancel context.CancelFunc
+	fired  bool
+}
+
+func (g *gateReader) Read(p []byte) (int, error) {
+	n, err := g.r.Read(p)
+	g.served += int64(n)
+	if !g.fired && g.served >= g.gate {
+		g.fired = true
+		g.cancel()
+	}
+	return n, err
+}
+
+// TestReadPkgInfoCancelMidStream — mid-stream вариант cancel-теста:
+// отмена ДО вызова не отличает «ctx на каждом члене» от «ctx на входе»
+// (верификация Р6). Несжатый tar с тремя членами (два заполнителя,
+// .PKGINFO последним); gate-ридер отменяет ctx сразу после доставки
+// первого члена (его заголовок — ровно 512 байт). Контракт: Canceled,
+// а не успешный разбор — при «проверке на входе» .PKGINFO третьего
+// члена был бы найден без ошибки; счётчик gate-ридера доказывает, что
+// члены после отмены не доставлялись.
+func TestReadPkgInfoCancelMidStream(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, name := range []string{"usr/bin/a", "usr/bin/b", ".PKGINFO"} {
+		var content []byte
+		if name == ".PKGINFO" {
+			content = []byte(pkginfoText)
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(content))}); err != nil {
+			t.Fatalf("WriteHeader %s: %v", name, err)
+		}
+		if len(content) > 0 {
+			if _, err := tw.Write(content); err != nil {
+				t.Fatalf("Write .PKGINFO: %v", err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tw.Close: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g := &gateReader{r: bytes.NewReader(buf.Bytes()), gate: 512, cancel: cancel}
+	_, err := readPkgInfoFromTar(ctx, g)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ожидали context.Canceled, получили %v", err)
+	}
+	if g.served > 512 {
+		t.Errorf("доставлено %d байт — члены после первого не должны читаться", g.served)
 	}
 }

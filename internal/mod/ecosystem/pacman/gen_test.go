@@ -808,3 +808,66 @@ func TestReadPkgInfoCancelDuringDecompress(t *testing.T) {
 		t.Fatalf("ожидали context.Canceled, получили %v", err)
 	}
 }
+
+// gateReader отменяет ctx один раз после доставки gate байт и считает
+// отданное: cancel-барьер в середине tar-потока. После отмены байты
+// продолжают отдаваться — если код читает поток дальше, счётчик served
+// это покажет.
+type gateReader struct {
+	r      io.Reader
+	gate   int64
+	served int64
+	cancel context.CancelFunc
+	fired  bool
+}
+
+func (g *gateReader) Read(p []byte) (int, error) {
+	n, err := g.r.Read(p)
+	g.served += int64(n)
+	if !g.fired && g.served >= g.gate {
+		g.fired = true
+		g.cancel()
+	}
+	return n, err
+}
+
+// TestReadPkgInfoCancelMidStream — mid-stream вариант cancel-теста:
+// отмена ДО вызова не отличает «ctx на каждом члене» от «ctx на входе»
+// (верификация Р6). Несжатый tar с тремя членами (два заполнителя,
+// .PKGINFO последним); gate-ридер отменяет ctx сразу после доставки
+// первого члена (его заголовок — ровно 512 байт). Контракт: Canceled,
+// а не успешный разбор — при «проверке на входе» .PKGINFO третьего
+// члена был бы найден без ошибки; счётчик gate-ридера доказывает, что
+// члены после отмены не доставлялись.
+func TestReadPkgInfoCancelMidStream(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, name := range []string{"usr/bin/a", "usr/bin/b", ".PKGINFO"} {
+		var content []byte
+		if name == ".PKGINFO" {
+			content = []byte(pkginfoText)
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(content))}); err != nil {
+			t.Fatalf("WriteHeader %s: %v", name, err)
+		}
+		if len(content) > 0 {
+			if _, err := tw.Write(content); err != nil {
+				t.Fatalf("Write .PKGINFO: %v", err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tw.Close: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g := &gateReader{r: bytes.NewReader(buf.Bytes()), gate: 512, cancel: cancel}
+	_, err := readPkgInfoFromTar(ctx, g)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ожидали context.Canceled, получили %v", err)
+	}
+	if g.served > 512 {
+		t.Errorf("доставлено %d байт — члены после первого не должны читаться", g.served)
+	}
+}

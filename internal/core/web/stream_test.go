@@ -250,11 +250,13 @@ func TestUploadSlowStreamBreaksWithoutStallReader(t *testing.T) {
 	}
 }
 
-// writeTimeoutUploadServer — сервер с WriteTimeout=50ms (ReadTimeout
-// не задан): write-дедлайн stdlib ставит один раз при чтении заголовков
-// и абсолютен. Прод-конфиг (adminWriteTimeout=30s) моделируется
-// коротким окном — инжект вместо часового ожидания (сессия 78).
-func writeTimeoutUploadServer(t *testing.T, stall bool) *httptest.Server {
+// timeoutUploadServer — httptest-сервер с WriteTimeout=50ms (readTimeout
+// > 0 добавляет и ReadTimeout — прод-модель админ-сервера: ОБА дедлайна
+// заданы; 0 = одно-обёрточная модель сессии 78). Write-дедлайн stdlib
+// ставит один раз при чтении заголовков и абсолютен. Прод-конфиг
+// (adminWriteTimeout=30s) моделируется коротким окном — инжект вместо
+// часового ожидания (сессия 78).
+func timeoutUploadServer(t *testing.T, stall bool, readTimeout time.Duration) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body io.Reader = r.Body
@@ -267,10 +269,20 @@ func writeTimeoutUploadServer(t *testing.T, stall bool) *httptest.Server {
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
+	if readTimeout > 0 {
+		srv.Config.ReadTimeout = readTimeout
+	}
 	srv.Config.WriteTimeout = 50 * time.Millisecond
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// writeTimeoutUploadServer — обёртка одно-обёрточной модели (WriteTimeout
+// без ReadTimeout) для теста сессии 78.
+func writeTimeoutUploadServer(t *testing.T, stall bool) *httptest.Server {
+	t.Helper()
+	return timeoutUploadServer(t, stall, 0)
 }
 
 // TestUploadResponseSurvivesWriteTimeout — ответ upload'а доезжает,
@@ -292,5 +304,48 @@ func TestUploadResponseSurvivesWriteTimeout(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("статус = %d, хочу 200", resp.StatusCode)
+	}
+}
+
+// TestUploadResponseSurvivesReadAndWriteTimeouts — прод-модель (сессия
+// 81): ReadTimeout и WriteTimeout заданы ВМЕСТЕ, тело длиннее обоих.
+// stallReader продлевает оба дедлайна каждым чтением — ответ доезжает.
+// Закрепляет симметрию механизма 78 против «однобокого» возврата:
+// продление только read-стороны оставило бы 201 в истёкшем write-
+// дедлайне.
+func TestUploadResponseSurvivesReadAndWriteTimeouts(t *testing.T) {
+	srv := timeoutUploadServer(t, true, 200*time.Millisecond)
+	req, err := http.NewRequest(http.MethodPut, srv.URL, newDripReader(1<<20, 16, 100*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("ответ не доехал после долгого тела (оба дедлайна): %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("статус = %d, хочу 200", resp.StatusCode)
+	}
+}
+
+// TestUploadSlowStreamBreaksWithReadAndWriteTimeouts — контроль
+// прод-модели: без stallReader оба абсолютных дедлайна режут поток,
+// и до 200 после полного чтения дело не доходит (доказывает, что тест
+// выше проверяет продление, а не бездействие таймаутов).
+func TestUploadSlowStreamBreaksWithReadAndWriteTimeouts(t *testing.T) {
+	srv := timeoutUploadServer(t, false, 200*time.Millisecond)
+	req, err := http.NewRequest(http.MethodPut, srv.URL, newDripReader(1<<20, 16, 100*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		return // обрыв на уровне соединения — ожидаемо
+	}
+	code := resp.StatusCode
+	_ = resp.Body.Close()
+	if code == http.StatusOK {
+		t.Fatal("upload прошёл (200), а должен был оборваться по дедлайнам")
 	}
 }
