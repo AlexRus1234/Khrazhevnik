@@ -457,9 +457,11 @@ jobs:
   # протестирован в build-test job — включая binary-smoke (exec'ит
   # khrazhevnik-ci как процесс: /healthz→setup→login→proxy byte-exact→404
   # →SIGTERM exit 0), см. test/integration/binary_smoke_test.go. Container-
-  # smoke (test/smoke/smoke.sh, podman run) — только локально перед релизом:
-  # rootless-podman runner не даёт вложенности, в CI контейнер через
-  # `podman run` не тестируется.
+  #   smoke (test/smoke/smoke.sh, podman run) — покрыт в CI job'ом distro-test
+  #   (DooD через /run/user/968/podman/podman.sock: sibling-контейнер, не
+  #   вложенность). Ограничение касалось только PinP-подхода в этом job'е
+  #   (podman внутри podman, --storage-driver=vfs). Локальный smoke.sh перед
+  #   релизом остаётся (RELEASE.md чеклист) — distro-test его не отменяет.
   oci:
     runs-on: docker
     container:

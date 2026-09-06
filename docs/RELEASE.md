@@ -47,6 +47,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 - [ ] CI на коммите-кандидате зелёный (build-test: vet → gofmt →
       golangci-lint → test [+race] → integration → binary-smoke).
+- [ ] CI distro-test (workflow_dispatch, `run_distro_tests=true`):
+      5/5 ног зелёные — покрывает §1 (кеш-прокси, каждая экосистема)
+      в автоматике; ручная проверка §1 остаётся для версий клиентов,
+      отличных от контейнерных.
 - [ ] Локально: `make image && make smoke` — контейнер поднимается,
       `/healthz` → `ok`, bootstrap, прокси byte-exact, SIGTERM — exit 0.
 - [ ] Bootstrap через UI (`/ui/`) и через `POST /api/v1/setup`.

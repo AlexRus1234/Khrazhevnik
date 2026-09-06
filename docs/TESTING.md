@@ -67,12 +67,26 @@ Unit-only цифра (~67% на момент внедрения) была зан
    пользовательского пути, а не фронтовые автотесты: **регрессионных
    UI-автотестов фронта нет (KISS)** — экраны тонкие, вся логика в
    engine и покрыта API-тестами.
-4. **Smoke** — `test/smoke`: живой контейнер, проверка curl'ом. В CI
-   НЕ запускается (nested-podman невозможен на rootless-раннере) —
-   только **локально перед релизом** (`make image && make smoke`, см.
+5. **Distro E2E (opt-in)** — CI job `distro-test` (workflow_dispatch,
+   вход `run_distro_tests`): 5 контейнеров-дистрибутивов (matrix:
+   debian/fedora/arch/alpine/nix) против контейнера Хражевника из
+   `Containerfile.test`. DooD через сокет раннера
+   (`/run/user/968/podman/podman.sock`) — sibling-контейнер, демон
+   хостовый, не вложенность. Тест-контейнер — тот же бинарь,
+   окружение alpine (curl/jq/sqlite3), sqlite+fs; sqlite-дефолт —
+   через env `KHRZ_AUTH__JWT_SECRET`. Критерий: пакет ставится
+   реальным пакетным менеджером + второй HEAD → `X-Cache: HIT` +
+   `/api/v1/cache/stats` `hits>0`, `bytes_from_upstream>0`;
+   внешние источники ног вырезаны (герметичность). Волатильность
+   внешних зеркал — не баг: падение ноги = дословный лог владельцу.
+6. **Smoke** — `test/smoke`: живой контейнер, проверка curl'ом. В
+   build-test/oci job'ах НЕ запускается (PinP-вложенность невозможна
+   на rootless-раннере; контейнер через `podman run` в CI покрыт
+   job'ом distro-test, п. 5) — только **локально перед релизом**
+   (`make image && make smoke`, см.
    [RELEASE.md](RELEASE.md)); контейнер идентичен артефакту
    (scratch + протестированный CI бинарник + CA-bundle).
-5. **Fuzz** — короткие прогоны в CI; crash-корпус коммитится в
+7. **Fuzz** — короткие прогоны в CI; crash-корпус коммитится в
    testdata.
 
 `-race` обязателен в CI (`make test-race`).
