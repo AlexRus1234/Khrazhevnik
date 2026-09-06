@@ -200,7 +200,7 @@ func (e *Engine) PrefetchThrottled(ctx context.Context, eco port.Ecosystem, ecos
 // идёт через тот же singleflight, что и Fetch — параллельные Fetch и
 // Prefetch на один ключ не дёрнут upstream дважды.
 func (e *Engine) prefetchImmutable(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache, wait Throttle) (PrefetchResult, error) {
-	if err := e.negativeError(target.StorageKey); err != nil {
+	if err := e.negativeError(m, target.StorageKey); err != nil {
 		return PrefetchResult{}, err
 	}
 	if meta, err := e.storage.Stat(ctx, target.StorageKey); err == nil {
@@ -212,7 +212,7 @@ func (e *Engine) prefetchImmutable(ctx context.Context, target port.Target, clas
 		if _, statErr := e.storage.Stat(ctx, target.StorageKey); statErr == nil {
 			return nil, nil
 		}
-		om, _, ferr := e.fetchOnce(ctx, target, class, nil, wait)
+		om, _, ferr := e.fetchOnce(ctx, target, class, m, nil, wait)
 		if ferr != nil {
 			return nil, ferr
 		}
@@ -243,7 +243,7 @@ func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class 
 			return PrefetchResult{Status: statusHit, Bytes: meta.Size}, nil
 		}
 	}
-	if negErr := e.negativeError(target.StorageKey); negErr != nil {
+	if negErr := e.negativeError(m, target.StorageKey); negErr != nil {
 		if indexErr == nil {
 			if _, _, ok := e.staleServe(ctx, negErr, &indexed, m); ok {
 				return PrefetchResult{Status: statusStale, Bytes: indexed.Size}, &domain.StaleError{Have: indexed.ETag}
@@ -257,7 +257,7 @@ func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class 
 		old = &indexed
 	}
 	res, err, _ := e.flights.Do(target.StorageKey, func() (any, error) {
-		return e.revalidate(ctx, target, class, &old, wait)
+		return e.revalidate(ctx, target, class, &old, m, wait)
 	})
 	if err != nil {
 		if _, _, ok := e.staleServe(ctx, err, old, m); ok {
@@ -294,8 +294,14 @@ func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class 
 	return PrefetchResult{Status: statusMiss, Bytes: meta.Size, Downloaded: meta.Size}, nil
 }
 
-// AddBytesToClients records bytes copied by the HTTP delivery layer.
-func (e *Engine) AddBytesToClients(n int64) { e.metrics.AddBytesToClients(n) }
+// AddBytesToClients записывает байты HTTP-доставки в разрез
+// экосистемы: загрузка байтов — атрибут точки delivery, у repo_public
+// eco-контента нет — его байты в bytes_to_clients не попадают и не
+// должны; per-eco — источник, глобальные значения — проекция сумм
+// при чтении (prom.go, handleCacheStats).
+func (e *Engine) AddBytesToClients(ecoName string, n int64) {
+	e.metrics.ForEcosystem(ecoName).AddBytesToClients(n)
+}
 
 // Metrics возвращает ссылку на счётчики кеша — для админ-API
 // (GET /api/v1/cache/stats) и Prometheus-экспозиции (web-слой строит
@@ -321,7 +327,7 @@ func (e *Engine) fetch(ctx context.Context, eco port.Ecosystem, ecosystemPath st
 }
 
 func (e *Engine) fetchImmutable(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache) (port.Object, string, error) {
-	if err := e.negativeError(target.StorageKey); err != nil {
+	if err := e.negativeError(m, target.StorageKey); err != nil {
 		return port.Object{}, "", err
 	}
 	// resilience: refetch при сбойном HIT — сбой чтения кеша (в т.ч.
@@ -337,7 +343,7 @@ func (e *Engine) fetchImmutable(ctx context.Context, target port.Target, class d
 		if _, statErr := e.storage.Stat(ctx, target.StorageKey); statErr == nil {
 			return nil, nil
 		}
-		_, _, err := e.fetchOnce(ctx, target, class, nil, nil)
+		_, _, err := e.fetchOnce(ctx, target, class, m, nil, nil)
 		return nil, err
 	})
 	if err != nil {
@@ -369,7 +375,7 @@ func (e *Engine) fetchMutable(ctx context.Context, target port.Target, class dom
 		}
 	}
 	// свежий 404/5xx не должен долбить upstream каждым клиентом
-	if negErr := e.negativeError(target.StorageKey); negErr != nil {
+	if negErr := e.negativeError(m, target.StorageKey); negErr != nil {
 		if indexErr == nil {
 			if obj, stale, ok := e.staleServe(ctx, negErr, &indexed, m); ok {
 				return obj, statusStale, stale
@@ -383,7 +389,7 @@ func (e *Engine) fetchMutable(ctx context.Context, target port.Target, class dom
 		old = &indexed
 	}
 	res, err, _ := e.flights.Do(target.StorageKey, func() (any, error) {
-		return e.revalidate(ctx, target, class, &old, nil)
+		return e.revalidate(ctx, target, class, &old, m, nil)
 	})
 	if err != nil {
 		if obj, stale, ok := e.staleServe(ctx, err, old, m); ok {
@@ -415,7 +421,7 @@ func (e *Engine) fetchMutable(ctx context.Context, target port.Target, class dom
 // conditional-запрос и запись результата. nil, nil — индекс свежий.
 // wait (полоса зеркала) пробрасывается в копирование; прокси-путь
 // зовётся с nil — клиентский трафик не троттлится.
-func (e *Engine) revalidate(ctx context.Context, target port.Target, class domain.Class, old **domain.ObjectMeta, wait Throttle) (any, error) {
+func (e *Engine) revalidate(ctx context.Context, target port.Target, class domain.Class, old **domain.ObjectMeta, m *metrics.Cache, wait Throttle) (any, error) {
 	cur, curErr := e.index.ObjectMeta(ctx, target.StorageKey)
 	if curErr == nil {
 		if !cur.Expired(e.clock.Now()) {
@@ -425,7 +431,7 @@ func (e *Engine) revalidate(ctx context.Context, target port.Target, class domai
 	} else {
 		*old = nil
 	}
-	meta, rev, fetchErr := e.fetchOnce(ctx, target, class, *old, wait)
+	meta, rev, fetchErr := e.fetchOnce(ctx, target, class, m, *old, wait)
 	if fetchErr != nil {
 		return nil, fetchErr
 	}
@@ -465,7 +471,7 @@ func (e *Engine) staleServe(ctx context.Context, cause error, old *domain.Object
 }
 
 //nolint:gocyclo // разбор статуса, bounded-стрим и транзакционный коммит — одна атомарная операция
-func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain.Class, old *domain.ObjectMeta, wait Throttle) (domain.ObjectMeta, bool, error) {
+func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache, old *domain.ObjectMeta, wait Throttle) (domain.ObjectMeta, bool, error) {
 	headers := map[string]string{}
 	if old != nil {
 		if old.ETag != "" {
@@ -481,7 +487,7 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 	}
 	resp, err := e.doer.Do(req)
 	if err != nil {
-		e.metrics.UpstreamErrors.Add(1)
+		m.UpstreamErrors.Add(1)
 		return domain.ObjectMeta{}, false, &domain.UpstreamError{URL: target.UpstreamURL, Err: err}
 	}
 	defer resp.Body.Close()
@@ -503,13 +509,13 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 		return updated, true, nil
 	}
 	if resp.StatusCode == 404 {
-		e.metrics.UpstreamErrors.Add(1)
+		m.UpstreamErrors.Add(1)
 		err := &domain.NotFoundError{What: "upstream объект", Key: target.UpstreamPath}
 		e.rememberNegative(target.StorageKey, e.cfg.NegativeTTL404, err)
 		return domain.ObjectMeta{}, false, err
 	}
 	if resp.StatusCode >= 500 {
-		e.metrics.UpstreamErrors.Add(1)
+		m.UpstreamErrors.Add(1)
 		err := &domain.UpstreamError{URL: target.UpstreamURL, Status: resp.StatusCode}
 		e.rememberNegative(target.StorageKey, e.cfg.NegativeTTL5xx, err)
 		return domain.ObjectMeta{}, false, err
@@ -529,7 +535,7 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 	if err != nil {
 		return domain.ObjectMeta{}, false, err
 	}
-	n, err := e.copyBody(ctx, w, resp.Body, resp.ContentLength, target.Checksum, target.UpstreamURL, wait)
+	n, err := e.copyBody(ctx, w, resp.Body, m, resp.ContentLength, target.Checksum, target.UpstreamURL, wait)
 	if err != nil {
 		_ = w.Abort(context.Background())
 		var cm *checksumMismatch
@@ -537,7 +543,7 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 			// Битый/подменённый upstream не должен отравить immutable
 			// («навсегда») кеш: объект не закоммичен, повторные
 			// запросы до конца TTL не долбят upstream.
-			e.metrics.UpstreamErrors.Add(1)
+			m.UpstreamErrors.Add(1)
 			e.rememberNegative(target.StorageKey, e.cfg.NegativeTTL5xx, err)
 		}
 		return domain.ObjectMeta{}, false, err
@@ -654,7 +660,7 @@ func parseHTTPTime(v string) (time.Time, error) {
 // sha256/sha1/md5: объект с «чужими» байтами коммита не увидит
 // (Abort у вызывающего). wait (Throttle зеркала) оборачивает запись:
 // байты оплачиваются по мере копирования, до записи куска.
-func (e *Engine) copyBody(ctx context.Context, w port.Writer, body io.Reader, length int64, sum port.Checksum, url string, wait Throttle) (int64, error) {
+func (e *Engine) copyBody(ctx context.Context, w port.Writer, body io.Reader, m *metrics.Cache, length int64, sum port.Checksum, url string, wait Throttle) (int64, error) {
 	src := body
 	if e.cfg.MaxObjectSize > 0 {
 		// +1 байт: чтобы отличить «ровно лимит» от «лимит превышен»
@@ -697,7 +703,7 @@ func (e *Engine) copyBody(ctx context.Context, w port.Writer, body io.Reader, le
 			}
 		}
 	}
-	e.metrics.BytesFromUpstream.Add(n)
+	m.BytesFromUpstream.Add(n)
 	return n, nil
 }
 
@@ -819,12 +825,12 @@ func (e *Engine) rememberMeta(key string, meta domain.ObjectMeta) {
 	e.mu.Unlock()
 }
 
-func (e *Engine) negativeError(key string) error {
+func (e *Engine) negativeError(m *metrics.Cache, key string) error {
 	e.mu.RLock()
 	n, ok := e.negative[key]
 	e.mu.RUnlock()
 	if ok && e.clock.Now().Before(n.until) {
-		e.metrics.NegativeHits.Add(1)
+		m.NegativeHits.Add(1)
 		return n.err
 	}
 	return nil

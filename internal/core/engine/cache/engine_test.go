@@ -509,7 +509,7 @@ func TestNegativeCacheImmutable(t *testing.T) {
 	if got := env.up.count("/pkg/missing.deb"); got != 1 {
 		t.Fatalf("upstream получил %d запросов, хочу 1 (negative)", got)
 	}
-	if got := env.m.NegativeHits.Load(); got != 4 {
+	if got := env.m.ForEcosystem("t").NegativeHits.Load(); got != 4 {
 		t.Fatalf("negative_hits = %d, хочу 4", got)
 	}
 
@@ -564,7 +564,7 @@ func TestMetricsConverge(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := env.m.BytesFromUpstream.Load(); got != 5 {
+	if got := env.m.ForEcosystem("t").BytesFromUpstream.Load(); got != 5 {
 		t.Fatalf("bytes_from_upstream = %d, хочу 5", got)
 	}
 	perEco := env.m.ForEcosystem("t")
@@ -572,8 +572,8 @@ func TestMetricsConverge(t *testing.T) {
 		t.Fatalf("hits/misses = %d/%d, хочу 2/1", perEco.Hits.Load(), perEco.Misses.Load())
 	}
 
-	env.engine.AddBytesToClients(7)
-	if got := env.m.BytesToClients.Load(); got != 7 {
+	env.engine.AddBytesToClients("t", 7)
+	if got := perEco.BytesToClients.Load(); got != 7 {
 		t.Fatalf("bytes_to_clients = %d, хочу 7", got)
 	}
 }

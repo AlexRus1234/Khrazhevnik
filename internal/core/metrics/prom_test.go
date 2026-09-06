@@ -52,22 +52,24 @@ func TestCacheEachEcosystemEmpty(t *testing.T) {
 
 func TestHandlerExposesAllMetricNames(t *testing.T) {
 	c := NewCache()
-	c.Hits.Add(7)
-	c.Misses.Add(3)
-	c.StaleServed.Add(2)
-	c.NegativeHits.Add(1)
-	c.UpstreamErrors.Add(4)
-	c.BytesFromUpstream.Add(1024)
-	c.BytesToClients.Add(2048)
-
+	// Корневые поля движком не пишутся (сессия 83): весь инкремент —
+	// per-eco записи, тотальные серии проверяются суммами.
 	apt := c.ForEcosystem("apt")
 	apt.Hits.Add(5)
 	apt.Misses.Add(2)
+	apt.StaleServed.Add(1)
+	apt.NegativeHits.Add(1)
+	apt.UpstreamErrors.Add(2)
+	apt.BytesFromUpstream.Add(512)
 	apt.BytesToClients.Add(1024)
 
 	rpmmmd := c.ForEcosystem("rpmmmd")
 	rpmmmd.Hits.Add(1)
+	rpmmmd.Misses.Add(1)
+	rpmmmd.StaleServed.Add(1)
 	rpmmmd.UpstreamErrors.Add(2)
+	rpmmmd.BytesFromUpstream.Add(512)
+	rpmmmd.BytesToClients.Add(1024)
 
 	h := NewHandler(c, prometheus.NewRegistry())
 	rec := httptest.NewRecorder()
@@ -96,9 +98,28 @@ func TestHandlerExposesAllMetricNames(t *testing.T) {
 	if !strings.Contains(body, `ecosystem="rpmmmd"`) {
 		t.Errorf("нет лейбла ecosystem=\"rpmmmd\":\n%s", body)
 	}
-	// Проверим конкретные значения: total hits = 7, apt hits = 5.
-	if !strings.Contains(body, "khrazhevnik_cache_hits_total 7") {
-		t.Errorf("total hits не равен 7:\n%s", body)
+	// Проекция на чтении: total = сумма per-eco (hits 6 = 5+1,
+	// misses 3, bytes_from_upstream 1024, bytes_to_clients 2048).
+	if !strings.Contains(body, "khrazhevnik_cache_hits_total 6") {
+		t.Errorf("total hits не равен 6:\n%s", body)
+	}
+	if !strings.Contains(body, "khrazhevnik_cache_misses_total 3") {
+		t.Errorf("total misses не равен 3:\n%s", body)
+	}
+	if !strings.Contains(body, "khrazhevnik_cache_stale_served_total 2") {
+		t.Errorf("total stale не равен 2:\n%s", body)
+	}
+	if !strings.Contains(body, "khrazhevnik_cache_negative_hits_total 1") {
+		t.Errorf("total negative не равен 1:\n%s", body)
+	}
+	if !strings.Contains(body, "khrazhevnik_cache_upstream_errors_total 4") {
+		t.Errorf("total upstream_errors не равен 4:\n%s", body)
+	}
+	if !strings.Contains(body, "khrazhevnik_cache_bytes_from_upstream_total 1024") {
+		t.Errorf("total bytes_from_upstream не равен 1024:\n%s", body)
+	}
+	if !strings.Contains(body, "khrazhevnik_cache_bytes_to_clients_total 2048") {
+		t.Errorf("total bytes_to_clients не равен 2048:\n%s", body)
 	}
 	if !strings.Contains(body, `khrazhevnik_cache_ecosystem_hits_total{ecosystem="apt"} 5`) {
 		t.Errorf("apt hits не равен 5:\n%s", body)

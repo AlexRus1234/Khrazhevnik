@@ -125,17 +125,20 @@ func (h *Handler) Describe(ch chan<- *prometheus.Desc) {
 }
 
 // Collect собирает текущие значения счётчиков из Cache. Вызывается
-// Prometheus-хендлером на каждый scrape /metrics.
+// Prometheus-хендлером на каждый scrape /metrics. Источник значений —
+// per-eco разрезы (сессия 83): глобальные серии — суммы per-eco,
+// собранные в один проход EachEcosystem; backgroundPanics — как
+// прежде из корня (у фонового удаления eco-контекста нет).
 func (h *Handler) Collect(ch chan<- prometheus.Metric) {
-	ch <- prometheus.MustNewConstMetric(h.hits, prometheus.CounterValue, float64(h.cache.Hits.Load()))
-	ch <- prometheus.MustNewConstMetric(h.misses, prometheus.CounterValue, float64(h.cache.Misses.Load()))
-	ch <- prometheus.MustNewConstMetric(h.stale, prometheus.CounterValue, float64(h.cache.StaleServed.Load()))
-	ch <- prometheus.MustNewConstMetric(h.negative, prometheus.CounterValue, float64(h.cache.NegativeHits.Load()))
-	ch <- prometheus.MustNewConstMetric(h.upstreamErrors, prometheus.CounterValue, float64(h.cache.UpstreamErrors.Load()))
-	ch <- prometheus.MustNewConstMetric(h.bytesFromUpstream, prometheus.CounterValue, float64(h.cache.BytesFromUpstream.Load()))
-	ch <- prometheus.MustNewConstMetric(h.bytesToClients, prometheus.CounterValue, float64(h.cache.BytesToClients.Load()))
-	ch <- prometheus.MustNewConstMetric(h.backgroundPanics, prometheus.CounterValue, float64(h.cache.BackgroundPanics.Load()))
+	var hits, misses, stale, negative, upstreamErrors, bytesFromUpstream, bytesToClients int64
 	h.cache.EachEcosystem(func(name string, m *Cache) {
+		hits += m.Hits.Load()
+		misses += m.Misses.Load()
+		stale += m.StaleServed.Load()
+		negative += m.NegativeHits.Load()
+		upstreamErrors += m.UpstreamErrors.Load()
+		bytesFromUpstream += m.BytesFromUpstream.Load()
+		bytesToClients += m.BytesToClients.Load()
 		ch <- prometheus.MustNewConstMetric(h.ecoHits, prometheus.CounterValue, float64(m.Hits.Load()), name)
 		ch <- prometheus.MustNewConstMetric(h.ecoMisses, prometheus.CounterValue, float64(m.Misses.Load()), name)
 		ch <- prometheus.MustNewConstMetric(h.ecoStale, prometheus.CounterValue, float64(m.StaleServed.Load()), name)
@@ -144,6 +147,14 @@ func (h *Handler) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(h.ecoBytesFromUp, prometheus.CounterValue, float64(m.BytesFromUpstream.Load()), name)
 		ch <- prometheus.MustNewConstMetric(h.ecoBytesToCli, prometheus.CounterValue, float64(m.BytesToClients.Load()), name)
 	})
+	ch <- prometheus.MustNewConstMetric(h.hits, prometheus.CounterValue, float64(hits))
+	ch <- prometheus.MustNewConstMetric(h.misses, prometheus.CounterValue, float64(misses))
+	ch <- prometheus.MustNewConstMetric(h.stale, prometheus.CounterValue, float64(stale))
+	ch <- prometheus.MustNewConstMetric(h.negative, prometheus.CounterValue, float64(negative))
+	ch <- prometheus.MustNewConstMetric(h.upstreamErrors, prometheus.CounterValue, float64(upstreamErrors))
+	ch <- prometheus.MustNewConstMetric(h.bytesFromUpstream, prometheus.CounterValue, float64(bytesFromUpstream))
+	ch <- prometheus.MustNewConstMetric(h.bytesToClients, prometheus.CounterValue, float64(bytesToClients))
+	ch <- prometheus.MustNewConstMetric(h.backgroundPanics, prometheus.CounterValue, float64(h.cache.BackgroundPanics.Load()))
 }
 
 // MetricsHandler — HTTP-хендлер /metrics из Registry. Вынесен сюда,

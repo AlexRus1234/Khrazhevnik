@@ -29,6 +29,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"khrazhevnik/internal/core/domain"
+	"khrazhevnik/internal/core/metrics"
 )
 
 // remoteOut — DTO ответа remote: ID и поля без аудиторских мусора.
@@ -264,6 +265,10 @@ type cacheStatsOut struct {
 // handleCacheStats — GET /api/v1/cache/stats: агрегаты из metrics.Cache.
 // Достаёт счётчики из движка кеша (Deps.Cache.Metrics), экспонирует в
 // удобной для UI форме: hit_ratio отдельно, чтобы фронт не считал.
+// Источник счётчиков — per-eco разрезы (сессия 83): глобальные
+// значения — сумма per-eco на чтении, а не корневые поля (движок
+// инкрементит только per-eco; единственный корневой писатель —
+// BackgroundPanics).
 func handleCacheStats(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Cache == nil {
@@ -271,19 +276,27 @@ func handleCacheStats(d Deps) http.HandlerFunc {
 			return
 		}
 		m := d.Cache.Metrics()
-		hits := m.Hits.Load()
-		misses := m.Misses.Load()
+		var hits, misses, stale, negative, upstreamErrors, bytesFromUpstream, bytesToClients int64
+		m.EachEcosystem(func(_ string, eco *metrics.Cache) {
+			hits += eco.Hits.Load()
+			misses += eco.Misses.Load()
+			stale += eco.StaleServed.Load()
+			negative += eco.NegativeHits.Load()
+			upstreamErrors += eco.UpstreamErrors.Load()
+			bytesFromUpstream += eco.BytesFromUpstream.Load()
+			bytesToClients += eco.BytesToClients.Load()
+		})
 		var ratio float64
 		if total := hits + misses; total > 0 {
 			ratio = float64(hits) / float64(total)
 		}
 		writeJSON(w, http.StatusOK, cacheStatsOut{
 			Hits: hits, Misses: misses, HitRatio: ratio,
-			StaleServed:       m.StaleServed.Load(),
-			NegativeHits:      m.NegativeHits.Load(),
-			UpstreamErrors:    m.UpstreamErrors.Load(),
-			BytesFromUpstream: m.BytesFromUpstream.Load(),
-			BytesToClients:    m.BytesToClients.Load(),
+			StaleServed:       stale,
+			NegativeHits:      negative,
+			UpstreamErrors:    upstreamErrors,
+			BytesFromUpstream: bytesFromUpstream,
+			BytesToClients:    bytesToClients,
 		})
 	}
 }

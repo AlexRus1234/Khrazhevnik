@@ -19,6 +19,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,6 +28,7 @@ import (
 
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/engine/auth"
+	cacheengine "khrazhevnik/internal/core/engine/cache"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/testutil"
 )
@@ -343,6 +345,60 @@ func TestAdminCacheStats(t *testing.T) {
 	}
 	if stats.Hits != 0 || stats.Misses != 0 || stats.HitRatio != 0 {
 		t.Errorf("пустой кеш отдал статистику: %+v", stats)
+	}
+}
+
+// TestAdminCacheStatsLive — живой разрез /api/v1/cache/stats (сессия
+// 83, CI-факт №5 distro-test): трафик через движок отражается в
+// агрегатах. newAdminEnv Cache не подаёт — до сессии 83 живую ветку
+// агрегации гонял только пустой кеш, корневые нули не замечались.
+func TestAdminCacheStatsLive(t *testing.T) {
+	env := newAdminEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "payload")
+	}))
+	t.Cleanup(up.Close)
+	engine := cacheengine.New(
+		testutil.NewFakeStorage(env.clock), testutil.NewFakeObjectIndex(),
+		up.Client(), env.clock, cacheengine.Config{}, nil,
+	)
+	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: time.Minute}
+	h := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Clock: env.clock, Cache: engine,
+		Ecosystems: map[string]port.Ecosystem{"t": eco},
+	})
+	// Трафик через движок: MISS + HIT по 7 байт.
+	for range 2 {
+		obj, _, err := engine.FetchStatus(t.Context(), eco, "/t/pkg/a.deb")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.ReadAll(obj.Body)
+		_ = obj.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/cache/stats", nil)
+	r.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Code)
+	}
+	var stats cacheStatsOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Hits < 1 || stats.Misses < 1 {
+		t.Errorf("hits/misses = %d/%d, хочу ≥1/≥1 (контракт broken distro-check)", stats.Hits, stats.Misses)
+	}
+	if stats.HitRatio <= 0 {
+		t.Errorf("hit_ratio = %f, хочу >0", stats.HitRatio)
+	}
+	if stats.BytesFromUpstream < 7 {
+		t.Errorf("bytes_from_upstream = %d, хочу ≥7", stats.BytesFromUpstream)
 	}
 }
 

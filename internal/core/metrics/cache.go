@@ -9,6 +9,12 @@ import (
 // создаются лениво, чтобы подключение адаптера не требовало глобального
 // реестра.
 type Cache struct {
+	// Hits…BytesToClients КОРНЯ движком НЕ пишутся: источник всех
+	// счётчиков (кроме BackgroundPanics) — per-eco разрезы; глобальное
+	// значение — проекция сумм per-eco при чтении (prom.go Collect,
+	// handleCacheStats). Читывать корень = вечные нули (CI-факт №5
+	// distro-test); не удалять поля — тип двуедин (корень и per-eco —
+	// одна структура), раздвоение API ради косметики не микросессия.
 	Hits              atomic.Int64
 	Misses            atomic.Int64
 	StaleServed       atomic.Int64

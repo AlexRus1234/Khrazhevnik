@@ -136,8 +136,83 @@ func TestProxyServesAndCaches(t *testing.T) {
 	if got := rec.Header().Get("X-Cache"); got != "HIT" {
 		t.Errorf("X-Cache второго = %q, хочу HIT", got)
 	}
-	if got := m.BytesToClients.Load(); got != 14 {
+	if got := m.ForEcosystem("t").BytesToClients.Load(); got != 14 {
 		t.Errorf("bytes_to_clients = %d, хочу 14 (7+7)", got)
+	}
+}
+
+// TestProxyStatsProjectionContract — пер-eco источник счётчиков
+// (сессия 83, CI-факт №5): весь трафик прокси пишется в per-eco
+// разрез, глобальные значения stats/пром-серий — сумма per-eco на
+// чтении. До фикса BytesFromUpstream/UpstreamErrors/NegativeHits/
+// BytesToClients писались только в корень — per-eco читать нули.
+func TestProxyStatsProjectionContract(t *testing.T) {
+	// set-able апстрим (хендлер статичен в newProxyEnv): MISS→HIT
+	// payload'а, затем 404-апстрим для negative-сценария — по образцу
+	// testUpstream.set (engine_test.go).
+	var handler http.HandlerFunc
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler(w, r) }))
+	t.Cleanup(up.Close)
+	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	m := metrics.NewCache()
+	exporter := metrics.NewHandler(m, prometheus.NewRegistry())
+	engine := cacheengine.New(
+		testutil.NewFakeStorage(clock), testutil.NewFakeObjectIndex(),
+		up.Client(), clock,
+		cacheengine.Config{StaleIfError: true, NegativeTTL404: 5 * time.Minute, NegativeTTL5xx: 30 * time.Second},
+		m,
+	)
+	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: 40 * time.Second}
+	h := BuildPublicRouter(Deps{Version: "test", Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}, Metrics: exporter})
+
+	handler = func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/deb")
+		_, _ = io.WriteString(w, "payload")
+	}
+	if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusOK || rec.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("прогрев = %d X-Cache %q (тело %q)", rec.Code, rec.Header().Get("X-Cache"), rec.Body.String())
+	}
+	if rec := get(t, h, "/t/pkg/a.deb"); rec.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("X-Cache второго = %q, хочу HIT", rec.Header().Get("X-Cache"))
+	}
+
+	// 404-апстрим: первый GET — upstream дёрнут (UpstreamErrors,
+	// rememberNegative), второй — negative-cache (NegativeHits).
+	handler = func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) }
+	for range 2 {
+		if rec := get(t, h, "/t/pkg/broken.deb"); rec.Code != http.StatusNotFound {
+			t.Fatalf("broken = %d (тело %q)", rec.Code, rec.Body.String())
+		}
+	}
+
+	perEco := m.ForEcosystem("t")
+	if got := perEco.Hits.Load(); got != 1 {
+		t.Errorf("per-eco hits = %d, хочу 1", got)
+	}
+	if got := perEco.Misses.Load(); got != 2 {
+		t.Errorf("per-eco misses = %d, хочу 2 (a.deb MISS + broken MISS)", got)
+	}
+	if got := perEco.BytesFromUpstream.Load(); got != 7 {
+		t.Errorf("per-eco bytes_from_upstream = %d, хочу 7", got)
+	}
+	if got := perEco.BytesToClients.Load(); got != 14 {
+		t.Errorf("per-eco bytes_to_clients = %d, хочу 14 (7 MISS + 7 HIT)", got)
+	}
+	if got := perEco.UpstreamErrors.Load(); got != 1 {
+		t.Errorf("per-eco upstream_errors = %d, хочу 1", got)
+	}
+	if got := perEco.NegativeHits.Load(); got != 1 {
+		t.Errorf("per-eco negative_hits = %d, хочу 1 (второй broken из negative)", got)
+	}
+
+	// Проекция на чтении: глобальная серия — сумма per-eco, а не
+	// корневой ноль; per-eco negative-серия существует.
+	body := scrapeMetrics(t, exporter)
+	if !strings.Contains(body, "khrazhevnik_cache_hits_total 1") {
+		t.Errorf("глобальная hits-серия не сложилась из per-eco:\n%s", body)
+	}
+	if !strings.Contains(body, `khrazhevnik_cache_ecosystem_negative_hits_total{ecosystem="t"} 1`) {
+		t.Errorf("нет per-eco negative-серии:\n%s", body)
 	}
 }
 
