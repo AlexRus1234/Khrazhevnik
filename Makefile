@@ -94,6 +94,14 @@ image:
 	podman build --platform='$(PLATFORMS)' --manifest '$(IMAGE):$(TAG)' \
 	    --build-arg VERSION='$(TAG)' -f deploy/Containerfile .
 
+# image-test — тестовый образ (deploy/Containerfile.test): тот же бинарь,
+# но alpine с curl/jq/sqlite3 для CI-тестов пакетными менеджерами (distro-test).
+# Для локальной проверки distro-сценария без CI.
+.PHONY: image-test
+image-test:
+	podman build --build-arg VERSION='$(TAG)' \
+	    -t khrazhevnik-test:dev -f deploy/Containerfile.test .
+
 .PHONY: clean
 clean:
 	@$(GO) clean; rm -rf bin coverage dist; rm -rf $(WEB_ASSETS); mkdir -p $(WEB_ASSETS); printf '<!doctype html>\n<html lang="ru"><head><meta charset="utf-8"><title>khrazhevnik</title></head><body><p>Web UI не собран. См. <code>make web-build</code>.</p></body></html>\n' > $(WEB_ASSETS)/index.html

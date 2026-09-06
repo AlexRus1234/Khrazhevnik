@@ -16,6 +16,8 @@ CLAUDE.md
 *.exe
 *.exe~
 *.test
+# *.test — Go-тестовый бинарь; негатив — тестовый OCI-образ (не бинарник)
+!deploy/Containerfile.test
 *.out
 *.prof
 
