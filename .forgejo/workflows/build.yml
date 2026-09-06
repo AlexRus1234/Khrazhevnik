@@ -57,6 +57,16 @@ on:
         required: true
         default: false
         type: boolean
+      run_distro_tests:
+        description: "Run distro E2E: real package managers via DooD socket (needs run on linux runner with podman socket)"
+        required: true
+        default: false
+        type: boolean
+      use_socks_proxy:
+        description: "Route upstream fetches through SOCKS5 proxy from secrets.SOCKS_PROXY_URL"
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   build-test:
@@ -531,3 +541,161 @@ jobs:
       - name: Cleanup
         if: always()
         run: podman --storage-driver=vfs system prune -a -f
+
+  # Distro-test (opt-in): реальный пакетный менеджер Debian ставит пакеты
+  # через Хражевник (pull-through живого deb.debian.org), кеш доказан
+  # фактами (X-Cache: HIT + /api/v1/cache/stats). DooD, а не PinP: сокет
+  # /run/user/968/podman/podman.sock — демон ХОСТОВЫЙ, job-контейнер лишь
+  # клиент: mount /proc не выполняется, ограничение rootless-раннера на
+  # вложенность (см. комментарий oci job) касалось podman ВНУТРИ job-
+  # контейнера. needs: build-test, НЕ oci: образ собирается здесь же
+  # (Containerfile.test, сессия 71) — падение/отключение oci не должно
+  # скипать ногу.
+  distro-test:
+    needs: build-test
+    if: github.event.inputs.run_distro_tests == 'true'
+    runs-on: docker
+    container:
+      image: fedora:44
+      options: --security-opt label=disable -v /run/user/968/podman/podman.sock:/run/podman/podman.sock
+    env:
+      # podman-клиент в job-контейнере говорит с хостовым демоном через
+      # проброшенный сокет (DooD).
+      DOCKER_HOST: unix:///run/podman/podman.sock
+
+    steps:
+      - name: Install dependencies
+        # nodejs — НЕ проекту, а раннеру: act/act_runner исполняет JS-экшены
+        # (actions/checkout@v4) через node ВНУТРИ job-контейнера; fedora:44
+        # его не содержит → crun "node not found", exit 127 (см. build-test).
+        # openssl-CLI НЕ входит в минимальный fedora-образ (curl тянет
+        # только openssl-libs), а Start app генерирует JWT-секрет
+        # `openssl rand -hex 32`. podman — DooD-клиент; jq/curl —
+        # bootstrap admin-API; git — checkout.
+        run: dnf install -y --setopt=install_weak_deps=False podman jq curl git nodejs npm openssl
+
+      - name: Trust Local CA
+        # До Checkout: git.yadr00.internal — сертификат step-ca.
+        run: |
+          curl -k https://172.20.0.1:9000/roots.pem -o /etc/pki/ca-trust/source/anchors/step-ca.crt
+          update-ca-trust
+          git config --global http.sslCAInfo /etc/pki/ca-trust/source/anchors/step-ca.crt
+
+      - name: Check socks secret (opt-in proxy)
+        # use_socks_proxy=true без секрета — конфигурационная ошибка
+        # запуска, нога сразу падает с внятной причиной, а не тишеё 502
+        # на первом же фетче.
+        if: github.event.inputs.use_socks_proxy == 'true'
+        env:
+          SOCKS_PROXY_URL: ${{ secrets.SOCKS_PROXY_URL }}
+        run: |
+          test -n "$SOCKS_PROXY_URL" || { echo "::error::use_socks_proxy=true, но secrets.SOCKS_PROXY_URL не задан"; exit 1; }
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build khrazhevnik:test image
+        # БЕЗ --storage-driver=vfs (в отличие от oci job): демон хостовый,
+        # storage-драйвер выбирает хост; vfs-хак нужен только при
+        # overlay-in-overlay ВНУТРИ контейнера.
+        run: podman build -t localhost/khrazhevnik:test-debian -f deploy/Containerfile.test .
+
+      - name: Create isolated network
+        run: podman network create khrz-debian-net
+
+      - name: Start khrazhevnik app
+        # bind-mount TOML нельзя: DooD резолвит пути на ХОСТЕ, файла там
+        # нет — конфиг только env-слоем KHRZ_AUTH__* (нативен контейнеру).
+        # JWT ≥32 байт — валидация конфига (сессия 22). Go читает
+        # HTTP(S)_PROXY (ProxyFromEnvironment, wire.go), не ALL_PROXY;
+        # NO_PROXY обязателен — иначе exec-bootstrap localhost уйдёт в socks.
+        run: |
+          PROXY_ARGS=""
+          if [ "${{ github.event.inputs.use_socks_proxy }}" = "true" ]; then
+            PROXY_ARGS="-e HTTP_PROXY=${{ secrets.SOCKS_PROXY_URL }} -e HTTPS_PROXY=${{ secrets.SOCKS_PROXY_URL }} -e NO_PROXY=localhost,127.0.0.1"
+          fi
+          podman run -d --name khrz-app-debian --network khrz-debian-net \
+            -e KHRZ_AUTH__JWT_SECRET="$(openssl rand -hex 32)" \
+            $PROXY_ARGS \
+            localhost/khrazhevnik:test-debian
+
+      - name: Wait for /healthz
+        run: |
+          for i in $(seq 1 30); do
+            if podman exec khrz-app-debian curl -fsS http://localhost:29202/healthz; then
+              echo "healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::/healthz не ответил за 30с"
+          podman logs khrz-app-debian || true
+          exit 1
+
+      - name: Bootstrap admin + remote
+        # учётка admin/distropw — тестовая, живёт считанные минуты в
+        # изолированной сети: не секрет. TOKEN — в GITHUB_ENV для Verify
+        # cache: /api/v1/cache/stats — admin-only на :30202.
+        env:
+          ADMIN: http://localhost:30202/api/v1
+        run: |
+          set -euxo pipefail
+          code="$(podman exec khrz-app-debian curl -s -o /dev/null -w '%{http_code}' \
+            -X POST "$ADMIN/setup" -d '{"username":"admin","password":"distropw"}')"
+          test "$code" = 201
+          token="$(podman exec khrz-app-debian curl -s -X POST "$ADMIN/auth/login" \
+            -d '{"username":"admin","password":"distropw"}' | jq -er .token)"
+          echo "TOKEN=$token" >> "$GITHUB_ENV"
+          code="$(podman exec khrz-app-debian curl -s -o /dev/null -w '%{http_code}' \
+            -X POST "$ADMIN/remotes" -H "Authorization: Bearer $token" \
+            -d '{"name":"debian","ecosystem":"apt","base_url":"https://deb.debian.org/debian","mode":"proxy","enabled":true}')"
+          test "$code" = 201
+
+      - name: Start distro container
+        run: podman run -d --name khrz-debian --network khrz-debian-net docker.io/library/debian:bookworm sleep infinity
+
+      - name: Run apt against mirror
+        # trusted=yes — кеш-прокси раздаёт чужие подписи байтово (инвариант
+        # кеша), ключ Debian ноге не нужен; вырезание debian.sources = зелёный
+        # не может пройти мимо прокси (единственный source — инстанс).
+        run: |
+          cat > /tmp/khrz-apt-setup.sh << 'EOF'
+          set -euxo pipefail
+          rm -f /etc/apt/sources.list.d/debian.sources
+          echo "deb [trusted=yes] http://khrz-app-debian:29202/apt/debian bookworm main" \
+            > /etc/apt/sources.list.d/khrz.list
+          apt-get update -qq && apt-get install -y -qq htop
+          EOF
+          podman cp /tmp/khrz-apt-setup.sh khrz-debian:/tmp/khrz-apt-setup.sh
+          podman exec khrz-debian sh /tmp/khrz-apt-setup.sh
+
+      - name: Verify cache
+        # HEAD-роут — сессия 68; запрос дважды: второй обязан HIT.
+        # /api/v1/cache/stats (admin-only, :30202): hits>0 и
+        # bytes_from_upstream>0 — доказывают и «работает», и «кеширует».
+        run: |
+          set -euxo pipefail
+          podman exec khrz-app-debian curl -sI http://localhost:29202/apt/debian/dists/bookworm/Release
+          second="$(podman exec khrz-app-debian curl -sI http://localhost:29202/apt/debian/dists/bookworm/Release)"
+          echo "$second"
+          grep -qi '^X-Cache: HIT' <<<"$second"
+          podman exec khrz-app-debian curl -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            http://localhost:30202/api/v1/cache/stats \
+            | jq -e '.hits>0 and .bytes_from_upstream>0'
+
+      - name: Dump logs on failure
+        if: failure()
+        run: podman logs khrz-app-debian || true
+
+      - name: Cleanup
+        # -v — anonymous volume /var/lib/khrazhevnik со sqlite/store.
+        # Строго свои ресурсы, БЕЗ system prune: демон общий с другими
+        # job'ами раннера.
+        if: always()
+        run: |
+          podman rm -fv khrz-app-debian khrz-debian || true
+          podman network rm khrz-debian-net || true
+          podman rmi -f localhost/khrazhevnik:test-debian || true
