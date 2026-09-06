@@ -63,7 +63,7 @@ on:
         default: false
         type: boolean
       use_socks_proxy:
-        description: "Route upstream fetches through SOCKS5 proxy from secrets.SOCKS_PROXY_URL"
+        description: "Route upstream fetches through SOCKS5 proxy from SOCKS_PROXY_URL (socks5://host:port; optional SOCKS_PROXY_USER/SOCKS_PROXY_PASSWORD auth)"
         required: true
         default: false
         type: boolean
@@ -584,12 +584,32 @@ jobs:
       - name: Check socks secret (opt-in proxy)
         # use_socks_proxy=true без секрета — конфигурационная ошибка
         # запуска, нога сразу падает с внятной причиной, а не тишеё 502
-        # на первом же фетче.
+        # на первом же фетче. Схема socks5:// обязательна: Go
+        # ProxyFromEnvironment трактует значение без схемы как HTTP-
+        # прокси (пошлёт HTTP CONNECT на SOCKS-порт — не сработает).
+        # Логин/пароль (RFC 1929) опциональны: секреты заданы — userinfo
+        # вклеивается в URL (percent-encoding через jq @uri, иначе
+        # спецсимволы пароля ломают парсинг URL), не заданы — ходим
+        # без авторизации.
         if: github.event.inputs.use_socks_proxy == 'true'
         env:
           SOCKS_PROXY_URL: ${{ secrets.SOCKS_PROXY_URL }}
+          SOCKS_PROXY_USER: ${{ secrets.SOCKS_PROXY_USER }}
+          SOCKS_PROXY_PASSWORD: ${{ secrets.SOCKS_PROXY_PASSWORD }}
         run: |
-          test -n "$SOCKS_PROXY_URL" || { echo "::error::use_socks_proxy=true, но secrets.SOCKS_PROXY_URL не задан"; exit 1; }
+          test -n "$SOCKS_PROXY_URL" || { echo "::error::use_socks_proxy=true, но SOCKS_PROXY_URL не задан"; exit 1; }
+          case "$SOCKS_PROXY_URL" in
+            socks5://*|socks5h://*) ;;
+            *) echo "::error::SOCKS_PROXY_URL требует схему socks5://host:port (без схемы Go считает её HTTP-прокси)"; exit 1 ;;
+          esac
+          PROXY_URL="$SOCKS_PROXY_URL"
+          if [ -n "$SOCKS_PROXY_USER" ]; then
+            u="$(jq -rn --arg s "$SOCKS_PROXY_USER" '$s|@uri')"
+            p="$(jq -rn --arg s "$SOCKS_PROXY_PASSWORD" '$s|@uri')"
+            rest="${SOCKS_PROXY_URL#socks5h://}"; rest="${rest#socks5://}"; rest="${rest#*@}"
+            PROXY_URL="socks5://${u}:${p}@${rest}"
+          fi
+          echo "PROXY_URL=$PROXY_URL" >> "$GITHUB_ENV"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -609,12 +629,14 @@ jobs:
         # bind-mount TOML нельзя: DooD резолвит пути на ХОСТЕ, файла там
         # нет — конфиг только env-слоем KHRZ_AUTH__* (нативен контейнеру).
         # JWT ≥32 байт — валидация конфига (сессия 22). Go читает
-        # HTTP(S)_PROXY (ProxyFromEnvironment, wire.go), не ALL_PROXY;
-        # NO_PROXY обязателен — иначе exec-bootstrap localhost уйдёт в socks.
+        # HTTP(S)_PROXY (ProxyFromEnvironment, wire.go), не ALL_PROXY.
+        # NO_PROXY — исключения, ходящие МИМО прокси: exec-bootstrap
+        # curl внутри контейнера ходит на localhost (:30202/:29202),
+        # без исключения self-bootstrap улетел бы в socks.
         run: |
           PROXY_ARGS=""
           if [ "${{ github.event.inputs.use_socks_proxy }}" = "true" ]; then
-            PROXY_ARGS="-e HTTP_PROXY=${{ secrets.SOCKS_PROXY_URL }} -e HTTPS_PROXY=${{ secrets.SOCKS_PROXY_URL }} -e NO_PROXY=localhost,127.0.0.1"
+            PROXY_ARGS="-e HTTP_PROXY=$PROXY_URL -e HTTPS_PROXY=$PROXY_URL -e NO_PROXY=localhost,127.0.0.1"
           fi
           podman run -d --name khrz-app-debian --network khrz-debian-net \
             -e KHRZ_AUTH__JWT_SECRET="$(openssl rand -hex 32)" \
