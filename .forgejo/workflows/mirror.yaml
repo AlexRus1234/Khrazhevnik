@@ -1,0 +1,84 @@
+# Хражевник — кеш-прокси и зеркало linux-репозиториев
+# Copyright (C) 2026 AlexRus1234
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+name: Зеркалирование Khrazhevnik
+
+# Срабатывает при каждом пуше в основную ветку
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+
+jobs:
+  sync-mirrors:
+    runs-on: docker
+    container:
+      # Используем сверхлегкий контейнер с Git
+      image: docker.io/alpine/git:latest
+
+    steps:
+      - name: Настройка безопасности и клонирование
+        run: |
+          echo "=== Загружаем корневой сертификат нашего CA (Step-CA) ==="
+          # Качаем публичный ключ доверия с нашего роутера
+          wget --no-check-certificate https://172.20.0.1:9000/roots.pem -O /tmp/step-ca.crt
+
+          echo "=== Настраиваем Git на доверие к нашей локальной сети ==="
+          # Говорим Git проверять HTTPS-соединения по нашему сертификату
+          git config --global http.sslCAInfo /tmp/step-ca.crt
+
+          echo "=== Скачиваем код с домашнего сервера ==="
+          # Клонируем репозиторий в текущую папку (точка в конце обязательна)
+          git clone ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git .
+          echo "=== Возвращаем стандартные сертификаты для остального интернета! ==="
+          git config --global --unset http.sslCAInfo
+
+      - name: Обозначение зеркала в README
+        run: |
+          echo "Добавление отметки о зеркале в README..."
+          printf '%s\n' '> **Это зеркало репозитория. Оригинал находится по адресу:**' '> [https://git.alexrus1234.ru/AlexRus1234/Khrazhevnik](https://git.alexrus1234.ru/AlexRus1234/Khrazhevnik)' '' > /tmp/mirror-notice-ru
+          printf '%s\n' '> **This is a mirror repository. The original is available at:**' '> [https://git.alexrus1234.ru/AlexRus1234/Khrazhevnik](https://git.alexrus1234.ru/AlexRus1234/Khrazhevnik)' '' > /tmp/mirror-notice-en
+          cat /tmp/mirror-notice-ru README.md > README.md.tmp && mv README.md.tmp README.md
+          cat /tmp/mirror-notice-en README.en.md > README.en.md.tmp && mv README.en.md.tmp README.en.md
+          git config user.name "Forgejo mirror"
+          git config user.email "forgejo-mirror@localhost"
+          git add README.md README.en.md
+          git commit -m "docs: mark repository as a mirror"
+
+      - name: Отправка на GitHub
+        continue-on-error: true
+        env:
+          TOKEN_GITHUB: ${{ secrets.TOKEN_GITHUB }}
+        run: |
+          echo "Синхронизация с GitHub..."
+          case "$GITHUB_REF" in
+            refs/heads/*) git push --force https://AlexRus1234:${TOKEN_GITHUB}@github.com/AlexRus1234/Khrazhevnik.git HEAD:main ;;
+          esac
+          git push https://AlexRus1234:${TOKEN_GITHUB}@github.com/AlexRus1234/Khrazhevnik.git --tags
+
+      - name: Отправка на Codeberg
+        continue-on-error: true
+        env:
+          TOKEN_CODEBERG: ${{ secrets.TOKEN_CODEBERG }}
+        run: |
+          echo "Синхронизация с Codeberg..."
+          case "$GITHUB_REF" in
+            refs/heads/*) git push --force https://AlexRus1234:${TOKEN_CODEBERG}@codeberg.org/AlexRus1234/Khrazhevnik.git HEAD:main ;;
+          esac
+          git push https://AlexRus1234:${TOKEN_CODEBERG}@codeberg.org/AlexRus1234/Khrazhevnik.git --tags
