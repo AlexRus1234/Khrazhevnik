@@ -141,6 +141,68 @@ func TestProxyServesAndCaches(t *testing.T) {
 	}
 }
 
+// TestProxyPercentEscapedPlus — apt шлёт «+» в пути как %2b (CI-факт
+// №4): chi v5.3.1 маршрутизирует по RawPath, wildcard приходит
+// экранированным, и ключ с «%» отсекался whitelist'ом ValidateKey →
+// 400 на валидном upstream-пути. Декод до ValidateKey: %2b-написание
+// даёт тот же объект кеша, что и сырое «+».
+func TestProxyPercentEscapedPlus(t *testing.T) {
+	hits := 0
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/pkg/a+bb.deb" {
+			hits++
+		}
+		_, _ = io.WriteString(w, "payload")
+	})
+
+	// Экранированное написание (как на проводе от apt): 200 + payload.
+	// %2b → «+», хвост «bb.deb» литеральный — то же имя, что у upstream.
+	rec := get(t, h, "/t/pkg/a%2bbb.deb")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%%2b-запрос = %d, тело %q", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "payload" {
+		t.Fatalf("тело = %q, хочу payload", rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Cache"); got != "MISS" {
+		t.Errorf("X-Cache %%2b-запроса = %q, хочу MISS", got)
+	}
+
+	// Сырое «+» — тот же объект кеша: HIT, upstream не дёргается
+	// (один объект на оба написания).
+	rec = get(t, h, "/t/pkg/a+bb.deb")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("raw-запрос = %d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Cache"); got != "HIT" {
+		t.Errorf("X-Cache raw-запроса = %q, хочу HIT", got)
+	}
+	if hits != 1 {
+		t.Errorf("upstream получил %d запросов, хочу 1 (один объект на оба написания)", hits)
+	}
+
+	// Двойное кодирование: %252b декодится в «%2b» с «%» — whitelist
+	// ValidateKey режет fail-closed → 400.
+	rec = get(t, h, "/t/pkg/a%252b.deb")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("%%252b-запрос = %d, хочу 400 (тело %q)", rec.Code, rec.Body.String())
+	}
+
+	// Битый escape (RawPath руками, in-memory): декод падает до
+	// движка → 400, не 500, и upstream не дёргается вовсе.
+	hitsBefore := hits
+	req := httptest.NewRequest(http.MethodGet, "/t/pkg/a.deb", nil)
+	req.URL.RawPath = "/t/pkg/a%zz.deb"
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusBadRequest {
+		t.Errorf("битый escape = %d, хочу 400 (тело %q)", rec2.Code, rec2.Body.String())
+	}
+	if hits != hitsBefore {
+		t.Errorf("битый escape дёрнул upstream (%d → %d), хочу без похода", hitsBefore, hits)
+	}
+}
+
 func TestProxyErrorCodes(t *testing.T) {
 	t.Run("404 upstream → 404 клиенту", func(t *testing.T) {
 		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404) })

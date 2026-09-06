@@ -18,6 +18,7 @@ package web
 
 import (
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -27,4 +28,22 @@ import (
 // так что параметр всегда достаётся из контекста запроса.
 func chiURLParam(r *http.Request, name string) string {
 	return chi.URLParam(r, name)
+}
+
+// decodedWildcard — chi v5.3.1 маршрутизирует по RawPath (mux.go:455):
+// клиент, кодирующий «+» как %2b (apt на libnl-3/g++), оставляет
+// wildcard экранированным, и ключ с «%» отсекается whitelist'ом
+// ValidateKey — 400 на валидном upstream-пути (CI-факт №4). Декод
+// ДО ValidateKey сохраняет инварианты: %25/%2e%2e fail-closed ниже.
+// PathUnescape сырое «+» не трогает (это не QueryUnescape). Когда
+// RawPath пуст, chi маршрутизировал по Path — параметр уже декодирован,
+// и повторный unescape алиасил бы двойное кодирование (%252b → %2b →
+// «+» в чужой объект) вместо fail-closed 400 на «%». Ветка ошибки
+// — defensive: net/http сам не пропускает битые escape.
+func decodedWildcard(r *http.Request) (string, error) {
+	tail := chi.URLParam(r, "*")
+	if r.URL.RawPath == "" {
+		return tail, nil
+	}
+	return url.PathUnescape(tail)
 }

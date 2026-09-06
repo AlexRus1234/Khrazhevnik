@@ -31,7 +31,17 @@ func handleProxy(d Deps) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		path := "/" + prefix + "/" + chi.URLParam(r, "*")
+		tail, err := decodedWildcard(r)
+		if err != nil {
+			// Битые escape (RawPath руками клиента) — тот же класс
+			// мусорного пути, что и InvalidKeyError из storage: 400.
+			writeProxyError(w, &domain.InvalidKeyError{
+				Key:     chi.URLParam(r, "*"),
+				Reasons: []error{err},
+			})
+			return
+		}
+		path := "/" + prefix + "/" + tail
 		obj, status, err := d.Cache.FetchStatus(r.Context(), eco, path)
 		if err != nil {
 			var stale *domain.StaleError

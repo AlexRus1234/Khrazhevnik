@@ -28,8 +28,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/port"
 	authmw "khrazhevnik/internal/core/web/middleware"
@@ -396,10 +394,15 @@ func handlePutObject(d Deps) http.HandlerFunc {
 			writeErr(w, err)
 			return
 		}
-		// Путь внутри репо — хвост после /objects/. chi URLParam "*" —
-		// весь остаток, decode %2F не нужен (apt-пути не содержат
-		// закодированных слешей).
-		objPath := chi.URLParam(r, "*")
+		// Путь внутри репо — хвост после /objects/. chi отдаёт wildcard
+		// экранированным (RawPath-маршрутизация, chi v5.3.1 mux.go:455):
+		// клиент, кодирующий «+» как %2b, иначе ловит 400 на ValidateKey
+		// (whitelist режет «%») — декод обязателен (decodedWildcard).
+		objPath, err := decodedWildcard(r)
+		if err != nil {
+			writeErrCode(w, http.StatusBadRequest, "validation_error")
+			return
+		}
 		if objPath == "" {
 			writeErrCode(w, http.StatusBadRequest, "validation_error")
 			return
@@ -463,11 +466,16 @@ func handleDeleteObject(d Deps) http.HandlerFunc {
 			writeErr(w, err)
 			return
 		}
-		objPath := strings.ToLower(chi.URLParam(r, "*"))
+		objPath, err := decodedWildcard(r)
+		if err != nil {
+			writeErrCode(w, http.StatusBadRequest, "validation_error")
+			return
+		}
 		if objPath == "" {
 			writeErrCode(w, http.StatusBadRequest, "validation_error")
 			return
 		}
+		objPath = strings.ToLower(objPath)
 		if err := d.Publish.DeleteObject(r.Context(), repo, objPath); err != nil {
 			writeErr(w, err)
 			return

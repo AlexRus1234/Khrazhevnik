@@ -17,6 +17,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -395,5 +396,29 @@ func TestPublicHeadRoutes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestPublicRepoFilePercentEscapedPlus — apt-клиент личного репо шлёт
+// «+» как %2b (CI-факт №4): генераторы пишут raw «+», а экранированный
+// запрос с «%» отсекался whitelist'ом — 400 вместо объекта. Декод
+// wildcard'а сводит оба написания в один ключ.
+func TestPublicRepoFilePercentEscapedPlus(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	body := []byte("gxx-pkg-bytes")
+	uploadRepoObject(t, env, repoID, "pool/main/g/g++_1.0_amd64.deb", body)
+
+	rec := getPublic(t, env, "/repo/alice/pool/main/g/g%2b%2b_1.0_amd64.deb")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %%2b-пути = %d, тело %q", rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), body) {
+		t.Errorf("тело = %q, хочу byte-exact %q", rec.Body.String(), body)
+	}
+	// Эквивалентность написаний: raw-запрос того же объекта работает.
+	rec = getPublic(t, env, "/repo/alice/pool/main/g/g++_1.0_amd64.deb")
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), body) {
+		t.Errorf("GET raw-пути = %d, тело %q", rec.Code, rec.Body.String())
 	}
 }

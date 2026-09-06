@@ -57,7 +57,16 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 			writeProxyError(w, publicCatalogError(err))
 			return
 		}
-		rest := chi.URLParam(r, "*")
+		rest, err := decodedWildcard(r)
+		if err != nil {
+			// Битые escape — мусорный путь клиента (400), как в
+			// handleProxy; декод ДО ToLower: %2B и %2b сходятся в «+».
+			writeProxyError(w, &domain.InvalidKeyError{
+				Key:     chi.URLParam(r, "*"),
+				Reasons: []error{err},
+			})
+			return
+		}
 		if rest == "" {
 			http.NotFound(w, r)
 			return

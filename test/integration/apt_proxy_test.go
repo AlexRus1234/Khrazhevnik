@@ -223,6 +223,73 @@ func TestAptProxyPlusTildeKey(t *testing.T) {
 	}
 }
 
+// TestAptProxyEncodedPlus — apt-клиент шлёт «+» в пути как %2b
+// (CI-факт №4 distro-test: apt-get install падал 400 на
+// libnl-3-200_3.7.0-0.2+b1). Экранированное написание должно давать
+// тот же объект кеша, что и сырое «+» (upstream-счётчик = 1);
+// двойное кодирование — 400 без кеш-загрязнения. httptest.NewRequest
+// с %-таргетом воспроизводит провод: chi берёт RawPath.
+func TestAptProxyEncodedPlus(t *testing.T) {
+	up := newAptUpstream(t)
+	storage := testutil.NewFakeStorage(testutil.NewManualClock(aptTestStart))
+	index := testutil.NewFakeObjectIndex()
+	clock := testutil.NewManualClock(aptTestStart)
+	remotes := testutil.NewFakeRemoteStore()
+	if _, err := remotes.CreateRemote(t.Context(), domain.Remote{
+		ID: 7, Name: "debian", Ecosystem: "apt",
+		BaseURL: up.srv.URL + "/debian", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := apt.New(remotes, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := cacheengine.New(storage, index, up.srv.Client(), clock,
+		cacheengine.Config{StaleIfError: true, NegativeTTL404: 5 * time.Minute, NegativeTTL5xx: 30 * time.Second},
+		metrics.NewCache())
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := web.BuildPublicRouter(web.Deps{
+		Log: log, Version: "test", Cache: engine,
+		Ecosystems: map[string]port.Ecosystem{"apt": adapter},
+	})
+
+	const escaped = "/apt/debian/pool/main/g/gcc-13/libstdc%2b%2b6_13.2.0-7~deb12u1_amd64.deb"
+	const raw = "/apt/debian/pool/main/g/gcc-13/libstdc++6_13.2.0-7~deb12u1_amd64.deb"
+	wantHex := sha256Hex(up.plusBytes)
+
+	rec := aptGet(t, h, escaped)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%%2b-запрос: код %d, тело %q", rec.Code, rec.Body.String())
+	}
+	if got := sha256Hex(rec.Body.Bytes()); got != wantHex {
+		t.Fatalf("%%2b-запрос sha256 = %s, хочу %s (byte-exact нарушен)", got, wantHex)
+	}
+	if got := rec.Header().Get("X-Cache"); got != "MISS" {
+		t.Errorf("%%2b-запрос X-Cache = %q, хочу MISS", got)
+	}
+	hitsAfterFirst := up.hits()
+
+	// Сырое «+» — тот же объект кеша: HIT, upstream не дёргается.
+	rec = aptGet(t, h, raw)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("raw-запрос: код %d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Cache"); got != "HIT" {
+		t.Errorf("raw-запрос X-Cache = %q, хочу HIT (один объект на оба написания)", got)
+	}
+	if up.hits() != hitsAfterFirst {
+		t.Errorf("upstream получил %d запросов после HIT, хочу %d", up.hits(), hitsAfterFirst)
+	}
+
+	// Двойное кодирование: %252b декодится в «%2b» с «%» — whitelist
+	// ValidateKey режет fail-closed → 400.
+	rec = aptGet(t, h, "/apt/debian/pool/main/g/gcc-13/libstdc%252b%252b6_13.2.0-7~deb12u1_amd64.deb")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("%%252b-запрос = %d, хочу 400", rec.Code)
+	}
+}
+
 // sha256Hex — hex от sha256 байт (для byte-exact проверки).
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)

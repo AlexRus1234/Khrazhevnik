@@ -721,6 +721,65 @@ func TestPublicRepoFileInvalidKeyPath(t *testing.T) {
 	}
 }
 
+// TestRepoObjectPercentEscapedPath — API-клиент шлёт «+» в пути как
+// %2b (CI-факт №4): chi отдаёт wildcard экранированным, ключ с «%»
+// отсекался whitelist'ом → 400. ДекодWildcard'а до whitelist'а: PUT
+// и DELETE работают, ключ сохраняется raw-написанием (генераторы
+// индексов ищут «+»).
+func TestRepoObjectPercentEscapedPath(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	body := []byte("gxx-pkg-bytes")
+
+	// PUT с %2b → 201; тело ответа — raw-написание пути.
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/repos/"+itoaRepo(repoID)+"/objects/pool/main/g/g%2b%2b_1.0_amd64.deb", bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	req.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	rec := httptest.NewRecorder()
+	env.admin.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("PUT %%2b-пути = %d, тело %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Path string `json:"path"`
+		Size int64  `json:"size"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Path != "pool/main/g/g++_1.0_amd64.deb" {
+		t.Errorf("path в ответе = %q, хочу raw-написание pool/main/g/g++_1.0_amd64.deb", out.Path)
+	}
+	if out.Size != int64(len(body)) {
+		t.Errorf("size = %d, хочу %d", out.Size, len(body))
+	}
+
+	// Ключ сохранён raw «+», а не экранированным написанием.
+	rawKey := "repo/" + itoaRepo(repoID) + "/apt/pool/main/g/g++_1.0_amd64.deb"
+	if _, err := env.storage.Stat(context.Background(), rawKey); err != nil {
+		t.Fatalf("Stat(%q) = %v, хочу объект", rawKey, err)
+	}
+
+	// DELETE с %2b → 204 и сносит raw-ключ; повторный DELETE — 404.
+	del := httptest.NewRequest(http.MethodDelete, "/api/v1/repos/"+itoaRepo(repoID)+"/objects/pool/main/g/g%2b%2b_1.0_amd64.deb", nil)
+	del.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	rec2 := httptest.NewRecorder()
+	env.admin.ServeHTTP(rec2, del)
+	if rec2.Code != http.StatusNoContent {
+		t.Fatalf("DELETE %%2b-пути = %d, хочу 204 (тело %s)", rec2.Code, rec2.Body.String())
+	}
+	if _, err := env.storage.Stat(context.Background(), rawKey); !errors.Is(err, &domain.NotFoundError{}) {
+		t.Fatalf("Stat после DELETE = %v, хочу NotFound (raw-ключ снесён)", err)
+	}
+	del2 := httptest.NewRequest(http.MethodDelete, "/api/v1/repos/"+itoaRepo(repoID)+"/objects/pool/main/g/g%2b%2b_1.0_amd64.deb", nil)
+	del2.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	rec3 := httptest.NewRecorder()
+	env.admin.ServeHTTP(rec3, del2)
+	if rec3.Code != http.StatusNotFound {
+		t.Errorf("повторный DELETE = %d, хочу 404", rec3.Code)
+	}
+}
+
 func TestPublicRepoKey(t *testing.T) {
 	env := newRepoEnv(t)
 	createRepoViaAPI(t, env, "alice", 2)
