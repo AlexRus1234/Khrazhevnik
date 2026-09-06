@@ -1,5 +1,5 @@
 <!--
-Hrazhevnik — caching proxy and mirror for Linux package repositories
+Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026 AlexRus1234
 
 This program is free software: you can redistribute it and/or modify
@@ -18,7 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 # Choosing storage and the database
 
-Hrazhevnik abstracts object bytes (`port.Storage`) and the metadata
+Khrazhevnik abstracts object bytes (`port.Storage`) and the metadata
 catalog (`port.Catalog*`) behind ports; implementations are wired in
 via blank imports in `cmd/khrazhevnik/wire.go` and selected by the
 TOML config. All driver pairs pass the same contract suites

@@ -1,5 +1,5 @@
 <!--
-Hrazhevnik — caching proxy and mirror for Linux package repositories
+Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026 AlexRus1234
 
 This program is free software: you can redistribute it and/or modify
@@ -20,11 +20,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <div align="center">
 
-<h1>Hrazhevnik</h1>
+<h1>Khrazhevnik</h1>
 
 **Caching proxy, mirror, and hosting for Linux package repositories**
 
-Hrazhevnik is a self-contained server for caching and mirroring Linux
+Khrazhevnik is a self-contained server for caching and mirroring Linux
 package repositories. The Go binary and the built-in web admin UI
 (Vue 3) are combined into a single executable; the object store is a
 local directory or any S3-compatible storage, the catalog is SQLite,
@@ -47,10 +47,10 @@ rebuilding. The primary distribution is an OCI container from `scratch`
 >
 > ```bash
 > # /etc/apt/sources.list.d/khrazhevnik.list
-> deb http://<hrazhevnik>:29202/apt/debian stable main
+> deb http://<Khrazhevnik>:29202/apt/debian stable main
 > ```
 >
-> Hrazhevnik only adds a cache on top (packages — permanently, indexes —
+> Khrazhevnik only adds a cache on top (packages — permanently, indexes —
 > revalidation by ETag/Last-Modified), background mirrors, and personal
 > signed user repositories.
 
@@ -233,11 +233,11 @@ podman exec khrazhevnik /khrazhevnik -add-remote apt/debian=https://deb.debian.o
 
 ### Client setup
 
-On any Debian/Ubuntu machine, point the client at Hrazhevnik instead of
+On any Debian/Ubuntu machine, point the client at Khrazhevnik instead of
 the upstream:
 
 ```bash
-echo 'deb http://<hrazhevnik>:29202/apt/debian stable main' \
+echo 'deb http://<Khrazhevnik>:29202/apt/debian stable main' \
   > /etc/apt/sources.list.d/khrazhevnik.list
 apt-get update && apt-get install hello
 ```
@@ -477,9 +477,9 @@ Developer documentation (reading order before making changes):
 
 ## Plans
 
-Development directions after the v1.0.0 release (owner decision of
-2026-09-05; the same [docs/ROADMAP.md](docs/ROADMAP.md) also covers
-old-version eviction and other post-v1 questions). Priority: XBPS and
+Development directions after the v1.0.0 release (old-version eviction
+and other post-v1 questions are covered in
+[docs/ROADMAP.md](docs/ROADMAP.md)). Priority: XBPS and
 pkg first — their "directory + index" model repeats already solved
 tasks; Flatpak requires a new publishing mechanism and comes last.
 
@@ -556,7 +556,7 @@ The project is distributed under the **[GNU Affero General Public
 License v3.0](LICENSE)** or later.
 
 ```
-Hrazhevnik — caching proxy and mirror for Linux package repositories
+Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026  AlexRus1234
 
 This program is free software: you can redistribute it and/or modify

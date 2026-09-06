@@ -1,5 +1,5 @@
 <!--
-Hrazhevnik — caching proxy and mirror for Linux package repositories
+Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026 AlexRus1234
 
 This program is free software: you can redistribute it and/or modify
@@ -81,11 +81,11 @@ podman exec khrazhevnik /khrazhevnik -add-remote apt/debian=https://deb.debian.o
 
 ## 4. Client configuration
 
-On any Debian/Ubuntu machine, specify Hrazhevnik instead of the
+On any Debian/Ubuntu machine, specify Khrazhevnik instead of the
 upstream:
 
 ```sh
-echo 'deb http://<hrazhevnik>:29202/apt/debian stable main' \
+echo 'deb http://<Khrazhevnik>:29202/apt/debian stable main' \
   > /etc/apt/sources.list.d/khrazhevnik.list
 apt-get update
 apt-get install hello
@@ -97,7 +97,7 @@ byte-for-byte.
 ## 5. Cache verification
 
 ```sh
-curl -sI http://<hrazhevnik>:29202/apt/debian/dists/stable/main/binary-amd64/Packages.gz | grep -i x-cache
+curl -sI http://<Khrazhevnik>:29202/apt/debian/dists/stable/main/binary-amd64/Packages.gz | grep -i x-cache
 ```
 
 A repeated request is served from the cache (`X-Cache: HIT`); packages

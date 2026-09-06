@@ -1,5 +1,5 @@
 <!--
-Hrazhevnik — caching proxy and mirror for Linux package repositories
+Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026 AlexRus1234
 
 This program is free software: you can redistribute it and/or modify
@@ -119,7 +119,7 @@ name is registered.
 
 ## Pointing clients at the proxy
 
-Hrazhevnik is transparent: the path after `/<remote-name>/` is
+Khrazhevnik is transparent: the path after `/<remote-name>/` is
 forwarded to the upstream byte-for-byte; signatures and checksums
 remain valid — the client keyring does not change. Examples (full
 pages covering mirror/include — in [ecosystems/](ecosystems/)):
@@ -129,7 +129,7 @@ pages covering mirror/include — in [ecosystems/](ecosystems/)):
 `/etc/apt/sources.list.d/khrazhevnik.list`:
 
 ```
-deb http://<hrazhevnik>:29202/apt/debian stable main
+deb http://<Khrazhevnik>:29202/apt/debian stable main
 ```
 
 ### dnf / Zypper (rpm-md)
@@ -142,14 +142,14 @@ is `rpm` (shorter than the adapter name `rpm-md`, as written in the
 ```ini
 [khrazhevnik-fedora]
 name=khrazhevnik proxy of Fedora
-baseurl=http://<hrazhevnik>:29202/rpm/fedora/releases/$releasever/Everything/$basearch/os/
+baseurl=http://<Khrazhevnik>:29202/rpm/fedora/releases/$releasever/Everything/$basearch/os/
 enabled=1
 gpgcheck=1
 ```
 
 ### pacman / apk / nix
 
-`Server = http://<hrazhevnik>:29202/pacman/<remote>/$repo/os/$arch`,
+`Server = http://<Khrazhevnik>:29202/pacman/<remote>/$repo/os/$arch`,
 a line in `/etc/apk/repositories`, `substituters` in `nix.conf` — see
 [ecosystems/pacman.md](ecosystems/pacman.md),
 [ecosystems/apk.md](ecosystems/apk.md), [ecosystems/nix.md](ecosystems/nix.md).

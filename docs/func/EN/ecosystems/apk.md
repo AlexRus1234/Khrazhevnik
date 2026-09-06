@@ -1,5 +1,5 @@
 <!--
-Hrazhevnik — caching proxy and mirror for Linux package repositories
+Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026 AlexRus1234
 
 This program is free software: you can redistribute it and/or modify
@@ -38,8 +38,8 @@ is an error (apk has no root index of architectures).
 ## Caching proxy: /etc/apk/repositories
 
 ```
-http://<hrazhevnik>:29202/apk/alpine/v3.21/main
-http://<hrazhevnik>:29202/apk/alpine/v3.21/community
+http://<Khrazhevnik>:29202/apk/alpine/v3.21/main
+http://<Khrazhevnik>:29202/apk/alpine/v3.21/community
 ```
 
 ## Personal repository
@@ -51,9 +51,9 @@ plus the detached signature `APKINDEX.tar.gz.sig` with the instance
 key. Client:
 
 ```sh
-curl -sO http://<hrazhevnik>:29202/repo/<name>/key.asc
+curl -sO http://<Khrazhevnik>:29202/repo/<name>/key.asc
 cp key.asc /etc/apk/keys/<name>.pem    # apk accepts keys in /etc/apk/keys
-echo 'http://<hrazhevnik>:29202/repo/<name>' >> /etc/apk/repositories
+echo 'http://<Khrazhevnik>:29202/repo/<name>' >> /etc/apk/repositories
 apk update && apk add <package>
 ```
 

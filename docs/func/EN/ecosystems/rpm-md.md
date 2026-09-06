@@ -1,5 +1,5 @@
 <!--
-Hrazhevnik — caching proxy and mirror for Linux package repositories
+Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026 AlexRus1234
 
 This program is free software: you can redistribute it and/or modify
@@ -43,7 +43,7 @@ per repomd); `include` is not used for rpm-md.
 ```ini
 [khrazhevnik-fedora]
 name=khrazhevnik proxy of Fedora
-baseurl=http://<hrazhevnik>:29202/rpm/fedora/releases/$releasever/Everything/$basearch/os/
+baseurl=http://<Khrazhevnik>:29202/rpm/fedora/releases/$releasever/Everything/$basearch/os/
 enabled=1
 gpgcheck=1
 ```
@@ -58,12 +58,12 @@ Upload `.rpm/.drpm/.src.rpm` anywhere under the repository root EXCEPT
 signature `repodata/repomd.xml.asc` with the instance key. Client:
 
 ```sh
-curl -sO http://<hrazhevnik>:29202/repo/<name>/key.asc
+curl -sO http://<Khrazhevnik>:29202/repo/<name>/key.asc
 rpm --import key.asc
 cat > /etc/yum.repos.d/<name>.repo << 'EOF'
 [<name>]
 name=<name> personal repo
-baseurl=http://<hrazhevnik>:29202/repo/<name>
+baseurl=http://<Khrazhevnik>:29202/repo/<name>
 enabled=1
 gpgcheck=1
 EOF

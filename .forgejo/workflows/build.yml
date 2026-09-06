@@ -22,7 +22,7 @@
 # Хражевник контейнерный
 # сервис, в отличие от CLI-бинарника lentovodec).
 
-name: Build and Test Hrazhevnik
+name: Build and Test Khrazhevnik
 
 on:
   workflow_dispatch:
@@ -359,7 +359,7 @@ jobs:
           done
           echo "Published Forgejo packages: $PUBLISH_FILES"
 
-          API="https://git.yadr00.internal/api/v1/repos/AlexRus1234/Hrazhevnik"
+          API="https://git.yadr00.internal/api/v1/repos/AlexRus1234/Khrazhevnik"
           RELEASE_ID="$(curl -fsSL --user "alexrus:${UPLOAD_TOKEN}" \
             "$API/releases/tags/${VERSION}" 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)"
           if [ -z "$RELEASE_ID" ]; then
@@ -393,7 +393,7 @@ jobs:
           ARTIFACT_NAME="khrazhevnik-${VERSION}-linux-amd64"
           PUBLISH_FILES="$ARTIFACT_NAME ${ARTIFACT_NAME}.sha256"
           echo "Files to publish: $PUBLISH_FILES"
-          API="https://api.github.com/repos/AlexRus1234/Hrazhevnik"
+          API="https://api.github.com/repos/AlexRus1234/Khrazhevnik"
           BODY="$(jq -n --arg tag "$VERSION" '{tag_name:$tag, name:$tag, draft:false, prerelease:($tag | test("-"))}')"
           RELEASE="$(curl -fsSL -X POST \
             -H "Authorization: Bearer ${RELEASE_TOKEN}" \
@@ -424,7 +424,7 @@ jobs:
           ARTIFACT_NAME="khrazhevnik-${VERSION}-linux-amd64"
           PUBLISH_FILES="$ARTIFACT_NAME ${ARTIFACT_NAME}.sha256"
           echo "Files to publish: $PUBLISH_FILES"
-          API="https://codeberg.org/api/v1/repos/AlexRus1234/Hrazhevnik"
+          API="https://codeberg.org/api/v1/repos/AlexRus1234/Khrazhevnik"
           BODY="$(jq -n --arg tag "$VERSION" '{tag_name:$tag, name:$tag, draft:false, prerelease:($tag | test("-"))}')"
           RELEASE="$(curl -fsSL -X POST \
             -H "Authorization: token ${RELEASE_TOKEN}" \

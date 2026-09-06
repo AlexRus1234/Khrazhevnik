@@ -1,5 +1,5 @@
 <!--
-Hrazhevnik — caching proxy and mirror for Linux package repositories
+Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026 AlexRus1234
 
 This program is free software: you can redistribute it and/or modify
@@ -46,11 +46,11 @@ a goal; pull-through "by usage" only. `include` is not used.
 `/etc/nix/nix.conf` (or `~/.config/nix/nix.conf`):
 
 ```
-substituters = http://<hrazhevnik>:29202/nix/cache https://cache.nixos.org
+substituters = http://<Khrazhevnik>:29202/nix/cache https://cache.nixos.org
 trusted-public-keys = cache.nixos.org-1:6NCHbD9f... (kept from upstream)
 ```
 
-Hrazhevnik is set as the **first** substituter: a cache hit is a HIT
+Khrazhevnik is set as the **first** substituter: a cache hit is a HIT
 without contacting the upstream; a miss is a transparent pull-through.
 The fallback `https://cache.nixos.org` guarantees access if the proxy
 is unavailable.
@@ -62,7 +62,7 @@ verifies them with the same keys as for `cache.nixos.org`.
 Verification:
 
 ```sh
-nix-shell -p hello --substituters http://<hrazhevnik>:29202/nix/cache
+nix-shell -p hello --substituters http://<Khrazhevnik>:29202/nix/cache
 ```
 
 The `X-Cache` header: a nar is always `HIT` after the first request; a
@@ -88,7 +88,7 @@ where a third-party file is modified; nar files are immutable and are
 not touched. Client:
 
 ```
-substituters = http://<hrazhevnik>:29202/repo/<name> https://cache.nixos.org
+substituters = http://<Khrazhevnik>:29202/repo/<name> https://cache.nixos.org
 trusted-public-keys = khrazhevnik:<pubkey-b64> cache.nixos.org-1:6NCHbD9f...
 ```
 

@@ -1,5 +1,5 @@
 <!--
-Hrazhevnik — caching proxy and mirror for Linux package repositories
+Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026 AlexRus1234
 
 This program is free software: you can redistribute it and/or modify
@@ -82,7 +82,7 @@ and `.../pool/foo.deb` are different objects.)
   (+.gz + by-hash) + `dists/stable/Release` (Date/Suite/Components/
   Architectures/SHA256). Signature: `InRelease` (cleartext) +
   `Release.gpg` (detached) — with the instance OpenPGP key (ed25519).
-- **Client:** `deb [signed-by=/path/to/key.asc] http://<hrazhevnik>:29202/repo/alice stable main`,
+- **Client:** `deb [signed-by=/path/to/key.asc] http://<Khrazhevnik>:29202/repo/alice stable main`,
   where `key.asc` = `GET /repo/alice/key.asc`.
 - **Public key:** `GET /repo/<name>/key.asc` (armored OpenPGP).
 - **By-hash retention:** index copies under `by-hash/sha256/<hash>`
@@ -105,7 +105,7 @@ and `.../pool/foo.deb` are different objects.)
   ```ini
   [alice]
   name=alice personal repo
-  baseurl=http://<hrazhevnik>:29202/repo/alice
+  baseurl=http://<Khrazhevnik>:29202/repo/alice
   enabled=1
   gpgcheck=1
   ```
@@ -125,7 +125,7 @@ and `.../pool/foo.deb` are different objects.)
   ```ini
   [alice]
   SigLevel = Required DatabaseOptional
-  Server = http://<hrazhevnik>:29202/repo/alice
+  Server = http://<Khrazhevnik>:29202/repo/alice
   ```
   The key `GET /repo/alice/key.asc` is imported via `pacman-key --add`.
 - **Public key:** `GET /repo/<name>/key.asc` (armored OpenPGP).
@@ -139,7 +139,7 @@ and `.../pool/foo.deb` are different objects.)
   `APKINDEX.tar.gz.sig` (detached, with the instance OpenPGP key).
 - **Client:** `/etc/apk/repositories`:
   ```
-  http://<hrazhevnik>:29202/repo/alice
+  http://<Khrazhevnik>:29202/repo/alice
   ```
   The key `GET /repo/alice/key.asc` is copied into `/etc/apk/keys/`.
 - **Public key:** `GET /repo/<name>/key.asc` (armored OpenPGP).
@@ -160,7 +160,7 @@ and `.../pool/foo.deb` are different objects.)
   golden diff test). nar files are immutable and are not touched.
 - **Client:** `/etc/nix/nix.conf`:
   ```
-  substituters = http://<hrazhevnik>:29202/repo/alice https://cache.nixos.org
+  substituters = http://<Khrazhevnik>:29202/repo/alice https://cache.nixos.org
   trusted-public-keys = khrazhevnik:<pubkey-b64> cache.nixos.org-1:6NCHbD9f...
   ```
   `<pubkey-b64>` = `GET /repo/alice/nix-key.asc` (a single

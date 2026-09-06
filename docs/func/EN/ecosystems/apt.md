@@ -1,5 +1,5 @@
 <!--
-Hrazhevnik — caching proxy and mirror for Linux package repositories
+Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026 AlexRus1234
 
 This program is free software: you can redistribute it and/or modify
@@ -43,14 +43,14 @@ The classic format (`/etc/apt/sources.list` or
 `/etc/apt/sources.list.d/khrazhevnik.list`):
 
 ```
-deb http://<hrazhevnik>:29202/apt/debian stable main
+deb http://<Khrazhevnik>:29202/apt/debian stable main
 ```
 
 deb822 (`/etc/apt/sources.list.d/debian.sources`):
 
 ```
 Types: deb
-URIs: http://<hrazhevnik>:29202/apt/debian
+URIs: http://<Khrazhevnik>:29202/apt/debian
 Suites: stable
 Components: main
 ```
@@ -67,8 +67,8 @@ uploading `dists/*` is forbidden (it is generated). Reindex creates
 with the instance key. Client:
 
 ```sh
-curl -sO http://<hrazhevnik>:29202/repo/<name>/key.asc
-echo 'deb [signed-by=/root/key.asc] http://<hrazhevnik>:29202/repo/<name> stable main' \
+curl -sO http://<Khrazhevnik>:29202/repo/<name>/key.asc
+echo 'deb [signed-by=/root/key.asc] http://<Khrazhevnik>:29202/repo/<name> stable main' \
   > /etc/apt/sources.list.d/<name>.list
 apt-get update && apt-get install <package>
 ```

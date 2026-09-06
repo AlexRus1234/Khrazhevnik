@@ -1,5 +1,5 @@
 <!--
-Hrazhevnik — caching proxy and mirror for Linux package repositories
+Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026 AlexRus1234
 
 This program is free software: you can redistribute it and/or modify
@@ -16,9 +16,9 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 -->
 
-# Hrazhevnik Documentation
+# Khrazhevnik Documentation
 
-This directory contains Hrazhevnik functional documentation in English.
+This directory contains Khrazhevnik functional documentation in English.
 The root `README.en.md` provides a system overview and initial setup
 instructions; details requiring separate treatment are documented here.
 

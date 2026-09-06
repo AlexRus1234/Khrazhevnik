@@ -1,5 +1,5 @@
 <!--
-Hrazhevnik — caching proxy and mirror for Linux package repositories
+Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026 AlexRus1234
 
 This program is free software: you can redistribute it and/or modify
@@ -41,7 +41,7 @@ empty `include` is an error (pacman has no root index of repositories).
 substitutes `core/`, `extra/` itself:
 
 ```
-Server = http://<hrazhevnik>:29202/pacman/arch/$repo/os/$arch
+Server = http://<Khrazhevnik>:29202/pacman/arch/$repo/os/$arch
 ```
 
 ## Personal repository
@@ -55,7 +55,7 @@ plus the detached signature `<repo-name>.db.sig` with the instance
 key. Client:
 
 ```sh
-curl -sO http://<hrazhevnik>:29202/repo/<name>/key.asc
+curl -sO http://<Khrazhevnik>:29202/repo/<name>/key.asc
 pacman-key --add key.asc   # and sign locally, if necessary
 ```
 
@@ -64,7 +64,7 @@ pacman-key --add key.asc   # and sign locally, if necessary
 ```ini
 [<name>]
 SigLevel = Required DatabaseOptional
-Server = http://<hrazhevnik>:29202/repo/<name>
+Server = http://<Khrazhevnik>:29202/repo/<name>
 ```
 
 For details, see [personal-repos.md](../personal-repos.md).
