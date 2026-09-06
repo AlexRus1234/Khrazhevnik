@@ -103,7 +103,7 @@ ETag/Last-Modified.
 ## Что дальше
 
 - Все экосистемы (apt, dnf/zypper, pacman, apk, nix) — [ecosystems/](ecosystems/).
-- Зеркала (`mode = mirror`) — [deploy.md](deploy.md#remotes-прокси-и-зеркала).
+- Зеркала (`mode = mirror`) — [README](../../README.md#зеркало).
 - Личные репозитории с подписью — [personal-repos.md](personal-repos.md).
 - Веб-админка — [ui.md](ui.md).
 - Справочник REST API — [api.md](api.md).

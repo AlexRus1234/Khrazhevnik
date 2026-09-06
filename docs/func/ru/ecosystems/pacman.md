@@ -37,8 +37,8 @@ curl -s -X POST http://127.0.0.1:30202/api/v1/remotes \
 
 ## Кеш-прокси: pacman.conf
 
-`/etc/pacman.d/mirrorlist` — просто URL без репозиториев, pacman сам
-подставит `core/`, `extra/`:
+`/etc/pacman.d/mirrorlist` содержит только URL, без имён репозиториев;
+pacman сам подставит `core/`, `extra/`:
 
 ```
 Server = http://<хражевник>:29202/pacman/arch/$repo/os/$arch

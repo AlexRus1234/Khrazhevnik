@@ -102,7 +102,7 @@ curl -s -X POST http://127.0.0.1:30202/api/v1/remotes \
   -d '{"name":"debian","ecosystem":"apt","base_url":"https://deb.debian.org/debian","mode":"proxy","enabled":true}'
 ```
 
-То же флагом (без сервера — удобно из CI/init-скрипта):
+То же флагом, без запущенного сервера (CI/init-скрипты):
 
 ```sh
 podman exec khrazhevnik /khrazhevnik -add-remote apt/debian=https://deb.debian.org/debian

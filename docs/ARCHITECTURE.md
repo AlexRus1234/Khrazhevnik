@@ -185,7 +185,7 @@ type MetaFetcher interface {
 
 - reuse cache-движка: sync качает через `cache.Prefetch` (singleflight,
   TTL, метрики общие с прокси), не лезет в сеть сам;
-- Enumerate через `MetaFetcher` (cache.Fetch под капотом) — адаптер
+- Enumerate через `MetaFetcher` (реализация — cache.Fetch) — адаптер
   знает формат метаданных, зеркало не дублирует парсеры;
 - resume по diff, не по курсору: каждый запуск пересчитывает
   (Storage.Stat отфильтровывает имеющееся), идемпотентно и дешевле
