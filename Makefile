@@ -85,12 +85,20 @@ web-build:
 web-dev:
 	cd web && "$(NPM)" run dev
 
+# Корень step-ca в контекст сборки образа. Builder сам ходит за ним на
+# CA-сервер (172.20.0.1 — шлюз LAN) непосредственно перед podman build:
+# файл целевой, скачивается только если отсутствует, в git не коммитится
+# (.gitignore). curl -f: HTTP-ошибка не оставит HTML-мусор под видом PEM.
+deploy/certs/step-ca-root.pem:
+	mkdir -p $(dir $@)
+	curl -fk https://172.20.0.1:9000/roots.pem -o $@
+
 # image — сборка OCI-образа из deploy/Containerfile в scratch.
 # --manifest создаёт manifest list (даже для одной платформы), что
 # позволяет `podman run` выбирать нативную запись и `podman push`
 # пушить multi-арх. --build-arg VERSION инжектит тег в main.Version.
 .PHONY: image
-image:
+image: deploy/certs/step-ca-root.pem
 	podman build --platform='$(PLATFORMS)' --manifest '$(IMAGE):$(TAG)' \
 	    --build-arg VERSION='$(TAG)' -f deploy/Containerfile .
 
@@ -98,7 +106,7 @@ image:
 # но alpine с curl/jq/sqlite3 для CI-тестов пакетными менеджерами (distro-test).
 # Для локальной проверки distro-сценария без CI.
 .PHONY: image-test
-image-test:
+image-test: deploy/certs/step-ca-root.pem
 	podman build --build-arg VERSION='$(TAG)' \
 	    -t khrazhevnik-test:dev -f deploy/Containerfile.test .
 

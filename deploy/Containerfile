@@ -20,17 +20,46 @@
 # результат npm ci.
 FROM node:22-alpine AS web
 WORKDIR /web
+# Корень step-ca ДО npm: node верит только своему вшитому хранилищу CA
+# (системный бандл alpine игнорирует) — без NODE_EXTRA_CA_CERTS npm ci
+# на https://nora... упадёт с self-signed certificate. В git файл не
+# коммитится: его кладёт builder (шаг в build.yml / цель в Makefile)
+# непосредственно перед сборкой.
+COPY deploy/certs/step-ca-root.pem /etc/step-ca-root.pem
+# npm — через Nora-прокси (как npm-шаг в build.yml): без ENV npm ci
+# идёт на registry.npmjs.org напрямую — дыра в герметичности сборки
+# образа.
+ENV NODE_EXTRA_CA_CERTS=/etc/step-ca-root.pem \
+    npm_config_registry=https://nora.panelka.yadr01.internal/npm/
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
 RUN npm run build
 
 FROM golang:1.26-alpine AS build
+# Корень step-ca до apk (chicken-and-egg: без него TLS к инстансу не
+# поднимется). Двойная укладка: аппенд в /etc/apk/certificates-bundle —
+# для самого apk; /usr/local/share/ca-certificates — чтобы
+# update-ca-certificates внутри apk add ca-certificates включил корень
+# в перегенерированный бандл (иначе стёр бы аппенд). В alpine
+# /etc/ssl/certs/ca-certificates.crt ведёт на этот бандл: закрыты apk,
+# go (GOPROXY→Nora) и curl одним движением.
+# sed repositories — apk ходит через Хражевник (ветка v3.x наследуется
+# от базового образа, remote покрывает весь корень dl-cdn).
+COPY deploy/certs/step-ca-root.pem /usr/local/share/ca-certificates/step-ca-root.crt
+RUN cat /usr/local/share/ca-certificates/step-ca-root.crt >> /etc/apk/certificates-bundle \
+    && sed -i 's#https://dl-cdn.alpinelinux.org/alpine#https://khrazhevnik.panelka.yadr01.internal/apk/alpine#g' /etc/apk/repositories \
+    && apk add --no-cache ca-certificates git
 # ca-certificates: scratch-образу нужен бандл доверенных CA, иначе
 # HTTPS-запросы к upstream-зеркалам упадут с x509. git — фолбэк версии
 # через git describe при локальной сборке без --build-arg VERSION.
-RUN apk add --no-cache ca-certificates git
 ARG VERSION=
+# Go-модули — через Nora-прокси (как GOPROXY в build.yml): без явного
+# ENV go build ходит на дефолтный proxy.golang.org — дыра в
+# герметичности сборки образа.
+ENV GOPROXY="https://nora.panelka.yadr01.internal/go,direct" \
+    GOSUMDB=off \
+    GOPRIVATE="git.yadr00.internal/*"
 WORKDIR /src
 COPY . .
 # Встроенный SPA-бандл из web-stage: //go:embed (internal/core/web/spa.go)

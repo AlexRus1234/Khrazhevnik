@@ -37,3 +37,8 @@ internal/core/web/assets/
 .env
 .env.*
 *.local.toml
+
+# Корень step-ca в контекст сборки образа: builder сам скачивает его с
+# CA-сервера (шаг в build.yml / цель в Makefile) непосредственно перед
+# podman build — в git не замораживаем, чтобы всегда был свежий.
+deploy/certs/step-ca-root.pem

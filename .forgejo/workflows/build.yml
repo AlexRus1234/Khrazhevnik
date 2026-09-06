@@ -128,15 +128,30 @@ jobs:
           update-ca-trust
           git config --global http.sslCAInfo /etc/pki/ca-trust/source/anchors/step-ca.crt
 
-      - name: Configure Nora RPM repo (custom packages if needed)
+      - name: Configure Khrazhevnik RPM repos (dogfood)
+        # DNF дальше ходит ТОЛЬКО через Хражевник: дефолтные fedora*.repo
+        # (metalink на внешние зеркала) удаляются — герметичность как у ног
+        # distro-test (rm *.repo). Bootstrap-шаг выше (git+curl) неизбежно
+        # идёт мимо кеша: curl ещё нет, а без него не достать roots.pem
+        # step-ca для доверия к инстансу.
+        # gpgcheck=0 — passthrough чужих подписей байтово (инвариант кеша),
+        # ключ Fedora ноге не ставим, как и в distro-матрице.
         run: |
-          cat > /etc/yum.repos.d/nora.repo << 'EOF'
-          [nora-runner]
-          name=Nora Runner Dependencies
-          baseurl=https://nora.panelka.yadr01.internal/rpm/runner/
+          rm -f /etc/yum.repos.d/fedora*.repo
+          cat > /etc/yum.repos.d/khrz.repo << 'EOF'
+          [khrz-fedora]
+          name=Khrazhevnik Fedora 44 (release)
+          baseurl=https://khrazhevnik.panelka.yadr01.internal/rpm/fedora/
           gpgcheck=0
           enabled=1
-          priority=1
+          sslverify=1
+          EOF
+          cat > /etc/yum.repos.d/khrz-updates.repo << 'EOF'
+          [khrz-fedora-updates]
+          name=Khrazhevnik Fedora 44 (updates)
+          baseurl=https://khrazhevnik.panelka.yadr01.internal/rpm/fedora-updates/
+          gpgcheck=0
+          enabled=1
           sslverify=1
           EOF
 
@@ -474,12 +489,26 @@ jobs:
           update-ca-trust
           git config --global http.sslCAInfo /etc/pki/ca-trust/source/anchors/step-ca.crt
 
-      - name: Configure Nora RPM repo
+      - name: Configure Khrazhevnik RPM repos (dogfood)
+        # priority=1, БЕЗ rm дефолтных fedora*.repo: образ
+        # quay.io/containers/podman:latest плавает по базовому fedora
+        # ($releasever не обязан быть 44) — вырезать дефолты значило бы
+        # ставить F44-пакеты поверх чужой базы. Дефолты остаются
+        # fallback'ом, приоритет — у кеша (паттерн прежнего nora.repo).
         run: |
-          cat > /etc/yum.repos.d/nora.repo << 'EOF'
-          [nora-runner]
-          name=Nora Runner Dependencies
-          baseurl=https://nora.panelka.yadr01.internal/rpm/runner/
+          cat > /etc/yum.repos.d/khrz.repo << 'EOF'
+          [khrz-fedora]
+          name=Khrazhevnik Fedora 44 (release)
+          baseurl=https://khrazhevnik.panelka.yadr01.internal/rpm/fedora/
+          gpgcheck=0
+          enabled=1
+          priority=1
+          sslverify=1
+          EOF
+          cat > /etc/yum.repos.d/khrz-updates.repo << 'EOF'
+          [khrz-fedora-updates]
+          name=Khrazhevnik Fedora 44 (updates)
+          baseurl=https://khrazhevnik.panelka.yadr01.internal/rpm/fedora-updates/
           gpgcheck=0
           enabled=1
           priority=1
@@ -515,7 +544,12 @@ jobs:
       - name: Build image
         # vfs: единственный driver, работающий на overlayfs backing FS внутри
         # контейнера раннера. amd64 single-platform; multi-арх релиз — с QEMU.
+        # Корень step-ca раннер сам кладёт в контекст сборки непосредственно
+        # перед podman build (в git не коммитится — .gitignore): Containerfile
+        # COPY-ит его в alpine-стадии для TLS к инстансу и Nora.
         run: |
+          mkdir -p deploy/certs
+          curl -fk https://172.20.0.1:9000/roots.pem -o deploy/certs/step-ca-root.pem
           podman --storage-driver=vfs build \
             --build-arg VERSION="${VERSION}" \
             -t git.yadr00.internal/build/khrazhevnik:${VERSION} \
@@ -734,7 +768,12 @@ jobs:
         # БЕЗ --storage-driver=vfs (в отличие от oci job): демон хостовый,
         # storage-драйвер выбирает хост; vfs-хак нужен только при
         # overlay-in-overlay ВНУТРИ контейнера.
-        run: podman build -t localhost/khrazhevnik:test-${{ matrix.name }} -f deploy/Containerfile.test .
+        # Корень step-ca в контекст — как в oci job (Containerfile.test
+        # COPY-ит его в alpine-стадии).
+        run: |
+          mkdir -p deploy/certs
+          curl -fk https://172.20.0.1:9000/roots.pem -o deploy/certs/step-ca-root.pem
+          podman build -t localhost/khrazhevnik:test-${{ matrix.name }} -f deploy/Containerfile.test .
 
       - name: Create isolated network
         run: podman network create khrz-${{ matrix.name }}-net
