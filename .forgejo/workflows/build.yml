@@ -542,9 +542,13 @@ jobs:
         if: always()
         run: podman --storage-driver=vfs system prune -a -f
 
-  # Distro-test (opt-in): реальный пакетный менеджер Debian ставит пакеты
-  # через Хражевник (pull-through живого deb.debian.org), кеш доказан
-  # фактами (X-Cache: HIT + /api/v1/cache/stats). DooD, а не PinP: сокет
+  # Distro-test (opt-in): реальные пакетные менеджеры ПЯТИ экосистем
+  # ставят пакеты через Хражевник (pull-through живых upstream), кеш
+  # доказан фактами (X-Cache: HIT + /api/v1/cache/stats). Матрица
+  # (сессия 73): одна нога = одна экосистема v1 (debian/fedora/arch/
+  # alpine/nix); fail-fast: false — красная волатильная нога (nix:
+  # eval-тарбол nixpkgs качается с github мимо binary-cache; fedora:
+  # полное dnf-дерево) не топит остальные. DooD, а не PinP: сокет
   # /run/user/968/podman/podman.sock — демон ХОСТОВЫЙ, job-контейнер лишь
   # клиент: mount /proc не выполняется, ограничение rootless-раннера на
   # вложенность (см. комментарий oci job) касалось podman ВНУТРИ job-
@@ -571,6 +575,97 @@ jobs:
       # docker-совместимых клиентов.
       CONTAINER_HOST: unix:///run/podman/podman.sock
       DOCKER_HOST: unix:///run/podman/podman.sock
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # trusted=yes — кеш-прокси раздаёт чужие подписи байтово
+          # (инвариант кеша), ключ Debian ноге не нужен; вырезание
+          # debian.sources — зелёный не может пройти мимо прокси
+          # (единственный source — инстанс).
+          - name: debian
+            image: docker.io/library/debian:bookworm
+            eco: apt
+            remote: debian
+            base_url: https://deb.debian.org/debian
+            check_path: /apt/debian/dists/bookworm/Release
+            setup: |
+              set -eu
+              rm -f /etc/apt/sources.list.d/debian.sources
+              echo "deb [trusted=yes] http://khrz-app-debian:29202/apt/debian bookworm main" \
+                > /etc/apt/sources.list.d/khrz.list
+              apt-get update -qq && apt-get install -y -qq htop
+          # rm *.repo — герметичность: dnf не может уйти мимо прокси
+          # (единственный source — инстанс); gpgcheck=0 — репомд
+          # прокси без ключа (подписи upstream байтовы, но ключ
+          # ноге не ставим — прокси-passthrough, не личное репо).
+          - name: fedora
+            image: docker.io/library/fedora:44
+            eco: rpm-md
+            remote: fedora
+            base_url: https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/
+            check_path: /rpm/fedora/repodata/repomd.xml
+            setup: |
+              set -eu
+              rm -f /etc/yum.repos.d/*.repo
+              cat > /etc/yum.repos.d/khrz.repo << 'EOF'
+              [khrz]
+              baseurl=http://khrz-app-fedora:29202/rpm/fedora/
+              gpgcheck=0
+              enabled=1
+              EOF
+              dnf install -y htop
+          # extra закомментирован — репо extra через прокси не создан
+          # (не упомянут в матрице); пакет из core: curl (htop лежит
+          # в extra). $repo в single-quoted echo — хост-шелл не
+          # разворачивает, pacman получает литерал.
+          - name: arch
+            image: docker.io/library/archlinux:latest
+            eco: pacman
+            remote: arch
+            base_url: https://geo.mirror.pkgbuild.com
+            check_path: /pacman/arch/core/os/x86_64/core.db
+            setup: |
+              set -eu
+              sed -i '/^\[extra\]/,/^\[/ s/^/#/' /etc/pacman.conf
+              echo 'Server = http://khrz-app-arch:29202/pacman/arch/$repo/os/$arch' \
+                > /etc/pacman.d/mirrorlist
+              pacman -Sy --noconfirm curl
+          # edge-образ согласован с edge/main (решение владельца);
+          # htop в edge — именно main, факт pkgs.alpinelinux.org
+          # (2026-09-06, htop 3.5.3-r0, repository: main).
+          - name: alpine
+            image: docker.io/library/alpine:edge
+            eco: apk
+            remote: alpine
+            base_url: https://dl-cdn.alpinelinux.org/alpine
+            check_path: /apk/alpine/edge/main/x86_64/APKINDEX.tar.gz
+            setup: |
+              set -eu
+              echo "http://khrz-app-alpine:29202/apk/alpine/edge/main" \
+                > /etc/apk/repositories
+              apk update && apk add htop
+          # nixos/nix работает root — trusted-substituter не нужен;
+          # narinfo/nar идут через нас, byte-exact подписи валидны
+          # (сессия 48: narinfo mutable). eval-тарбол nixpkgs качается
+          # с github МИМО binary-cache протокола — ожидаемо, нога
+          # доказывает именно substituter-passthrough.
+          # --extra-experimental-features: nix-command/flakes в Nix
+          # 2.30 всё ещё experimental (nix.dev/manual/nix/2.30), а
+          # nix.conf образа nixos/nix содержит только sandbox=false —
+          # без флага nix profile install падает до первого запроса.
+          - name: nix
+            image: docker.io/nixos/nix:latest
+            eco: nix
+            remote: cache
+            base_url: https://cache.nixos.org
+            check_path: /nix/cache/nix-cache-info
+            setup: |
+              set -eu
+              nix profile install nixpkgs#htop \
+                --option substituters http://khrz-app-nix:29202/nix/cache \
+                --extra-experimental-features 'nix-command flakes'
 
     steps:
       - name: Install dependencies
@@ -637,10 +732,10 @@ jobs:
         # БЕЗ --storage-driver=vfs (в отличие от oci job): демон хостовый,
         # storage-драйвер выбирает хост; vfs-хак нужен только при
         # overlay-in-overlay ВНУТРИ контейнера.
-        run: podman build -t localhost/khrazhevnik:test-debian -f deploy/Containerfile.test .
+        run: podman build -t localhost/khrazhevnik:test-${{ matrix.name }} -f deploy/Containerfile.test .
 
       - name: Create isolated network
-        run: podman network create khrz-debian-net
+        run: podman network create khrz-${{ matrix.name }}-net
 
       - name: Start khrazhevnik app
         # bind-mount TOML нельзя: DooD резолвит пути на ХОСТЕ, файла там
@@ -655,81 +750,92 @@ jobs:
           if [ "${{ github.event.inputs.use_socks_proxy }}" = "true" ]; then
             PROXY_ARGS="-e HTTP_PROXY=$PROXY_URL -e HTTPS_PROXY=$PROXY_URL -e NO_PROXY=localhost,127.0.0.1"
           fi
-          podman run -d --name khrz-app-debian --network khrz-debian-net \
+          podman run -d --name khrz-app-${{ matrix.name }} --network khrz-${{ matrix.name }}-net \
             -e KHRZ_AUTH__JWT_SECRET="$(openssl rand -hex 32)" \
             $PROXY_ARGS \
-            localhost/khrazhevnik:test-debian
+            localhost/khrazhevnik:test-${{ matrix.name }}
 
       - name: Wait for /healthz
         run: |
           for i in $(seq 1 30); do
-            if podman exec khrz-app-debian curl -fsS http://localhost:29202/healthz; then
+            if podman exec khrz-app-${{ matrix.name }} curl -fsS http://localhost:29202/healthz; then
               echo "healthy after ${i}s"
               exit 0
             fi
             sleep 1
           done
           echo "::error::/healthz не ответил за 30с"
-          podman logs khrz-app-debian || true
+          podman logs khrz-app-${{ matrix.name }} || true
           exit 1
 
       - name: Bootstrap admin + remote
         # учётка admin/distropw — тестовая, живёт считанные минуты в
         # изолированной сети: не секрет. TOKEN — в GITHUB_ENV для Verify
-        # cache: /api/v1/cache/stats — admin-only на :30202.
+        # cache: /api/v1/cache/stats — admin-only на :30202. remote-JSON
+        # собирается jq -n из matrix-полей — имена/URL без ручных кавычек.
         env:
           ADMIN: http://localhost:30202/api/v1
         run: |
           set -euxo pipefail
-          code="$(podman exec khrz-app-debian curl -s -o /dev/null -w '%{http_code}' \
+          code="$(podman exec khrz-app-${{ matrix.name }} curl -s -o /dev/null -w '%{http_code}' \
             -X POST "$ADMIN/setup" -d '{"username":"admin","password":"distropw"}')"
           test "$code" = 201
-          token="$(podman exec khrz-app-debian curl -s -X POST "$ADMIN/auth/login" \
+          token="$(podman exec khrz-app-${{ matrix.name }} curl -s -X POST "$ADMIN/auth/login" \
             -d '{"username":"admin","password":"distropw"}' | jq -er .token)"
           echo "TOKEN=$token" >> "$GITHUB_ENV"
-          code="$(podman exec khrz-app-debian curl -s -o /dev/null -w '%{http_code}' \
+          remote_json="$(jq -n --arg n '${{ matrix.remote }}' --arg e '${{ matrix.eco }}' \
+            --arg u '${{ matrix.base_url }}' \
+            '{name:$n, ecosystem:$e, base_url:$u, mode:"proxy", enabled:true}')"
+          code="$(podman exec khrz-app-${{ matrix.name }} curl -s -o /dev/null -w '%{http_code}' \
             -X POST "$ADMIN/remotes" -H "Authorization: Bearer $token" \
-            -d '{"name":"debian","ecosystem":"apt","base_url":"https://deb.debian.org/debian","mode":"proxy","enabled":true}')"
+            -d "$remote_json")"
           test "$code" = 201
 
       - name: Start distro container
-        run: podman run -d --name khrz-debian --network khrz-debian-net docker.io/library/debian:bookworm sleep infinity
-
-      - name: Run apt against mirror
-        # trusted=yes — кеш-прокси раздаёт чужие подписи байтово (инвариант
-        # кеша), ключ Debian ноге не нужен; вырезание debian.sources = зелёный
-        # не может пройти мимо прокси (единственный source — инстанс).
+        # sleep infinity держит ногу живой между exec'ами; GNU sleep
+        # (debian/fedora/arch) и современный busybox (alpine, nixos/nix
+        # = FROM alpine) оба понимают infinity (busybox: strncasecmp
+        # "inf" — факт из исходника sleep.c).
         run: |
-          cat > /tmp/khrz-apt-setup.sh << 'EOF'
-          set -euxo pipefail
-          rm -f /etc/apt/sources.list.d/debian.sources
-          echo "deb [trusted=yes] http://khrz-app-debian:29202/apt/debian bookworm main" \
-            > /etc/apt/sources.list.d/khrz.list
-          apt-get update -qq && apt-get install -y -qq htop
-          EOF
-          podman cp /tmp/khrz-apt-setup.sh khrz-debian:/tmp/khrz-apt-setup.sh
-          # bash, не sh: sh в Debian — dash, pipefail не знает (CI-факт
-          # 2026-09-06: "set: Illegal option -o pipefail"); bash в базе есть.
-          podman exec khrz-debian bash /tmp/khrz-apt-setup.sh
+          podman run -d --name khrz-${{ matrix.name }} --network khrz-${{ matrix.name }}-net \
+            ${{ matrix.image }} sleep infinity
+
+      - name: Run package manager against mirror
+        # setup из матрицы → файл → внутрь ноги → exec. Делимитер
+        # KHRZ_SETUP_EOF: у fedora внутри setup СВОЙ heredoc 'EOF'
+        # (репо-файл) — вложенность не должна закрыть внешний heredoc
+        # раньше времени. sh, не bash: bash отсутствует в alpine и
+        # nixos/nix (nixos/nix = FROM alpine + openssl/git); поэтому
+        # сетап-скрипты POSIX и без pipefail (урок CI-факта №3 про
+        # dash — ослаблен до «просто без pipefail», `set -eu` —
+        # Portable), ранний стоп ветки сохранён && и set -e.
+        run: |
+          cat > /tmp/khrz-setup.sh << 'KHRZ_SETUP_EOF'
+          ${{ matrix.setup }}
+          KHRZ_SETUP_EOF
+          podman cp /tmp/khrz-setup.sh khrz-${{ matrix.name }}:/tmp/khrz-setup.sh
+          podman exec khrz-${{ matrix.name }} sh /tmp/khrz-setup.sh
 
       - name: Verify cache
         # HEAD-роут — сессия 68; запрос дважды: второй обязан HIT.
         # /api/v1/cache/stats (admin-only, :30202): hits>0 и
-        # bytes_from_upstream>0 — доказывают и «работает», и «кеширует».
+        # bytes_from_upstream>0 — доказывают и «работает», и
+        # «кеширует»; после сессии 83 глобал — проекция per-eco
+        # счётчиков, нога пишет в свою экосистему — контракт тот же.
         run: |
           set -euxo pipefail
-          podman exec khrz-app-debian curl -sI http://localhost:29202/apt/debian/dists/bookworm/Release
-          second="$(podman exec khrz-app-debian curl -sI http://localhost:29202/apt/debian/dists/bookworm/Release)"
+          podman exec khrz-app-${{ matrix.name }} curl -sI "http://localhost:29202${{ matrix.check_path }}"
+          second="$(podman exec khrz-app-${{ matrix.name }} curl -sI "http://localhost:29202${{ matrix.check_path }}")"
           echo "$second"
           grep -qi '^X-Cache: HIT' <<<"$second"
-          podman exec khrz-app-debian curl -fsS \
+          podman exec khrz-app-${{ matrix.name }} curl -fsS \
             -H "Authorization: Bearer $TOKEN" \
             http://localhost:30202/api/v1/cache/stats \
             | jq -e '.hits>0 and .bytes_from_upstream>0'
 
       - name: Dump logs on failure
         if: failure()
-        run: podman logs khrz-app-debian || true
+        run: podman logs khrz-app-${{ matrix.name }} || true
 
       - name: Cleanup
         # -v — anonymous volume /var/lib/khrazhevnik со sqlite/store.
@@ -737,6 +843,6 @@ jobs:
         # job'ами раннера.
         if: always()
         run: |
-          podman rm -fv khrz-app-debian khrz-debian || true
-          podman network rm khrz-debian-net || true
-          podman rmi -f localhost/khrazhevnik:test-debian || true
+          podman rm -fv khrz-app-${{ matrix.name }} khrz-${{ matrix.name }} || true
+          podman network rm khrz-${{ matrix.name }}-net || true
+          podman rmi -f localhost/khrazhevnik:test-${{ matrix.name }} || true
