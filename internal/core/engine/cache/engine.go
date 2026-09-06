@@ -604,6 +604,26 @@ func (t *throttledWriter) Write(p []byte) (int, error) {
 	return t.dst.Write(p)
 }
 
+// unavailableWriter — тегирование сбоев записи на границе движка:
+// порт Writer не обязывает адаптер классифицировать сбои носителя,
+// сырая ошибка без тега ушла бы в UpstreamError (502 «виноват
+// upstream»), а носитель — наш (503). Ошибки, уже классифицированные
+// адаптером, проходят без переобёртки.
+type unavailableWriter struct{ w port.Writer }
+
+// Write реализует io.Writer.
+func (u unavailableWriter) Write(p []byte) (int, error) {
+	n, err := u.w.Write(p)
+	if err == nil {
+		return n, nil
+	}
+	var un *domain.UnavailableError
+	if errors.As(err, &un) {
+		return n, err
+	}
+	return n, &domain.UnavailableError{What: "хранилище", Reason: "сбой записи тела", Err: err}
+}
+
 // checksumMismatch — тело не сошлось с чексуммой из индекса
 // экосистемы. Локальный тип: наружу уходит обёрнутым в
 // *domain.UpstreamError, а различать его внутри движка нужно только
@@ -672,7 +692,7 @@ func (e *Engine) copyBody(ctx context.Context, w port.Writer, body io.Reader, m 
 		// +1 байт: чтобы отличить «ровно лимит» от «лимит превышен»
 		src = io.LimitReader(body, e.cfg.MaxObjectSize+1)
 	}
-	var dst io.Writer = w
+	var dst io.Writer = unavailableWriter{w}
 	if wait != nil {
 		dst = &throttledWriter{dst: dst, wait: wait, ctx: ctx}
 	}
@@ -683,9 +703,9 @@ func (e *Engine) copyBody(ctx context.Context, w port.Writer, body io.Reader, m 
 	}
 	n, err := io.Copy(dst, src)
 	if err != nil {
-		// 502 = только upstream, 503 = наш носитель: классифицированную
-		// адаптером недоступность хранилища (сбой записи тела) не
-		// заворачиваем в UpstreamError (сессия 60).
+		// 502 = только upstream, 503 = наш носитель: сюда попадают и
+		// тег unavailableWriter, и осознанная классификация адаптера
+		// (сессия 60) — в UpstreamError не заворачиваем.
 		var un *domain.UnavailableError
 		if errors.As(err, &un) {
 			return n, err

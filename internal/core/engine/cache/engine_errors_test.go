@@ -170,6 +170,28 @@ func (s unavailWriteStorage) Put(ctx context.Context, key string) (port.Writer, 
 	return &unavailWriter{point: s.point}, nil
 }
 
+// rawErrWriter — writer с сырой ошибкой записи: адаптер не
+// классифицировал сбой (порт Writer этого не гарантирует) — тег 503
+// ставит граница движка (сессия 85).
+type rawErrWriter struct{}
+
+func (rawErrWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func (rawErrWriter) Commit(context.Context) error { return nil }
+
+func (rawErrWriter) Abort(context.Context) error { return nil }
+
+type rawWriteStorage struct {
+	*testutil.FakeStorage
+}
+
+func (s rawWriteStorage) Put(ctx context.Context, _ string) (port.Writer, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return rawErrWriter{}, nil
+}
+
 // newEnvWith — окружение с подменёнными зависимостями.
 func newEnvWith(t *testing.T, cfg Config, h http.HandlerFunc, storage port.Storage, index port.ObjectIndex) *testEnv {
 	t.Helper()
@@ -490,6 +512,23 @@ func TestStorageWriteUnavailablePassThrough(t *testing.T) {
 				t.Fatalf("сбой носителя замаскирован под upstream: %v", err)
 			}
 		})
+	}
+}
+
+// TestRawStorageWriteErrorTaggedUnavailable — сырая (не
+// домен-классифицированная) ошибка записи тела получает тег 503 на
+// границе движка (сессия 85): дисциплина адаптера не обязательна.
+func TestRawStorageWriteErrorTaggedUnavailable(t *testing.T) {
+	base := testutil.NewFakeStorage(testutil.NewManualClock(testStart))
+	env := newEnvWith(t, defaultConfig(), fixedHandler("x", "text/plain"), rawWriteStorage{base}, nil)
+	_, _, err := fetch(t, env.engine, env.eco, "/t/pkg/a.deb")
+	var un *domain.UnavailableError
+	if !errors.As(err, &un) {
+		t.Fatalf("ошибка = %v, хочу UnavailableError", err)
+	}
+	var up *domain.UpstreamError
+	if errors.As(err, &up) {
+		t.Fatalf("сырой сбой носителя замаскирован под upstream: %v", err)
 	}
 }
 
