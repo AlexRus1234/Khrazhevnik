@@ -481,7 +481,8 @@ Development directions after the v1.0.0 release (old-version eviction
 and other post-v1 questions are covered in
 [docs/ROADMAP.md](docs/ROADMAP.md)). Priority: XBPS and
 pkg first — their "directory + index" model repeats already solved
-tasks; Flatpak requires a new publishing mechanism and comes last.
+tasks; Guix right after them (the nix protocol, reusing the nix
+adapter); Flatpak requires a new publishing mechanism and comes last.
 
 Every new ecosystem is a `port.Ecosystem` adapter: object
 classification (immutable/mutable), a metadata parser, mirror
@@ -530,6 +531,19 @@ The limitation of both: the clients are not Linux, and the CI runner
 (Linux containers) does not cover them — acceptance verification
 remains manual per the RELEASE.md checklist; a VM or a separate runner
 is an open question.
+
+### Guix
+
+The Guix binary cache speaks the same substituter protocol as nix:
+narinfo + nar, content-addressed immutable objects. The proxy case
+fits the nix adapter almost unchanged; a full mirror is not supported
+for the same reasons as nix (tens of TB) — proxy-only. Guix specifics
+to work out: its own narinfo signature format (a `Signature:` line
+instead of the nix `Sig:`) and its own client keys — a re-signing
+branch alongside nix; upstreams are `ci.guix.gnu.org` /
+`bordeaux.guix.gnu.org`. Personal repositories follow the nix model:
+narinfo + nar upload with re-signing. Acceptance — with a real `guix`
+client (the package manager installs on top of any distro).
 
 ### Flatpak
 
