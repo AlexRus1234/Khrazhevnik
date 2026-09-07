@@ -399,6 +399,44 @@ func TestPublicHeadRoutes(t *testing.T) {
 	}
 }
 
+// naiveStorage — сторадж, НЕ валидирующий ключи (ассерт точки
+// контроля, сессия 86): traversal-ключ не отбивается InvalidKeyError,
+// а даёт сырую ошибку фейка — 400 в ответе может прийти только из
+// web-слоя, не из стораджа.
+type naiveStorage struct {
+	port.Storage
+}
+
+func (s *naiveStorage) Get(_ context.Context, key string) (port.Object, error) {
+	if strings.Contains(key, "..") {
+		return port.Object{}, errors.New("наивный сторадж: traversal-ключ дошёл до хранилища")
+	}
+	return port.Object{}, &domain.NotFoundError{What: "объект", Key: key}
+}
+
+// TestPublicRepoTraversalRejectedAtWebLayer — единая точка
+// path-traversal структурна, а не дисциплина стораджа (сессия 86):
+// ключ repo-объекта валидируется в web-слое до Storage.Get. Фейк без
+// валидации на traversal-ключе даёт сырую ошибку (до фикса — 502
+// «proxy error», после — 400 invalid_key из validate.go).
+func TestPublicRepoTraversalRejectedAtWebLayer(t *testing.T) {
+	repos := testutil.NewFakeRepoStore()
+	_, err := repos.CreateRepo(t.Context(), domain.Repo{Name: "alice", OwnerID: 2, Ecosystem: "apt", CreatedAt: time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := BuildPublicRouter(Deps{
+		Storage: &naiveStorage{}, Repos: repos,
+		Signer: &fakeKeySigner{}, NarSigner: &fakeNarKeySigner{},
+	})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/repo/alice/%2e%2e/etc/passwd", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("GET URL-encoded traversal = %d, тело %q; хочу 400 invalid_key из web-слоя", rec.Code, rec.Body.String())
+	}
+}
+
 // TestPublicRepoFilePercentEscapedPlus — apt-клиент личного репо шлёт
 // «+» как %2b (CI-факт №4): генераторы пишут raw «+», а экранированный
 // запрос с «%» отсекался whitelist'ом — 400 вместо объекта. Декод

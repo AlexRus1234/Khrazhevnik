@@ -73,6 +73,15 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 		}
 		rest = strings.ToLower(rest)
 		key := port.RepoPrefix(repo) + "/" + rest
+		// Единая точка path-traversal структурна, а не дисциплина
+		// стораджа (сессия 86): ключ собирается из запроса клиента —
+		// валидируется до Storage.Get, чтобы новый адаптер хранилища без
+		// внутренней валидации не превратил traversal в дыру. Префикс
+		// репо легален по построению — проверяется rest.
+		if err := domain.ValidateKey(rest); err != nil {
+			writeProxyError(w, err)
+			return
+		}
 		obj, err := d.Storage.Get(r.Context(), key)
 		if err != nil {
 			var nf *domain.NotFoundError
