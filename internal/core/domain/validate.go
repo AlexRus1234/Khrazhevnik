@@ -99,13 +99,11 @@ func allowedKeyByte(b byte) bool {
 		return true
 	case b == '/' || b == '.' || b == '_' || b == '-':
 		return true
-	case b == '+' || b == '~' || b == '^':
+	case b == '+' || b == '~':
 		// Реальные имена пакетов: g++/libstdc++ (Debian/RPM),
-		// версии ~deb12u1 / ~bpo12u1, caret-синтаксис pre-release
-		// версий RPM (aribb24-1.0.3^20160216…, Fedora 34+; CI-факт
-		// №6). Инертны для traversal — не кодируются, не образуют
-		// сегментов пути, легальны в fs-именах unix/Windows и
-		// S3-ключах.
+		// версии ~deb12u1 / ~bpo12u1. Инертны для traversal —
+		// не кодируются, не образуют сегментов пути, легальны
+		// в fs-именах unix/Windows и S3-ключах.
 		return true
 	}
 	return false
