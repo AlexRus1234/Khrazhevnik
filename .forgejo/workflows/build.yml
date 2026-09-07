@@ -711,10 +711,12 @@ jobs:
           # формат version 2 по факту channels.nixos.org) убирает эту
           # точку отказа; за eval-тарболом nixpkgs nix по-прежнему
           # ходит на github напрямую — известная волатильность ноги.
-          # --extra-experimental-features: nix-command/flakes в Nix
-          # 2.30 всё ещё experimental (nix.dev/manual/nix/2.30), а
-          # nix.conf образа nixos/nix содержит только sandbox=false —
-          # без флага nix profile install падает до первого запроса.
+          # experimental-features включается в /etc/nix/nix.conf
+          # (CI-факт №9, см. setup): в Nix 2.30 nix-command/flakes всё
+          # ещё experimental (nix.dev/manual/nix/2.30), nix.conf образа
+          # nixos/nix содержит только sandbox=false; CLI-вариант
+          # --extra-experimental-features не годится для гейтнутых
+          # опций — см. комментарий в setup.
           - name: nix
             image: docker.io/nixos/nix:latest
             eco: nix
@@ -726,10 +728,16 @@ jobs:
               cat > /tmp/khrz-flake-registry.json << 'EOF'
               {"version":2,"flakes":[{"from":{"id":"nixpkgs","type":"indirect"},"to":{"owner":"NixOS","repo":"nixpkgs","type":"github"}}]}
               EOF
+              # CI-факт №9: CLI-опции применяются последовательно, и
+              # --option flake-registry гейтится по фиче flakes В МОМЕНТ
+              # применения — --extra-experimental-features позже в той
+              # же строке не спасал («Ignoring setting 'flake-registry'»).
+              # Конфиг-файл читается ДО CLI (nix.conf(5): sysconfdir
+              # первым) — фича включена до разбора --option.
+              echo 'experimental-features = nix-command flakes' >> /etc/nix/nix.conf
               nix profile install nixpkgs#htop \
                 --option substituters http://khrz-app-nix:29202/nix/cache \
-                --option flake-registry /tmp/khrz-flake-registry.json \
-                --extra-experimental-features 'nix-command flakes'
+                --option flake-registry /tmp/khrz-flake-registry.json
 
     steps:
       - name: Install dependencies
