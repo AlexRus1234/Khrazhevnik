@@ -19,8 +19,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 # Спецификация
 
 Канон для разработчиков (слои, контракты, БД, REST). Пользовательская
-документация — [func/ru/](func/ru/) (quickstart, config, api, deploy,
-ui, ecosystems, personal-repos).
+документация двуязычная: [func/ru/](func/ru/) + английский набор
+[func/EN/](func/EN/) (quickstart, config, api, deploy, ui,
+ecosystems, personal-repos).
 
 ## Назначение
 

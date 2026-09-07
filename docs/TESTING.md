@@ -67,7 +67,7 @@ Unit-only цифра (~67% на момент внедрения) была зан
    пользовательского пути, а не фронтовые автотесты: **регрессионных
    UI-автотестов фронта нет (KISS)** — экраны тонкие, вся логика в
    engine и покрыта API-тестами.
-5. **Distro E2E (opt-in)** — CI job `distro-test` (workflow_dispatch,
+4. **Distro E2E (opt-in)** — CI job `distro-test` (workflow_dispatch,
    вход `run_distro_tests`): 5 контейнеров-дистрибутивов (matrix:
    debian/fedora/arch/alpine/nix) против контейнера Хражевника из
    `Containerfile.test`. DooD через сокет раннера
@@ -79,14 +79,14 @@ Unit-only цифра (~67% на момент внедрения) была зан
    `/api/v1/cache/stats` `hits>0`, `bytes_from_upstream>0`;
    внешние источники ног вырезаны (герметичность). Волатильность
    внешних зеркал — не баг: падение ноги = дословный лог владельцу.
-6. **Smoke** — `test/smoke`: живой контейнер, проверка curl'ом. В
+5. **Smoke** — `test/smoke`: живой контейнер, проверка curl'ом. В
    build-test/oci job'ах НЕ запускается (PinP-вложенность невозможна
    на rootless-раннере; контейнер через `podman run` в CI покрыт
-   job'ом distro-test, п. 5) — только **локально перед релизом**
+   job'ом distro-test, п. 4) — только **локально перед релизом**
    (`make image && make smoke`, см.
    [RELEASE.md](RELEASE.md)); контейнер идентичен артефакту
    (scratch + протестированный CI бинарник + CA-bundle).
-7. **Fuzz** — короткие прогоны в CI; crash-корпус коммитится в
+6. **Fuzz** — короткие прогоны в CI; crash-корпус коммитится в
    testdata.
 
 `-race` обязателен в CI (`make test-race`).

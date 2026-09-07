@@ -62,7 +62,7 @@ runtime-плагины (задел сохранён контрактами), п�
 ## 3. Слои и правила импортов
 
 ```
-cmd/khrazhevnik/           main.go (~40 строк), wire.go — единственная склейка
+cmd/khrazhevnik/           main.go + addremote.go (точка входа, паника разрешена только здесь), wire.go — единственная склейка
 internal/core/
   port/       контракты: Storage, Ecosystem, Catalog*, Signer, Clock, Rand, HTTP
   domain/     модели + типизированные ошибки; только stdlib, без os/net
@@ -82,7 +82,7 @@ internal/contract/        общие контрактные suite каталог
 migrations/<driver>/      embedded goose-миграции каталога (по каталогу на БД)
 web/                      Vue 3 + Vite + TS SPA
 deploy/                   Containerfile, quadlet/
-docs/                     ARCHITECTURE, SPECIFICATION, ROADMAP, TESTING; func/ru/
+docs/                     ARCHITECTURE, SPECIFICATION, ROADMAP, TESTING; func/ru/, func/EN/
 test/                     integration/, smoke/
 ```
 
