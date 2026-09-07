@@ -333,19 +333,26 @@ jobs:
         # (тот качает билд с cdn.playwright.dev мимо Хражевника — дыра,
         # закрытая dogfood-схемой). Ручной список shared-lib-депсов тоже
         # убран: дерево зависимостей пакета ставит сам dnf — весь трафик
-        # шага идёт через кеш. Путь к бинарнику вычисляется rpm -ql
-        # (иммунно к переименованиям между версиями Fedora) и передаётся
-        # Playwright'у через KHRZ_E2E_CHROMIUM (launchOptions.executablePath
-        # в playwright.config.ts). Отличие версий от tip-of-tree Playwright
+        # шага идёт через кеш. Отличие версий от tip-of-tree Playwright
         # при явном executablePath — не ошибка, смоук идёт на stable.
+        #
+        # CI-факт №7 (v0.9.1): бинарь пакета лежит НЕ в /usr/bin, а в
+        # /usr/lib64/chromium-browser/headless_shell (файллист F44,
+        # packages.fedoraproject.org) — прежний grep '/bin/' не матчил
+        # ничего и под set -e -o pipefail раннера убивал шаг МОЛЧА
+        # (Complete! → exit 1, ноль строк между). Теперь ищем по имени
+        # бинаря; || true внутри substitution — при пустом матче шаг
+        # падает видимой ::error ниже, а не тишиной. Путь передаётся
+        # Playwright'у через KHRZ_E2E_CHROMIUM (launchOptions.
+        # executablePath в playwright.config.ts).
         if: success() && github.event.inputs.run_e2e_tests == 'true'
         env:
           KHRZ_TEST_BINARY: "${{ github.workspace }}/khrazhevnik-ci"
         run: |
           dnf install -y --setopt=install_weak_deps=False chromium-headless
-          KHRZ_E2E_CHROMIUM="$(rpm -ql chromium-headless | grep -E '/bin/[^/]+$' | head -n1)"
+          KHRZ_E2E_CHROMIUM="$(rpm -ql chromium-headless | grep -E 'headless_shell$' | head -n1 || true)"
           test -n "$KHRZ_E2E_CHROMIUM" && test -x "$KHRZ_E2E_CHROMIUM" \
-            || { echo "::error::executable chromium-headless not found"; exit 1; }
+            || { echo "::error::headless_shell not found in chromium-headless"; exit 1; }
           echo "Using browser: $KHRZ_E2E_CHROMIUM"
           export KHRZ_E2E_CHROMIUM
           cd web
