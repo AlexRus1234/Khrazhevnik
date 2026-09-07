@@ -77,7 +77,14 @@ func handleProxy(d Deps) http.HandlerFunc {
 		}
 		// stallWriter: медленный читатель отвалится по write-deadline,
 		// а не будет держать FD и tmp-объект вечно (аудит 2026-08-27).
-		n, _ := io.CopyBuffer(newStallWriter(w), obj.Body, make([]byte, 32*1024))
+		n, err := io.CopyBuffer(newStallWriter(w), obj.Body, make([]byte, 32*1024))
+		if err != nil {
+			// Обрыв (клиент ушёл или write-deadline stallWriter) — не
+			// ошибка отдачи: n байт реально ушли, счётчики честны; но
+			// сам факт diagnosable — иначе «почему PM рвёт соединение»
+			// неотличим от полной выдачи.
+			d.logger().Debug("прокси: клиент оборвал выдачу", "eco", eco.Name(), "path", path, "bytes", n, "err", err)
+		}
 		d.Cache.AddBytesToClients(eco.Name(), n)
 		// object_bytes — точка прокси-отдачи (byte-exact путь, аудит
 		// 2026-08-30): размер скопированного тела + имя экосистемы.
