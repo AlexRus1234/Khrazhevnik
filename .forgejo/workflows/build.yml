@@ -677,6 +677,12 @@ jobs:
             setup: |
               set -eu
               sed -i '/^\[extra\]/,/^\[/ s/^/#/' /etc/pacman.conf
+              # CI-факт №8: встроенный даунлоадер pacman рвёт соединение
+              # при «<1 байт/с за 10с» (Operation too slow) — mutable
+              # core.db через прокси при медленном upstream'е попадает
+              # под kill-switch. DisableDownloadTimeout — рекомендация
+              # man pacman.conf для скачивания через proxy/gateway.
+              sed -i '/^\[options\]/a DisableDownloadTimeout' /etc/pacman.conf
               echo 'Server = http://khrz-app-arch:29202/pacman/arch/$repo/os/$arch' \
                 > /etc/pacman.d/mirrorlist
               pacman -Sy --noconfirm curl
@@ -696,9 +702,15 @@ jobs:
               apk update && apk add htop
           # nixos/nix работает root — trusted-substituter не нужен;
           # narinfo/nar идут через нас, byte-exact подписи валидны
-          # (сессия 48: narinfo mutable). eval-тарбол nixpkgs качается
-          # с github МИМО binary-cache протокола — ожидаемо, нога
-          # доказывает именно substituter-passthrough.
+          # (сессия 48: narinfo mutable). CI-факт №8: глобальный
+          # flake-registry по умолчанию тянется с channels.nixos.org
+          # МИМО binary-cache (внешка раннера волатильна — connection
+          # timed out ×5 ронял ногу до первого же narinfo). Локальный
+          # registry-файл с единственным маппингом nixpkgs →
+          # github:NixOS/nixpkgs (те же данные глобального реестра,
+          # формат version 2 по факту channels.nixos.org) убирает эту
+          # точку отказа; за eval-тарболом nixpkgs nix по-прежнему
+          # ходит на github напрямую — известная волатильность ноги.
           # --extra-experimental-features: nix-command/flakes в Nix
           # 2.30 всё ещё experimental (nix.dev/manual/nix/2.30), а
           # nix.conf образа nixos/nix содержит только sandbox=false —
@@ -711,8 +723,12 @@ jobs:
             check_path: /nix/cache/nix-cache-info
             setup: |
               set -eu
+              cat > /tmp/khrz-flake-registry.json << 'EOF'
+              {"version":2,"flakes":[{"from":{"id":"nixpkgs","type":"indirect"},"to":{"owner":"NixOS","repo":"nixpkgs","type":"github"}}]}
+              EOF
               nix profile install nixpkgs#htop \
                 --option substituters http://khrz-app-nix:29202/nix/cache \
+                --option flake-registry /tmp/khrz-flake-registry.json \
                 --extra-experimental-features 'nix-command flakes'
 
     steps:
