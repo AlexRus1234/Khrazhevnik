@@ -86,6 +86,10 @@ type Store struct {
 // разворачивается в уникальную shared-cache память, иначе соединения
 // пула видели бы разные пустые БД).
 func Open(cfg config.Database) (*Store, error) {
+	// time.Now напрямую, минуя port.Clock — осознанное исключение
+	// (ревю 2026-09-06): нонс различает «:memory:»-базы одного
+	// процесса, это не доменное время; clock-параметр только в sqlite
+	// сломал бы симметрию Open-сигнатур трёх драйверов.
 	db, err := sql.Open("sqlite", buildDSN(cfg.DSN, time.Now().UnixNano()))
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: открытие каталога: %w", err)

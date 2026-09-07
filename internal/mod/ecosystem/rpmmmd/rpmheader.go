@@ -252,9 +252,12 @@ func extractHeader(index, data []byte) (*RPMHeader, error) {
 
 // readHeaderString достаёт nul-terminated строку из data по offset.
 // Выход за границу или отсутствие nul → строка до конца data (tolerant:
-// битое значение не валит парсер, валидация — задача上层а).
+// битое значение не валит парсер, валидация — задача верхнего слоя).
 func readHeaderString(data []byte, off uint32) string {
-	if int(off) >= len(data) {
+	// гард в uint64 до конверсии: на 32-bit портах int(off) от uint32
+	// старше 2^31-1 становится отрицательным, проходит проверку и
+	// slice-паникует вместо documented-tolerant ""
+	if uint64(off) >= uint64(len(data)) {
 		return ""
 	}
 	rest := data[off:]
@@ -274,10 +277,14 @@ func readHeaderInt32(data []byte, off, typ uint32) int64 {
 	if typ != typeInt32 {
 		return 0
 	}
-	end := int(off) + 4
-	if end > len(data) {
+	// гард в uint64 до конверсии: на 32-bit портах int(off)+4 может
+	// переполниться в минус, пройти проверку end > len и паниковать
+	// на срезе; после гарда off+4 ≤ len(data) ≤ MaxInt — int(off)
+	// безопасен
+	if uint64(off)+4 > uint64(len(data)) {
 		return 0
 	}
+	end := int(off) + 4
 	return int64(binary.BigEndian.Uint32(data[off:end]))
 }
 
@@ -291,7 +298,8 @@ func readHeaderInt32(data []byte, off, typ uint32) int64 {
 // цикла (каждая строка ≥1 байта NUL-терминатора, поэтому строк не
 // больше, чем байт в остатке данных; округление вниз).
 func readHeaderStringArray(data []byte, off, count, typ uint32) []string {
-	if typ != typeStringArray || count == 0 || int(off) >= len(data) {
+	// гард off в uint64 — тот же 32-bit класс, что в readHeaderString
+	if typ != typeStringArray || count == 0 || uint64(off) >= uint64(len(data)) {
 		return nil
 	}
 	rest := data[off:]

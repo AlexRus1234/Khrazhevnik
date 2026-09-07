@@ -18,7 +18,9 @@ package s3
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -472,5 +474,24 @@ func TestCommitWithAccessDeniedIsUnavailable(t *testing.T) {
 	var un *domain.UnavailableError
 	if !errors.As(err, &un) {
 		t.Fatalf("Commit при AccessDenied = %v, хочу UnavailableError", err)
+	}
+}
+
+// TestCryptoRandInt64ClampMinInt64 — контракт port.Rand «неотрицательное»
+// на граничном входе: байты MinInt64 инжектируются в cryptoRand через
+// read (twin теста нет — fs-фикс 2026-09-03 проверялся ревью); без
+// clamp -MinInt64 == MinInt64, и n%max уходит в минус.
+func TestCryptoRandInt64ClampMinInt64(t *testing.T) {
+	var b [8]byte
+	minInt64 := math.MinInt64
+	binary.BigEndian.PutUint64(b[:], uint64(minInt64))
+	r := cryptoRand{read: func(p []byte) (int, error) {
+		copy(p, b[:])
+		return len(p), nil
+	}}
+	for _, max := range []int64{1, 2, 100, 1 << 40} {
+		if n := r.Int64(max); n < 0 || n >= max {
+			t.Fatalf("Int64(%d) на байтах MinInt64 = %d, хочу [0,%d)", max, n, max)
+		}
 	}
 }

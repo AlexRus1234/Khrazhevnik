@@ -32,6 +32,7 @@ import (
 	"io"
 	"iter"
 	"log/slog"
+	"math"
 	"mime"
 	"os"
 	"path/filepath"
@@ -445,14 +446,30 @@ func (w *writer) Abort(_ context.Context) error {
 var _ io.Reader = (*os.File)(nil)
 
 // cryptoRand — port.Rand поверх crypto/rand (как uuidRand в wire и
-// cryptoRand в fs; дублируется ради запрета mod→mod).
-type cryptoRand struct{}
+// cryptoRand в fs; дублируется ради запрета mod→mod). read вынесен
+// в поле по образцу sleep в db/sqlite: тест clamp'а MinInt64 вводит
+// детерминированные байты вместо патча crypto/rand; nil = crypto/rand.
+type cryptoRand struct {
+	read func([]byte) (int, error)
+}
+
+// fill читает байты через инъекцию или crypto/rand.
+func (r cryptoRand) fill(b []byte) error {
+	f := r.read
+	if f == nil {
+		f = rand.Read
+	}
+	if _, err := f(b); err != nil {
+		return fmt.Errorf("s3: чтение crypto/rand: %w", err)
+	}
+	return nil
+}
 
 // UUID4 генерирует канонический UUID v4.
-func (cryptoRand) UUID4() (string, error) {
+func (r cryptoRand) UUID4() (string, error) {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("s3: чтение crypto/rand: %w", err)
+	if err := r.fill(b[:]); err != nil {
+		return "", err
 	}
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
@@ -462,18 +479,25 @@ func (cryptoRand) UUID4() (string, error) {
 // Int64 возвращает неотрицательное псевдослучайное число в [0, max).
 // s3-хранилище использует rand только для имён спула (UUID4); Int64
 // добавлен ради полноты port.Rand (расширен в сессии 11).
-func (cryptoRand) Int64(max int64) int64 {
+func (r cryptoRand) Int64(max int64) int64 {
 	if max <= 0 {
 		return 0
 	}
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if err := r.fill(b[:]); err != nil {
 		return 0
 	}
 	n := int64(b[0])<<56 | int64(b[1])<<48 | int64(b[2])<<40 | int64(b[3])<<32 |
 		int64(b[4])<<24 | int64(b[5])<<16 | int64(b[6])<<8 | int64(b[7])
+	// clamp перед abs: -MinInt64 в дополнительном коде == MinInt64 — без
+	// зажима модульная арифметика дала бы отрицательный результат
+	// (ревю 2026-09-03, twin fs.go; урок сессии 77 — фикс класса, не точки).
 	if n < 0 {
-		n = -n
+		if n == math.MinInt64 {
+			n = math.MaxInt64
+		} else {
+			n = -n
+		}
 	}
 	return n % max
 }
