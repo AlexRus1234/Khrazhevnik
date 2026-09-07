@@ -278,6 +278,46 @@ func TestProxyPercentEscapedPlus(t *testing.T) {
 	}
 }
 
+// TestProxyCaretRpmName — caret-синтаксис pre-release версий RPM
+// (CI-факт №6): dnf/librepo шлёт «^» в имени пакета как %5e; whitelist
+// ValidateKey не знал «^» → InvalidKeyError → 400 на валидном upstream-
+// пути, librepo ретраил и падал «All mirrors were tried» (182 пакета
+// ставились, единственный с ^ — нет). %5e-написание и сырое «^» — один
+// объект кеша.
+func TestProxyCaretRpmName(t *testing.T) {
+	hits := 0
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/pkg/a/aribb24-1.0.3^20160216git5e9be27-5.fc44.x86_64.rpm" {
+			hits++
+		}
+		_, _ = io.WriteString(w, "payload")
+	})
+
+	// Как на проводе от dnf (librepo кодирует ^ → %5e): 200 + payload.
+	rec := get(t, h, "/t/pkg/a/aribb24-1.0.3%5e20160216git5e9be27-5.fc44.x86_64.rpm")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%%5e-запрос = %d, тело %q", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "payload" {
+		t.Fatalf("тело = %q, хочу payload", rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Cache"); got != "MISS" {
+		t.Errorf("X-Cache %%5e-запроса = %q, хочу MISS", got)
+	}
+
+	// Сырое «^» — тот же объект кеша: HIT, upstream не дёргается.
+	rec = get(t, h, "/t/pkg/a/aribb24-1.0.3^20160216git5e9be27-5.fc44.x86_64.rpm")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("raw-запрос = %d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Cache"); got != "HIT" {
+		t.Errorf("X-Cache raw-запроса = %q, хочу HIT", got)
+	}
+	if hits != 1 {
+		t.Errorf("upstream получил %d запросов, хочу 1 (один объект на оба написания)", hits)
+	}
+}
+
 func TestProxyErrorCodes(t *testing.T) {
 	t.Run("404 upstream → 404 клиенту", func(t *testing.T) {
 		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404) })
