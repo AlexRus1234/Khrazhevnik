@@ -37,5 +37,17 @@ export default defineConfig({
   use: {
     trace: 'retain-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  // Системный браузер в CI: KHRZ_E2E_CHROMIUM задаёт шаг L4 в build.yml
+  // (chromium-headless из fedora-репо через кеш — ноль внешних загрузок
+  // мимо Хражевника). Локально env не задан → executablePath undefined →
+  // Playwright использует bundled-браузер (npx playwright install).
+  projects: [
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: { executablePath: process.env.KHRZ_E2E_CHROMIUM },
+      },
+    },
+  ],
 })

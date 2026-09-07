@@ -328,23 +328,28 @@ jobs:
         # Release byte-exact + переключатель ru/en + локализация кодов
         # ошибок (web/e2e/smoke.spec.ts).
         #
-        # NOTE on deps (проверено в Intermasq L4): `npx playwright install
-        # --with-deps` знает только apt (Ubuntu/Debian) и на fedora-контейнере
-        # падает на `apt-get: command not found`. Поэтому shared-lib-депы
-        # chromium ставим сами через dnf, браузер — без --with-deps. Полный
-        # gtk3 НЕ ставим: тянет десктоп-стек (pipewire/openh264 с внешнего
-        # кодек-зеркала); headless-хрому достаточно перечисленного.
+        # Герметичность: браузер — системный chromium-headless из
+        # fedora-репо через khrz.repo (dnf), а НЕ `npx playwright install`
+        # (тот качает билд с cdn.playwright.dev мимо Хражевника — дыра,
+        # закрытая dogfood-схемой). Ручной список shared-lib-депсов тоже
+        # убран: дерево зависимостей пакета ставит сам dnf — весь трафик
+        # шага идёт через кеш. Путь к бинарнику вычисляется rpm -ql
+        # (иммунно к переименованиям между версиями Fedora) и передаётся
+        # Playwright'у через KHRZ_E2E_CHROMIUM (launchOptions.executablePath
+        # в playwright.config.ts). Отличие версий от tip-of-tree Playwright
+        # при явном executablePath — не ошибка, смоук идёт на stable.
         if: success() && github.event.inputs.run_e2e_tests == 'true'
         env:
           KHRZ_TEST_BINARY: "${{ github.workspace }}/khrazhevnik-ci"
         run: |
-          dnf install -y --setopt=install_weak_deps=False \
-            nss nspr atk at-spi2-atk cups-libs libdrm libxkbcommon \
-            libX11 libXcomposite libXdamage libXext libXfixes libXrandr \
-            mesa-libgbm pango alsa-lib libxshmfence
+          dnf install -y --setopt=install_weak_deps=False chromium-headless
+          KHRZ_E2E_CHROMIUM="$(rpm -ql chromium-headless | grep -E '/bin/[^/]+$' | head -n1)"
+          test -n "$KHRZ_E2E_CHROMIUM" && test -x "$KHRZ_E2E_CHROMIUM" \
+            || { echo "::error::executable chromium-headless not found"; exit 1; }
+          echo "Using browser: $KHRZ_E2E_CHROMIUM"
+          export KHRZ_E2E_CHROMIUM
           cd web
           # @playwright/test уже в node_modules (npm ci шага Build frontend).
-          npx playwright install chromium
           npx playwright test
 
       - name: Show binary info
