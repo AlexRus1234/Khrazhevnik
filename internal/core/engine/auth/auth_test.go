@@ -724,6 +724,27 @@ func TestSessionValidationClaimsAlgorithmRevocationAndExpiry(t *testing.T) {
 	}
 }
 
+// Мусорный sub («12abc») — невалидная сессия: строгий ParseInt, а не
+// префиксный Sscan, молча глотавший хвост (внешнее ревью Р8).
+// Пользователь 12 существует: иначе красный-до-фикса маскировался бы
+// 404 каталога вместо принятия префиксного id.
+func TestSessionGarbageSubRejected(t *testing.T) {
+	a, _ := newTestAuth(t)
+	ctx := context.Background()
+	u12, err := a.cfg.Users.CreateUser(ctx, domain.User{ID: 12, Username: "prefix-victim", Role: domain.RoleUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := jwt.MapClaims{"sub": "12abc", "jti": "prefix-jti", "ver": float64(u12.TokenVersion), "exp": float64(time.Unix(100, 0).Add(time.Hour).Unix())}
+	raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ValidateSession(ctx, raw); !errors.Is(err, &domain.ForbiddenError{}) {
+		t.Fatalf("мусорный sub принят: %v, хочу ForbiddenError", err)
+	}
+}
+
 // Даунгрейд владельца до user гасит admin-scope токен немедленно:
 // роль сверяется с БД на каждом запросе (внешнее ревью 2026-09-03).
 // repo-токены не затронуты — права репо и так сверяются живьём

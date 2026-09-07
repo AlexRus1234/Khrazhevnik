@@ -12,7 +12,6 @@ package auth
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strconv"
@@ -360,8 +359,8 @@ func (s *Service) ValidateSession(ctx context.Context, raw string) (Session, err
 	if !ok {
 		return Session{}, &domain.ForbiddenError{Reason: "недействительная сессия"}
 	}
-	var id int64
-	if _, err := fmt.Sscan(sub, &id); err != nil {
+	id, err := strconv.ParseInt(sub, 10, 64)
+	if err != nil {
 		return Session{}, &domain.ForbiddenError{Reason: "недействительная сессия"}
 	}
 	ver, ok := c["ver"].(float64)
@@ -523,7 +522,10 @@ func (s *Service) VerifyAPIToken(ctx context.Context, raw string) (domain.APITok
 	if err != nil {
 		return domain.APIToken{}, domain.User{}, authStoreError(err, "каталог", "недействительный API-токен")
 	}
-	if subtle.ConstantTimeCompare([]byte(t.SHA256), []byte(domain.HashToken(parts[1]+parts[2]))) != 1 || !t.RevokedAt.IsZero() || (!t.ExpiresAt.IsZero() && !s.cfg.Clock.Now().Before(t.ExpiresAt)) {
+	// Равенство хеша уже решено лукапом TokenBySHA256 выше; повторное
+	// сравнение было бы всегда истинно. Timing-безопасность — свойство
+	// индексного поиска БД, а не сравнения после него (ревью Р8).
+	if !t.RevokedAt.IsZero() || (!t.ExpiresAt.IsZero() && !s.cfg.Clock.Now().Before(t.ExpiresAt)) {
 		return domain.APIToken{}, domain.User{}, &domain.ForbiddenError{Reason: "недействительный API-токен"}
 	}
 	u, err := s.cfg.Users.User(ctx, t.UserID)
