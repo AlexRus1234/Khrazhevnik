@@ -127,6 +127,7 @@ func handleCreateRepo(d Deps) http.HandlerFunc {
 			writeErr(w, err)
 			return
 		}
+		*r = *r.WithContext(WithAuditAction(r.Context(), "repo.create"))
 		repo, err := d.Repos.CreateRepo(r.Context(), domain.Repo{
 			Name: in.Name, OwnerID: in.OwnerID, Ecosystem: in.Ecosystem,
 			Quota:     domain.Quota{MaxBytes: in.Quota.MaxBytes, MaxObjects: in.Quota.MaxObjects},
@@ -136,7 +137,6 @@ func handleCreateRepo(d Deps) http.HandlerFunc {
 			writeErr(w, err)
 			return
 		}
-		*r = *r.WithContext(WithAuditAction(r.Context(), "repo.create"))
 		writeJSON(w, http.StatusCreated, repoOutFrom(repo))
 	}
 }
@@ -429,11 +429,11 @@ func handlePutObject(d Deps) http.HandlerFunc {
 		// каждый Read тела продлевает оба дедлайна (stream.go). Только
 		// этот эндпоинт: остальные тела админ-API идут через decodeJSON
 		// и уже под MaxBytesReader 1 MiB (validate.go) — им окно не нужно.
+		*r = *r.WithContext(WithAuditAction(r.Context(), "repo.object.upload"))
 		if err := d.Publish.Upload(r.Context(), repo, objPath, size, newStallReader(w, r.Body), force); err != nil {
 			writeErr(w, err)
 			return
 		}
-		*r = *r.WithContext(WithAuditAction(r.Context(), "repo.object.upload"))
 		writeJSON(w, http.StatusCreated, map[string]any{"path": objPath, "size": size})
 	}
 }
@@ -476,11 +476,11 @@ func handleDeleteObject(d Deps) http.HandlerFunc {
 			return
 		}
 		objPath = strings.ToLower(objPath)
+		*r = *r.WithContext(WithAuditAction(r.Context(), "repo.object.delete"))
 		if err := d.Publish.DeleteObject(r.Context(), repo, objPath); err != nil {
 			writeErr(w, err)
 			return
 		}
-		*r = *r.WithContext(WithAuditAction(r.Context(), "repo.object.delete"))
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

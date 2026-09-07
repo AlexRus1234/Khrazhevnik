@@ -657,6 +657,61 @@ func TestRepoGrantPermDuplicateAuditAction(t *testing.T) {
 	}
 }
 
+// failingPublish — publishStub, чей Upload всегда падает (сбой
+// хранилища на записи тела): неудачная мутация — проверяемая ветка.
+type failingPublish struct {
+	*publishStub
+	err error
+}
+
+func (p *failingPublish) Upload(_ context.Context, _ domain.Repo, _ string, _ int64, _ io.Reader, _ bool) error {
+	return p.err
+}
+
+// TestRepoUploadFailureAuditAction — неудачный upload пишется в аудит
+// под repo.object.upload (не fallback-именем метода+пути) с result=
+// кодом ошибки: action ставится в контекст ДО вызова мутации
+// (сессия 87; тот же инвариант, что у repo.perm.grant — сессия 58).
+func TestRepoUploadFailureAuditAction(t *testing.T) {
+	env := newRepoEnv(t)
+	fail := &failingPublish{
+		publishStub: env.publish,
+		err:         &domain.UnavailableError{What: "хранилище", Reason: "сбой записи тела"},
+	}
+	tasks := NewTaskRegistry(2, env.clock, nil)
+	adminH := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Repos: env.repos, Storage: env.storage, Audit: env.audit,
+		Tasks: tasks, Publish: fail, Clock: env.clock,
+	})
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/repos/"+itoaRepo(repoID)+"/objects/pool/main/a/foo.deb", strings.NewReader("hello apt"))
+	req.ContentLength = 9
+	req.RemoteAddr = "10.0.0.9:1"
+	req.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	rec := httptest.NewRecorder()
+	adminH.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("upload при сбое хранилища = %d, хочу 503 (тело %s)", rec.Code, rec.Body.String())
+	}
+	entries, err := env.audit.AuditEntries(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Action == "repo.object.upload" {
+			found = true
+			if e.Result != "503" {
+				t.Errorf("result = %q, хочу 503", e.Result)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("неудачный upload не записан под repo.object.upload — ушёл под fallback-имя (записи: %+v)", entries)
+	}
+}
+
 // Публичный роутер: раздача объектов репо.
 func TestPublicRepoFile(t *testing.T) {
 	env := newRepoEnv(t)
