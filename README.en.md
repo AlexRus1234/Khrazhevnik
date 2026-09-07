@@ -24,6 +24,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 **Caching proxy, mirror, and hosting for Linux package repositories**
 
+*The name is a blend of the Russian verbs «Хранить» (to store) and
+«Отражать» (to mirror): the roots «Хран» and «раж» are fused on the
+shared syllable «-ра-».*
+
 Khrazhevnik is a self-contained server for caching and mirroring Linux
 package repositories. The Go binary and the built-in web admin UI
 (Vue 3) are combined into a single executable; the object store is a
