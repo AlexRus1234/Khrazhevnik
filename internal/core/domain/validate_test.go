@@ -39,6 +39,10 @@ func TestValidateKey(t *testing.T) {
 		"cache/apt/1/pool/main/g/g++_13.2.0-7_amd64.deb",
 		"cache/apt/1/pool/main/g/gcc-13/libstdc++6_13.2.0-7~deb12u1_amd64.deb",
 		"cache/rpm/2/Packages/l/libstdc++/libstdc++-13.2.1-7.fc40.x86_64.rpm",
+		// «^» — caret-синтаксис pre-release версий RPM (Fedora 34+,
+		// CI-факт №6: aribb24 через прокси падал 400/«All mirrors
+		// were tried» на единственном пакете с ^ из 182).
+		"cache/rpm-md/2/packages/a/aribb24-1.0.3^20160216git5e9be27-5.fc44.x86_64.rpm",
 	}
 	for _, key := range valid {
 		if err := ValidateKey(key); err != nil {
