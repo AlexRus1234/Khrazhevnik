@@ -38,7 +38,25 @@ the [REST API](api.md).
 
 Cache statistics (`/api/v1/cache/stats`): hits/misses, hit-ratio,
 stale serves, negative-hits, upstream errors, bytes from upstream and
-to clients. Below — a live list of background tasks (state, progress,
+to clients, the number of cached packages. Buttons in the panel
+header: **Refresh** — re-reads the statistics and tasks without a
+page reload; **Reset statistics** — after a confirmation, zeroes the
+counters (in memory and in the DB, [REST](api.md)
+`POST /cache/stats/reset`, written to the audit log) — the operation
+is irreversible.
+
+Below — the **By ecosystem** panel: for each ecosystem with traffic —
+the number of cached packages, hit-ratio, hits/misses, bytes from
+upstream and to clients (`per_ecosystem` from `/cache/stats`).
+
+Below — the **Recent transactions** panel: a feed of the latest
+client requests to the cache — time, ecosystem, path, status
+(HIT/MISS/STALE/ERROR), size, error text. The feed is updated in the
+shared 2-second task polling and by the «Refresh» button; the buffer
+is in-memory (the last 50) — after a server restart the history
+starts from zero.
+
+Below — a live list of background tasks (state, progress,
 speed). A hint with a link to Prometheus `/metrics`.
 
 ## Remotes
