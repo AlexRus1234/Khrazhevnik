@@ -129,6 +129,7 @@ env или `file://`.
 | `max_object_size`  | `20GiB`  | `KHRZ_CACHE__MAX_OBJECT_SIZE`        | Потолок кешируемого объекта       |
 | `negative_ttl_404` | `5m`     | `KHRZ_CACHE__NEGATIVE_TTL_404`       | Отрицательное кеширование 404     |
 | `negative_ttl_5xx` | `30s`    | `KHRZ_CACHE__NEGATIVE_TTL_5XX`       | Отрицательное кеширование 5xx     |
+| `stats_flush_interval` | `1m` | `KHRZ_CACHE__STATS_FLUSH_INTERVAL`   | Период фонового флаша счётчиков статистики в БД (`cache_stats`); `0` = выключено |
 
 ## `[mirror]`
 

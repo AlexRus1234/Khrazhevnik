@@ -74,6 +74,7 @@ func TestLoadDefaults(t *testing.T) {
 		{"cache.max_object_size", cfg.Cache.MaxObjectSize.Bytes, int64(20 << 30)},
 		{"cache.negative_ttl_404", cfg.Cache.NegativeTTL404.Duration, 5 * time.Minute},
 		{"cache.negative_ttl_5xx", cfg.Cache.NegativeTTL5xx.Duration, 30 * time.Second},
+		{"cache.stats_flush_interval", cfg.Cache.StatsFlushInterval.Duration, time.Minute},
 		{"mirror.workers", cfg.Mirror.Workers, 4},
 		{"mirror.interval_jitter", cfg.Mirror.IntervalJitter.Duration, 10 * time.Minute},
 		{"mirror.max_bandwidth", cfg.Mirror.MaxBandwidth.Bytes, int64(0)},
@@ -119,6 +120,7 @@ stale_if_error = false
 max_object_size = "512MiB"
 negative_ttl_404 = "1m"
 negative_ttl_5xx = "2s"
+stats_flush_interval = "0s"
 
 [mirror]
 workers = 8
@@ -163,6 +165,10 @@ enabled = false
 	}
 	if cfg.Cache.NegativeTTL404.Duration != time.Minute || cfg.Cache.NegativeTTL5xx.Duration != 2*time.Second {
 		t.Errorf("negative ttl = %v / %v", cfg.Cache.NegativeTTL404, cfg.Cache.NegativeTTL5xx)
+	}
+	// 0 — легальное «персистентность статистики выключена».
+	if cfg.Cache.StatsFlushInterval.Duration != 0 {
+		t.Errorf("stats_flush_interval = %v, хочу 0", cfg.Cache.StatsFlushInterval.Duration)
 	}
 	if cfg.Mirror.Workers != 8 || cfg.Mirror.IntervalJitter.Duration != 3*time.Minute || cfg.Mirror.MaxBandwidth.Bytes != 5<<20 {
 		t.Errorf("mirror = %+v", cfg.Mirror)
@@ -385,6 +391,27 @@ touch_interval = "0s"
 		if !strings.Contains(msg, want) {
 			t.Errorf("в ошибке валидации нет %q:\n%s", want, msg)
 		}
+	}
+}
+
+// TestLoadStatsFlushInterval — отрицательный stats_flush_interval —
+// ошибка конфига, 0 — легальное «выключено» (сессия 96).
+func TestLoadStatsFlushInterval(t *testing.T) {
+	path := writeTemp(t, "conf.toml", `
+[cache]
+stats_flush_interval = "-5s"
+`)
+	_, err := Load(path, withJWT(nil))
+	if err == nil || !strings.Contains(err.Error(), "cache.stats_flush_interval") {
+		t.Fatalf("отрицательный stats_flush_interval прошёл валидацию: %v", err)
+	}
+
+	path = writeTemp(t, "conf-off.toml", `
+[cache]
+stats_flush_interval = "0s"
+`)
+	if _, err := Load(path, withJWT(nil)); err != nil {
+		t.Errorf("stats_flush_interval = 0 легален, got %v", err)
 	}
 }
 

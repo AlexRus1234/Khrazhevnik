@@ -567,3 +567,65 @@ func (s *FakeRemoteStore) DeleteRemote(_ context.Context, id int64) error {
 	delete(s.byName, r.Name)
 	return nil
 }
+
+// FakeStatsStore — map-реализация port.StatsStore: снапшот пишется
+// целиком (upsert по имени экосистемы, как у боевого адаптера БД),
+// ResetStats чистит все строки. Каждая SaveStatsSnapshot записывается
+// в историю — тестам флаш-цикла statskeeper (сессия 96) нужно число
+// и содержимое снапшотов, а не только финальное состояние.
+type FakeStatsStore struct {
+	mu    sync.Mutex
+	rows  map[string]domain.CacheStatsRow
+	saves [][]domain.CacheStatsRow
+}
+
+// NewFakeStatsStore создаёт пустое хранилище снапшотов.
+func NewFakeStatsStore() *FakeStatsStore {
+	return &FakeStatsStore{rows: map[string]domain.CacheStatsRow{}}
+}
+
+// SaveStatsSnapshot перезаписывает строки переданных экосистем
+// (upsert по Ecosystem), сохраняя копию снапшота в историю.
+func (s *FakeStatsStore) SaveStatsSnapshot(_ context.Context, rows []domain.CacheStatsRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]domain.CacheStatsRow, len(rows))
+	copy(cp, rows)
+	s.saves = append(s.saves, cp)
+	for _, r := range rows {
+		s.rows[r.Ecosystem] = r
+	}
+	return nil
+}
+
+// StatsSnapshot отдаёт все строки по возрастанию имени экосистемы.
+func (s *FakeStatsStore) StatsSnapshot(_ context.Context) ([]domain.CacheStatsRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]domain.CacheStatsRow, 0, len(s.rows))
+	for _, r := range s.rows {
+		out = append(out, r)
+	}
+	slices.SortFunc(out, func(a, b domain.CacheStatsRow) int { return cmp.Compare(a.Ecosystem, b.Ecosystem) })
+	return out, nil
+}
+
+// ResetStats удаляет все строки (история снапшотов не трогается).
+func (s *FakeStatsStore) ResetStats(_ context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows = map[string]domain.CacheStatsRow{}
+	return nil
+}
+
+// Saves возвращает копию истории снапшотов (для проверок числа
+// и последовательности флашей).
+func (s *FakeStatsStore) Saves() [][]domain.CacheStatsRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]domain.CacheStatsRow, len(s.saves))
+	for i, sv := range s.saves {
+		out[i] = append([]domain.CacheStatsRow(nil), sv...)
+	}
+	return out
+}

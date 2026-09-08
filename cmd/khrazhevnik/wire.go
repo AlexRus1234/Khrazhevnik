@@ -43,6 +43,7 @@ import (
 	cacheengine "khrazhevnik/internal/core/engine/cache"
 	mirrorengine "khrazhevnik/internal/core/engine/mirror"
 	publishengine "khrazhevnik/internal/core/engine/publish"
+	statskeeper "khrazhevnik/internal/core/engine/statskeeper"
 	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/registry"
@@ -105,6 +106,10 @@ type App struct {
 	// деградированном режиме: nix narinfo не переподписываются (отдаются
 	// как есть, подписи upstream валидны, если клиент им доверяет).
 	NarSigner port.NarSigner
+	// StatsKeeper — фоновый флаш per-eco счётчиков статистики в
+	// cache_stats (сессия 96); nil при stats_flush_interval=0 или
+	// без модуля БД. Stop вызывается из graceful shutdown каскада.
+	StatsKeeper *statskeeper.Keeper
 }
 
 // Таймауты upstream-соединения: обрыв установки соединения и ожидания
@@ -169,6 +174,21 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	}
 	httpClient := outboundHTTPClient()
 	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, httpClient, systemClock{}, cacheengine.Config{StaleIfError: cfg.Cache.StaleIfError, MaxObjectSize: cfg.Cache.MaxObjectSize.Bytes, NegativeTTL404: cfg.Cache.NegativeTTL404.Duration, NegativeTTL5xx: cfg.Cache.NegativeTTL5xx.Duration}, metrics.NewCache())
+	// statskeeper (сессия 96): персистентность счётчиков — отдельный
+	// фоновый цикл, движок кеша не получает ни горутин, ни порта БД.
+	// Выключен без модуля БД или при stats_flush_interval=0 (легальная
+	// конфигурация «без персистентности статистики»). Сбой загрузки
+	// снапшота не фатален: работаем с нуля, следующий флаш перезапишет
+	// строки целиком (прецедент RecoverInterruptedJobs выше).
+	var statsKeeper *statskeeper.Keeper
+	if catalog.Stats != nil && cfg.Cache.StatsFlushInterval.Duration > 0 {
+		statsKeeper = statskeeper.New(cacheEngine.Metrics(), catalog.Stats, systemClock{}, cfg.Cache.StatsFlushInterval.Duration)
+		statsKeeper.OnError = func(err error) { log.Error("stats keeper", "err", err) }
+		if err := statsKeeper.Load(context.Background()); err != nil {
+			log.Error("stats: загрузка снапшота cache_stats", "err", err)
+		}
+		statsKeeper.Run(context.Background())
+	}
 	tasks := web.NewTaskRegistry(cfg.Mirror.Workers, systemClock{}, uuidRand{})
 	mirrorEngine := mirrorengine.New(mirrorengine.Config{
 		Workers:        cfg.Mirror.Workers,
@@ -247,6 +267,7 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		Scheduler:      scheduler,
 		Signer:         signer,
 		NarSigner:      narSigner,
+		StatsKeeper:    statsKeeper,
 	}, nil
 }
 
@@ -490,6 +511,7 @@ func wireEcosystems(cfg config.Config, remotes port.RemoteStore) (map[string]por
 const (
 	schedulerStopBudget = 10 * time.Second
 	tasksWaitBudget     = 15 * time.Second
+	statsFlushBudget    = 5 * time.Second
 	drainDeletesBudget  = 5 * time.Second
 )
 
@@ -497,6 +519,7 @@ const (
 // задач и ждёт их завершения в рамках таймаута каскада (server.go).
 // Зеркало: сначала стопаем scheduler (per-remote тикеры), затем
 // TaskRegistry (ручные sync и потенциальные publish — сессия 14),
+// затем keeper статистики (финальный флаш cache_stats — сессия 96),
 // затем дожимаем фоновые удаления прошлых версий mutable-объектов.
 // Каждой стадии — своя доля бюджета; ошибки агрегируются, ни одна
 // стадия не пропускается из-за ошибки предыдущей.
@@ -514,6 +537,13 @@ func (a *App) WaitTasks(ctx context.Context) error {
 		defer cancel()
 		if err := a.Tasks.WaitAll(tctx); err != nil {
 			errs = append(errs, fmt.Errorf("tasks wait: %w", err))
+		}
+	}
+	if a.StatsKeeper != nil {
+		fctx, cancel := context.WithTimeout(ctx, statsFlushBudget)
+		defer cancel()
+		if err := a.StatsKeeper.Stop(fctx); err != nil {
+			errs = append(errs, fmt.Errorf("stats keeper stop: %w", err))
 		}
 	}
 	if a.Cache != nil {

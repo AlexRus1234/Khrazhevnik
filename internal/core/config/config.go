@@ -108,6 +108,11 @@ type Cache struct {
 	MaxObjectSize  ByteSize `toml:"max_object_size"`
 	NegativeTTL404 Duration `toml:"negative_ttl_404"`
 	NegativeTTL5xx Duration `toml:"negative_ttl_5xx"`
+	// StatsFlushInterval — период фонового флаша per-eco счётчиков
+	// статистики в cache_stats (statskeeper, сессия 96); 0 — легальная
+	// «выключено» (инстанс без персистентности статистики, счётчики
+	// живут только в памяти), отрицательное — ошибка конфига.
+	StatsFlushInterval Duration `toml:"stats_flush_interval"`
 }
 
 // Mirror — параметры sync-воркеров зеркал (сессия 11).
@@ -175,6 +180,7 @@ const (
 	defaultMaxObject    = int64(20 << 30)
 	defaultNegTTL404    = 5 * time.Minute
 	defaultNegTTL5xx    = 30 * time.Second
+	defaultStatsFlush   = time.Minute
 	defaultWorkers      = 4
 	defaultJitter       = 10 * time.Minute
 	defaultMaxBandwidth = int64(0)       // безлимит
@@ -196,10 +202,11 @@ func defaultConfig() Config {
 		},
 		Auth: Auth{SessionTTL: Duration{defaultSessionTTL}, BcryptCost: defaultBcryptCost, TouchInterval: Duration{defaultTouchMark}},
 		Cache: Cache{
-			StaleIfError:   true,
-			MaxObjectSize:  ByteSize{defaultMaxObject},
-			NegativeTTL404: Duration{defaultNegTTL404},
-			NegativeTTL5xx: Duration{defaultNegTTL5xx},
+			StaleIfError:       true,
+			MaxObjectSize:      ByteSize{defaultMaxObject},
+			NegativeTTL404:     Duration{defaultNegTTL404},
+			NegativeTTL5xx:     Duration{defaultNegTTL5xx},
+			StatsFlushInterval: Duration{defaultStatsFlush},
 		},
 		Mirror:  Mirror{Workers: defaultWorkers, IntervalJitter: Duration{defaultJitter}, MaxBandwidth: ByteSize{defaultMaxBandwidth}},
 		Publish: Publish{MaxObjectSize: ByteSize{defaultPublishMax}, DefaultQuotaBytes: ByteSize{defaultQuotaBytes}, DefaultQuotaFiles: defaultQuotaFiles},
@@ -316,6 +323,10 @@ func (c Config) validate() []error {
 	}
 	if c.Cache.NegativeTTL5xx.Duration <= 0 {
 		problems = append(problems, positiveField("cache.negative_ttl_5xx"))
+	}
+	if c.Cache.StatsFlushInterval.Duration < 0 {
+		problems = append(problems, errors.New(
+			"конфигурация: cache.stats_flush_interval: не может быть отрицательным (0 — персистентность статистики выключена)"))
 	}
 	if c.Mirror.Workers < 1 {
 		problems = append(problems, errors.New("конфигурация: mirror.workers: нужно не меньше одного воркера"))

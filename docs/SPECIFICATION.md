@@ -103,6 +103,7 @@ touch_interval = "1m"            # мин. интервал записи last_us
 stale_if_error = true
 max_object_size = "20GiB"
 negative_ttl_404 = "5m" ; negative_ttl_5xx = "30s"
+stats_flush_interval = "1m"      # флаш счётчиков статистики в cache_stats; 0 = выключено
 
 [mirror]
 workers = 4 ; interval_jitter = "10m"

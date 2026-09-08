@@ -131,6 +131,7 @@ can be brute-forced offline; generate one with `openssl rand -base64
 | `max_object_size` | `20GiB`  | `KHRZ_CACHE__MAX_OBJECT_SIZE`      | Upper limit of a cacheable object   |
 | `negative_ttl_404`| `5m`     | `KHRZ_CACHE__NEGATIVE_TTL_404`     | Negative caching of 404             |
 | `negative_ttl_5xx`| `30s`    | `KHRZ_CACHE__NEGATIVE_TTL_5XX`     | Negative caching of 5xx             |
+| `stats_flush_interval` | `1m` | `KHRZ_CACHE__STATS_FLUSH_INTERVAL` | Periodic flush of cache stats counters to the DB (`cache_stats`); `0` = disabled |
 
 ## `[mirror]`
 
