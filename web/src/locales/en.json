@@ -37,6 +37,7 @@
 
   "dashboard.title": "Dashboard",
   "dashboard.cache": "Cache",
+  "dashboard.refresh": "Refresh",
   "dashboard.hitRatio": "Hit ratio",
   "dashboard.hits": "Hits",
   "dashboard.misses": "Misses",

@@ -37,6 +37,7 @@
 
   "dashboard.title": "Дашборд",
   "dashboard.cache": "Кеш",
+  "dashboard.refresh": "Обновить",
   "dashboard.hitRatio": "Hit ratio",
   "dashboard.hits": "Попадания",
   "dashboard.misses": "Промахи",

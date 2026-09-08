@@ -27,6 +27,7 @@ import type { CacheStats, TaskSnapshot } from '../types'
 const stats = ref<CacheStats | null>(null)
 const tasks = ref<TaskSnapshot[]>([])
 const error = ref('')
+const refreshing = ref(false)
 
 const POLL_MS = 2000
 let timer: number | undefined
@@ -49,6 +50,19 @@ async function loadTasks(): Promise<void> {
     error.value = ''
   } catch (e) {
     error.value = errText(e)
+  }
+}
+
+// Кнопка «Обновить»: stats в 2-секундный поллинг не включены (поллинг
+// молотил бы админ-API без надобности — статистика меняется редко,
+// реестр задач — живой), перечитываются по требованию.
+async function refreshAll(): Promise<void> {
+  refreshing.value = true
+  try {
+    await loadStats()
+    await loadTasks()
+  } finally {
+    refreshing.value = false
   }
 }
 
@@ -77,7 +91,12 @@ function pct(ratio: number): string {
     <p v-if="error" class="error">{{ error }}</p>
 
     <div class="panel">
-      <h2>{{ t('dashboard.cache') }}</h2>
+      <div class="row spread">
+        <h2>{{ t('dashboard.cache') }}</h2>
+        <button class="btn" :disabled="refreshing" @click="void refreshAll()">
+          {{ t('dashboard.refresh') }}
+        </button>
+      </div>
       <div v-if="stats" class="grid cards">
         <div class="card">
           <span class="dim">{{ t('dashboard.hitRatio') }}</span>

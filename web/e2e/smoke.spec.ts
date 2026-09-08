@@ -165,3 +165,26 @@ test('i18n: код ошибки API invalid_credentials локализован',
   await page.locator('form button[type="submit"]').click()
   await expect(page.locator('p.error')).toHaveText('invalid username or password')
 })
+
+test('дашборд: кнопка «Обновить» перечитывает статистику', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+
+  // admin создан первым тестом (serial): обычный вход на дашборд.
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  // Механика UI (числовая семантика перечитанных значений — уровень
+  // TestAdminCacheStatsLive): клик по «Обновить» в панели кеша — без
+  // ошибки, карточки на месте, кнопка выходит из disabled.
+  const refresh = page.getByRole('button', { name: 'Обновить', exact: true })
+  await expect(refresh).toBeVisible()
+  await refresh.click()
+  await expect(page.locator('p.error')).toHaveCount(0)
+  await expect(page.getByText('Hit ratio')).toBeVisible()
+  await expect(page.getByText('Попадания')).toBeVisible()
+  await expect(page.getByText('Промахи')).toBeVisible()
+  await expect(refresh).toBeEnabled()
+})
