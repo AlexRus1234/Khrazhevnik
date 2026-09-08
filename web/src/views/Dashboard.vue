@@ -207,7 +207,10 @@ function pct(ratio: number): string {
 
     <div class="panel">
       <h2>{{ t('dashboard.txns') }}</h2>
-      <table v-if="txns.length > 0">
+      <!-- Шапка таблицы живёт всегда: пустой буфер — dim-строка под
+           таблицей, но колонки на месте (e2e-приёмка сессии 101
+           ассертит заголовки и на пустой ленте). -->
+      <table>
         <thead>
           <tr>
             <th>{{ t('dashboard.colTime') }}</th>
@@ -218,7 +221,7 @@ function pct(ratio: number): string {
             <th>{{ t('dashboard.colError') }}</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody v-if="txns.length > 0">
           <tr v-for="(txn, i) in txns" :key="txn.at + txn.path + i">
             <td>{{ formatTime(txn.at) }}</td>
             <td>{{ txn.ecosystem }}</td>
@@ -231,7 +234,7 @@ function pct(ratio: number): string {
           </tr>
         </tbody>
       </table>
-      <p v-else class="dim">{{ t('dashboard.txnsEmpty') }}</p>
+      <p v-if="txns.length === 0" class="dim">{{ t('dashboard.txnsEmpty') }}</p>
     </div>
 
     <div class="panel">
