@@ -343,7 +343,7 @@ in-memory, не персистится; персистентное состоя�
 
 | Метод | Путь                       | Auth        | Код | Назначение                          |
 |-------|----------------------------|-------------|-----|-------------------------------------|
-| GET   | `/api/v1/cache/stats`      | admin       | 200 | hits/misses/hit_ratio/stale_served/negative_hits/upstream_errors/bytes_from_upstream/bytes_to_clients |
+| GET   | `/api/v1/cache/stats`      | admin       | 200 | hits/misses/hit_ratio/stale_served/negative_hits/upstream_errors/bytes_from_upstream/bytes_to_clients + `per_ecosystem`: массив рядов `{ecosystem, hits, misses, hit_ratio, stale_served, negative_hits, upstream_errors, bytes_from_upstream, bytes_to_clients}` (по одной на экосистему с трафиком, лексический порядок; суммы рядов равны глобальным полям) |
 | GET   | `/api/v1/audit`            | admin       | 200 | keyset-пагинация: `after_id`, `limit`|
 | GET   | `/metrics`                 | admin (session или `admin`-scoped токен) | 200 | Prometheus exposition |
 

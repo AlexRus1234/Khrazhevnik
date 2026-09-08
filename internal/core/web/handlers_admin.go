@@ -250,8 +250,10 @@ func handleGetTask(d Deps) http.HandlerFunc {
 	}
 }
 
-// cacheStatsOut — DTO статистики кеша для /api/v1/cache/stats.
-type cacheStatsOut struct {
+// ecoStatsOut — per-eco ряд статистики кеша (сессия 92): те же поля,
+// что и глобал, плюс имя экосистемы и свой hit_ratio.
+type ecoStatsOut struct {
+	Ecosystem         string  `json:"ecosystem"`
 	Hits              int64   `json:"hits"`
 	Misses            int64   `json:"misses"`
 	HitRatio          float64 `json:"hit_ratio"`
@@ -260,6 +262,19 @@ type cacheStatsOut struct {
 	UpstreamErrors    int64   `json:"upstream_errors"`
 	BytesFromUpstream int64   `json:"bytes_from_upstream"`
 	BytesToClients    int64   `json:"bytes_to_clients"`
+}
+
+// cacheStatsOut — DTO статистики кеша для /api/v1/cache/stats.
+type cacheStatsOut struct {
+	Hits              int64         `json:"hits"`
+	Misses            int64         `json:"misses"`
+	HitRatio          float64       `json:"hit_ratio"`
+	StaleServed       int64         `json:"stale_served"`
+	NegativeHits      int64         `json:"negative_hits"`
+	UpstreamErrors    int64         `json:"upstream_errors"`
+	BytesFromUpstream int64         `json:"bytes_from_upstream"`
+	BytesToClients    int64         `json:"bytes_to_clients"`
+	PerEcosystem      []ecoStatsOut `json:"per_ecosystem"`
 }
 
 // handleCacheStats — GET /api/v1/cache/stats: агрегаты из metrics.Cache.
@@ -272,12 +287,13 @@ type cacheStatsOut struct {
 func handleCacheStats(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Cache == nil {
-			writeJSON(w, http.StatusOK, cacheStatsOut{})
+			writeJSON(w, http.StatusOK, cacheStatsOut{PerEcosystem: []ecoStatsOut{}})
 			return
 		}
 		m := d.Cache.Metrics()
 		var hits, misses, stale, negative, upstreamErrors, bytesFromUpstream, bytesToClients int64
-		m.EachEcosystem(func(_ string, eco *metrics.Cache) {
+		perEco := []ecoStatsOut{}
+		m.EachEcosystem(func(name string, eco *metrics.Cache) {
 			hits += eco.Hits.Load()
 			misses += eco.Misses.Load()
 			stale += eco.StaleServed.Load()
@@ -285,6 +301,19 @@ func handleCacheStats(d Deps) http.HandlerFunc {
 			upstreamErrors += eco.UpstreamErrors.Load()
 			bytesFromUpstream += eco.BytesFromUpstream.Load()
 			bytesToClients += eco.BytesToClients.Load()
+			var ratio float64
+			if total := eco.Hits.Load() + eco.Misses.Load(); total > 0 {
+				ratio = float64(eco.Hits.Load()) / float64(total)
+			}
+			perEco = append(perEco, ecoStatsOut{
+				Ecosystem: name,
+				Hits:      eco.Hits.Load(), Misses: eco.Misses.Load(), HitRatio: ratio,
+				StaleServed:       eco.StaleServed.Load(),
+				NegativeHits:      eco.NegativeHits.Load(),
+				UpstreamErrors:    eco.UpstreamErrors.Load(),
+				BytesFromUpstream: eco.BytesFromUpstream.Load(),
+				BytesToClients:    eco.BytesToClients.Load(),
+			})
 		})
 		var ratio float64
 		if total := hits + misses; total > 0 {
@@ -297,6 +326,7 @@ func handleCacheStats(d Deps) http.HandlerFunc {
 			UpstreamErrors:    upstreamErrors,
 			BytesFromUpstream: bytesFromUpstream,
 			BytesToClients:    bytesToClients,
+			PerEcosystem:      perEco,
 		})
 	}
 }

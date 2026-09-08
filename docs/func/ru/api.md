@@ -157,8 +157,25 @@ sync-задач — в `sync_jobs` (одна на remote).
 
 | Метод | Путь                | Код  | Назначение                                |
 |-------|---------------------|------|-------------------------------------------|
-| GET   | `/api/v1/cache/stats` | 200 | `{hits, misses, hit_ratio, stale_served, negative_hits, upstream_errors, bytes_from_upstream, bytes_to_clients}` |
+| GET   | `/api/v1/cache/stats` | 200 | `{hits, misses, hit_ratio, stale_served, negative_hits, upstream_errors, bytes_from_upstream, bytes_to_clients, per_ecosystem}` |
 | GET   | `/api/v1/audit`     | 200  | Аудит, keyset-пагинация `?after_id=&limit=` |
+
+`per_ecosystem` — массив рядов по одной на экосистему с трафиком
+(лексический порядок имён):
+`{ecosystem, hits, misses, hit_ratio, stale_served, negative_hits,
+upstream_errors, bytes_from_upstream, bytes_to_clients}` — те же поля,
+что и глобал, плюс имя и свой hit_ratio (по hits/misses ряда); суммы
+рядов равны глобальным полям. Пример:
+
+```json
+{
+  "hits": 1, "misses": 2, "hit_ratio": 0.333,
+  "per_ecosystem": [
+    {"ecosystem": "apt", "hits": 1, "misses": 1, "hit_ratio": 0.5},
+    {"ecosystem": "apk", "hits": 0, "misses": 1, "hit_ratio": 0}
+  ]
+}
+```
 
 ## Коды ошибок
 

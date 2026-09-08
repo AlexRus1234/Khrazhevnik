@@ -402,6 +402,71 @@ func TestAdminCacheStatsLive(t *testing.T) {
 	}
 }
 
+// TestAdminCacheStatsPerEcosystem — per-eco разрез в /api/v1/cache/stats
+// (сессия 92): каждая экосистема получает свой ряд с теми же полями,
+// что и глобал; суммы рядов равны глобальным полям.
+func TestAdminCacheStatsPerEcosystem(t *testing.T) {
+	env := newAdminEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "payload")
+	}))
+	t.Cleanup(up.Close)
+	engine := cacheengine.New(
+		testutil.NewFakeStorage(env.clock), testutil.NewFakeObjectIndex(),
+		up.Client(), env.clock, cacheengine.Config{}, nil,
+	)
+	eco1 := testutil.FakeEcosystem{NameOf: "t1", Base: up.URL, MutableTTL: time.Minute}
+	eco2 := testutil.FakeEcosystem{NameOf: "t2", Base: up.URL, MutableTTL: time.Minute}
+	h := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Clock: env.clock, Cache: engine,
+		Ecosystems: map[string]port.Ecosystem{"t1": eco1, "t2": eco2},
+	})
+	// t1: MISS + HIT (тот же путь дважды); t2: только MISS.
+	for _, ecoPath := range []struct {
+		eco  testutil.FakeEcosystem
+		path string
+	}{{eco1, "/t1/pkg/a.deb"}, {eco1, "/t1/pkg/a.deb"}, {eco2, "/t2/pkg/b.deb"}} {
+		obj, _, err := engine.FetchStatus(t.Context(), ecoPath.eco, ecoPath.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.ReadAll(obj.Body)
+		_ = obj.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/cache/stats", nil)
+	r.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Code)
+	}
+	var stats cacheStatsOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.PerEcosystem) != 2 {
+		t.Fatalf("per_ecosystem = %d рядов, хочу 2: %+v", len(stats.PerEcosystem), stats.PerEcosystem)
+	}
+	if stats.PerEcosystem[0].Ecosystem != "t1" || stats.PerEcosystem[1].Ecosystem != "t2" {
+		t.Errorf("порядок рядов = %s,%s, хочу лексический t1,t2", stats.PerEcosystem[0].Ecosystem, stats.PerEcosystem[1].Ecosystem)
+	}
+	t1, t2 := stats.PerEcosystem[0], stats.PerEcosystem[1]
+	if t1.Hits != 1 || t1.Misses != 1 || t1.HitRatio != 0.5 {
+		t.Errorf("t1 = %d/%d/%f, хочу 1/1/0.5", t1.Hits, t1.Misses, t1.HitRatio)
+	}
+	if t2.Hits != 0 || t2.Misses != 1 || t2.HitRatio != 0 {
+		t.Errorf("t2 = %d/%d/%f, хочу 0/1/0", t2.Hits, t2.Misses, t2.HitRatio)
+	}
+	if stats.Hits != t1.Hits+t2.Hits || stats.Misses != t1.Misses+t2.Misses ||
+		stats.BytesFromUpstream != t1.BytesFromUpstream+t2.BytesFromUpstream {
+		t.Errorf("глобал %+v ≠ сумма рядов %+v", stats, stats.PerEcosystem)
+	}
+}
+
 func TestAdminAuditPagination(t *testing.T) {
 	env := newAdminEnv(t)
 	// Пишем 100 записей напрямую в фейковый аудит.
