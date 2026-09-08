@@ -52,6 +52,12 @@ type Deps struct {
 	TrustedProxies []*net.IPNet
 	// Срезы каталога для админ-API (сессия 09): remotes CRUD, аудит.
 	Remotes port.RemoteStore
+	// Stats — персистентный снапшот per-eco счётчиков статистики
+	// (cache_stats, сессия 95): сброс статистики (сессия 97) обнуляет
+	// и память, и БД — сброс половины лгал бы (рестарт вернул бы
+	// старые числа). nil в деградированном режиме — сброс касается
+	// только памяти.
+	Stats port.StatsStore
 	// Repos — CRUD личных репозиториев + lookup по имени для
 	// публичного роутера :29202 (сессия 14).
 	Repos port.RepoStore
@@ -292,6 +298,9 @@ func BuildAdminRouter(d Deps) http.Handler {
 
 			// /cache/stats — статистика кеша; admin-only.
 			api.With(adminAuth).Get("/cache/stats", handleCacheStats(d))
+			// /cache/stats/reset — мутация: под auditWrap, как прочие
+			// POST (сессия 97); admin-only.
+			api.With(auditWrap, adminAuth).Post("/cache/stats/reset", handleCacheStatsReset(d))
 
 			// /audit — keyset-пагинация; admin-only.
 			api.With(adminAuth).Get("/audit", handleAuditPage(d))

@@ -336,6 +336,51 @@ func handleCacheStats(d Deps) http.HandlerFunc {
 	}
 }
 
+// handleCacheStatsReset — POST /api/v1/cache/stats/reset (сессия 97):
+// обнуляет per-eco атомики, корневой BackgroundPanics и строки
+// cache_stats. Ответ 204 пустой; идемпотентен. Сброс «половины»
+// (только память) лгал бы: следующий рестарт вернул бы старые числа
+// из БД — поэтому оба хранилища, в этом порядке.
+func handleCacheStatsReset(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Action до мутации (урок сессии 87): неудачный сброс виден в
+		// трейле под настоящим именем.
+		*r = *r.WithContext(WithAuditAction(r.Context(), "cache.stats.reset"))
+		if d.Cache == nil {
+			// Нечего сбрасывать — идемпотентный 204.
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		m := d.Cache.Metrics()
+		// Сначала БД, потом атомики: флаш keeper'а (сессия 96) после
+		// ResetStats прочитает уже обнулённые атомики и запишет нули;
+		// флаш до ResetStats перезаписывается им. Обращённый порядок
+		// оставил бы полусброс при сбое БД (атомики нули, строки — нет).
+		if d.Stats != nil {
+			if err := d.Stats.ResetStats(r.Context()); err != nil {
+				writeErr(w, &domain.UnavailableError{What: "каталог", Reason: "сброс статистики", Err: err})
+				return
+			}
+		}
+		// Запись в переданный per-eco разрез легальна; вложенный
+		// ForEcosystem запрещён (внешний замок) — и не зовётся.
+		m.EachEcosystem(func(_ string, eco *metrics.Cache) {
+			eco.Hits.Store(0)
+			eco.Misses.Store(0)
+			eco.StaleServed.Store(0)
+			eco.NegativeHits.Store(0)
+			eco.UpstreamErrors.Store(0)
+			eco.BytesFromUpstream.Store(0)
+			eco.BytesToClients.Store(0)
+			eco.Packages.Store(0)
+		})
+		// BackgroundPanics — единственный корневой писатель (сессия 83):
+		// без него сброс неполный.
+		m.BackgroundPanics.Store(0)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // auditEntryOut — DTO записи аудита для /api/v1/audit.
 type auditEntryOut struct {
 	ID     int64     `json:"id"`

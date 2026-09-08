@@ -224,3 +224,8 @@ LOW/DOC (сессии 60–63, этап M4-Р4).
   и флашит их в БД раз в `cache.stats_flush_interval` (дефолт `1m`,
   `0` — выключено); финальный флаш — в graceful shutdown до закрытия
   БД. Сбой загрузки снапшота не фатален (работа с нуля).
+- **API (сессия 97):** POST /api/v1/cache/stats/reset — сброс
+  статистики обнуляет per-eco атомики, BackgroundPanics и строки
+  `cache_stats` (идемпотентен, аудируется `cache.stats.reset`);
+  сбой БД → 503 без касания счётчиков. Prometheus-серии видят counter
+  reset — штатное поведение.

@@ -160,6 +160,7 @@ sync tasks lives in `sync_jobs` (one per remote).
 | Method | Path                  | Code | Purpose                                                                       |
 |--------|-----------------------|------|-------------------------------------------------------------------------------|
 | GET    | `/api/v1/cache/stats` | 200  | `{hits, misses, hit_ratio, stale_served, negative_hits, upstream_errors, bytes_from_upstream, bytes_to_clients, packages, per_ecosystem}` |
+| POST   | `/api/v1/cache/stats/reset` | 204 | Statistics reset: zeroes in-memory counters and `cache_stats` rows; idempotent, audited (`cache.stats.reset`). DB failure → 503 `unavailable`, counters untouched |
 | GET    | `/api/v1/audit`       | 200  | Audit log, keyset pagination `?after_id=&limit=`                              |
 
 `per_ecosystem` is an array with one row per ecosystem that has traffic
@@ -180,6 +181,10 @@ legitimately drop it. Example:
   ]
 }
 ```
+
+After a reset (`POST /cache/stats/reset`) Prometheus counter series see
+a counter reset — normal Prometheus behavior (sawtooth graph), not a
+bug.
 
 ## Error codes
 

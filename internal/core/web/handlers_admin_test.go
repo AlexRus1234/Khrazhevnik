@@ -19,6 +19,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -475,6 +476,180 @@ func TestAdminCacheStatsPerEcosystem(t *testing.T) {
 	}
 	if stats.Packages != t1.Packages+t2.Packages {
 		t.Errorf("глобальный packages = %d ≠ сумма рядов %d", stats.Packages, t1.Packages+t2.Packages)
+	}
+}
+
+// resetCountingStats — фейк StatsStore со счётчиком ResetStats и
+// инжектируемой ошибкой: контрактам сброса (сессия 97) нужно «вызван
+// ли БД-сброс» и «503 при сбое», которых базовый FakeStatsStore не
+// даёт.
+type resetCountingStats struct {
+	*testutil.FakeStatsStore
+	calls int
+	err   error
+}
+
+func (s *resetCountingStats) ResetStats(_ context.Context) error {
+	s.calls++
+	return s.err
+}
+
+// TestAdminCacheStatsReset — контракт POST /api/v1/cache/stats/reset
+// (сессия 97): обнуление атомиков и БД-снапшота одним POST, 503 при
+// сбое БД с живыми атомиками, аудит под cache.stats.reset,
+// идемпотентность. Образец живого харнесса — TestAdminCacheStatsLive.
+func TestAdminCacheStatsReset(t *testing.T) {
+	env := newAdminEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "payload")
+	}))
+	t.Cleanup(up.Close)
+	engine := cacheengine.New(
+		testutil.NewFakeStorage(env.clock), testutil.NewFakeObjectIndex(),
+		up.Client(), env.clock, cacheengine.Config{}, nil,
+	)
+	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: time.Minute}
+	stats := &resetCountingStats{FakeStatsStore: testutil.NewFakeStatsStore()}
+	h := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Clock: env.clock, Cache: engine, Stats: stats, Audit: env.audit,
+		Ecosystems: map[string]port.Ecosystem{"t": eco},
+	})
+	call := func(method, path, bearer string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(method, path, nil)
+		r.Header.Set("Authorization", "Bearer "+bearer)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+	getStats := func() cacheStatsOut {
+		t.Helper()
+		rec := call(http.MethodGet, "/api/v1/cache/stats", env.jwtAdmin)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET stats = %d, тело %s", rec.Code, rec.Body.String())
+		}
+		var s cacheStatsOut
+		if err := json.Unmarshal(rec.Body.Bytes(), &s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	// Трафик: MISS + HIT по 7 байт (как в TestAdminCacheStatsLive).
+	for range 2 {
+		obj, _, err := engine.FetchStatus(t.Context(), eco, "/t/pkg/a.deb")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.ReadAll(obj.Body)
+		_ = obj.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := getStats()
+	if before.Hits < 1 || before.Packages < 1 {
+		t.Fatalf("сброс при нулях ничего бы не доказал: %+v", before)
+	}
+	// POST reset → 204.
+	if rec := call(http.MethodPost, "/api/v1/cache/stats/reset", env.jwtAdmin); rec.Code != http.StatusNoContent {
+		t.Fatalf("POST reset = %d, хочу 204 (тело %s)", rec.Code, rec.Body.String())
+	}
+	if stats.calls != 1 {
+		t.Errorf("ResetStats вызван %d раз, хочу 1", stats.calls)
+	}
+	// После сброса все нули (включая packages); per-eco строка живёт с нулями.
+	after := getStats()
+	if after.Hits != 0 || after.Misses != 0 || after.BytesFromUpstream != 0 || after.Packages != 0 {
+		t.Errorf("после сброса не нули: %+v", after)
+	}
+	if len(after.PerEcosystem) != 1 || after.PerEcosystem[0].Ecosystem != "t" {
+		t.Fatalf("per_ecosystem после сброса = %+v, хочу ряд t", after.PerEcosystem)
+	}
+	pe := after.PerEcosystem[0]
+	if pe.Hits != 0 || pe.Misses != 0 || pe.Packages != 0 {
+		t.Errorf("per-eco ряд после сброса = %+v, хочу нули", pe)
+	}
+	// Аудит: action=cache.stats.reset, result=ok (204).
+	e := lastAudit(t, env.audit)
+	if e.Action != "cache.stats.reset" || e.Result != domain.AuditOK {
+		t.Errorf("аудит: %+v, хочу cache.stats.reset/ok", e)
+	}
+	// Идемпотентность: повторный POST — 204, сброс всё ещё полон.
+	if rec := call(http.MethodPost, "/api/v1/cache/stats/reset", env.jwtAdmin); rec.Code != http.StatusNoContent {
+		t.Fatalf("повторный POST reset = %d, хочу 204", rec.Code)
+	}
+	if again := getStats(); again.Hits != 0 || again.Packages != 0 {
+		t.Errorf("повторный сброс испортил нули: %+v", again)
+	}
+}
+
+// TestAdminCacheStatsResetDBFailure — сбой БД → 503 unavailable, атомики
+// НЕ тронуты (полусброс хуже отсутствия сброса, сессия 97).
+func TestAdminCacheStatsResetDBFailure(t *testing.T) {
+	env := newAdminEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "payload")
+	}))
+	t.Cleanup(up.Close)
+	engine := cacheengine.New(
+		testutil.NewFakeStorage(env.clock), testutil.NewFakeObjectIndex(),
+		up.Client(), env.clock, cacheengine.Config{}, nil,
+	)
+	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: time.Minute}
+	stats := &resetCountingStats{FakeStatsStore: testutil.NewFakeStatsStore(), err: errors.New("db down")}
+	h := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Clock: env.clock, Cache: engine, Stats: stats, Audit: env.audit,
+		Ecosystems: map[string]port.Ecosystem{"t": eco},
+	})
+	obj, _, err := engine.FetchStatus(t.Context(), eco, "/t/pkg/a.deb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadAll(obj.Body)
+	_ = obj.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Второй запрос — HIT (как в TestAdminCacheStatsReset): сбой БД
+	// проверяется при живых счётчиках, а не на нулях.
+	obj, _, err = engine.FetchStatus(t.Context(), eco, "/t/pkg/a.deb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadAll(obj.Body)
+	_ = obj.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/cache/stats/reset", nil)
+	r.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("сбой БД = %d, хочу 503 (тело %s)", rec.Code, rec.Body.String())
+	}
+	var e apiError
+	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || e.Code != "unavailable" {
+		t.Fatalf("код = %q (тело %s), хочу unavailable", e.Code, rec.Body.String())
+	}
+	// Атомики живы: GET stats показывает трафик (сброс не начался).
+	r = httptest.NewRequest(http.MethodGet, "/api/v1/cache/stats", nil)
+	r.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	var s cacheStatsOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Hits < 1 {
+		t.Errorf("hits = %d, хочу >0 — атомики не должны сбрасываться при сбое БД", s.Hits)
+	}
+	// Неудачная мутация видна в трейле под настоящим именем (урок 87).
+	ae := lastAudit(t, env.audit)
+	if ae.Action != "cache.stats.reset" || ae.Result != "503" {
+		t.Errorf("аудит: %+v, хочу cache.stats.reset/503", ae)
 	}
 }
 

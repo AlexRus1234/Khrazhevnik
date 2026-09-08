@@ -107,6 +107,7 @@ func run(ctx context.Context, configPath string) error {
 			TrustedProxies:   trusted,
 			Remotes:          app.Catalog.Remotes,
 			Repos:            app.Catalog.Repos,
+			Stats:            app.Catalog.Stats,
 			Storage:          app.Storage,
 			Audit:            app.Catalog.Audit,
 			Tasks:            app.Tasks,
