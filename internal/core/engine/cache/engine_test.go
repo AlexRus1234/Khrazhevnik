@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -841,4 +842,133 @@ func TestPrefetchErrors(t *testing.T) {
 			t.Fatalf("ошибка = %v, хочу ValidationError", err)
 		}
 	})
+}
+
+func TestTxnHistoryOutcomes(t *testing.T) {
+	env := newTestEnv(t, defaultConfig(), func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/pkg/a.deb":
+			w.Header().Set("Content-Type", "application/deb")
+			_, _ = io.WriteString(w, "hello")
+		case "/pkg/missing.deb":
+			w.WriteHeader(http.StatusNotFound)
+		case "/pkg/broken.deb":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	if _, status, err := fetch(t, env.engine, env.eco, "/t/pkg/a.deb"); err != nil || status != "MISS" {
+		t.Fatalf("immutable MISS = %s %v", status, err)
+	}
+	if _, status, err := fetch(t, env.engine, env.eco, "/t/pkg/a.deb"); err != nil || status != "HIT" {
+		t.Fatalf("immutable HIT = %s %v", status, err)
+	}
+	// 404: первый запрос — ошибка upstream, второй — negative-hit,
+	// тоже ошибка (NegativeHits растёт).
+	if _, _, err := fetch(t, env.engine, env.eco, "/t/pkg/missing.deb"); err == nil {
+		t.Fatal("первый запрос 404 — хочу ошибку")
+	}
+	if _, _, err := fetch(t, env.engine, env.eco, "/t/pkg/missing.deb"); err == nil {
+		t.Fatal("повтор 404 — хочу ошибку из negative")
+	}
+	if got := env.m.ForEcosystem("t").NegativeHits.Load(); got != 1 {
+		t.Fatalf("NegativeHits = %d, хочу 1", got)
+	}
+	// сбойный upstream (5xx) — тоже ошибка.
+	if _, _, err := fetch(t, env.engine, env.eco, "/t/pkg/broken.deb"); err == nil {
+		t.Fatal("запрос 5xx — хочу ошибку")
+	}
+
+	txns := env.engine.RecentTransactions(10)
+	if len(txns) != 5 {
+		t.Fatalf("записей = %d, хочу 5", len(txns))
+	}
+	// newest-first: последняя — broken.deb, первая — a.deb MISS.
+	want := []struct {
+		path   string
+		status string
+		size   int64
+	}{
+		{"/t/pkg/broken.deb", "error", 0},
+		{"/t/pkg/missing.deb", "error", 0},
+		{"/t/pkg/missing.deb", "error", 0},
+		{"/t/pkg/a.deb", "HIT", 5},
+		{"/t/pkg/a.deb", "MISS", 5},
+	}
+	for i, w := range want {
+		got := txns[i]
+		if got.Path != w.path || got.Status != w.status {
+			t.Fatalf("запись %d = %q %q, хочу %q %q", i, got.Path, got.Status, w.path, w.status)
+		}
+		if got.Ecosystem != "t" {
+			t.Fatalf("запись %d: eco = %q, хочу %q", i, got.Ecosystem, "t")
+		}
+		if w.size > 0 && got.Size <= 0 {
+			t.Fatalf("запись %d: size = %d, хочу > 0", i, got.Size)
+		}
+		if got.Err == "" && w.status == "error" {
+			t.Fatalf("запись %d: пустая ошибка у error-записи", i)
+		}
+		if got.Status != "error" && got.Err != "" {
+			t.Fatalf("запись %d: ошибка при статусе %q", i, got.Status)
+		}
+	}
+}
+
+func TestTxnHistoryCap(t *testing.T) {
+	env := newTestEnv(t, defaultConfig(), fixedHandler("hello", "application/deb"))
+
+	total := txnCap + 10
+	for i := range total {
+		if _, status, err := fetch(t, env.engine, env.eco, "/t/pkg/p"+strconv.Itoa(i)+".deb"); err != nil || status != "MISS" {
+			t.Fatalf("запрос %d = %s %v", i, status, err)
+		}
+	}
+	if got := env.engine.txns.count; got != txnCap {
+		t.Fatalf("записей в буфере = %d, хочу %d", got, txnCap)
+	}
+	txns := env.engine.RecentTransactions(total)
+	if len(txns) != txnCap {
+		t.Fatalf("записей из истории = %d, хочу %d", len(txns), txnCap)
+	}
+	// newest-first: p59 в начале, p10 в конце — вытеснены p0..p9.
+	for i, w := 0, total-1; i < txnCap; i, w = i+1, w-1 {
+		want := "/t/pkg/p" + strconv.Itoa(w) + ".deb"
+		if txns[i].Path != want {
+			t.Fatalf("запись %d = %q, хочу %q", i, txns[i].Path, want)
+		}
+	}
+}
+
+func TestTxnPrefetchNotRecorded(t *testing.T) {
+	env := newTestEnv(t, defaultConfig(), fixedHandler("hello", "application/deb"))
+
+	if _, err := env.engine.PrefetchThrottled(context.Background(), env.eco, "/t/pkg/a.deb", nil); err != nil {
+		t.Fatalf("PrefetchThrottled = %v", err)
+	}
+	if got := env.engine.RecentTransactions(txnCap); len(got) != 0 {
+		t.Fatalf("prefetch записан в историю: %d записей, хочу 0", len(got))
+	}
+	if _, status, err := fetch(t, env.engine, env.eco, "/t/pkg/b.deb"); err != nil || status != "MISS" {
+		t.Fatalf("клиентский Fetch = %s %v", status, err)
+	}
+	txns := env.engine.RecentTransactions(txnCap)
+	if len(txns) != 1 || txns[0].Path != "/t/pkg/b.deb" || txns[0].Status != "MISS" {
+		t.Fatalf("клиентская запись не одна/не та: %+v", txns)
+	}
+}
+
+func TestTxnResolveFailNotRecorded(t *testing.T) {
+	env := newTestEnv(t, defaultConfig(), fixedHandler("hello", "application/deb"))
+
+	_, _, err := env.engine.FetchStatus(context.Background(), env.eco, "/other/pkg/a.deb")
+	var nf *domain.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("ошибка = %v, хочу NotFoundError", err)
+	}
+	if got := env.engine.RecentTransactions(txnCap); len(got) != 0 {
+		t.Fatalf("resolve fail записан в историю: %d записей, хочу 0", len(got))
+	}
 }

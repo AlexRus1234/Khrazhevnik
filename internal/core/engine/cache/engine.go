@@ -90,6 +90,9 @@ type Engine struct {
 	clock   port.Clock
 	cfg     Config
 	metrics *metrics.Cache
+	// txns — история последних клиентских транзакций кеша для
+	// операционной панели; in-memory, при рестарте теряется осознанно.
+	txns    txnLog
 	flights singleflight.Group
 	mu      sync.RWMutex
 	// meta — заголовки immutable-объектов (ETag/Content-Type/
@@ -308,11 +311,32 @@ func (e *Engine) AddBytesToClients(ecoName string, n int64) {
 // metrics.NewHandler на этом же *Cache).
 func (e *Engine) Metrics() *metrics.Cache { return e.metrics }
 
-func (e *Engine) fetch(ctx context.Context, eco port.Ecosystem, ecosystemPath string) (port.Object, string, error) {
+// RecentTransactions возвращает последние клиентские транзакции кеша
+// (newest-first, копия) — операционная панель, не аудит.
+func (e *Engine) RecentTransactions(limit int) []Txn {
+	return e.txns.recent(limit)
+}
+
+func (e *Engine) fetch(ctx context.Context, eco port.Ecosystem, ecosystemPath string) (obj port.Object, status string, err error) {
 	target, ok := eco.Resolve(ecosystemPath)
 	if !ok {
 		return port.Object{}, "", &domain.NotFoundError{What: "путь", Key: ecosystemPath}
 	}
+	// resolve fail — мусорный путь (сканеры), не клиентская транзакция
+	// кеша: шум не должен вытеснять полезную историю.
+	resolved := true
+	defer func() {
+		if resolved {
+			e.txns.record(Txn{
+				At:        e.clock.Now(),
+				Ecosystem: eco.Name(),
+				Path:      ecosystemPath,
+				Status:    status,
+				Err:       errText(err),
+				Size:      obj.Size,
+			})
+		}
+	}()
 	class, err := eco.Classify(target.UpstreamPath)
 	if err != nil {
 		return port.Object{}, "", err
