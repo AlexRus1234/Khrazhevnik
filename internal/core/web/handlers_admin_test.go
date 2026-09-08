@@ -465,6 +465,17 @@ func TestAdminCacheStatsPerEcosystem(t *testing.T) {
 		stats.BytesFromUpstream != t1.BytesFromUpstream+t2.BytesFromUpstream {
 		t.Errorf("глобал %+v ≠ сумма рядов %+v", stats, stats.PerEcosystem)
 	}
+	// Счётчик пакетов (сессия 93): immutable-объект по каждой
+	// экосистеме закеширован — поле и в ряду, и в глобальной сумме.
+	if stats.Packages < 1 {
+		t.Errorf("packages = %d, хочу ≥1", stats.Packages)
+	}
+	if t1.Packages < 1 || t2.Packages < 1 {
+		t.Errorf("per-eco packages t1/t2 = %d/%d, хочу ≥1/≥1", t1.Packages, t2.Packages)
+	}
+	if stats.Packages != t1.Packages+t2.Packages {
+		t.Errorf("глобальный packages = %d ≠ сумма рядов %d", stats.Packages, t1.Packages+t2.Packages)
+	}
 }
 
 func TestAdminAuditPagination(t *testing.T) {

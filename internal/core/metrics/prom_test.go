@@ -62,6 +62,7 @@ func TestHandlerExposesAllMetricNames(t *testing.T) {
 	apt.UpstreamErrors.Add(2)
 	apt.BytesFromUpstream.Add(512)
 	apt.BytesToClients.Add(1024)
+	apt.Packages.Add(3)
 
 	rpmmmd := c.ForEcosystem("rpmmmd")
 	rpmmmd.Hits.Add(1)
@@ -86,6 +87,7 @@ func TestHandlerExposesAllMetricNames(t *testing.T) {
 		"khrazhevnik_cache_upstream_errors_total",
 		"khrazhevnik_cache_bytes_from_upstream_total",
 		"khrazhevnik_cache_bytes_to_clients_total",
+		"khrazhevnik_cache_ecosystem_packages",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("в /metrics нет имени %q:\n%s", want, body)
@@ -123,6 +125,10 @@ func TestHandlerExposesAllMetricNames(t *testing.T) {
 	}
 	if !strings.Contains(body, `khrazhevnik_cache_ecosystem_hits_total{ecosystem="apt"} 5`) {
 		t.Errorf("apt hits не равен 5:\n%s", body)
+	}
+	// Gauge per-eco: значение по лейблу, глобальной серии у packages нет.
+	if !strings.Contains(body, `khrazhevnik_cache_ecosystem_packages{ecosystem="apt"} 3`) {
+		t.Errorf("apt packages не равен 3:\n%s", body)
 	}
 }
 

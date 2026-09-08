@@ -579,6 +579,12 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 			e.deleteInBackground(old)
 		}
 	} else {
+		// Единственная точка фиксации immutable-объекта: оба пути
+		// (прокси-fetch и prefetch зеркала) сходятся в fetchOnce,
+		// singleflight не даёт параллельным ожидателям задвоить.
+		// Декремента нет: immutable в v1 не удаляются (eviction —
+		// пост-v1); HIT-ветки счётчик не трогают.
+		m.Packages.Add(1)
 		e.rememberMeta(target.StorageKey, meta)
 	}
 	return meta, false, nil

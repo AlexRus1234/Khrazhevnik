@@ -208,3 +208,7 @@ LOW/DOC (сессии 60–63, этап M4-Р4).
 - **API (сессия 92):** `per_ecosystem` в GET /api/v1/cache/stats —
   разрез «пакетный менеджер → статистика» с собственным hit_ratio
   каждого ряда; глобальные поля не меняются.
+- **Engine/API/метрики (сессия 93):** счётчик закешированных пакетов
+  `packages` per-eco в GET /api/v1/cache/stats (глобал — сумма рядов);
+  Prometheus-гейдж `khrazhevnik_cache_ecosystem_packages` (gauge,
+  не counter — сброс/рестарт легитимно роняет).

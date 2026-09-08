@@ -343,14 +343,17 @@ in-memory, не персистится; персистентное состоя�
 
 | Метод | Путь                       | Auth        | Код | Назначение                          |
 |-------|----------------------------|-------------|-----|-------------------------------------|
-| GET   | `/api/v1/cache/stats`      | admin       | 200 | hits/misses/hit_ratio/stale_served/negative_hits/upstream_errors/bytes_from_upstream/bytes_to_clients + `per_ecosystem`: массив рядов `{ecosystem, hits, misses, hit_ratio, stale_served, negative_hits, upstream_errors, bytes_from_upstream, bytes_to_clients}` (по одной на экосистему с трафиком, лексический порядок; суммы рядов равны глобальным полям) |
+| GET   | `/api/v1/cache/stats`      | admin       | 200 | hits/misses/hit_ratio/stale_served/negative_hits/upstream_errors/bytes_from_upstream/bytes_to_clients/packages + `per_ecosystem`: массив рядов `{ecosystem, hits, misses, hit_ratio, stale_served, negative_hits, upstream_errors, bytes_from_upstream, bytes_to_clients, packages}` (по одной на экосистему с трафиком, лексический порядок; суммы рядов равны глобальным полям). `packages` — число закешированных immutable-объектов (пакетов) |
 | GET   | `/api/v1/audit`            | admin       | 200 | keyset-пагинация: `after_id`, `limit`|
 | GET   | `/metrics`                 | admin (session или `admin`-scoped токен) | 200 | Prometheus exposition |
 
 Метрики Prometheus (`/metrics`): `khrazhevnik_cache_{hits,misses,
 stale_served,negative_hits,upstream_errors}_total`,
 `khrazhevnik_cache_bytes_{from_upstream,to_clients}_total` — глобально
-и по экосистемам (`ecosystem` лейбл, суффикс `_ecosystem_`); две
+и по экосистемам (`ecosystem` лейбл, суффикс `_ecosystem_`); гейдж
+`khrazhevnik_cache_ecosystem_packages` — закешированные immutable-
+объекты по экосистемам (только per-eco, сброс/рестарт легитимно роняет);
+две
 гистограммы — `khrazhevnik_request_duration_seconds` (method, status)
 и `khrazhevnik_object_bytes` (ecosystem); счётчик
 `khrazhevnik_cache_background_panics_total` — паники, recover'нутые

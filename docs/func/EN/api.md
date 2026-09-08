@@ -159,15 +159,17 @@ sync tasks lives in `sync_jobs` (one per remote).
 
 | Method | Path                  | Code | Purpose                                                                       |
 |--------|-----------------------|------|-------------------------------------------------------------------------------|
-| GET    | `/api/v1/cache/stats` | 200  | `{hits, misses, hit_ratio, stale_served, negative_hits, upstream_errors, bytes_from_upstream, bytes_to_clients, per_ecosystem}` |
+| GET    | `/api/v1/cache/stats` | 200  | `{hits, misses, hit_ratio, stale_served, negative_hits, upstream_errors, bytes_from_upstream, bytes_to_clients, packages, per_ecosystem}` |
 | GET    | `/api/v1/audit`       | 200  | Audit log, keyset pagination `?after_id=&limit=`                              |
 
 `per_ecosystem` is an array with one row per ecosystem that has traffic
 (lexicographic name order): `{ecosystem, hits, misses, hit_ratio,
 stale_served, negative_hits, upstream_errors, bytes_from_upstream,
-bytes_to_clients}` — the same fields as the global values, plus the
-name and its own hit_ratio (from the row's hits/misses); row sums
-equal the global fields. Example:
+bytes_to_clients, packages}` — the same fields as the global values,
+plus the name and its own hit_ratio (from the row's hits/misses); row
+sums equal the global fields. `packages` is the number of cached
+immutable objects (packages); a statistics reset and a restart
+legitimately drop it. Example:
 
 ```json
 {

@@ -262,6 +262,7 @@ type ecoStatsOut struct {
 	UpstreamErrors    int64   `json:"upstream_errors"`
 	BytesFromUpstream int64   `json:"bytes_from_upstream"`
 	BytesToClients    int64   `json:"bytes_to_clients"`
+	Packages          int64   `json:"packages"`
 }
 
 // cacheStatsOut — DTO статистики кеша для /api/v1/cache/stats.
@@ -274,6 +275,7 @@ type cacheStatsOut struct {
 	UpstreamErrors    int64         `json:"upstream_errors"`
 	BytesFromUpstream int64         `json:"bytes_from_upstream"`
 	BytesToClients    int64         `json:"bytes_to_clients"`
+	Packages          int64         `json:"packages"`
 	PerEcosystem      []ecoStatsOut `json:"per_ecosystem"`
 }
 
@@ -291,7 +293,7 @@ func handleCacheStats(d Deps) http.HandlerFunc {
 			return
 		}
 		m := d.Cache.Metrics()
-		var hits, misses, stale, negative, upstreamErrors, bytesFromUpstream, bytesToClients int64
+		var hits, misses, stale, negative, upstreamErrors, bytesFromUpstream, bytesToClients, packages int64
 		perEco := []ecoStatsOut{}
 		m.EachEcosystem(func(name string, eco *metrics.Cache) {
 			hits += eco.Hits.Load()
@@ -301,6 +303,7 @@ func handleCacheStats(d Deps) http.HandlerFunc {
 			upstreamErrors += eco.UpstreamErrors.Load()
 			bytesFromUpstream += eco.BytesFromUpstream.Load()
 			bytesToClients += eco.BytesToClients.Load()
+			packages += eco.Packages.Load()
 			var ratio float64
 			if total := eco.Hits.Load() + eco.Misses.Load(); total > 0 {
 				ratio = float64(eco.Hits.Load()) / float64(total)
@@ -313,6 +316,7 @@ func handleCacheStats(d Deps) http.HandlerFunc {
 				UpstreamErrors:    eco.UpstreamErrors.Load(),
 				BytesFromUpstream: eco.BytesFromUpstream.Load(),
 				BytesToClients:    eco.BytesToClients.Load(),
+				Packages:          eco.Packages.Load(),
 			})
 		})
 		var ratio float64
@@ -326,6 +330,7 @@ func handleCacheStats(d Deps) http.HandlerFunc {
 			UpstreamErrors:    upstreamErrors,
 			BytesFromUpstream: bytesFromUpstream,
 			BytesToClients:    bytesToClients,
+			Packages:          packages,
 			PerEcosystem:      perEco,
 		})
 	}

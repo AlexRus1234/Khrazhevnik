@@ -169,6 +169,40 @@ func TestImmutableMissThenHit(t *testing.T) {
 	}
 }
 
+func TestPackagesCounter(t *testing.T) {
+	env := newTestEnv(t, defaultConfig(), fixedHandler("hello", "application/deb"))
+
+	if _, status, err := fetch(t, env.engine, env.eco, "/t/pkg/a.deb"); err != nil || status != "MISS" {
+		t.Fatalf("immutable MISS = %s %v", status, err)
+	}
+	perEco := env.m.ForEcosystem("t")
+	if got := perEco.Packages.Load(); got != 1 {
+		t.Fatalf("Packages после MISS = %d, хочу 1", got)
+	}
+	if _, status, err := fetch(t, env.engine, env.eco, "/t/pkg/a.deb"); err != nil || status != "HIT" {
+		t.Fatalf("immutable HIT = %s %v", status, err)
+	}
+	if got := perEco.Packages.Load(); got != 1 {
+		t.Fatalf("Packages после HIT = %d, хочу 1 (HIT не инкрементирует)", got)
+	}
+	// mutable-индекс — служебная метадата: его оборот виден в
+	// hits/misses, счётчик пакетов не растёт.
+	if _, status, err := fetch(t, env.engine, env.eco, "/t/idx/Packages.gz"); err != nil || status != "MISS" {
+		t.Fatalf("mutable MISS = %s %v", status, err)
+	}
+	if got := perEco.Packages.Load(); got != 1 {
+		t.Fatalf("Packages после mutable MISS = %d, хочу 1", got)
+	}
+	// prefetch-ветка зеркала сходится в тот же fetchOnce — один
+	// инкремент на оба пути.
+	if _, err := env.engine.PrefetchThrottled(context.Background(), env.eco, "/t/pkg/b.deb", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := perEco.Packages.Load(); got != 2 {
+		t.Fatalf("Packages после prefetch = %d, хочу 2", got)
+	}
+}
+
 func TestImmutableSingleflight(t *testing.T) {
 	release := make(chan struct{})
 	env := newTestEnv(t, defaultConfig(), func(w http.ResponseWriter, _ *http.Request) {

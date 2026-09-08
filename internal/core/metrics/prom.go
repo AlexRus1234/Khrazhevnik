@@ -48,6 +48,7 @@ type Handler struct {
 	bytesFromUpstream, bytesToClients                *prometheus.Desc
 	ecoHits, ecoMisses, ecoStale, ecoNegative        *prometheus.Desc
 	ecoUpstreamErrors, ecoBytesFromUp, ecoBytesToCli *prometheus.Desc
+	ecoPackages                                      *prometheus.Desc
 	// Гистограммы — stateful, живут между scrape.
 	requestLatency *prometheus.HistogramVec
 	objectBytes    *prometheus.HistogramVec
@@ -87,6 +88,10 @@ func NewHandler(cache *Cache, registry *prometheus.Registry) *Handler {
 		ecoUpstreamErrors: prometheus.NewDesc("khrazhevnik_cache_ecosystem_upstream_errors_total", "Upstream errors per ecosystem.", []string{"ecosystem"}, nil),
 		ecoBytesFromUp:    prometheus.NewDesc("khrazhevnik_cache_ecosystem_bytes_from_upstream_total", "Bytes from upstream per ecosystem.", []string{"ecosystem"}, nil),
 		ecoBytesToCli:     prometheus.NewDesc("khrazhevnik_cache_ecosystem_bytes_to_clients_total", "Bytes to clients per ecosystem.", []string{"ecosystem"}, nil),
+		// Gauge, не counter: значение — текущее число закешированных
+		// immutable-объектов; сброс статистики и рестарт легитимно
+		// роняют его, counter-семантика монотонности здесь ложная.
+		ecoPackages: prometheus.NewDesc("khrazhevnik_cache_ecosystem_packages", "Cached immutable objects (packages) per ecosystem.", []string{"ecosystem"}, nil),
 		requestLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "khrazhevnik_request_duration_seconds",
 			Help:    "Request latency in seconds across both public and admin listeners.",
@@ -122,6 +127,7 @@ func (h *Handler) Describe(ch chan<- *prometheus.Desc) {
 	ch <- h.ecoUpstreamErrors
 	ch <- h.ecoBytesFromUp
 	ch <- h.ecoBytesToCli
+	ch <- h.ecoPackages
 }
 
 // Collect собирает текущие значения счётчиков из Cache. Вызывается
@@ -146,6 +152,7 @@ func (h *Handler) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(h.ecoUpstreamErrors, prometheus.CounterValue, float64(m.UpstreamErrors.Load()), name)
 		ch <- prometheus.MustNewConstMetric(h.ecoBytesFromUp, prometheus.CounterValue, float64(m.BytesFromUpstream.Load()), name)
 		ch <- prometheus.MustNewConstMetric(h.ecoBytesToCli, prometheus.CounterValue, float64(m.BytesToClients.Load()), name)
+		ch <- prometheus.MustNewConstMetric(h.ecoPackages, prometheus.GaugeValue, float64(m.Packages.Load()), name)
 	})
 	ch <- prometheus.MustNewConstMetric(h.hits, prometheus.CounterValue, float64(hits))
 	ch <- prometheus.MustNewConstMetric(h.misses, prometheus.CounterValue, float64(misses))

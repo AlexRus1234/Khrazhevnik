@@ -22,6 +22,13 @@ type Cache struct {
 	UpstreamErrors    atomic.Int64
 	BytesFromUpstream atomic.Int64
 	BytesToClients    atomic.Int64
+	// Packages — закешированные immutable-объекты («пакеты»): пишется
+	// только per-eco разрез (инкремент — движок в единственной точке
+	// фиксации fetchOnce); глобальное значение — проекция сумм при
+	// чтении, как у Hits. Декремента нет: immutable в v1 не удаляются
+	// (eviction — пост-v1, ROADMAP), сброс/рестарт легитимно роняет
+	// счётчик до персистентности сессии 96.
+	Packages atomic.Int64
 	// BackgroundPanics — паники фоновых операций кеша (удаление прошлых
 	// версий), изолированные recover'ом (сессия 25); рост = баг в
 	// storage-драйвере, а не смерть процесса.
