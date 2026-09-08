@@ -591,13 +591,28 @@ func TestSchedulerTickVsManualRace(t *testing.T) {
 	cr := newClaimRecorder()
 	sched := NewScheduler(env.mirror, env.remotes,
 		testutil.FixedRand("44444444-4444-4444-8444-444444444444"), env.clock, 0)
-	sched.ClaimSync = cr.claim
-	sched.UnclaimSync = cr.unclaim
 
 	// два «тика» идут параллельно: в Claim проходит один, второй — skip.
-	// Upstream отдаёт тела мгновенно, поэтому шлагбаум не нужен: даже
-	// при быстром sync ровно один Claim засчитывается, второй либо
-	// отказан, либо занял бы ключ при пустом дедупе.
+	// Перекрытие Claim'ов шлагбаумом на unclaim: победитель держит ключ,
+	// пока проигравший не получит отказ (отказ закрывает шлагбаум).
+	// Без шлагбаума быстрый первый тик успевал claim→sync→unclaim до
+	// чужого Claim (CI-факт 2026-09-08: claims=2, denied=0 при позднем
+	// втором тике) — ассерт «ровно один» проверял планировщик горутин,
+	// а не контракт дедупа сессии 38.
+	gate := make(chan struct{})
+	var gateOnce sync.Once
+	sched.ClaimSync = func(name string) bool {
+		ok := cr.claim(name)
+		if !ok {
+			gateOnce.Do(func() { close(gate) })
+		}
+		return ok
+	}
+	sched.UnclaimSync = func(name string) {
+		<-gate
+		cr.unclaim(name)
+	}
+
 	const ticks = 2
 	var wg sync.WaitGroup
 	var tickOK atomic.Int64
