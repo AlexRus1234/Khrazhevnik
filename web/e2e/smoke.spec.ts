@@ -242,3 +242,26 @@ test('дашборд: панель «По экосистемам»', async ({ pa
   await expect(packagesCard).toBeVisible()
   await expect(packagesCard.locator('.value')).toHaveText('0')
 })
+
+test('дашборд: панель «Последние транзакции»', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+
+  // admin создан первым тестом (serial): обычный вход на дашборд.
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  // Прокси-трафика в e2e-окружении нет (remotes не настроены, publish
+  // идёт мимо кеша): буфер движка пуст → dim-строка пустоты. Исходы/
+  // порядок/лимиты буфера — уровень тестов сессий 99/100. Скоуп
+  // заголовков — панель транзакций: «Экосистема» есть и в per-eco
+  // таблице выше.
+  await expect(page.getByRole('heading', { name: 'Последние транзакции' })).toBeVisible()
+  await expect(page.getByText('Клиентских транзакций пока нет.')).toBeVisible()
+  const txnsPanel = page.locator('.panel', { hasText: 'Последние транзакции' })
+  for (const col of ['Время', 'Экосистема', 'Путь', 'Статус', 'Размер']) {
+    await expect(txnsPanel.getByRole('columnheader', { name: col })).toBeVisible()
+  }
+})

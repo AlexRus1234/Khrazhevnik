@@ -100,6 +100,18 @@ export interface CacheStats {
   per_ecosystem: EcoStats[]
 }
 
+// Клиентская транзакция кеша (GET /cache/transactions). Статус
+// «error» — в нижнем регистре: так нормализует движок при записи
+// (внутренний ring-буфер), HIT/MISS/STALE — верхними.
+export interface CacheTxn {
+  at: string
+  ecosystem: string
+  path: string
+  status: 'HIT' | 'MISS' | 'STALE' | 'error'
+  size: number
+  error: string
+}
+
 export interface User {
   id: number
   username: string

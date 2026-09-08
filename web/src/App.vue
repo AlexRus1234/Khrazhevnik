@@ -297,6 +297,27 @@ th {
   border-color: var(--err);
 }
 
+/* Статусы клиентских транзакций кеша (дашборд). */
+.badge.hit {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.badge.miss {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.badge.stale {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.badge.error {
+  color: var(--err);
+  border-color: var(--err);
+}
+
 pre.snippet {
   background: var(--inset);
   border: 1px solid var(--border);

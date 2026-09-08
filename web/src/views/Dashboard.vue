@@ -22,10 +22,11 @@ import { request } from '../api'
 import { errText } from '../errors'
 import { formatBytes, formatSpeed, formatTime } from '../format'
 import { t } from '../i18n'
-import type { CacheStats, TaskSnapshot } from '../types'
+import type { CacheStats, CacheTxn, TaskSnapshot } from '../types'
 
 const stats = ref<CacheStats | null>(null)
 const tasks = ref<TaskSnapshot[]>([])
+const txns = ref<CacheTxn[]>([])
 const error = ref('')
 const refreshing = ref(false)
 const resetting = ref(false)
@@ -54,6 +55,15 @@ async function loadTasks(): Promise<void> {
   }
 }
 
+async function loadTxns(): Promise<void> {
+  try {
+    txns.value = await request<CacheTxn[]>('GET', '/cache/transactions')
+    error.value = ''
+  } catch (e) {
+    error.value = errText(e)
+  }
+}
+
 // Кнопка «Обновить»: stats в 2-секундный поллинг не включены (поллинг
 // молотил бы админ-API без надобности — статистика меняется редко,
 // реестр задач — живой), перечитываются по требованию.
@@ -62,6 +72,7 @@ async function refreshAll(): Promise<void> {
   try {
     await loadStats()
     await loadTasks()
+    await loadTxns()
   } finally {
     refreshing.value = false
   }
@@ -84,13 +95,17 @@ async function resetStats(): Promise<void> {
   }
 }
 
-// Поллинг 2с: реестр задач живой (in-memory), завершённые пропадают из
-// списка при рестарте — дашборд честно показывает «что бегает сейчас».
+// Поллинг 2с: реестр задач и журнал транзакций живые (in-memory),
+// завершённые задачи и история при рестарте пропадают — дашборд честно
+// показывает «что бегает сейчас»; лента транзакций после рестарта
+// начинается с нуля.
 onMounted(() => {
   void loadStats()
   void loadTasks()
+  void loadTxns()
   timer = window.setInterval(() => {
     void loadTasks()
+    void loadTxns()
   }, POLL_MS)
 })
 
@@ -191,6 +206,35 @@ function pct(ratio: number): string {
     </div>
 
     <div class="panel">
+      <h2>{{ t('dashboard.txns') }}</h2>
+      <table v-if="txns.length > 0">
+        <thead>
+          <tr>
+            <th>{{ t('dashboard.colTime') }}</th>
+            <th>{{ t('dashboard.colEco') }}</th>
+            <th>{{ t('dashboard.colPath') }}</th>
+            <th>{{ t('dashboard.colStatus') }}</th>
+            <th>{{ t('dashboard.colSize') }}</th>
+            <th>{{ t('dashboard.colError') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(txn, i) in txns" :key="txn.at + txn.path + i">
+            <td>{{ formatTime(txn.at) }}</td>
+            <td>{{ txn.ecosystem }}</td>
+            <td class="path" :title="txn.path">{{ txn.path }}</td>
+            <td>
+              <span class="badge" :class="txn.status.toLowerCase()">{{ txn.status }}</span>
+            </td>
+            <td>{{ formatBytes(txn.size) }}</td>
+            <td :class="txn.error === '' ? 'dim' : 'error'">{{ txn.error }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="dim">{{ t('dashboard.txnsEmpty') }}</p>
+    </div>
+
+    <div class="panel">
       <div class="row spread">
         <h2>{{ t('dashboard.tasks') }}</h2>
         <a class="btn" :href="metricsURL" target="_blank" rel="noopener">/metrics</a>
@@ -231,3 +275,14 @@ function pct(ratio: number): string {
     </div>
   </section>
 </template>
+
+<style scoped>
+/* Пути бывают длинными (cache/<eco>/<remote>/<path>) — обрезка в
+   пределах ячейки, полный путь в title (план сессии 101). */
+td.path {
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>
