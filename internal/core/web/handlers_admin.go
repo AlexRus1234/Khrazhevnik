@@ -24,11 +24,13 @@ package web
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"khrazhevnik/internal/core/domain"
+	"khrazhevnik/internal/core/engine/cache"
 	"khrazhevnik/internal/core/metrics"
 )
 
@@ -378,6 +380,62 @@ func handleCacheStatsReset(d Deps) http.HandlerFunc {
 		// без него сброс неполный.
 		m.BackgroundPanics.Store(0)
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// txnOut — DTO клиентской транзакции кеша для
+// /api/v1/cache/transactions (сессия 100).
+type txnOut struct {
+	At        time.Time `json:"at"`
+	Ecosystem string    `json:"ecosystem"`
+	Path      string    `json:"path"`
+	Status    string    `json:"status"`
+	Size      int64     `json:"size"`
+	Error     string    `json:"error"`
+}
+
+// txnOutFrom — модель cache.Txn → DTO.
+func txnOutFrom(t cache.Txn) txnOut {
+	return txnOut{
+		At: t.At, Ecosystem: t.Ecosystem, Path: t.Path,
+		Status: t.Status, Size: t.Size, Error: t.Err,
+	}
+}
+
+// txnLimitMax — глубина кольцевого буфера движка (cache.txnCap): клиент,
+// просящий больше буфера, получает 400, а не тихий clamp.
+const txnLimitMax = 50
+
+// handleCacheTransactions — GET /api/v1/cache/transactions?limit=:
+// последние клиентские транзакции кеша newest-first. limit — «вернуть
+// не более N последних», без пагинации: буфер — операционная память на
+// 50, ключевая пагинация (как /audit) здесь избыточна. Чтение без
+// аудита (прецедент /tasks и /cache/stats).
+func handleCacheTransactions(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		limit := int64(txnLimitMax)
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			// Строгий ParseInt (урок сессии 88): мусорный хвост —
+			// ошибка запроса, не префиксно-принятое число.
+			v, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || v <= 0 || v > txnLimitMax {
+				writeErr(w, &domain.ValidationError{What: "limit", Value: raw, Reason: "целое от 1 до 50"})
+				return
+			}
+			limit = v
+		}
+		if d.Cache == nil {
+			// Деградация без движка кеша — пустой список (образец
+			// handleCacheStats).
+			writeJSON(w, http.StatusOK, []txnOut{})
+			return
+		}
+		txns := d.Cache.RecentTransactions(int(limit))
+		out := make([]txnOut, 0, len(txns))
+		for _, t := range txns {
+			out = append(out, txnOutFrom(t))
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 

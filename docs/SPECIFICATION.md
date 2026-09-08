@@ -346,6 +346,7 @@ in-memory, не персистится; персистентное состоя�
 |-------|----------------------------|-------------|-----|-------------------------------------|
 | GET   | `/api/v1/cache/stats`      | admin       | 200 | hits/misses/hit_ratio/stale_served/negative_hits/upstream_errors/bytes_from_upstream/bytes_to_clients/packages + `per_ecosystem`: массив рядов `{ecosystem, hits, misses, hit_ratio, stale_served, negative_hits, upstream_errors, bytes_from_upstream, bytes_to_clients, packages}` (по одной на экосистему с трафиком, лексический порядок; суммы рядов равны глобальным полям). `packages` — число закешированных immutable-объектов (пакетов) |
 | POST  | `/api/v1/cache/stats/reset`| admin       | 204 | Сброс статистики: per-eco атомики, BackgroundPanics и строки `cache_stats`; идемпотентен, аудируется (`cache.stats.reset`). Сбой БД → 503, атомики не тронуты |
+| GET   | `/api/v1/cache/transactions` | admin     | 200 | Последние клиентские транзакции кеша newest-first, ряды `{at, ecosystem, path, status, size, error}` (`status` — HIT/MISS/STALE/error). `?limit=` — «не более N»: целое 1–50 (дефолт 50, глубина буфера); невалидный/0/отрицательный/>50 → 400 `validation_error`. In-memory буфер на 50, без пагинации |
 | GET   | `/api/v1/audit`            | admin       | 200 | keyset-пагинация: `after_id`, `limit`|
 | GET   | `/metrics`                 | admin (session или `admin`-scoped токен) | 200 | Prometheus exposition |
 

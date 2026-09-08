@@ -159,6 +159,7 @@ sync-задач — в `sync_jobs` (одна на remote).
 |-------|---------------------|------|-------------------------------------------|
 | GET   | `/api/v1/cache/stats` | 200 | `{hits, misses, hit_ratio, stale_served, negative_hits, upstream_errors, bytes_from_upstream, bytes_to_clients, packages, per_ecosystem}` |
 | POST  | `/api/v1/cache/stats/reset` | 204 | Сброс статистики: обнуляет атомики памяти и строки `cache_stats`; идемпотентен, аудируется (`cache.stats.reset`). Сбой БД → 503 `unavailable`, счётчики не тронуты |
+| GET   | `/api/v1/cache/transactions` | 200 | Последние клиентские транзакции кеша newest-first, `?limit=` (1–50, по умолчанию 50); ряд `{at, ecosystem, path, status, size, error}` |
 | GET   | `/api/v1/audit`     | 200  | Аудит, keyset-пагинация `?after_id=&limit=` |
 
 `per_ecosystem` — массив рядов по одной на экосистему с трафиком
@@ -182,6 +183,13 @@ upstream_errors, bytes_from_upstream, bytes_to_clients, packages}` — те
 
 После сброса (`POST /cache/stats/reset`) Prometheus-серии счётчиков
 увидят counter reset — штатное поведение прома (график «пила»), не баг.
+
+`GET /api/v1/cache/transactions?limit=20` — последние клиентские
+транзакции кеша newest-first (операционная панель «что происходит», не
+аудит): `{at, ecosystem, path, status, size, error}`; `status` —
+HIT/MISS/STALE/error. Буфер — in-memory на 50 записей (prefetch зеркала
+и битые пути не пишутся), пагинации нет; `limit` — «не более N»,
+целое 1–50, невалидный → 400 `validation_error`.
 
 ## Коды ошибок
 

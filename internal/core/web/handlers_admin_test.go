@@ -653,6 +653,129 @@ func TestAdminCacheStatsResetDBFailure(t *testing.T) {
 	}
 }
 
+// TestAdminCacheTransactions — живой разрез /api/v1/cache/transactions
+// (сессия 100): трафик через движок отражается в истории newest-first,
+// limit режет самые свежие, невалидный limit — 400, деградация без
+// Cache — 200 []. Образец харнесса — TestAdminCacheStatsLive.
+func TestAdminCacheTransactions(t *testing.T) {
+	env := newAdminEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/pkg/a.deb":
+			_, _ = io.WriteString(w, "payload")
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(up.Close)
+	engine := cacheengine.New(
+		testutil.NewFakeStorage(env.clock), testutil.NewFakeObjectIndex(),
+		up.Client(), env.clock, cacheengine.Config{}, nil,
+	)
+	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: time.Minute}
+	h := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Clock: env.clock, Cache: engine,
+		Ecosystems: map[string]port.Ecosystem{"t": eco},
+	})
+	// Трафик: MISS + HIT + error (5xx), как в TestTxnHistory (сессия 99).
+	for range 2 {
+		obj, _, err := engine.FetchStatus(t.Context(), eco, "/t/pkg/a.deb")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.ReadAll(obj.Body)
+		_ = obj.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := engine.FetchStatus(t.Context(), eco, "/t/pkg/broken.deb"); err == nil {
+		t.Fatal("запрос 5xx — хочу ошибку")
+	}
+	call := func(path string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+	// 1. Без limit: 3 записи newest-first, статусы верны.
+	rec := call("/api/v1/cache/transactions")
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Code)
+	}
+	var txns []txnOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &txns); err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		path, status string
+		err          bool
+	}{
+		{"/t/pkg/broken.deb", "error", true},
+		{"/t/pkg/a.deb", "HIT", false},
+		{"/t/pkg/a.deb", "MISS", false},
+	}
+	if len(txns) != len(want) {
+		t.Fatalf("записей = %d, хочу %d: %+v", len(txns), len(want), txns)
+	}
+	for i, w := range want {
+		got := txns[i]
+		if got.Path != w.path || got.Status != w.status {
+			t.Fatalf("запись %d = %q %q, хочу %q %q", i, got.Path, got.Status, w.path, w.status)
+		}
+		if got.Ecosystem != "t" {
+			t.Errorf("запись %d: eco = %q, хочу %q", i, got.Ecosystem, "t")
+		}
+		if w.err && got.Error == "" {
+			t.Errorf("запись %d: пустая ошибка у error-записи", i)
+		}
+		if !w.err && (got.Error != "" || got.Size <= 0) {
+			t.Errorf("запись %d: error=%q size=%d, хочу пустую ошибку и размер >0", i, got.Error, got.Size)
+		}
+		if got.At.IsZero() {
+			t.Errorf("запись %d: нулевое время", i)
+		}
+	}
+	// 2. limit=2: две самые свежие записи.
+	rec = call("/api/v1/cache/transactions?limit=2")
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Code)
+	}
+	var two []txnOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &two); err != nil {
+		t.Fatal(err)
+	}
+	if len(two) != 2 || two[0].Status != "error" || two[1].Status != "HIT" {
+		t.Fatalf("limit=2: %+v, хочу [error HIT]", two)
+	}
+	// 3. Невалидный limit → 400 validation_error.
+	for _, q := range []string{"abc", "0", "51"} {
+		rec = call("/api/v1/cache/transactions?limit=" + q)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("limit=%s = %d, хочу 400", q, rec.Code)
+			continue
+		}
+		var e apiError
+		if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || e.Code != "validation_error" {
+			t.Errorf("limit=%s: тело %s, хочу validation_error", q, rec.Body.String())
+		}
+	}
+	// 4. Деградация: Deps без Cache → 200 [].
+	degraded := BuildAdminRouter(Deps{Auth: env.auth, Clock: env.clock})
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/cache/transactions", nil)
+	r.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	drec := httptest.NewRecorder()
+	degraded.ServeHTTP(drec, r)
+	if drec.Code != http.StatusOK {
+		t.Fatalf("деградация = %d, хочу 200", drec.Code)
+	}
+	if got := strings.TrimRight(drec.Body.String(), "\n"); got != "[]" {
+		t.Errorf("деградация: тело %q, хочу []", got)
+	}
+}
+
 func TestAdminAuditPagination(t *testing.T) {
 	env := newAdminEnv(t)
 	// Пишем 100 записей напрямую в фейковый аудит.

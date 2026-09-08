@@ -238,3 +238,7 @@ LOW/DOC (сессии 60–63, этап M4-Р4).
   newest-first чтение; prefetch зеркала и мусорные пути (fail
   resolve) не пишутся; экспорт `RecentTransactions` — потребители
   в сессии 100.
+- **API (сессия 100):** GET /api/v1/cache/transactions?limit= —
+  последние клиентские транзакции кеша newest-first (буфер сессии 99),
+  admin-only, без аудита (чтение); `limit` — целое 1–50 (дефолт 50),
+  невалидный/0/>50 → 400 `validation_error`; без движка кеша — 200 `[]`.

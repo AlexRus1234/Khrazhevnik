@@ -161,6 +161,7 @@ sync tasks lives in `sync_jobs` (one per remote).
 |--------|-----------------------|------|-------------------------------------------------------------------------------|
 | GET    | `/api/v1/cache/stats` | 200  | `{hits, misses, hit_ratio, stale_served, negative_hits, upstream_errors, bytes_from_upstream, bytes_to_clients, packages, per_ecosystem}` |
 | POST   | `/api/v1/cache/stats/reset` | 204 | Statistics reset: zeroes in-memory counters and `cache_stats` rows; idempotent, audited (`cache.stats.reset`). DB failure → 503 `unavailable`, counters untouched |
+| GET    | `/api/v1/cache/transactions` | 200 | Latest client cache transactions, newest-first, `?limit=` (1–50, default 50); row `{at, ecosystem, path, status, size, error}` |
 | GET    | `/api/v1/audit`       | 200  | Audit log, keyset pagination `?after_id=&limit=`                              |
 
 `per_ecosystem` is an array with one row per ecosystem that has traffic
@@ -185,6 +186,14 @@ legitimately drop it. Example:
 After a reset (`POST /cache/stats/reset`) Prometheus counter series see
 a counter reset — normal Prometheus behavior (sawtooth graph), not a
 bug.
+
+`GET /api/v1/cache/transactions?limit=20` returns the latest client
+cache transactions newest-first (an operational "what is happening"
+panel, not an audit log): `{at, ecosystem, path, status, size, error}`;
+`status` is HIT/MISS/STALE/error. The buffer is in-memory, 50 entries
+(mirror prefetch and unresolvable paths are not recorded), no
+pagination; `limit` means "at most N", an integer 1–50, invalid values
+→ 400 `validation_error`.
 
 ## Error codes
 

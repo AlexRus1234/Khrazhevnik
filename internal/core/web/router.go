@@ -302,6 +302,10 @@ func BuildAdminRouter(d Deps) http.Handler {
 			// POST (сессия 97); admin-only.
 			api.With(auditWrap, adminAuth).Post("/cache/stats/reset", handleCacheStatsReset(d))
 
+			// /cache/transactions — история клиентских транзакций кеша;
+			// admin-only, чтение (без audit-middleware).
+			api.With(adminAuth).Get("/cache/transactions", handleCacheTransactions(d))
+
 			// /audit — keyset-пагинация; admin-only.
 			api.With(adminAuth).Get("/audit", handleAuditPage(d))
 		}
