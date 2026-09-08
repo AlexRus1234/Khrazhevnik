@@ -188,3 +188,23 @@ test('дашборд: кнопка «Обновить» перечитывает
   await expect(page.getByText('Промахи')).toBeVisible()
   await expect(refresh).toBeEnabled()
 })
+
+test('дашборд: панель «По экосистемам»', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+
+  // admin создан первым тестом (serial): обычный вход на дашборд.
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  // Прокси-трафика в e2e-окружении нет (remotes не настроены):
+  // per_ecosystem пуст → dim-строка; карточка пакетов в гриде кеша
+  // со значением 0. Числа per-eco — уровень TestAdminCacheStatsPerEcosystem.
+  await expect(page.getByRole('heading', { name: 'По экосистемам' })).toBeVisible()
+  await expect(page.getByText('Данных по экосистемам пока нет.')).toBeVisible()
+  const packagesCard = page.locator('.card', { hasText: 'Кешировано пакетов' })
+  await expect(packagesCard).toBeVisible()
+  await expect(packagesCard.locator('.value')).toHaveText('0')
+})

@@ -99,6 +99,10 @@ function pct(ratio: number): string {
       </div>
       <div v-if="stats" class="grid cards">
         <div class="card">
+          <span class="dim">{{ t('dashboard.cachedPackages') }}</span>
+          <div class="value">{{ stats.packages }}</div>
+        </div>
+        <div class="card">
           <span class="dim">{{ t('dashboard.hitRatio') }}</span>
           <div class="value">{{ pct(stats.hit_ratio) }}</div>
         </div>
@@ -132,6 +136,35 @@ function pct(ratio: number): string {
         </div>
       </div>
       <p v-else class="dim">{{ t('common.loading') }}</p>
+    </div>
+
+    <div v-if="stats" class="panel">
+      <h2>{{ t('dashboard.perEco') }}</h2>
+      <table v-if="stats.per_ecosystem.length > 0">
+        <thead>
+          <tr>
+            <th>{{ t('dashboard.colEco') }}</th>
+            <th>{{ t('dashboard.colPackages') }}</th>
+            <th>{{ t('dashboard.hitRatio') }}</th>
+            <th>{{ t('dashboard.hits') }}</th>
+            <th>{{ t('dashboard.misses') }}</th>
+            <th>{{ t('dashboard.colBytesUp') }}</th>
+            <th>{{ t('dashboard.colBytesDown') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="eco in stats.per_ecosystem" :key="eco.ecosystem">
+            <td>{{ eco.ecosystem }}</td>
+            <td>{{ eco.packages }}</td>
+            <td>{{ pct(eco.hit_ratio) }}</td>
+            <td>{{ eco.hits }}</td>
+            <td>{{ eco.misses }}</td>
+            <td>{{ formatBytes(eco.bytes_from_upstream) }}</td>
+            <td>{{ formatBytes(eco.bytes_to_clients) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="dim">{{ t('dashboard.perEcoEmpty') }}</p>
     </div>
 
     <div class="panel">

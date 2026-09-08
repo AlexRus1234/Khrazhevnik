@@ -74,6 +74,19 @@ export interface TaskSnapshot {
   finished_at?: string
 }
 
+export interface EcoStats {
+  ecosystem: string
+  packages: number
+  hits: number
+  misses: number
+  hit_ratio: number
+  stale_served: number
+  negative_hits: number
+  upstream_errors: number
+  bytes_from_upstream: number
+  bytes_to_clients: number
+}
+
 export interface CacheStats {
   hits: number
   misses: number
@@ -83,6 +96,8 @@ export interface CacheStats {
   upstream_errors: number
   bytes_from_upstream: number
   bytes_to_clients: number
+  packages: number
+  per_ecosystem: EcoStats[]
 }
 
 export interface User {

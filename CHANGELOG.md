@@ -212,3 +212,6 @@ LOW/DOC (сессии 60–63, этап M4-Р4).
   `packages` per-eco в GET /api/v1/cache/stats (глобал — сумма рядов);
   Prometheus-гейдж `khrazhevnik_cache_ecosystem_packages` (gauge,
   не counter — сброс/рестарт легитимно роняет).
+- **Web (сессия 94):** на дашборде панель «По экосистемам» (пакеты,
+  hit-ratio, hits/misses, байты) и карточка «Кешировано пакетов»;
+  кнопка «Обновить» перечитывает оба блока разом.
