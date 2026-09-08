@@ -77,6 +77,7 @@ func init() {
 			Jobs:        st,
 			Audit:       st,
 			ObjIndex:    st,
+			Stats:       st,
 			Revocations: st,
 		}, nil
 	})
@@ -85,10 +86,11 @@ func init() {
 // Store — один *sql.DB, реализующий все срезы порта каталога. sleep
 // вынесен в поле для тестов retry без реальных пауз.
 type Store struct {
-	db               *sql.DB
-	sleep            func(time.Duration)
-	upsertObjectMeta string
-	upsertRevocation string
+	db                  *sql.DB
+	sleep               func(time.Duration)
+	upsertObjectMeta    string
+	upsertRevocation    string
+	upsertStatsSnapshot string
 }
 
 // Open парсит DSN (mysql.ParseDSN — fail-fast на плохом формате),
@@ -115,10 +117,11 @@ func Open(cfg config.Database) (*Store, error) {
 		return nil, err
 	}
 	return &Store{
-		db:               db,
-		sleep:            time.Sleep,
-		upsertObjectMeta: objectMetaUpsertSQL(),
-		upsertRevocation: revocationUpsertSQL(),
+		db:                  db,
+		sleep:               time.Sleep,
+		upsertObjectMeta:    objectMetaUpsertSQL(),
+		upsertRevocation:    revocationUpsertSQL(),
+		upsertStatsSnapshot: statsUpsertSQL(),
 	}, nil
 }
 

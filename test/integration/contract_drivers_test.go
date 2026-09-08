@@ -104,7 +104,7 @@ func TestCatalogContractSQLite(t *testing.T) {
 		}
 		return contract.Catalog{
 			Users: st, Tokens: st, Repos: st, Remotes: st,
-			Jobs: st, Audit: st, ObjIndex: st, Revocations: st, Close: st.Close,
+			Jobs: st, Audit: st, ObjIndex: st, Stats: st, Revocations: st, Close: st.Close,
 		}
 	})
 }
@@ -124,7 +124,7 @@ func TestCatalogContractPostgres(t *testing.T) {
 		}
 		return contract.Catalog{
 			Users: st, Tokens: st, Repos: st, Remotes: st,
-			Jobs: st, Audit: st, ObjIndex: st, Revocations: st, Close: st.Close,
+			Jobs: st, Audit: st, ObjIndex: st, Stats: st, Revocations: st, Close: st.Close,
 		}
 	})
 }
@@ -159,7 +159,7 @@ func TestCatalogContractMariaDB(t *testing.T) {
 		}
 		return contract.Catalog{
 			Users: st, Tokens: st, Repos: st, Remotes: st,
-			Jobs: st, Audit: st, ObjIndex: st, Revocations: st, Close: st.Close,
+			Jobs: st, Audit: st, ObjIndex: st, Stats: st, Revocations: st, Close: st.Close,
 		}
 	})
 }

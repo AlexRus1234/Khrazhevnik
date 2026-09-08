@@ -64,6 +64,7 @@ func init() {
 			Jobs:        st,
 			Audit:       st,
 			ObjIndex:    st,
+			Stats:       st,
 			Revocations: st,
 		}, nil
 	})
@@ -74,11 +75,12 @@ func init() {
 type Store struct {
 	db    *sql.DB
 	sleep func(time.Duration)
-	// upsertObjectMeta/upsertRevocation — upsert'ы, собранные через
-	// dbtalk.Upsert один раз при открытии (SQL-константы — для
-	// остального; upsert — предмет диалект-шима).
-	upsertObjectMeta string
-	upsertRevocation string
+	// upsertObjectMeta/upsertRevocation/upsertStatsSnapshot — upsert'ы,
+	// собранные через dbtalk.Upsert один раз при открытии (SQL-константы
+	// — для остального; upsert — предмет диалект-шима).
+	upsertObjectMeta    string
+	upsertRevocation    string
+	upsertStatsSnapshot string
 }
 
 // Open открывает БД по cfg.DSN, применяет миграции и возвращает Store.
@@ -105,10 +107,11 @@ func Open(cfg config.Database) (*Store, error) {
 		return nil, err
 	}
 	return &Store{
-		db:               db,
-		sleep:            time.Sleep,
-		upsertObjectMeta: objectMetaUpsertSQL(),
-		upsertRevocation: revocationUpsertSQL(),
+		db:                  db,
+		sleep:               time.Sleep,
+		upsertObjectMeta:    objectMetaUpsertSQL(),
+		upsertRevocation:    revocationUpsertSQL(),
+		upsertStatsSnapshot: statsUpsertSQL(),
 	}, nil
 }
 

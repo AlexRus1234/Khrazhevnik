@@ -81,6 +81,7 @@ func TestCatalogContract(t *testing.T) {
 			Jobs:        st,
 			Audit:       st,
 			ObjIndex:    st,
+			Stats:       st,
 			Revocations: st,
 			Close:       st.Close,
 		}

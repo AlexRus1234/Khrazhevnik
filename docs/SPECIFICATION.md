@@ -482,8 +482,10 @@ khrazhevnik -config khrazhevnik.toml -add-remote apt/debian=https://deb.debian.o
 0003 — `object_index.storage_key` (версионные байты mutable-объектов);
 0004 — `remotes.sync_interval_sec` и `remotes.include` (планируемый
 sync и include-фильтры); 0005 — `revoked_sessions` (персистентный
-отзыв JWT-сессий, сессия 25). `schema_migrations` — служебная таблица
-goose.
+отзыв JWT-сессий, сессия 25); 0006 — FK `api_tokens.user_id` →
+ON DELETE CASCADE; 0007 — `cache_stats` (снапшот per-eco счётчиков
+статистики кеша, переживает рестарт; флаш/загрузка — сессия 96).
+`schema_migrations` — служебная таблица goose.
 
 | Таблица        | Назначение                                        |
 |----------------|---------------------------------------------------|
@@ -496,6 +498,7 @@ goose.
 | `audit_log`    | аудит мутаций (actor/action/object/result/detail) |
 | `object_index` | etag/expires mutable-объектов кеша; `storage_key` — ключ версионных байт (миграция 0003; пустой — байты под самим `key`, записи до версионирования) |
 | `revoked_sessions` | отзывы JWT (jti, expires_at); logout переживает рестарт; просроченные чистятся при вставке |
+| `cache_stats`  | снапшот per-eco счётчиков статистики кеша (hits/misses/байты/пакеты, updated_at); снапшот всегда полный, перезапись целиком одной транзакцией |
 
 Драйверы — плагин через TOML:
 

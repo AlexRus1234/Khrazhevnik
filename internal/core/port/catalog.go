@@ -113,6 +113,20 @@ type ObjectIndex interface {
 	DeleteObjectMeta(ctx context.Context, key string) error
 }
 
+// StatsStore — персистентный снапшот per-eco счётчиков статистики
+// кеша (cache_stats): счётчики в памяти обнуляются при рестарте, а
+// кеш на диске живёт. Снапшот-модель, не журнал (per-request запись —
+// write-амплификация; тайм-серии — Prometheus): SaveStatsSnapshot
+// перезаписывает строки переданных экосистем upsert'ом одной
+// транзакцией (атомарно — не partial), пустой срез — no-op;
+// StatsSnapshot читает снапшот целиком; ResetStats удаляет все
+// строки (сброс статистики админом, сессия 97).
+type StatsStore interface {
+	SaveStatsSnapshot(ctx context.Context, rows []domain.CacheStatsRow) error
+	StatsSnapshot(ctx context.Context) ([]domain.CacheStatsRow, error)
+	ResetStats(ctx context.Context) error
+}
+
 // SessionRevocationStore — персистентный отзыв JWT-сессий: logout
 // переживает рестарт процесса, in-memory карта в auth.Service — только
 // fast-path (аудит 2026-08-27: in-memory отзыв «оживал» после

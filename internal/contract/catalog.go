@@ -50,6 +50,7 @@ type Catalog struct {
 	Jobs        port.JobStore
 	Audit       port.AuditLog
 	ObjIndex    port.ObjectIndex
+	Stats       port.StatsStore
 	Revocations port.SessionRevocationStore
 	Close       func() error
 }
@@ -80,6 +81,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("audit", func(t *testing.T) { auditSuite(t, newCat(t)) })
 	t.Run("audit_limit_cap", func(t *testing.T) { auditLimitCapSuite(t, newCat(t)) })
 	t.Run("object_index", func(t *testing.T) { objectIndexSuite(t, newCat(t)) })
+	t.Run("stats_snapshot", func(t *testing.T) { statsSnapshotSuite(t, newCat(t)) })
 	t.Run("revocations", func(t *testing.T) { revocationsSuite(t, newCat(t)) })
 	t.Run("noop_update", func(t *testing.T) { noopUpdateSuite(t, newCat(t)) })
 	t.Run("concurrent_upsert", func(t *testing.T) { concurrentUpsertSuite(t, newCat(t)) })
@@ -636,6 +638,73 @@ func objectIndexSuite(t *testing.T, c Catalog) {
 	}
 	if _, err := c.ObjIndex.ObjectMeta(ctx, boundary.Key); err != nil {
 		t.Fatalf("ObjectMeta(ключ 767 байт): %v", err)
+	}
+}
+
+// statsSnapshotSuite — снапшот per-eco счётчиков статистики (сессия
+// 95): пусто → Save 2 строк → чтение верно (значения, порядок по
+// экосистемам) → Save тех же экосистем перезаписывает (снапшот-модель,
+// не накопление) → Reset → пусто.
+func statsSnapshotSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	got, err := c.Stats.StatsSnapshot(ctx)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("снапшот пустой таблицы = %+v, %v; хочу пусто без ошибки", got, err)
+	}
+	if err := c.Stats.SaveStatsSnapshot(ctx, nil); err != nil {
+		t.Fatalf("пустой срез — no-op, не ошибка: %v", err)
+	}
+	first := []domain.CacheStatsRow{
+		{
+			Ecosystem: "rpmmmd", Hits: 10, Misses: 3, StaleServed: 1,
+			NegativeHits: 2, UpstreamErrors: 4, BytesFromUpstream: 1024,
+			BytesToClients: 2048, Packages: 7, UpdatedAt: fixed,
+		},
+		{
+			Ecosystem: "apt", Hits: 100, Misses: 30, BytesFromUpstream: 1 << 20,
+			BytesToClients: 2 << 20, Packages: 42, UpdatedAt: fixed,
+		},
+	}
+	if err := c.Stats.SaveStatsSnapshot(ctx, first); err != nil {
+		t.Fatalf("SaveStatsSnapshot: %v", err)
+	}
+	got, err = c.Stats.StatsSnapshot(ctx)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("снапшот после Save = %+v, %v; хочу 2 строки", got, err)
+	}
+	if got[0].Ecosystem != "apt" || got[1].Ecosystem != "rpmmmd" {
+		t.Fatalf("порядок экосистем нарушен: %q, %q", got[0].Ecosystem, got[1].Ecosystem)
+	}
+	want := map[string]domain.CacheStatsRow{"apt": first[1], "rpmmmd": first[0]}
+	for _, r := range got {
+		w := want[r.Ecosystem]
+		if r != w {
+			t.Fatalf("строка %s = %+v, хочу %+v", r.Ecosystem, r, w)
+		}
+	}
+	second := []domain.CacheStatsRow{
+		{Ecosystem: "apt", Hits: 1, Packages: 2, UpdatedAt: fixed.Add(time.Minute)},
+		{Ecosystem: "rpmmmd", Hits: 5, Packages: 9, UpdatedAt: fixed.Add(time.Minute)},
+	}
+	if err := c.Stats.SaveStatsSnapshot(ctx, second); err != nil {
+		t.Fatalf("перезапись снапшота: %v", err)
+	}
+	got, err = c.Stats.StatsSnapshot(ctx)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("снапшот после перезаписи = %+v, %v; хочу 2 строки", got, err)
+	}
+	for _, r := range got {
+		w := map[string]domain.CacheStatsRow{"apt": second[0], "rpmmmd": second[1]}[r.Ecosystem]
+		if r != w {
+			t.Fatalf("перезапись: строка %s = %+v, хочу %+v (снапшот перезаписывает, не накапливает)", r.Ecosystem, r, w)
+		}
+	}
+	if err := c.Stats.ResetStats(ctx); err != nil {
+		t.Fatalf("ResetStats: %v", err)
+	}
+	got, err = c.Stats.StatsSnapshot(ctx)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("снапшот после Reset = %+v, %v; хочу пусто без ошибки", got, err)
 	}
 }
 

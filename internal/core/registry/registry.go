@@ -37,6 +37,9 @@ type CatalogSet struct {
 	Jobs     port.JobStore
 	Audit    port.AuditLog
 	ObjIndex port.ObjectIndex
+	// Stats — снапшот per-eco счётчиков статистики кеша (сессия 95):
+	// переживает рестарт процесса.
+	Stats port.StatsStore
 	// Revocations — персистентный отзыв JWT-сессий (сессия 25):
 	// logout переживает рестарт процесса.
 	Revocations port.SessionRevocationStore
