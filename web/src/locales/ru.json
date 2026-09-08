@@ -38,6 +38,8 @@
   "dashboard.title": "Дашборд",
   "dashboard.cache": "Кеш",
   "dashboard.refresh": "Обновить",
+  "dashboard.statsReset": "Сбросить статистику",
+  "dashboard.statsResetConfirm": "Обнулить всю статистику кеша? Действие необратимо.",
   "dashboard.hitRatio": "Hit ratio",
   "dashboard.hits": "Попадания",
   "dashboard.misses": "Промахи",

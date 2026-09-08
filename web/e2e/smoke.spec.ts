@@ -189,6 +189,40 @@ test('дашборд: кнопка «Обновить» перечитывает
   await expect(refresh).toBeEnabled()
 })
 
+test('дашборд: сброс статистики через confirm', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+
+  // admin создан первым тестом (serial): обычный вход на дашборд.
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  const reset = page.getByRole('button', { name: 'Сбросить статистику', exact: true })
+  await expect(reset).toBeVisible()
+
+  // Отмена confirm — ничего не делает: карточки на месте, ошибок нет.
+  page.once('dialog', (d) => {
+    void d.dismiss()
+  })
+  await reset.click()
+  await expect(page.locator('p.error')).toHaveCount(0)
+  await expect(page.getByText('Hit ratio')).toBeVisible()
+
+  // Подтверждение: POST reset (204) + перечитывание — карточки
+  // остаются (нули в stats/аудите/БД — уровень TestAdminCacheStatsReset).
+  page.once('dialog', (d) => {
+    void d.accept()
+  })
+  await reset.click()
+  await expect(page.locator('p.error')).toHaveCount(0)
+  await expect(page.getByText('Hit ratio')).toBeVisible()
+  await expect(page.getByText('Попадания')).toBeVisible()
+  await expect(page.getByText('Промахи')).toBeVisible()
+  await expect(reset).toBeEnabled()
+})
+
 test('дашборд: панель «По экосистемам»', async ({ page }) => {
   await pinRu(page)
   await page.goto(`${ADMIN}/ui/login`)

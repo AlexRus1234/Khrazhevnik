@@ -28,6 +28,7 @@ const stats = ref<CacheStats | null>(null)
 const tasks = ref<TaskSnapshot[]>([])
 const error = ref('')
 const refreshing = ref(false)
+const resetting = ref(false)
 
 const POLL_MS = 2000
 let timer: number | undefined
@@ -66,6 +67,23 @@ async function refreshAll(): Promise<void> {
   }
 }
 
+// Кнопка «Сбросить статистику»: confirm нативным window.confirm
+// (модальных компонентов в проекте нет), затем POST reset (204 без
+// тела — request() разбирает пустой ответ в null) и немедленное
+// перечитывание — обнулённые значения на экране без перезагрузки.
+async function resetStats(): Promise<void> {
+  if (!window.confirm(t('dashboard.statsResetConfirm'))) return
+  resetting.value = true
+  try {
+    await request('POST', '/cache/stats/reset')
+    await refreshAll()
+  } catch (e) {
+    error.value = errText(e)
+  } finally {
+    resetting.value = false
+  }
+}
+
 // Поллинг 2с: реестр задач живой (in-memory), завершённые пропадают из
 // списка при рестарте — дашборд честно показывает «что бегает сейчас».
 onMounted(() => {
@@ -93,9 +111,14 @@ function pct(ratio: number): string {
     <div class="panel">
       <div class="row spread">
         <h2>{{ t('dashboard.cache') }}</h2>
-        <button class="btn" :disabled="refreshing" @click="void refreshAll()">
-          {{ t('dashboard.refresh') }}
-        </button>
+        <div class="row">
+          <button class="btn" :disabled="refreshing || resetting" @click="void refreshAll()">
+            {{ t('dashboard.refresh') }}
+          </button>
+          <button class="btn" :disabled="refreshing || resetting" @click="void resetStats()">
+            {{ t('dashboard.statsReset') }}
+          </button>
+        </div>
       </div>
       <div v-if="stats" class="grid cards">
         <div class="card">

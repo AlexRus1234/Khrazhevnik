@@ -38,6 +38,8 @@
   "dashboard.title": "Dashboard",
   "dashboard.cache": "Cache",
   "dashboard.refresh": "Refresh",
+  "dashboard.statsReset": "Reset statistics",
+  "dashboard.statsResetConfirm": "Reset all cache statistics? This cannot be undone.",
   "dashboard.hitRatio": "Hit ratio",
   "dashboard.hits": "Hits",
   "dashboard.misses": "Misses",
