@@ -479,7 +479,11 @@ jobs:
   # job-контейнер quay.io/containers/podman (podman преднастроен для nested-
   # CI), storage driver vfs флагом на каждом podman-вызове (overlay-in-overlay
   # не поддерживается внутри раннера), push в git.yadr00.internal/build/
-  # khrazhevnik. БЕЗ --privileged и БЕЗ smoke: контейнер = FROM scratch
+  # khrazhevnik. Push — ТОЛЬКО релизных v*-тегов (сессия 103): образ
+  # собирается на каждом прогоне (ловит поломку Containerfile), но sha-*-
+  # версии не пушатся — иначе каждый прогон оставляет новую версию в
+  # registry (25+ накопленных к 2026-09-09 вычищены руками). БЕЗ
+  # --privileged и БЕЗ smoke: контейнер = FROM scratch
   # (бинарник + CA-bundle), функционально идентичен артефакту, который уже
   # протестирован в build-test job — включая binary-smoke (exec'ит
   # khrazhevnik-ci как процесс: /healthz→setup→login→proxy byte-exact→404
@@ -568,6 +572,10 @@ jobs:
             -f deploy/Containerfile .
 
       - name: Push to Forgejo Registry
+        # Только релизные v*-теги: см. политику в комментарии job'а.
+        # Сборка образа выше остаётся безусловной (битый Containerfile
+        # ловится каждым прогоном), пуш — нет.
+        if: env.IS_TAG == 'yes'
         env:
           UPLOAD_TOKEN: ${{ secrets.UPLOAD_TOKEN }}
         run: |
