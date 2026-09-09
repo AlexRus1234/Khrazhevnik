@@ -29,6 +29,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
@@ -172,6 +173,9 @@ func (a *Adapter) Classify(upstreamPath string) (domain.Class, error) {
 // «<repo>/os/<arch>/<filename>». Пустой Include — ошибка: pacman не имеет
 // корневого индекса репозиториев, перечислить «вообще все» нельзя.
 // Метаданные качаются через meta (движок кеша — singleflight/TTL/метрики).
+// {repo}.db 404 → пробуем legacy {repo}.db.tar.gz тем же ParseDB:
+// gzip-эпоха Arch и legacy-зеркала публикуют индекс только под
+// до-zstd-именем.
 //
 // Чексуммы (не-цель v1): desc-запись upstream .db содержит %SHA256SUM%,
 // но парсер (parse.go) извлекает только %FILENAME%/%NAME%/%VERSION% —
@@ -248,10 +252,13 @@ func (a *Adapter) enumerateRepo(ctx context.Context, meta port.MetaFetcher, remo
 	body, err := meta.Fetch(ctx, dbPath)
 	if err != nil {
 		var nf *domain.NotFoundError
-		if errors.As(err, &nf) {
-			return nil, unsupportedDBErr(ctx, meta, dbPath, err)
+		if !errors.As(err, &nf) {
+			return nil, err
 		}
-		return nil, err
+		body, err = dbFallback(ctx, meta, dbPath, err)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer body.Close()
 	var paths []string
@@ -268,21 +275,23 @@ func (a *Adapter) enumerateRepo(ctx context.Context, meta port.MetaFetcher, remo
 	return paths, nil
 }
 
-// unsupportedDBErr — {repo}.db не найден. Пробуем legacy-имя
-// {repo}.db.tar.gz (до zstd-эпохи Arch): если upstream публикует
-// только его, sync должен падать с причиной «gzip не поддерживается»,
-// а не с NotFound, неотличимым от пустого upstream (парсер .db
-// читает только zstd — gz-декомпрессии нет). Иначе — исходный
-// NotFound: индекс действительно отсутствует.
-func unsupportedDBErr(ctx context.Context, meta port.MetaFetcher, dbPath string, notFound error) error {
-	if body, err := meta.Fetch(ctx, dbPath+".tar.gz"); err == nil {
-		_ = body.Close()
-		return &domain.UnsupportedError{
-			What: "enumerate",
-			Why:  fmt.Sprintf("pacman: индекс %s.tar.gz в формате gzip — парсер читает только zstd (.db)", dbPath),
-		}
+// dbFallback — {repo}.db 404: пробуем legacy-имя {repo}.db.tar.gz.
+// gzip-эпоха Arch (до zstd) и часть генераторов публикуют индекс
+// ТОЛЬКО под этим именем, поэтому разбор — тот же ParseDB ниже
+// (авто-детект по magic сам разберёт gzip), а не отказ от репозитория.
+// Fetch-ошибка fallback'а НЕ-NotFound возвращается как есть (upstream
+// жив, но крив — это не «пустой upstream»); NotFound — исходная
+// ошибка от .db: индекс действительно отсутствует.
+func dbFallback(ctx context.Context, meta port.MetaFetcher, dbPath string, notFound error) (io.ReadCloser, error) {
+	body, err := meta.Fetch(ctx, dbPath+".tar.gz")
+	if err == nil {
+		return body, nil
 	}
-	return notFound
+	var nf *domain.NotFoundError
+	if errors.As(err, &nf) {
+		return nil, notFound
+	}
+	return nil, err
 }
 
 // lookupRemote возвращает Remote по имени из кеша; при истечении TTL

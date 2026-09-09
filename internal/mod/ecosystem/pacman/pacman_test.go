@@ -19,6 +19,8 @@ package pacman
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -524,21 +526,44 @@ func TestEnumeratePacmanErrors(t *testing.T) {
 			t.Fatalf("ошибка = %v, хочу *NotFoundError", err)
 		}
 	})
-	t.Run("legacy .db.tar.gz — UnsupportedError", func(t *testing.T) {
-		// upstream публикует только до-zstd-имя {repo}.db.tar.gz: sync
-		// должен падать с честной причиной, а не с NotFound.
+	t.Run("legacy .db.tar.gz — разбор gzip, не ошибка", func(t *testing.T) {
+		// upstream публикует только до-zstd-имя {repo}.db.tar.gz:
+		// авто-детект ParseDB сам разберёт gzip — те же пути,
+		// что у zstd-варианта.
+		desc1 := mustReadTestdata(t, "desc-1.golden")
 		meta := fakeMeta{files: map[string][]byte{
-			"/pacman/arch/core/os/x86_64/core.db.tar.gz": []byte("gz-stream"),
+			"/pacman/arch/core/os/x86_64/core.db.tar.gz": newTarGz(t, tarEntries{
+				"pacman-example-1.0-1-x86_64/desc": desc1,
+			}),
 		}}
-		_, err := a.Enumerate(context.Background(), domain.Remote{
+		got, err := a.Enumerate(context.Background(), domain.Remote{
 			ID: 1, Name: "arch", Ecosystem: Name, Include: []string{"core/x86_64"},
 		}, meta)
-		var ue *domain.UnsupportedError
-		if !errors.As(err, &ue) {
-			t.Fatalf("ошибка = %v, хочу *UnsupportedError", err)
+		if err != nil {
+			t.Fatalf("Enumerate: %v", err)
 		}
-		if !strings.Contains(err.Error(), ".db.tar.gz") {
-			t.Errorf("причина не называет legacy-формат: %v", err)
+		if len(got) != 1 || got[0] != "/core/os/x86_64/pacman-example-1.0-1-x86_64.pkg.tar.zst" {
+			t.Fatalf("Enumerate = %+v, хочу один путь zstd-варианта", got)
+		}
+	})
+	t.Run("оба имени отсутствуют — NotFound", func(t *testing.T) {
+		_, err := a.Enumerate(context.Background(), domain.Remote{
+			Name: "arch", Ecosystem: Name, Include: []string{"core/x86_64"},
+		}, fakeMeta{})
+		var nf *domain.NotFoundError
+		if !errors.As(err, &nf) {
+			t.Fatalf("ошибка = %v, хочу *NotFoundError от .db", err)
+		}
+	})
+	t.Run("транспортная ошибка .db.tar.gz — та же ошибка", func(t *testing.T) {
+		// .db NotFound, fallback fetch отказал не-NotFound'ом —
+		// upstream жив, но крив: прятать за NotFound нельзя.
+		meta := failingFallbackMeta{fakeMeta: fakeMeta{}}
+		_, err := a.Enumerate(context.Background(), domain.Remote{
+			Name: "arch", Ecosystem: Name, Include: []string{"core/x86_64"},
+		}, meta)
+		if err == nil || !strings.Contains(err.Error(), "упал") {
+			t.Fatalf("ошибка = %v, хочу транспортную ошибку fallback", err)
 		}
 	})
 	t.Run("nil MetaFetcher — ошибка", func(t *testing.T) {
@@ -549,4 +574,17 @@ func TestEnumeratePacmanErrors(t *testing.T) {
 			t.Fatal("nil MetaFetcher должен ошибаться")
 		}
 	})
+}
+
+// failingFallbackMeta — «.db» NotFound, «.db.tar.gz» — транспортная
+// ошибка (не NotFound): fallback должен вернуть её как есть.
+type failingFallbackMeta struct {
+	fakeMeta
+}
+
+func (failingFallbackMeta) Fetch(_ context.Context, path string) (io.ReadCloser, error) {
+	if strings.HasSuffix(path, ".db.tar.gz") {
+		return nil, fmt.Errorf("pacman: fetch %s: упал", path)
+	}
+	return nil, &domain.NotFoundError{What: "upstream метаданные", Key: path}
 }
