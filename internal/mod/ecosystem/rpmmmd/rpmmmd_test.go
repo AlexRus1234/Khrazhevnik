@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
+
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/testutil"
 )
@@ -575,13 +577,90 @@ func TestEnumerateRpmMdGzZipBomb(t *testing.T) {
 	}
 }
 
+func TestEnumeratePrimaryZst(t *testing.T) {
+	// primary.xml.zst (Fedora 41+/Leap 16.0 отдают primary только в
+	// zst) — те же package-пути, что у gz-фикстуры. Чексумма СЖАТОГО
+	// zst-файла из repomd попадает в sums: движок кеша сверяет скачанные
+	// repodata по сжатым байтам — сумма не меняется семантически
+	// (контракт checksum_test.go).
+	primaryZst := zstBytes(t, mustReadTestdata(t, "primary.golden"))
+	sha := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	a := newResolveAdapter(t, domain.Remote{
+		ID: 7, Name: "fedora", Ecosystem: Name, BaseURL: "https://mirrors.example/fedora",
+		Mode: domain.ModeMirror, Enabled: true,
+	})
+	meta := fakeMeta{files: map[string][]byte{
+		"/rpm/fedora/repodata/repomd.xml":                       []byte(`<?xml version="1.0"?><repomd xmlns="http://linux.duke.edu/metadata/repo"><data type="primary"><checksum type="sha256">` + sha + `</checksum><location href="repodata/0458a2b3c4d5e6f7-primary.xml.zst"/></data></repomd>`),
+		"/rpm/fedora/repodata/0458a2b3c4d5e6f7-primary.xml.zst": primaryZst,
+	}}
+	got, err := a.Enumerate(context.Background(), domain.Remote{
+		ID: 7, Name: "fedora", Ecosystem: Name, Mode: domain.ModeMirror, Enabled: true,
+	}, meta)
+	if err != nil {
+		t.Fatalf("Enumerate .zst: %v", err)
+	}
+	want := []string{
+		"/Packages/f/foo-1.0-1.x86_64.rpm",
+		"/Packages/b/bar-2.3-4.aarch64.rpm",
+		"/Packages/b/baz-devel-0.1-1.noarch.rpm",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Enumerate .zst = %+v, хочу %+v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("Enumerate .zst[%d] = %q, хочу %q", i, got[i], w)
+		}
+	}
+	target, ok := a.Resolve("/rpm/fedora/repodata/0458a2b3c4d5e6f7-primary.xml.zst")
+	if !ok {
+		t.Fatal("Resolve primary.zst = false")
+	}
+	if target.Checksum.Algo != "sha256" || target.Checksum.Hex != sha {
+		t.Fatalf("Checksum primary.zst = %+v, хочу sha256 %s", target.Checksum, sha)
+	}
+}
+
+// TestEnumeratePrimaryZstBomb — zstd-бомба вместо primary.xml.zst
+// (твин gz-бомбы сессии 54). Разжатый поток ~2 GiB обязан упереться в
+// декомпресс-лимит 1 GiB. Обход итератором СТРИМИНГОМ (не Enumerate:
+// он копит пути в слайс — OOM-вектор урока 77). Для zstd честен ассерт
+// «бомба не дочитана», НЕ «кап+δ» — декодер отдаёт блоками с
+// упреждением MiB-класса (отступление сессии 81, apt gen_test.go).
+func TestEnumeratePrimaryZstBomb(t *testing.T) {
+	pad := bytes.Repeat([]byte("x"), 512<<10) // 512 KiB на член
+	rawMember := append(append([]byte("<package><name>n</name><location href=\"p/x.rpm\"/></package><pad>"), pad...), []byte("</pad>")...)
+	member := zstBytes(t, rawMember)
+	bomb := bytes.Repeat(member, 4096) // 4096 × ~512 KiB ≈ 2 GiB разжатых
+	r, err := unwrapPrimary(io.NopCloser(bytes.NewReader(bomb)), "repodata/primary.xml.zst")
+	if err != nil {
+		t.Fatalf("unwrapPrimary: %v", err)
+	}
+	lr, ok := r.(*limitedReadCloser)
+	if !ok {
+		t.Fatalf("unwrapPrimary вернул %T, хочу *limitedReadCloser", r)
+	}
+	defer func() { _ = lr.Close() }() // zstd-горутины гасятся Close'ом
+	for _, perr := range ParsePrimary(r) {
+		if perr != nil {
+			if !errors.Is(perr, ErrDecompressTooLarge) {
+				t.Fatalf("ошибка итератора = %v, хочу ErrDecompressTooLarge", perr)
+			}
+			break
+		}
+	}
+	if lr.n >= int64(len(rawMember))*4096 { // точный объём разжатой бомбы
+		t.Errorf("разжато %d байт — бомба не должна быть дочитана (упреждение декодера ≠ конец тела)", lr.n)
+	}
+}
+
 func TestEnumerateRpmMdUnsupportedPrimary(t *testing.T) {
 	// primary в сжатиях вне whitelist: Enumerate обязана упасть с
 	// честной причиной (формат назван) до fetch'а primary — раньше
 	// бинарный поток уходил в XML-парсер и sync падал с общим
 	// «parse primary».
 	a := newEnumerateAdapter(t)
-	for _, href := range []string{"repodata/primary.xml.zck", "repodata/primary.xml.zst", "repodata/primary.xml.xz", "repodata/primary.xml.bz2"} {
+	for _, href := range []string{"repodata/primary.xml.zck", "repodata/primary.xml.xz", "repodata/primary.xml.bz2"} {
 		meta := fakeMeta{files: map[string][]byte{
 			"/rpm/fedora/repodata/repomd.xml": []byte(`<?xml version="1.0"?><repomd xmlns="http://linux.duke.edu/metadata/repo"><data type="primary"><location href="` + href + `"/></data></repomd>`),
 		}}
@@ -634,6 +713,24 @@ func newGz(t *testing.T, b []byte) []byte {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// zstBytes zstd-упаковывает b для теста (по образцу pacman newTarZst;
+// дубль легален: mod→mod запрещён, тесты самодостаточны).
+func zstBytes(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Write(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()

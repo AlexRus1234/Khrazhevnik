@@ -39,6 +39,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
+
 	"khrazhevnik/internal/core/config"
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/port"
@@ -192,7 +194,8 @@ func (a *Adapter) Classify(upstreamPath string) (domain.Class, error) {
 // пакетов (location-href каждого <package>). Remote.Include для rpm-md не
 // используется: репо — единое целое по repomd. Метаданные качаются через
 // meta (движок кеша — singleflight/TTL/метрики). primary.xml может быть
-// сжат (gzip) — расширение .gz автоматически распаковывается.
+// сжат (.gz/.zst) — распаковывается по расширению; .zck/.xz/.bz2 —
+// честная UnsupportedError до fetch'а.
 //
 // Побочный эффект — наполнение таблицы чексумм remote из repomd.xml
 // (checksum каждого <data>): после успешного Enumerate прокси-ветка
@@ -221,7 +224,7 @@ func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port
 		return nil, fmt.Errorf("rpm-md: primary %s: %w", href, err)
 	}
 	defer body.Close()
-	r, err := unwrapGzIfNeeded(body, href)
+	r, err := unwrapPrimary(body, href)
 	if err != nil {
 		return nil, err
 	}
@@ -276,13 +279,12 @@ func (a *Adapter) parseRepomd(ctx context.Context, meta port.MetaFetcher, remote
 }
 
 // unsupportedPrimaryErr — честная ошибка для сжатий primary.xml,
-// которые Хражевник не распаковывает: .zck (zchunk, Fedora), .zst,
-// .xz, .bz2. Поддержаны несжатый и .gz (unwrapGzIfNeeded). nil —
+// которые Хражевник не распаковывает: .zck (zchunk, Fedora), .xz,
+// .bz2. Поддержаны несжатый, .gz и .zst (unwrapPrimary). nil —
 // формат нам известен или неизвестен парсеру (пусть скажет своё).
 func unsupportedPrimaryErr(href string) error {
 	unsupported := map[string]string{
 		".zck": "zchunk — декодера нет в whitelist зависимостей",
-		".zst": "zstd — декомпрессия primary не поддерживается",
 		".xz":  "xz — декодера нет в whitelist зависимостей",
 		".bz2": "bzip2 — декомпрессия primary не поддерживается",
 	}
@@ -297,22 +299,53 @@ func unsupportedPrimaryErr(href string) error {
 	return nil
 }
 
-// unwrapGzIfNeeded оборачивает body в gzip.Reader, если имя файла
-// заканчивается на .gz; иначе отдаёт как есть. Имя берётся из href,
-// потому что Content-Type у репозиториев часто absent или «text/plain».
+// unwrapPrimary оборачивает body в декомпрессор по расширению href
+// (Content-Type у репозиториев часто absent или «text/plain»):
+// .gz — gzip, .zst — zstd (Fedora 41+/Leap 16.0 отдают primary только
+// в zst, отдельного .gz-варианта в repomd нет), прочее — как есть.
 // Поток ограничен maxDecompressedRpmMd (паттерн apt/pacman/apk):
-// gzip-бомба вместо primary.xml.gz валит sync одного remote с
+// бомба вместо primary валит sync одного remote с
 // ErrDecompressTooLarge, а не крутит декомпрессию вечно.
-func unwrapGzIfNeeded(body io.Reader, href string) (io.Reader, error) {
-	if !strings.HasSuffix(href, ".gz") {
+func unwrapPrimary(body io.Reader, href string) (io.Reader, error) {
+	switch {
+	case strings.HasSuffix(href, ".gz"):
+		gz, err := gzip.NewReader(body)
+		if err != nil {
+			return nil, fmt.Errorf("rpm-md: unpack primary.xml.gz: %w", err)
+		}
+		return &limitedReader{r: gz, limit: maxDecompressedRpmMd}, nil
+	case strings.HasSuffix(href, ".zst"):
+		zr, err := zstd.NewReader(body)
+		if err != nil {
+			return nil, fmt.Errorf("rpm-md: unpack primary.xml.zst: %w", err)
+		}
+		// Close обязан дойти до декодера (worker-горутины гасятся
+		// только им) — io.Closer-обёртка, а не голый limitedReader.
+		return &limitedReadCloser{
+			limitedReader: &limitedReader{r: zr, limit: maxDecompressedRpmMd},
+			closer:        zstdReadCloser{zr},
+		}, nil
+	default:
 		return body, nil
 	}
-	gz, err := gzip.NewReader(body)
-	if err != nil {
-		return nil, fmt.Errorf("rpm-md: unpack primary.xml.gz: %w", err)
-	}
-	return &limitedReader{r: gz, limit: maxDecompressedRpmMd}, nil
 }
+
+// limitedReadCloser — limitedReader с Close исходного ридера: лимит
+// считается на Read, Close пробрасывается (zstd-декодер держит
+// worker-горутины до Close). Дубликат из apt/pacman легален:
+// mod→mod импорты запрещены depguard'ом.
+type limitedReadCloser struct {
+	*limitedReader
+	closer io.Closer
+}
+
+func (l *limitedReadCloser) Close() error { return l.closer.Close() }
+
+// zstdReadCloser адаптирует *zstd.Decoder к io.ReadCloser: Close у
+// декодера безвозвратный и без error, контракт io.Closer требует error.
+type zstdReadCloser struct{ *zstd.Decoder }
+
+func (z zstdReadCloser) Close() error { z.Decoder.Close(); return nil }
 
 // ErrDecompressTooLarge — разжатый primary.xml.gz превысил лимит
 // (zip-bomb guard). Сравнение через errors.Is.
