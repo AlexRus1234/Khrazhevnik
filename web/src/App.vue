@@ -17,13 +17,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 -->
 
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import { RouterLink, RouterView, useRouter } from 'vue-router'
 import { logout } from './api'
 import LangSwitch from './components/LangSwitch.vue'
 import { t } from './i18n'
 import { loggedIn, markLoggedOut } from './stores/auth'
+import { buildVersion, loadVersion } from './stores/version'
 
 const router = useRouter()
+
+onMounted(() => {
+  void loadVersion()
+})
 
 async function onLogout(): Promise<void> {
   await logout()
@@ -36,6 +42,7 @@ async function onLogout(): Promise<void> {
   <div class="app">
     <header v-if="loggedIn" class="topbar">
       <span class="brand">Хражевник</span>
+      <span v-if="buildVersion" class="version mono dim">{{ buildVersion }}</span>
       <nav class="tabs">
         <RouterLink to="/dashboard">{{ t('nav.dashboard') }}</RouterLink>
         <RouterLink to="/remotes">{{ t('nav.remotes') }}</RouterLink>
@@ -341,6 +348,10 @@ pre.snippet {
 .brand {
   font-weight: 700;
   letter-spacing: 0.05em;
+}
+
+.version {
+  font-size: 0.78rem;
 }
 
 .tabs {

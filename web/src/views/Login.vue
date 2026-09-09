@@ -24,6 +24,7 @@ import { errText } from '../errors'
 import LangSwitch from '../components/LangSwitch.vue'
 import { t } from '../i18n'
 import { markLoggedIn } from '../stores/auth'
+import { buildVersion } from '../stores/version'
 
 const router = useRouter()
 const route = useRoute()
@@ -122,6 +123,7 @@ async function submit(): Promise<void> {
         {{ t('login.setupHint') }}
       </p>
     </form>
+    <p v-if="buildVersion" class="dim mono build">{{ buildVersion }}</p>
   </section>
 </template>
 
@@ -139,5 +141,11 @@ async function submit(): Promise<void> {
 .tabswitch .on {
   color: var(--text);
   box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.build {
+  margin: 0.75rem 0 0;
+  font-size: 0.78rem;
+  text-align: right;
 }
 </style>
