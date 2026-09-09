@@ -1,0 +1,61 @@
+# Хражевник — systemd-юнит для деплоя голым бинарником.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Установка (системный systemd):
+#   sudo install -m 0755 khrazhevnik-<version>-linux-amd64 /usr/local/bin/khrazhevnik
+#   sudo useradd --system --user-group --home-dir /var/lib/khrazhevnik --no-create-home khrazhevnik
+#   sudo install -d -o khrazhevnik -g khrazhevnik /var/lib/khrazhevnik
+#   sudo install -d -m 0750 /etc/khrazhevnik
+#   sudo sh -c 'umask 077; printf "KHRZ_AUTH__JWT_SECRET=%s\nKHRZ_SERVER__ADMIN_LISTEN=127.0.0.1:30202\n" "$(openssl rand -hex 32)" > /etc/khrazhevnik/khrazhevnik.env'
+#   sudo cp deploy/systemd/khrazhevnik.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now khrazhevnik
+# Подробности — docs/func/ru/deploy.md.
+#
+# Бинарник статический (CGO_ENABLED=0), рантайм-зависимостей нет;
+# writable — только /var/lib/khrazhevnik (sqlite, fs-store, ключи).
+# Env-файл читает systemd от root: 0600 root:root достаточно,
+# процессу сервиса право на файл не нужно.
+
+[Unit]
+Description=Khrazhevnik — кеш-прокси и зеркало linux-репозиториев
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/khrazhevnik
+# defaults + env; для TOML — drop-in (systemctl edit) с
+# ExecStart= и ExecStart=/usr/local/bin/khrazhevnik -config /etc/khrazhevnik/khrazhevnik.toml
+EnvironmentFile=-/etc/khrazhevnik/khrazhevnik.env
+User=khrazhevnik
+Group=khrazhevnik
+StateDirectory=khrazhevnik
+# Graceful shutdown каскад: HTTP 5с + фоновые задачи 30с (архитектура
+# §2) — тот же запас, что StopTimeout=40 в quadlet.
+TimeoutStopSec=40
+Restart=on-failure
+RestartSec=5
+
+# Hardening: сетевой сервис на портах ≥1024, никакого cap-набора.
+# SystemCallFilter сознательно не ставим: старые systemd + новые
+# seccomp-маппинги (clone3 и др.) дают криптичные отказы Go-рантайма.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/khrazhevnik
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

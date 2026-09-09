@@ -19,10 +19,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 # Deployment
 
 The primary distribution is a scratch OCI image under rootless podman
-quadlet (or docker compose). The alternative is a bare binary
-(CGO-free, static) under systemd or any process supervisor. For a
-quick setup see [quickstart.md](quickstart.md); this page is a
-deployment reference.
+quadlet (or docker compose). The alternative is a [bare binary
+(CGO-free, static)](#running-from-the-binary-systemd) under systemd or
+any process supervisor. For a quick setup see
+[quickstart.md](quickstart.md); this page is a deployment reference.
 
 The container listens on two ports:
 
@@ -121,6 +121,70 @@ Differences from the quadlet: the JWT secret is passed via env from
 `docker inspect`, keep `.env` out of git and backups; to pin a version,
 replace the tag with `vX.Y.Z`. Publishing on 80/443 and TLS — via a
 reverse proxy ([reverse-proxy.md](reverse-proxy.md)).
+
+## Running from the binary (systemd)
+
+The binary is static (`CGO_ENABLED=0`, sqlite is pure Go) with no
+runtime dependencies — only a data directory and an env secret.
+Release artifacts `khrazhevnik-<version>-linux-amd64` + `.sha256` are
+published by CI to Releases (Forgejo/GitHub/Codeberg, see
+[RELEASE.md](../../RELEASE.md)); for other platforms build from source
+([README](../../README.en.md#building-from-source)).
+
+```sh
+# 1. Download the release artifact and verify the checksum.
+curl -fLO <release-url>/khrazhevnik-vX.Y.Z-linux-amd64
+curl -fLO <release-url>/khrazhevnik-vX.Y.Z-linux-amd64.sha256
+sha256sum -c khrazhevnik-vX.Y.Z-linux-amd64.sha256
+
+# 2. Install the binary.
+sudo install -m 0755 khrazhevnik-vX.Y.Z-linux-amd64 /usr/local/bin/khrazhevnik
+
+# 3. System user and the data directory (sqlite, fs-store, keys).
+sudo useradd --system --user-group --home-dir /var/lib/khrazhevnik --no-create-home khrazhevnik
+sudo install -d -o khrazhevnik -g khrazhevnik /var/lib/khrazhevnik
+
+# 4. Env file: the JWT secret and a loopbound admin — a bare binary
+#    without a config listens on :30202 on all interfaces (warn in the log).
+sudo install -d -m 0750 /etc/khrazhevnik
+sudo sh -c 'umask 077; printf "KHRZ_AUTH__JWT_SECRET=%s\nKHRZ_SERVER__ADMIN_LISTEN=127.0.0.1:30202\n" "$(openssl rand -hex 32)" > /etc/khrazhevnik/khrazhevnik.env'
+
+# 5. The unit and start.
+sudo cp deploy/systemd/khrazhevnik.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now khrazhevnik
+curl -s http://localhost:29202/healthz   # → ok
+```
+
+The ready unit is `deploy/systemd/khrazhevnik.service`:
+`TimeoutStopSec=40` for the graceful shutdown cascade (SIGTERM → HTTP
+5s → tasks 30s — the same margin as `StopTimeout=40` in the quadlet)
+and hardening (`ProtectSystem=strict`, writable only
+`/var/lib/khrazhevnik`, `NoNewPrivileges`, an empty
+`CapabilityBoundingSet` — the ports are ≥1024). The env file is read
+by systemd as root — `0600 root:root` is enough. For a TOML config —
+a drop-in:
+
+```sh
+sudo systemctl edit khrazhevnik
+# [Service]
+# ExecStart=
+# ExecStart=/usr/local/bin/khrazhevnik -config /etc/khrazhevnik/khrazhevnik.toml
+```
+
+Headless bootstrap without a container — the same `-add-remote` flag
+(writes the remote to the database and exits; no jwt_secret needed —
+the CLI substitutes a stub):
+
+```sh
+sudo -u khrazhevnik /usr/local/bin/khrazhevnik -add-remote apt/debian=https://deb.debian.org/debian
+```
+
+Another process supervisor (OpenRC, runit, supervisord) or a manual
+run: an env `KHRZ_AUTH__JWT_SECRET` and a writable data directory are
+enough — `khrazhevnik [-config <path>]`; flags: `-version`,
+`-add-remote`. Then follow the common
+[bootstrap](#first-start-bootstrap) and client setup.
 
 ## First start: bootstrap
 

@@ -19,8 +19,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 # Развёртывание
 
 Основная дистрибуция — OCI-образ из scratch под rootless podman
-quadlet (или docker compose). Альтернатива — голый бинарник (CGO-free,
-static) под systemd или любой процесс-супервизор. Быстрая установка —
+quadlet (или docker compose). Альтернатива — [голый бинарник
+(CGO-free, static)](#запуск-из-бинарника-systemd) под systemd или любой
+процесс-супервизор. Быстрая установка —
 в [quickstart.md](quickstart.md); эта страница — справочник развёртывания.
 
 Контейнер слушает два порта:
@@ -117,6 +118,68 @@ docker run -d --name khrazhevnik \
 git и backup'ов; для пина версии замените тег на `vX.Y.Z`. Публикация
 на 80/443 и TLS — через reverse-proxy
 ([reverse-proxy.md](reverse-proxy.md)).
+
+## Запуск из бинарника (systemd)
+
+Бинарник статический (`CGO_ENABLED=0`, sqlite — pure Go), рантайм-
+зависимостей нет — только каталог данных и env с секретом. Релизные
+артефакты `khrazhevnik-<version>-linux-amd64` + `.sha256` публикуются
+CI в Releases (Forgejo/GitHub/Codeberg, см. [RELEASE.md](../../RELEASE.md));
+для иных платформ — сборка из исходников
+([README](../../README.md#сборка-из-исходников)).
+
+```sh
+# 1. Скачать артефакт из Release и сверить чексумму.
+curl -fLO <url-release>/khrazhevnik-vX.Y.Z-linux-amd64
+curl -fLO <url-release>/khrazhevnik-vX.Y.Z-linux-amd64.sha256
+sha256sum -c khrazhevnik-vX.Y.Z-linux-amd64.sha256
+
+# 2. Установить бинарник.
+sudo install -m 0755 khrazhevnik-vX.Y.Z-linux-amd64 /usr/local/bin/khrazhevnik
+
+# 3. Системный пользователь и каталог данных (sqlite, fs-store, ключи).
+sudo useradd --system --user-group --home-dir /var/lib/khrazhevnik --no-create-home khrazhevnik
+sudo install -d -o khrazhevnik -g khrazhevnik /var/lib/khrazhevnik
+
+# 4. Env-файл: JWT-секрет и loopback-админка — голый бинарник без
+#    конфига слушает :30202 на всех интерфейсах (warn в логе).
+sudo install -d -m 0750 /etc/khrazhevnik
+sudo sh -c 'umask 077; printf "KHRZ_AUTH__JWT_SECRET=%s\nKHRZ_SERVER__ADMIN_LISTEN=127.0.0.1:30202\n" "$(openssl rand -hex 32)" > /etc/khrazhevnik/khrazhevnik.env'
+
+# 5. Юнит и старт.
+sudo cp deploy/systemd/khrazhevnik.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now khrazhevnik
+curl -s http://localhost:29202/healthz   # → ok
+```
+
+Готовый юнит — `deploy/systemd/khrazhevnik.service`: `TimeoutStopSec=40`
+под каскад graceful shutdown (SIGTERM → HTTP 5с → задачи 30с — тот же
+запас, что `StopTimeout=40` в quadlet) и hardening
+(`ProtectSystem=strict`, writable только `/var/lib/khrazhevnik`,
+`NoNewPrivileges`, пустой `CapabilityBoundingSet` — порты ≥1024).
+Env-файл читает systemd от root — `0600 root:root` достаточно.
+Для TOML-конфига — drop-in:
+
+```sh
+sudo systemctl edit khrazhevnik
+# [Service]
+# ExecStart=
+# ExecStart=/usr/local/bin/khrazhevnik -config /etc/khrazhevnik/khrazhevnik.toml
+```
+
+Headless-bootstrap без контейнера — тот же флаг `-add-remote` (пишет
+remote в БД и выходит; jwt_secret не нужен — CLI подставляет заглушку):
+
+```sh
+sudo -u khrazhevnik /usr/local/bin/khrazhevnik -add-remote apt/debian=https://deb.debian.org/debian
+```
+
+Другой процесс-супервизор (OpenRC, runit, supervisord) или запуск
+вручную: достаточно env `KHRZ_AUTH__JWT_SECRET` и writable-каталога
+данных — `khrazhevnik [-config <путь>]`; флаги: `-version`,
+`-add-remote`. Дальше — общий для всех способов
+[bootstrap](#первый-запуск-bootstrap) и настройка клиентов.
 
 ## Первый запуск: bootstrap
 
