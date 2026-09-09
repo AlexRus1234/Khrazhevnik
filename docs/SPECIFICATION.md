@@ -404,8 +404,10 @@ stale_served,negative_hits,upstream_errors}_total`,
   (`media.1/products` и т.п.) — conservative mutable{TTL 1m}. Streaming
   XML-парсер repomd.xml — `mod/ecosystem/rpmmmd/parse.go`, streaming
   XML-парсер primary.xml — `mod/ecosystem/rpmmmd/primary.go`; оба
-  переиспользуются зеркалом (сессия 11) для Enumerate: repomd →
-  `<data type="primary">` location-href → primary.xml[.gz] → hrefs пакетов.
+   переиспользуются зеркалом (сессия 11) для Enumerate: repomd →
+   `<data type="primary">` location-href → primary (несжатый|.gz|.zst;
+   .zck/.xz/.bz2 — честная UnsupportedError: декодеров нет в whitelist)
+   → hrefs пакетов.
   `Remote.Include` для rpm-md не используется (репо — единое целое по repomd).
 - **pacman** (сессия 12) — кеш-прокси Arch Linux (pacman). Путь
   `/pacman/<remote-name>/<остальной-путь>`; `StorageKey` =
@@ -414,8 +416,10 @@ stale_served,negative_hits,upstream_errors}_total`,
   NEVRA в имени); репозитарные базы `{repo}.db`, `{repo}.files` и их
   `.sig`, legacy `.db.tar.*` / `.files.tar.*` — mutable{TTL 5m}; публичные
   ключи `keys/*` — mutable{TTL 1h}; прочее — conservative mutable{TTL 1m}.
-  Streaming-парсер `{repo}.db` (tar.zst → tar → desc) —
-  `mod/ecosystem/pacman/parse.go`, декомпресс-лимит 1GiB (zip-bomb guard);
+   Streaming-парсер `{repo}.db` (tar.gz|tar.zst — авто-детект по
+   magic-байтам → tar → desc; fallback `.db.tar.gz` при 404 короткого
+   имени) — `mod/ecosystem/pacman/parse.go`, декомпресс-лимит 1GiB
+   (zip-bomb guard, обе ветки декомпрессии);
   переиспользуется зеркалом (сессия 11) для Enumerate: `{repo}.db` →
   desc-записи → поле `%FILENAME%`. `Remote.Include` — список
   `repo/arch` (например, `["core/x86_64", "extra/x86_64"]`); пустой —

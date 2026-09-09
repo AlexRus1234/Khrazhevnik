@@ -97,6 +97,24 @@ Unit-only цифра (~67% на момент внедрения) была зан
 случайность — `FixedRand`; golden-файлы для парсеров и генераторов
 метаданных.
 
+## Регресс-кейсы зеркальных индексов
+
+Форматы индексов upstream'ов меняются независимо от парсера (волна
+«Зеркало-форматы», 2026-09-09: Arch отдаёт sync-БД tar.gz, Fedora
+41+/Leap 16.0 — primary.xml.zst); закреплены кейсы:
+
+- pacman: gzip-golden (те же desc-записи, что у zstd-варианта),
+  авто-детект компрессии по magic-байтам (gzip|zstd, короткий поток —
+  без паники), gzip-бомба — стриминг итератором в `io.Discard`,
+  `ErrDecompressTooLarge` (точный кап+δ честен для gzip);
+- rpm-md: primary.xml.zst на Enumerate (те же пути пакетов, что у
+  .gz-фикстуры; чексумма сжатого файла из repomd попадает в sums),
+  zstd-бомба — стриминг в `io.Discard` («бомба не дочитана»,
+  упреждение декодера делает точный кап нечестным);
+- integration: полный mirror sync против httptest-фикстур реальных
+  форматов (pacman gzip-БД, rpm-md zst-primary) — remote → sync
+  succeeded → MISS → HIT, byte-exact.
+
 ## Надёжность
 
 Graceful shutdown каскадом; идемпотентные миграции; resume sync-задач
