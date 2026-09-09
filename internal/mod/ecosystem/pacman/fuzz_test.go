@@ -19,6 +19,7 @@ package pacman
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -136,6 +137,27 @@ func FuzzParsePacmanDBZstd(f *testing.F) {
 		}),
 		goldenDB(map[string][]byte{}),
 	}
+	// gzip-сид (sync-БД Arch — tar.gz): авто-детект обязан выбрать
+	// gzip-ветку по magic, не по расширению.
+	goldenDBGzip := func(entries map[string][]byte) []byte {
+		var tarBuf bytes.Buffer
+		tw := tar.NewWriter(&tarBuf)
+		for name, content := range entries {
+			_ = tw.WriteHeader(&tar.Header{
+				Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(content)),
+			})
+			_, _ = tw.Write(content)
+		}
+		_ = tw.Close()
+		var gzBuf bytes.Buffer
+		gw := gzip.NewWriter(&gzBuf)
+		_, _ = gw.Write(tarBuf.Bytes())
+		_ = gw.Close()
+		return gzBuf.Bytes()
+	}
+	seeds = append(seeds, goldenDBGzip(map[string][]byte{
+		"pacman-example-1.0-1-x86_64/desc": desc1,
+	}))
 	for _, s := range seeds {
 		f.Add(s)
 	}

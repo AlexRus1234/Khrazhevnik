@@ -14,16 +14,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// Streaming-парсер pacman {repo}.db (tar.zst → tar): отдаёт desc-записи
-// (поле %FILENAME% — имя файла пакета). Потоковый (archive/tar
-// Reader.Next): не грузит архив целиком, без I/O на уровне парсера —
-// принимает io.Reader сжатого потока, сам разжимает zstd. Переиспользуется
-// зеркалом (сессия 11) для Enumerate и фаззингом (через parseDBTar —
-// отдельная точка входа на распакованном tar-потоке).
+// Streaming-парсер pacman {repo}.db (tar.gz|tar.zst — авто-детект по
+// magic-байтам → tar → desc): отдаёт desc-записи (поле %FILENAME% —
+// имя файла пакета). Потоковый (archive/tar Reader.Next): не грузит
+// архив целиком, без I/O на уровне парсера — принимает io.Reader
+// сжатого потока, сам разжимает gzip/zstd. Переиспользуется зеркалом
+// (сессия 11) для Enumerate и фаззингом (через parseDBTar — отдельная
+// точка входа на распакованном tar-потоке).
+//
+// Почему авто-детект по magic, а не по расширению: имя {repo}.db
+// компрессии не несёт, а upstream'ы различаются — sync-БД Arch
+// публикуется как gzip, репо-add свежих релионов — zstd. Одна точка
+// детекта (newDBStream) на оба случая.
 //
 // Защита от adversarial-ввода (фаззинг): декомпресс-лимит 1GiB —
-// zstd-декомпрессия останавливается на пороге, защищая от zip-bomb
-// (маленький .zst, разжимающийся в гигабайты мусора). Дополнительно:
+// декомпрессия останавливается на пороге, защищая от zip-bomb
+// (маленький архив, разжимающийся в гигабайты мусора). Дополнительно:
 // потолки числа desc-записей и размера одной desc — парсер не паникует
 // и не зацикливается на битом tar / битом desc.
 
@@ -32,6 +38,7 @@ package pacman
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -58,6 +65,7 @@ var (
 	ErrTooManyEntries     = errors.New("pacman: слишком много desc-записей")
 	ErrDescTooLarge       = errors.New("pacman: desc превышает лимит")
 	ErrBadZstd            = errors.New("pacman: некорректный zstd-поток")
+	ErrBadGzip            = errors.New("pacman: некорректный gzip-поток")
 )
 
 // DescEntry — одна запись из pacman .db: поле %FILENAME% (имя файла
@@ -79,9 +87,10 @@ type parseLimits struct {
 	descLines    int
 }
 
-// ParseDB стримит desc-записи из {repo}.db (zstd-сжатый tar). Ошибка
-// прерывает обход и отдаётся последним yield'ом (запись nil). Чистый
-// EOF — тихое завершение. Декомпресс-лимит 1GiB — защита от zip-bomb.
+// ParseDB стримит desc-записи из {repo}.db (gzip/zstd-сжатый tar,
+// авто-детект по magic). Ошибка прерывает обход и отдаётся последним
+// yield'ом (запись nil). Чистый EOF — тихое завершение. Декомпресс-лимит
+// 1GiB — защита от zip-bomb (один на обе ветки компрессии).
 func ParseDB(r io.Reader) iter.Seq2[*DescEntry, error] {
 	return parseDB(r, parseLimits{
 		decompressed: maxDecompressed,
@@ -91,19 +100,46 @@ func ParseDB(r io.Reader) iter.Seq2[*DescEntry, error] {
 	})
 }
 
+// newDBStream — точка авто-детекта компрессии {repo}.db: читает до 4
+// байт головы (короткое чтение — не ошибка, поток может кончиться
+// раньше), склеивает голову с исходником через io.MultiReader —
+// потребитель не видит «съеденных» байт. Выбор декомпрессора по
+// magic-байтам, не по расширению: gzip (1F 8B) — sync-БД Arch, zstd —
+// всё прочее (мусор без gzip-magic уходит в zstd-ветку, сохраняя
+// контракт битого zstd). Close-функция гасит декодер (zstd-декодер
+// держит горутины; gzip.Reader.Close — симметрия ветвей).
+func newDBStream(r io.Reader) (io.Reader, func(), error) {
+	head := make([]byte, 4)
+	n, _ := io.ReadFull(r, head)
+	rest := io.MultiReader(bytes.NewReader(head[:n]), r)
+	if n >= 2 && head[0] == 0x1F && head[1] == 0x8B {
+		gr, err := gzip.NewReader(rest)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: %w", ErrBadGzip, err)
+		}
+		return gr, func() { _ = gr.Close() }, nil
+	}
+	zr, err := zstd.NewReader(rest)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", ErrBadZstd, err)
+	}
+	return zr.IOReadCloser(), zr.Close, nil
+}
+
 // parseDB — ядро с явными потолками; ParseDB подставляет дефолты.
-// Сначала разжимает zstd через limitedReader (декомпресс-лимит), затем
-// передаёт распакованный tar-поток в parseDBTar. errDecompressLimit
-// от limitedReader транслируется в ErrDecompressTooLarge.
+// newDBStream выбирает декомпрессор по magic (gzip/zstd), limitedReader
+// ставит декомпресс-лимит, затем распакованный tar-поток уходит в
+// parseDBTar. errDecompressLimit от limitedReader транслируется в
+// ErrDecompressTooLarge.
 func parseDB(r io.Reader, lim parseLimits) iter.Seq2[*DescEntry, error] {
 	return func(yield func(*DescEntry, error) bool) {
-		zr, err := zstd.NewReader(r)
+		src, closeDec, err := newDBStream(r)
 		if err != nil {
-			_ = yield(nil, fmt.Errorf("%w: %w", ErrBadZstd, err))
+			_ = yield(nil, err)
 			return
 		}
-		defer zr.Close()
-		limited := &limitedReader{r: zr, limit: lim.decompressed, sentinel: errDecompressLimit}
+		defer closeDec()
+		limited := &limitedReader{r: src, limit: lim.decompressed, sentinel: errDecompressLimit}
 		for entry, err := range parseDBTar(limited, lim) {
 			if err != nil {
 				if errors.Is(err, errDecompressLimit) {

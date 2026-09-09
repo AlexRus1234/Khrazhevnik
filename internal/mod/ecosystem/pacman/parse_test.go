@@ -19,8 +19,10 @@ package pacman
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -102,6 +104,23 @@ func newTarZst(t *testing.T, entries tarEntries) []byte {
 	return buf.Bytes()
 }
 
+// newTarGz собирает gzip-сжатый tar из map (sync-БД Arch публикует
+// {repo}.db как tar.gz). Дубль apk-хелпера легален: mod→mod запрещён,
+// тесты самодостаточны.
+func newTarGz(t *testing.T, entries tarEntries) []byte {
+	t.Helper()
+	raw := newTar(t, entries)
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 // mustReadTestdata читает файл из testdata/.
 func mustReadTestdata(t *testing.T, name string) []byte {
 	t.Helper()
@@ -164,6 +183,66 @@ func TestParseDBGolden(t *testing.T) {
 	}
 	if entries[1].Filename != "second-pkg-2.0-1-any.pkg.tar.xz" {
 		t.Errorf("entries[1].Filename = %q", entries[1].Filename)
+	}
+}
+
+func TestParseDBGzipGolden(t *testing.T) {
+	// gzip-ветка (sync-БД Arch — core.db это tar.gz): те же entries,
+	// что у zstd-golden — те же desc-результаты (детект по magic-байтам,
+	// не по расширению).
+	desc1 := mustReadTestdata(t, "desc-1.golden")
+	desc2 := mustReadTestdata(t, "desc-2.golden")
+	db := newTarGz(t, tarEntries{
+		"pacman-example-1.0-1-x86_64/desc": desc1,
+		"second-pkg-2.0-1-any/desc":        desc2,
+	})
+	entries, err := collectDB(ParseDB(bytes.NewReader(db)))
+	if err != nil {
+		t.Fatalf("ParseDB gzip: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("записей = %d, хочу 2", len(entries))
+	}
+	if entries[0].Filename != "pacman-example-1.0-1-x86_64.pkg.tar.zst" {
+		t.Errorf("entries[0].Filename = %q", entries[0].Filename)
+	}
+	if entries[0].Name != "pacman-example" {
+		t.Errorf("entries[0].Name = %q", entries[0].Name)
+	}
+	if entries[0].Version != "1.0-1" {
+		t.Errorf("entries[0].Version = %q", entries[0].Version)
+	}
+	if entries[1].Filename != "second-pkg-2.0-1-any.pkg.tar.xz" {
+		t.Errorf("entries[1].Filename = %q", entries[1].Filename)
+	}
+}
+
+func TestParseDBAutoDetect(t *testing.T) {
+	// детект по magic, не по расширению: поток без имени файла —
+	// gzip и zstd оба разбираются одной точкой входа.
+	desc := mustReadTestdata(t, "desc-1.golden")
+	for _, tc := range []struct {
+		name string
+		db   []byte
+	}{
+		{"gzip", newTarGz(t, tarEntries{"foo-1.0-1-x86_64/desc": desc})},
+		{"zstd", newTarZst(t, tarEntries{"foo-1.0-1-x86_64/desc": desc})},
+	} {
+		entries, err := collectDB(ParseDB(bytes.NewReader(tc.db)))
+		if err != nil {
+			t.Fatalf("%s: ParseDB: %v", tc.name, err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("%s: записей = %d, хочу 1", tc.name, len(entries))
+		}
+		if entries[0].Name != "pacman-example" {
+			t.Errorf("%s: Name = %q, хочу pacman-example", tc.name, entries[0].Name)
+		}
+	}
+	// короткий поток (<4 байт) — не паника; ошибка или пустой результат
+	// допустимы (детект честно уходит в одну из веток).
+	for _, short := range [][]byte{nil, {0x1F}, {0x28, 0xB5}, {0x1F, 0x8B}} {
+		_, _ = collectDB(ParseDB(bytes.NewReader(short)))
 	}
 }
 
@@ -341,6 +420,62 @@ func TestParseDBZipBombGuard(t *testing.T) {
 	}
 }
 
+func TestParseDBGzipBombGuard(t *testing.T) {
+	// настоящая gzip-бомба: 1100 desc-записей по ~1MiB — распакованный
+	// поток > 1GiB (кап maxDecompressed), сжатый файл — килобайты
+	// (повторы). Чтение стримингом: итератор гаснет на ошибке, никакого
+	// ReadAll распакованной бомбы (OOM-урок 77). Content каждой desc —
+	// строго меньше descSize-потолка, чтобы помеха проверяла именно
+	// декомпресс-лимит, а не ErrDescTooLarge.
+	block := bytes.Repeat([]byte("x"), (1<<20)-(1<<10)) // 1MiB-1KiB
+	var buf bytes.Buffer
+	gw, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(gw)
+	for i := 0; i < 1100; i++ {
+		name := fmt.Sprintf("pkg-%04d-1.0-1-x86_64/desc", i)
+		if err := tw.WriteHeader(&tar.Header{
+			Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(block)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(block); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	bomb := buf.Bytes()
+
+	_, err = collectDB(ParseDB(bytes.NewReader(bomb)))
+	if !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидалась ErrDecompressTooLarge, получено %v", err)
+	}
+
+	// Для gzip счётчик limitedReader честен (δ-нечестность — только
+	// zstd, урок 77): через ту же точку детекта с маленьким капом
+	// проверяем, что декомпрессор отдал не больше капа + один чанк.
+	src, closeFn, err := newDBStream(bytes.NewReader(bomb))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeFn()
+	cr := &countingReader{r: src}
+	_, _ = collectDB(parseDBTar(&limitedReader{r: cr, limit: 1 << 20, sentinel: errDecompressLimit}, parseLimits{
+		decompressed: maxDecompressed, entries: maxDescEntries, descSize: maxDescSize, descLines: maxDescLines,
+	}))
+	const delta = 8192 // один чанк tar/readDesc поверх точного капа
+	if cr.n > (1<<20)+delta {
+		t.Errorf("gzip-декомпрессор отдал %d байт, хочу ≤ %d (кап+δ)", cr.n, (1<<20)+delta)
+	}
+}
+
 func TestParseDBTarOnGarbage(t *testing.T) {
 	// произвольный мусор как tar-поток — не паника, ошибка или пустой.
 	_, err := collectDB(ParseDBTar(bytes.NewReader([]byte("garbage"))))
@@ -370,6 +505,19 @@ func TestParseDBDeterminism(t *testing.T) {
 			t.Fatalf("запись %d differs между прогонами", i)
 		}
 	}
+}
+
+// countingReader считает байты, проходящие через него (ассерт «кап+δ»
+// на gzip-ветке бомбы).
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func sameErr(a, b error) bool {
