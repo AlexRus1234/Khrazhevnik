@@ -29,7 +29,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 | [config.md](config.md) | Конфигурация: все секции TOML, env `KHRZ_*`, секреты `file://`, валидация. |
 | [api.md](api.md) | REST API админки: аутентификация, эндпоинты, коды ошибок. |
 | [ui.md](ui.md) | Веб-админка: экраны и типовые операции. |
-| [deploy.md](deploy.md) | Развёртывание: quadlet, bootstrap, настройка клиентов, сборка образа. |
+| [deploy.md](deploy.md) | Развёртывание: quadlet, docker, bootstrap, настройка клиентов, сборка образа. |
+| [reverse-proxy.md](reverse-proxy.md) | Реверс-прокси: Caddy/Traefik/nginx, TLS, trusted_proxies. |
 | [storage-db.md](storage-db.md) | Хранилище объектов (fs/S3) и каталог (sqlite/postgres/mariadb): выбор и переключение. |
 | [personal-repos.md](personal-repos.md) | Личные репозитории: upload, подпись, настройка клиентов по экосистемам. |
 | [ecosystems/](ecosystems/) | Клиенты экосистем: [apt](ecosystems/apt.md), [rpm-md](ecosystems/rpm-md.md), [pacman](ecosystems/pacman.md), [apk](ecosystems/apk.md), [nix](ecosystems/nix.md). |

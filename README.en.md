@@ -360,7 +360,9 @@ background tasks 30s.
 | 30202 | all interfaces (default; a warning at startup — loopback via the quadlet's `PublishPort`) | admin API `/api/v1`, `/metrics`, web admin UI `/ui` |
 
 Rootless mode: both ports are ≥1024; publishing on 80/443 is done via a
-reverse proxy on the host. `AutoUpdate=registry` in the quadlet enables
+reverse proxy on the host (Caddy/Traefik/nginx —
+[`docs/func/EN/reverse-proxy.md`](docs/func/EN/reverse-proxy.md)).
+`AutoUpdate=registry` in the quadlet enables
 image auto-updates via `podman auto-update`. The default (fs + sqlite)
 is for a homelab; for production — S3 + postgres/mariadb (an example
 quadlet — `deploy/quadlet/khrazhevnik-s3.container`, recommendations —

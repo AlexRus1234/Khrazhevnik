@@ -19,9 +19,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 # Deployment
 
 The primary distribution is a scratch OCI image under rootless podman
-quadlet. The alternative is a bare binary (CGO-free, static) under
-systemd or any process supervisor. For a quick setup see
-[quickstart.md](quickstart.md); this page is a deployment reference.
+quadlet (or docker compose). The alternative is a bare binary
+(CGO-free, static) under systemd or any process supervisor. For a
+quick setup see [quickstart.md](quickstart.md); this page is a
+deployment reference.
 
 The container listens on two ports:
 
@@ -36,8 +37,9 @@ config listens on both ports on all interfaces (with a startup
 warning); how to keep the admin interface closed from the outside —
 see [SECURITY.md](../../SECURITY.md).
 
-Rootless: both ports are ≥1024; ports below 1024 are served via an
-nginx/caddy reverse proxy on the host. Container: `USER 65534:65534`,
+Rootless: both ports are ≥1024; ports below 1024 are served via a
+reverse proxy on the host — see [reverse-proxy.md](reverse-proxy.md)
+(Caddy/Traefik/nginx). Container: `USER 65534:65534`,
 scratch (only the binary + a CA bundle), read-only rootfs
 (`ReadOnlyRootfs=true` in the quadlet); the only writable path is the
 `/var/lib/khrazhevnik` volume; PID 1 is the binary (no subprocesses,
@@ -78,6 +80,47 @@ specific version, replace the tag in `Image=` and remove `AutoUpdate=`.
 Verification: `curl -s http://localhost:29202/healthz` → `ok`;
 `curl -s http://127.0.0.1:30202/api/v1/` → JSON with
 `service: khrazhevnik`.
+
+## Running via Docker
+
+The same image runs under plain docker — no podman or systemd needed.
+A ready compose file is `deploy/docker-compose.yml` (ports, read-only
+rootfs, the volume and stop-timeout mirror the quadlet):
+
+```sh
+# 1. Config + JWT secret into .env (next to the compose file; do not commit).
+cp deploy/docker-compose.yml docker-compose.yml
+echo "KHRZ_AUTH__JWT_SECRET=$(openssl rand -hex 32)" > .env
+
+# 2. Data directory; the container runs under UID 65534 (nobody).
+sudo mkdir -p /var/lib/khrazhevnik
+sudo chown 65534:65534 /var/lib/khrazhevnik
+
+# 3. Start.
+docker compose up -d
+curl -s http://localhost:29202/healthz   # → ok
+```
+
+The same as a single `docker run` (the secret is generated at container
+creation and lives until the container is re-created — for stable
+sessions use compose with `.env`):
+
+```sh
+docker run -d --name khrazhevnik \
+  -p 29202:29202 -p 127.0.0.1:30202:30202 \
+  --read-only \
+  -v /var/lib/khrazhevnik:/var/lib/khrazhevnik \
+  -e KHRZ_AUTH__JWT_SECRET="$(openssl rand -hex 32)" \
+  --stop-timeout 40 \
+  --restart on-failure \
+  git.yadr00.internal/build/khrazhevnik:latest
+```
+
+Differences from the quadlet: the JWT secret is passed via env from
+`.env` (Podman Secrets are unavailable) — the value is visible in
+`docker inspect`, keep `.env` out of git and backups; to pin a version,
+replace the tag with `vX.Y.Z`. Publishing on 80/443 and TLS — via a
+reverse proxy ([reverse-proxy.md](reverse-proxy.md)).
 
 ## First start: bootstrap
 

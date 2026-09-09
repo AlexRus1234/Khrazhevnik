@@ -19,9 +19,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 # Развёртывание
 
 Основная дистрибуция — OCI-образ из scratch под rootless podman
-quadlet. Альтернатива — голый бинарник (CGO-free, static) под systemd
-или любой процесс-супервизор. Быстрая установка — в
-[quickstart.md](quickstart.md); эта страница — справочник развёртывания.
+quadlet (или docker compose). Альтернатива — голый бинарник (CGO-free,
+static) под systemd или любой процесс-супервизор. Быстрая установка —
+в [quickstart.md](quickstart.md); эта страница — справочник развёртывания.
 
 Контейнер слушает два порта:
 
@@ -35,8 +35,9 @@ Loopback-админка — свойство quadlet-деплоя (`PublishPort=
 (со стартовым warn); как закрыть админку снаружи —
 [SECURITY.md](../../SECURITY.md).
 
-Rootless: оба порта ≥1024, порты ниже 1024 — через reverse-proxy
-nginx/caddy на хосте. Контейнер: `USER 65534:65534`, scratch (только
+Rootless: оба порта ≥1024, порты ниже 1024 — через reverse-proxy на
+хосте — [reverse-proxy.md](reverse-proxy.md) (Caddy/Traefik/nginx).
+Контейнер: `USER 65534:65534`, scratch (только
 бинарник + CA-bundle), rootfs read-only (`ReadOnlyRootfs=true` в
 quadlet), writable — только volume `/var/lib/khrazhevnik`; PID 1 =
 бинарник (сабпроцессов нет, зомби-реапер не нужен), graceful shutdown:
@@ -75,6 +76,47 @@ systemctl --user status khrazhevnik.service
 
 Проверка: `curl -s http://localhost:29202/healthz` → `ok`;
 `curl -s http://127.0.0.1:30202/api/v1/` → JSON с `service: khrazhevnik`.
+
+## Запуск через Docker
+
+Тот же образ поднимается чистым docker — podman и systemd не нужны.
+Готовый compose-файл — `deploy/docker-compose.yml` (порты, read-only
+rootfs, volume и stop-timeout повторяют quadlet):
+
+```sh
+# 1. Конфиг + JWT-секрет в .env (рядом с compose-файлом; в git не коммитить).
+cp deploy/docker-compose.yml docker-compose.yml
+echo "KHRZ_AUTH__JWT_SECRET=$(openssl rand -hex 32)" > .env
+
+# 2. Каталог данных: контейнер работает под UID 65534 (nobody).
+sudo mkdir -p /var/lib/khrazhevnik
+sudo chown 65534:65534 /var/lib/khrazhevnik
+
+# 3. Старт.
+docker compose up -d
+curl -s http://localhost:29202/healthz   # → ok
+```
+
+То же одним `docker run` (секрет генерируется при создании контейнера
+и живёт до его пересоздания — для стабильных сессий используйте
+compose с `.env`):
+
+```sh
+docker run -d --name khrazhevnik \
+  -p 29202:29202 -p 127.0.0.1:30202:30202 \
+  --read-only \
+  -v /var/lib/khrazhevnik:/var/lib/khrazhevnik \
+  -e KHRZ_AUTH__JWT_SECRET="$(openssl rand -hex 32)" \
+  --stop-timeout 40 \
+  --restart on-failure \
+  git.yadr00.internal/build/khrazhevnik:latest
+```
+
+Отличия от quadlet: JWT-секрет передаётся env из `.env` (Podman Secret
+недоступен) — значение видно в `docker inspect`, держите `.env` вне
+git и backup'ов; для пина версии замените тег на `vX.Y.Z`. Публикация
+на 80/443 и TLS — через reverse-proxy
+([reverse-proxy.md](reverse-proxy.md)).
 
 ## Первый запуск: bootstrap
 

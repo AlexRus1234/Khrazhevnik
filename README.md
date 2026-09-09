@@ -344,7 +344,9 @@ graceful shutdown: SIGTERM → HTTP 5с → фоновые задачи 30с.
 | 30202 | все интерфейсы (дефолт; warn при старте — loopback через PublishPort quadlet'а) | админ-API `/api/v1`, `/metrics`, веб-админка `/ui` |
 
 Rootless-режим: оба порта ≥1024; публикация на 80/443 — через
-reverse-proxy на хосте. `AutoUpdate=registry` в quadlet включает
+reverse-proxy на хосте (Caddy/Traefik/nginx —
+[`docs/func/ru/reverse-proxy.md`](docs/func/ru/reverse-proxy.md)).
+`AutoUpdate=registry` в quadlet включает
 автообновление образа через `podman auto-update`. Дефолт (fs + sqlite) —
 для homelab; для прода — S3 + postgres/mariadb (пример quadlet —
 `deploy/quadlet/khrazhevnik-s3.container`, рекомендации — в

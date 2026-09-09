@@ -1,0 +1,33 @@
+# Хражевник — docker compose (эквивалент deploy/quadlet/khrazhevnik.container).
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# JWT-секрет берётся из .env рядом с этим файлом (в git не коммитить):
+#   echo 'KHRZ_AUTH__JWT_SECRET='"$(openssl rand -hex 32)" > .env
+# Каталог данных на хосте (контейнер работает под UID 65534):
+#   sudo mkdir -p /var/lib/khrazhevnik && sudo chown 65534:65534 /var/lib/khrazhevnik
+# Запуск: docker compose up -d
+# Подробности — docs/func/ru/deploy.md.
+#
+# Отличие от quadlet: секрет передаётся через env из .env (compose-секреты
+# монтируются файлом, а KHRZ_* ждёт строку — поэтому file:// не подходит
+# без доп. обвязки); не светится в `docker inspect` только если .env вне
+# репозитория и не попал в backup'ы.
+
+services:
+  khrazhevnik:
+    image: git.yadr00.internal/build/khrazhevnik:latest
+    container_name: khrazhevnik
+    ports:
+      # Публичная раздача пакетов + /healthz.
+      - "29202:29202"
+      # Админ-API /metrics /ui — только loopback хоста; наружу — через
+      # reverse-proxy с ограничением доступа (docs/func/ru/reverse-proxy.md).
+      - "127.0.0.1:30202:30202"
+    environment:
+      KHRZ_AUTH__JWT_SECRET: ${KHRZ_AUTH__JWT_SECRET}
+    volumes:
+      - /var/lib/khrazhevnik:/var/lib/khrazhevnik
+    read_only: true
+    # Зеркало StopTimeout=40 quadlet'а: graceful-каскад HTTP 5с + задачи 30с.
+    stop_grace_period: 40s
+    restart: on-failure

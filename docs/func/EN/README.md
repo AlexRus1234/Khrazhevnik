@@ -28,7 +28,8 @@ instructions; details requiring separate treatment are documented here.
 | [config.md](config.md) | Configuration: all TOML sections, the `KHRZ_*` env, `file://` secrets, validation. |
 | [api.md](api.md) | Admin REST API: authentication, endpoints, error codes. |
 | [ui.md](ui.md) | Web admin UI: screens and typical operations. |
-| [deploy.md](deploy.md) | Deployment: the quadlet, bootstrap, client setup, image build. |
+| [deploy.md](deploy.md) | Deployment: the quadlet, docker, bootstrap, client setup, image build. |
+| [reverse-proxy.md](reverse-proxy.md) | Reverse proxy: Caddy/Traefik/nginx, TLS, trusted_proxies. |
 | [storage-db.md](storage-db.md) | Object storage (fs/S3) and the catalog (sqlite/postgres/mariadb): selection and switching. |
 | [personal-repos.md](personal-repos.md) | Personal repositories: upload, signing, client setup per ecosystem. |
 | [ecosystems/](ecosystems/) | Ecosystem clients: [apt](ecosystems/apt.md), [rpm-md](ecosystems/rpm-md.md), [pacman](ecosystems/pacman.md), [apk](ecosystems/apk.md), [nix](ecosystems/nix.md). |
