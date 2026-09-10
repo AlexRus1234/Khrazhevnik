@@ -82,7 +82,7 @@ internal/contract/        общие контрактные suite каталог
 migrations/<driver>/      embedded goose-миграции каталога (по каталогу на БД)
 web/                      Vue 3 + Vite + TS SPA
 deploy/                   Containerfile, quadlet/
-docs/                     ARCHITECTURE, SPECIFICATION, ROADMAP, TESTING; func/ru/, func/EN/
+docs/                     ARCHITECTURE, SPECIFICATION, ROADMAP, HISTORY, TESTING; func/ru/, func/EN/
 test/                     integration/, smoke/
 ```
 

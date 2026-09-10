@@ -440,7 +440,7 @@ scoped API token `Bearer khz_...` (CI scripts: `admin`,
 ├── web/                      # Vue 3 + Vite + TypeScript SPA (bundle → core/web/assets)
 ├── deploy/                   # Containerfile (node → golang → scratch) + quadlet/
 ├── test/                     # integration/ (in-process + binary-smoke), smoke/
-├── docs/                     # ARCHITECTURE/SPECIFICATION/TESTING/ROADMAP; func/EN/
+├── docs/                     # ARCHITECTURE/SPECIFICATION/TESTING/ROADMAP/HISTORY; func/EN/
 └── .forgejo/workflows/       # CI: build, tests, e2e, OCI
 ```
 
@@ -501,96 +501,22 @@ Developer documentation (reading order before making changes):
 1. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — layers, import rules, engine invariants.
 2. [docs/SPECIFICATION.md](docs/SPECIFICATION.md) — requirements, REST API, DB schema.
 3. [docs/TESTING.md](docs/TESTING.md) — testing strategy.
-4. [docs/ROADMAP.md](docs/ROADMAP.md) — the plan and stage history.
+4. [docs/ROADMAP.md](docs/ROADMAP.md) — the plan (guide); the stage history is in [docs/HISTORY.md](docs/HISTORY.md).
 
 ---
 
 ## Plans
 
-Development directions after the v1.0.0 release (old-version eviction
-and other post-v1 questions are covered in
-[docs/ROADMAP.md](docs/ROADMAP.md)). Priority: XBPS and
-pkg first — their "directory + index" model repeats already solved
-tasks; Guix right after them (the nix protocol, reusing the nix
-adapter); Flatpak requires a new publishing mechanism and comes last.
+The nearest work after the v1.0.0 release is ecosystem expansion:
+XBPS and pkg (their "directory + index" model repeats already solved
+tasks), then Guix (the nix protocol), Flatpak last. Beyond that,
+without a fixed order: autonomous offline mirror export, instance
+federation, cache eviction and cleanup, OIDC/OAuth2, notifications,
+the CLI (khzr-cli), and global package search.
 
-Every new ecosystem is a `port.Ecosystem` adapter: object
-classification (immutable/mutable), a metadata parser, mirror
-enumeration, and a personal-repository index generator — without core
-or contract changes. The acceptance criteria stay the same: byte-exact
-metadata proxying, a mirror with resume, personal repositories with
-signing, parser fuzzing, and a real client in verification.
-
-### Void Linux (XBPS)
-
-A repository is a directory of the form `current/<arch>/`: `.xbps`
-packages and a `repodata` index with an ed25519 `.sig2` signature. The
-classification is straightforward: packages are immutable and stored
-permanently, `repodata` is mutable with revalidation by
-ETag/Last-Modified. A mirror is a recursive directory copy; resume and
-include filters by architecture fit the existing machinery (similar to
-apk).
-
-Adapter work: a streaming repodata parser (a proprietary archive
-format with plist metadata inside) — for the mirror, statistics, and
-detection of non-index objects; a repodata generator for personal
-repositories — a functional analogue of `xbps-rindex`; the `.sig2`
-signature is a format distinct from both OpenPGP and the instance
-ed25519 key, requiring a separate Signer adapter (the `port.Signer`
-contract allows this). The Void client is available in the container
-distro-test matrix — automated verification with a real `xbps-install`
-is possible on par with the five current ecosystems.
-
-### pkg (FreeBSD, OpenBSD)
-
-FreeBSD pkg(8): a repository is a directory with `meta.conf`, the
-`packagesite.txz`/`digests.txz` archives (YAML metadata), and
-`.pkg`/`.txz` packages. Indexes are mutable, packages are immutable;
-repository signing uses an RSA key published in the client
-configuration. Personal repositories need a `packagesite`+`digests`
-generator and a third key format (RSA) in the signing module.
-
-OpenBSD pkg_add(7): there is no shared index file — each package
-carries its own metadata, and the client resolves dependencies itself;
-a repository is merely a `packages/<arch>/` directory. For a caching
-proxy this is the simplest possible case: all objects are immutable,
-negative caching and singleflight work without any parser at all; a
-mirror is an exact directory copy.
-
-The limitation of both: the clients are not Linux, and the CI runner
-(Linux containers) does not cover them — acceptance verification
-remains manual per the RELEASE.md checklist; a VM or a separate runner
-is an open question.
-
-### Guix
-
-The Guix binary cache speaks the same substituter protocol as nix:
-narinfo + nar, content-addressed immutable objects. The proxy case
-fits the nix adapter almost unchanged; a full mirror is not supported
-for the same reasons as nix (tens of TB) — proxy-only. Guix specifics
-to work out: its own narinfo signature format (a `Signature:` line
-instead of the nix `Sig:`) and its own client keys — a re-signing
-branch alongside nix; upstreams are `ci.guix.gnu.org` /
-`bordeaux.guix.gnu.org`. Personal repositories follow the nix model:
-narinfo + nar upload with re-signing. Acceptance — with a real `guix`
-client (the package manager installs on top of any distro).
-
-### Flatpak
-
-A Flatpak repository is an OSTree store: a signed `summary`,
-content-addressed objects (sha256, zstd packing), and static deltas.
-The byte-exact invariant holds naturally: objects are immutable
-forever, `summary`/`summary.sig` are mutable with revalidation; a
-mirror is a recursive HTTP copy of the store.
-
-Personal repositories are the hardest of the three tasks, and the
-stage is deferred separately: publishing means creating OSTree commits
-(`flatpak build-export` + `build-update-repo`), not uploading ready
-artifacts; at the first stage Flatpak will be limited to the proxy and
-the mirror. Signing is GPG, matching the OpenPGP adapter format. Open
-questions: client behavior when a mirror lacks part of its deltas,
-range requests to pack files, and the feasibility of GC for
-unreferenced objects.
+The full guide with details and design boundaries is in
+[docs/ROADMAP.md](docs/ROADMAP.md); the history of completed stages
+is in [docs/HISTORY.md](docs/HISTORY.md).
 
 ---
 

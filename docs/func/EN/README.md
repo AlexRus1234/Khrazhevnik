@@ -39,4 +39,4 @@ The Russian documentation is in [`docs/func/ru/`](../ru/README.md).
 Internal development documentation is in [`docs/`](../../):
 `ARCHITECTURE.md` (layers and import rules), `SPECIFICATION.md` (full
 requirements and schemas), `TESTING.md` (testing strategy),
-`ROADMAP.md` (stage history).
+`ROADMAP.md` (the plan guide), `HISTORY.md` (stage history).
