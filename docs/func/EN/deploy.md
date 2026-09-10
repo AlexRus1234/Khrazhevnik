@@ -53,6 +53,26 @@ a zombie reaper is not needed); graceful shutdown: SIGTERM → HTTP 5s
 - the data directory `/var/lib/khrazhevnik` (sqlite, fs-store, keys);
 - OpenSSL (for JWT secret generation).
 
+## Image registries
+
+CI publishes the image to five registries at once (mirrors, identical
+content; tag — `latest` or `vX.Y.Z`):
+
+```bash
+docker pull git.alexrus1234.ru/alexrus1234/khrazhevnik:latest
+podman pull git.yadr00.internal/alexrus1234/khrazhevnik:latest   # internal name of the same registry
+docker pull ghcr.io/alexrus1234/khrazhevnik:latest
+docker pull codeberg.org/alexrus1234/khrazhevnik:latest
+docker pull docker.io/alexrus1234/khrazhevnik:latest
+podman pull quay.io/alexrus1234/khrazhevnik:latest
+```
+
+Caveats: codeberg.org requires `docker login codeberg.org` even to
+pull public packages (a Codeberg registry limitation). The quadlet and
+compose below pull from `git.yadr00.internal` (the author's homelab
+host, the same storage as `git.alexrus1234.ru`); when deploying
+elsewhere, replace `Image=` with any registry from the list.
+
 ## Installation via quadlet
 
 ```sh

@@ -51,6 +51,26 @@ SIGTERM → HTTP 5с → задачи 30с.
 - каталог данных `/var/lib/khrazhevnik` (sqlite, fs-store, ключи);
 - OpenSSL (для генерации JWT-секрета).
 
+## Реестры образа
+
+CI публикует образ одновременно в пять реестров (зеркала, содержимое
+идентично; тег — `latest` или `vX.Y.Z`):
+
+```bash
+docker pull git.alexrus1234.ru/alexrus1234/khrazhevnik:latest
+podman pull git.yadr00.internal/alexrus1234/khrazhevnik:latest   # внутреннее имя того же реестра
+docker pull ghcr.io/alexrus1234/khrazhevnik:latest
+docker pull codeberg.org/alexrus1234/khrazhevnik:latest
+docker pull docker.io/alexrus1234/khrazhevnik:latest
+podman pull quay.io/alexrus1234/khrazhevnik:latest
+```
+
+Нюансы: codeberg.org требует `docker login codeberg.org` даже на pull
+публичных пакетов (ограничение реестра Codeberg). Quadlet и compose
+ниже тянут из `git.yadr00.internal` (авторский homelab-хост, то же
+хранилище, что и `git.alexrus1234.ru`); при развёртывании вовне
+замените `Image=` на любой реестр из списка.
+
 ## Установка через quadlet
 
 ```sh

@@ -24,6 +24,17 @@ machine is assumed.
 
 ## 1. Container installation
 
+The image lives in five mirror registries (pick any; details and
+caveats — [deploy.md](deploy.md#image-registries)):
+
+```sh
+docker pull git.alexrus1234.ru/alexrus1234/khrazhevnik:latest   # primary
+docker pull ghcr.io/alexrus1234/khrazhevnik:latest
+docker pull docker.io/alexrus1234/khrazhevnik:latest
+docker pull codeberg.org/alexrus1234/khrazhevnik:latest   # login required
+podman pull quay.io/alexrus1234/khrazhevnik:latest
+```
+
 ```sh
 # quadlet into the user systemd generator path.
 mkdir -p ~/.config/containers/systemd

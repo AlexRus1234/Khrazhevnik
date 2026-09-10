@@ -58,10 +58,23 @@ rebuilding. The primary distribution is an OCI container from `scratch`
 > revalidation by ETag/Last-Modified), background mirrors, and personal
 > signed user repositories.
 
+## Screenshots
+
+The web admin UI (`/ui/`).
+
+**Dashboard** — cache statistics and live tasks:
+
+![Dashboard — cache stats and tasks](scrn/en/g1.png)
+
+**Repositories** — list, upload, reindex:
+
+![Repositories — upload and reindex](scrn/en/g2.png)
+
 ---
 
 ## Contents
 
+- [Screenshots](#screenshots)
 - [Features](#features)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
@@ -187,6 +200,17 @@ A detailed description is provided in [`docs/func/EN/`](docs/func/EN/).
 | **Node.js** | 22+ | Building the Web UI (optional) |
 
 ### Installation (container)
+
+The image is published to mirror registries (identical content):
+
+```bash
+docker pull git.alexrus1234.ru/alexrus1234/khrazhevnik:latest   # primary
+docker pull ghcr.io/alexrus1234/khrazhevnik:latest
+docker pull docker.io/alexrus1234/khrazhevnik:latest
+```
+
+The full registry list (codeberg.org, quay.io) — in
+[`docs/func/EN/deploy.md`](docs/func/EN/deploy.md#image-registries).
 
 ```bash
 # 1. Quadlet — into the user systemd generator path.

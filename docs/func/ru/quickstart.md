@@ -24,6 +24,17 @@ Linux-машине.
 
 ## 1. Установка контейнера
 
+Образ — в пяти реестрах-зеркалах (любой на выбор; подробности и
+нюансы — [deploy.md](deploy.md#реестры-образа)):
+
+```sh
+docker pull git.alexrus1234.ru/alexrus1234/khrazhevnik:latest   # основной
+docker pull ghcr.io/alexrus1234/khrazhevnik:latest
+docker pull docker.io/alexrus1234/khrazhevnik:latest
+docker pull codeberg.org/alexrus1234/khrazhevnik:latest   # нужен login
+podman pull quay.io/alexrus1234/khrazhevnik:latest
+```
+
 ```sh
 # quadlet в пользовательский путь генератора systemd.
 mkdir -p ~/.config/containers/systemd

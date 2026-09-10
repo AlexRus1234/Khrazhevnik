@@ -57,10 +57,23 @@ read-only rootfs) под rootless podman quadlet.
 > ревалидация по ETag/Last-Modified), фоновые зеркала и личные
 > подписанные репозитории пользователей.
 
+## Скриншоты
+
+Веб-админка (`/ui/`).
+
+**Дашборд** — статистика кеша и живые задачи:
+
+![Дашборд — статистика кеша и задачи](scrn/ru/g1.png)
+
+**Репозитории** — список, upload, reindex:
+
+![Репозитории — upload и reindex](scrn/ru/g2.png)
+
 ---
 
 ## Содержание
 
+- [Скриншоты](#скриншоты)
 - [Возможности](#возможности)
 - [Быстрый старт](#быстрый-старт)
 - [Конфигурация](#конфигурация)
@@ -179,6 +192,17 @@ read-only rootfs) под rootless podman quadlet.
 | **Node.js** | 22+ | Сборка Web UI (опционально) |
 
 ### Установка (контейнер)
+
+Образ публикуется в реестрах-зеркалах (содержимое идентично):
+
+```bash
+docker pull git.alexrus1234.ru/alexrus1234/khrazhevnik:latest   # основной
+docker pull ghcr.io/alexrus1234/khrazhevnik:latest
+docker pull docker.io/alexrus1234/khrazhevnik:latest
+```
+
+Полный список реестров (codeberg.org, quay.io) — в
+[`docs/func/ru/deploy.md`](docs/func/ru/deploy.md#реестры-образа).
 
 ```bash
 # 1. Quadlet — в пользовательский путь генератора systemd.
