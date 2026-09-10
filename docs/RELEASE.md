@@ -111,9 +111,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 - [ ] Workflow с `push_to_registry=true`, `publish_github=true`,
       `publish_codeberg=true` (секреты `UPLOAD_TOKEN`/`TOKEN_GITHUB`/
       `TOKEN_CODEBERG` настроены) — зелёный; артефакт
-      `khrazhevnik-vX.Y.Z-linux-amd64` и образ
-      `git.yadr00.internal/build/khrazhevnik:vX.Y.Z` + `:latest`
-      опубликованы.
+      `khrazhevnik-vX.Y.Z-linux-amd64` опубликован.
+- [ ] Образ: workflow с `push_image_*` для нужных реестров (секреты
+      `UPLOAD_TOKEN`/`TOKEN_GITHUB`/`OCI_CODEBERG`/`DOCKERHUB_TOKEN`/
+      `QUAY_TOKEN`) — `git.yadr00.internal/alexrus1234/khrazhevnik:
+      vX.Y.Z` + `:latest` и публичные зеркала ghcr.io / codeberg.org /
+      docker.io / quay.io (`alexrus1234/khrazhevnik`) опубликованы.
 - [ ] Release notes: сводка функций (кеш-прокси / зеркало / личные
       репо), 5 экосистем, матрица storage (fs/s3) × БД
       (sqlite/postgres/mariadb), ссылка на [func/ru/](func/ru/).

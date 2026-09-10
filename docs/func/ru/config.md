@@ -219,7 +219,7 @@ podman run ... \
   -e HTTP_PROXY="socks5://user:pass%21@192.0.2.10:1080" \
   -e HTTPS_PROXY="socks5://user:pass%21@192.0.2.10:1080" \
   -e NO_PROXY="localhost,127.0.0.1" \
-  git.yadr00.internal/build/khrazhevnik
+  git.yadr00.internal/alexrus1234/khrazhevnik
 ```
 
 Переменные действуют только на исходящие fetch-запросы — слушатели

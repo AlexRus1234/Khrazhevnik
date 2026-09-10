@@ -110,7 +110,7 @@ docker run -d --name khrazhevnik \
   -e KHRZ_AUTH__JWT_SECRET="$(openssl rand -hex 32)" \
   --stop-timeout 40 \
   --restart on-failure \
-  git.yadr00.internal/build/khrazhevnik:latest
+  git.yadr00.internal/alexrus1234/khrazhevnik:latest
 ```
 
 Отличия от quadlet: JWT-секрет передаётся env из `.env` (Podman Secret

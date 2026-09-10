@@ -15,7 +15,7 @@
 
 services:
   khrazhevnik:
-    image: git.yadr00.internal/build/khrazhevnik:latest
+    image: git.yadr00.internal/alexrus1234/khrazhevnik:latest
     container_name: khrazhevnik
     ports:
       # Публичная раздача пакетов + /healthz.

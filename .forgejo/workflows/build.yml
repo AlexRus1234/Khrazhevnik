@@ -18,8 +18,9 @@
 # build workflow (workflow_dispatch + inputs, fedora:44 runner, Nora
 # proxy, step-ca, Go tarball). Project-specific additions: services block
 # (postgres/mariadb/minio для контрактных suite сессии 17) и отдельная
-# oci job (сборка образа + push в git.yadr00.internal/build/khrazhevnik —
-# Хражевник контейнерный
+# oci job (сборка образа + push по входам push_image_* в 5 реестров —
+# Forgejo git.yadr00.internal/alexrus1234/khrazhevnik, ghcr.io,
+# codeberg.org, docker.io, quay.io — Хражевник контейнерный
 # сервис, в отличие от CLI-бинарника lentovodec).
 
 name: Build and Test Khrazhevnik
@@ -29,6 +30,31 @@ on:
     inputs:
       push_to_registry:
         description: "Upload binary to Forgejo Packages and Release on success?"
+        required: true
+        default: false
+        type: boolean
+      push_image_forgejo:
+        description: "Push OCI image to git.yadr00.internal/alexrus1234/khrazhevnik (v* tag only)?"
+        required: true
+        default: false
+        type: boolean
+      push_image_ghcr:
+        description: "Push OCI image to ghcr.io/alexrus1234/khrazhevnik (v* tag only)?"
+        required: true
+        default: false
+        type: boolean
+      push_image_codeberg:
+        description: "Push OCI image to codeberg.org/alexrus1234/khrazhevnik (v* tag only)?"
+        required: true
+        default: false
+        type: boolean
+      push_image_dockerhub:
+        description: "Push OCI image to docker.io/alexrus1234/khrazhevnik (v* tag only)?"
+        required: true
+        default: false
+        type: boolean
+      push_image_quay:
+        description: "Push OCI image to quay.io/alexrus1234/khrazhevnik (v* tag only)?"
         required: true
         default: false
         type: boolean
@@ -474,15 +500,23 @@ jobs:
                 khrazhevnik-*linux-amd64 khrazhevnik-*linux-amd64.sha256 \
                 coverage.out cover-unit.out cover-int.out
 
-  # Сборка OCI-образа → push в Forgejo container registry.
+  # Сборка OCI-образа → push по входам push_image_* в 5 реестров.
   # Алгоритм 1-в-1 по образцу 0_ЦОД/container-build (mortis/nora/memos):
   # job-контейнер quay.io/containers/podman (podman преднастроен для nested-
   # CI), storage driver vfs флагом на каждом podman-вызове (overlay-in-overlay
-  # не поддерживается внутри раннера), push в git.yadr00.internal/build/
-  # khrazhevnik. Push — ТОЛЬКО релизных v*-тегов (сессия 103): образ
-  # собирается на каждом прогоне (ловит поломку Containerfile), но sha-*-
-  # версии не пушатся — иначе каждый прогон оставляет новую версию в
-  # registry (25+ накопленных к 2026-09-09 вычищены руками). БЕЗ
+  # не поддерживается внутри раннера). Сборка — под локальным тегом
+  # localhost/khrazhevnik:${VERSION} (нейтральное имя, реестр-агностик);
+  # каждый push-шаг ретегирует его на <registry>/alexrus1234/khrazhevnik
+  # и пушит :VERSION + :latest. Push — ТОЛЬКО релизных v*-тегов (сессия
+  # 103): образ собирается на каждом прогоне (ловит поломку
+  # Containerfile), но sha-*-версии не пушатся — иначе каждый прогон
+  # оставляет новую версию в registry (25+ накопленных к 2026-09-09
+  # вычищены руками). Неймспейс alexrus1234 (смена с build/…, 2026-09-10):
+  # владелец-аккаунт, единый с публичными реестрами; доступность всех
+  # хостов с раннера доказана фактом: quay.io — сам oci-job-контейнер,
+  # docker.io — distro-test тянет docker.io/library/*, codeberg.org —
+  # publish_codeberg, ghcr.io — та же инфраструктура, что api.github.com
+  # (publish_github). БЕЗ
   # --privileged и БЕЗ smoke: контейнер = FROM scratch
   # (бинарник + CA-bundle), функционально идентичен артефакту, который уже
   # протестирован в build-test job — включая binary-smoke (exec'ит
@@ -568,31 +602,105 @@ jobs:
           curl -fk https://172.20.0.1:9000/roots.pem -o deploy/certs/step-ca-root.pem
           podman --storage-driver=vfs build \
             --build-arg VERSION="${VERSION}" \
-            -t git.yadr00.internal/build/khrazhevnik:${VERSION} \
+            -t localhost/khrazhevnik:${VERSION} \
             -f deploy/Containerfile .
 
-      - name: Push to Forgejo Registry
-        # Только релизные v*-теги: см. политику в комментарии job'а.
-        # Сборка образа выше остаётся безусловной (битый Containerfile
-        # ловится каждым прогоном), пуш — нет.
-        if: env.IS_TAG == 'yes'
+      # Push-шаги (5 реестров, по входу push_image_<reg> на каждый):
+      # одинаковая механика — login → ретег localhost-образа на
+      # <registry>/alexrus1234/khrazhevnik:{VERSION,latest} → push.
+      # Гейт IS_TAG — политика сессии 103 (см. комментарий job'а).
+      # Галочка без секрета — конфигурационная ошибка запуска: шаг
+      # падает с внятной причиной (паттерн socks-проверки), а не
+      # молча пропускает publish.
+      - name: Push image to Forgejo Registry
+        if: env.IS_TAG == 'yes' && github.event.inputs.push_image_forgejo == 'true'
         env:
-          UPLOAD_TOKEN: ${{ secrets.UPLOAD_TOKEN }}
+          REG_TOKEN: ${{ secrets.UPLOAD_TOKEN }}
         run: |
-          if [ -z "$UPLOAD_TOKEN" ]; then
-            echo "::warning::secrets.UPLOAD_TOKEN не задан — push пропущен"
-            exit 0
+          if [ -z "$REG_TOKEN" ]; then
+            echo "::error::push_image_forgejo=true, но secrets.UPLOAD_TOKEN не задан"
+            exit 1
           fi
-          podman --storage-driver=vfs login git.yadr00.internal -u alexrus -p "$UPLOAD_TOKEN"
-          podman --storage-driver=vfs push git.yadr00.internal/build/khrazhevnik:${VERSION}
+          IMAGE=git.yadr00.internal/alexrus1234/khrazhevnik
+          podman --storage-driver=vfs login git.yadr00.internal -u alexrus -p "$REG_TOKEN"
+          podman --storage-driver=vfs tag localhost/khrazhevnik:${VERSION} ${IMAGE}:${VERSION}
+          podman --storage-driver=vfs push ${IMAGE}:${VERSION}
+          podman --storage-driver=vfs tag localhost/khrazhevnik:${VERSION} ${IMAGE}:latest
+          podman --storage-driver=vfs push ${IMAGE}:latest
 
-      - name: Tag and push :latest (release tag)
-        if: env.IS_TAG == 'yes'
+      - name: Push image to ghcr.io
+        # TOKEN_GITHUB — PAT со scope write:packages (scope для
+        # Release-assets недостаточен). Имя образа строго lowercase —
+        # ghcr отклоняет AlexRus1234.
+        if: env.IS_TAG == 'yes' && github.event.inputs.push_image_ghcr == 'true'
         env:
-          UPLOAD_TOKEN: ${{ secrets.UPLOAD_TOKEN }}
+          REG_TOKEN: ${{ secrets.TOKEN_GITHUB }}
         run: |
-          podman --storage-driver=vfs tag git.yadr00.internal/build/khrazhevnik:${VERSION} git.yadr00.internal/build/khrazhevnik:latest
-          podman --storage-driver=vfs push git.yadr00.internal/build/khrazhevnik:latest
+          if [ -z "$REG_TOKEN" ]; then
+            echo "::error::push_image_ghcr=true, но secrets.TOKEN_GITHUB не задан"
+            exit 1
+          fi
+          IMAGE=ghcr.io/alexrus1234/khrazhevnik
+          podman --storage-driver=vfs login ghcr.io -u alexrus1234 -p "$REG_TOKEN"
+          podman --storage-driver=vfs tag localhost/khrazhevnik:${VERSION} ${IMAGE}:${VERSION}
+          podman --storage-driver=vfs push ${IMAGE}:${VERSION}
+          podman --storage-driver=vfs tag localhost/khrazhevnik:${VERSION} ${IMAGE}:latest
+          podman --storage-driver=vfs push ${IMAGE}:latest
+
+      - name: Push image to Codeberg Registry
+        # OCI_CODEBERG — токен со scope write:package (реестр — тот же
+        # Forgejo-механизм, что и у git.yadr00.internal).
+        if: env.IS_TAG == 'yes' && github.event.inputs.push_image_codeberg == 'true'
+        env:
+          REG_TOKEN: ${{ secrets.OCI_CODEBERG }}
+        run: |
+          if [ -z "$REG_TOKEN" ]; then
+            echo "::error::push_image_codeberg=true, но secrets.OCI_CODEBERG не задан"
+            exit 1
+          fi
+          IMAGE=codeberg.org/alexrus1234/khrazhevnik
+          podman --storage-driver=vfs login codeberg.org -u alexrus1234 -p "$REG_TOKEN"
+          podman --storage-driver=vfs tag localhost/khrazhevnik:${VERSION} ${IMAGE}:${VERSION}
+          podman --storage-driver=vfs push ${IMAGE}:${VERSION}
+          podman --storage-driver=vfs tag localhost/khrazhevnik:${VERSION} ${IMAGE}:latest
+          podman --storage-driver=vfs push ${IMAGE}:latest
+
+      - name: Push image to Docker Hub
+        # DOCKERHUB_TOKEN — access token (hub.docker.com → Account
+        # Settings → Personal access tokens). Free-аккаунт: неймспейс
+        # одного уровня — docker.io/alexrus1234/khrazhevnik.
+        if: env.IS_TAG == 'yes' && github.event.inputs.push_image_dockerhub == 'true'
+        env:
+          REG_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$REG_TOKEN" ]; then
+            echo "::error::push_image_dockerhub=true, но secrets.DOCKERHUB_TOKEN не задан"
+            exit 1
+          fi
+          IMAGE=docker.io/alexrus1234/khrazhevnik
+          podman --storage-driver=vfs login docker.io -u alexrus1234 -p "$REG_TOKEN"
+          podman --storage-driver=vfs tag localhost/khrazhevnik:${VERSION} ${IMAGE}:${VERSION}
+          podman --storage-driver=vfs push ${IMAGE}:${VERSION}
+          podman --storage-driver=vfs tag localhost/khrazhevnik:${VERSION} ${IMAGE}:latest
+          podman --storage-driver=vfs push ${IMAGE}:latest
+
+      - name: Push image to quay.io
+        # QUAY_TOKEN — Encrypted Password аккаунта alexrus1234 (quay.io
+        # → User Settings): логин alexrus1234, токен — пароль.
+        if: env.IS_TAG == 'yes' && github.event.inputs.push_image_quay == 'true'
+        env:
+          REG_TOKEN: ${{ secrets.QUAY_TOKEN }}
+        run: |
+          if [ -z "$REG_TOKEN" ]; then
+            echo "::error::push_image_quay=true, но secrets.QUAY_TOKEN не задан"
+            exit 1
+          fi
+          IMAGE=quay.io/alexrus1234/khrazhevnik
+          podman --storage-driver=vfs login quay.io -u alexrus1234 -p "$REG_TOKEN"
+          podman --storage-driver=vfs tag localhost/khrazhevnik:${VERSION} ${IMAGE}:${VERSION}
+          podman --storage-driver=vfs push ${IMAGE}:${VERSION}
+          podman --storage-driver=vfs tag localhost/khrazhevnik:${VERSION} ${IMAGE}:latest
+          podman --storage-driver=vfs push ${IMAGE}:latest
 
       - name: Cleanup
         if: always()

@@ -21,10 +21,11 @@
 # Ключи S3 и DSN postgres — через Podman Secret (env), не в файле.
 
 [Container]
-# CI пушит образ только во внутренний registry (build.yml, oci-job);
-# ghcr.io — не пушится (публичное зеркало — future). Без тега — :latest;
-# при релизе тегируем (RELEASE.md) и пинуем сюда тег.
-Image=git.yadr00.internal/build/khrazhevnik
+# Внутренний registry — канонический источник образа (build.yml, oci-job);
+# публичные зеркала (ghcr.io/codeberg.org/docker.io/quay.io, входы
+# push_image_*) — опциональны. Без тега — :latest; при релизе тегируем
+# (RELEASE.md) и пинуем сюда тег.
+Image=git.yadr00.internal/alexrus1234/khrazhevnik
 ContainerName=khrazhevnik-s3
 PublishPort=29202:29202
 PublishPort=127.0.0.1:30202:30202
