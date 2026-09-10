@@ -187,6 +187,50 @@ of the required adapter fails at startup with a clear registry error.
 |------------------|---------|----------------------------------------|
 | `KHRZ_LOG_LEVEL` | `info`  | `debug` \| `info` \| `warn` \| `error` |
 
+## Upstream (outbound) proxy
+
+All upstream requests — both the caching proxy and mirror sync — go
+through a single outbound HTTP client (`outboundHTTPClient`,
+`cmd/khrazhevnik/wire.go`) using the standard
+`http.ProxyFromEnvironment`. The proxy is configured via regular Go
+env variables — **without** the `KHRZ_` prefix and outside of TOML:
+
+| Variable    | Purpose                                                            |
+|-------------|--------------------------------------------------------------------|
+| `HTTP_PROXY`| proxy for `http://` upstreams                                      |
+| `HTTPS_PROXY`| proxy for `https://` upstreams                                    |
+| `NO_PROXY`  | exceptions (CSV: hosts, domain suffixes, CIDRs) — go directly      |
+
+Lowercase names (`https_proxy`, etc.) are also honored. Go does not
+read `ALL_PROXY` — to route "everything through one proxy", set both
+`HTTP_PROXY` and `HTTPS_PROXY`.
+
+URL schemes: `http://`, `https://`, `socks5://`, `socks5h://`
+(equivalent for SOCKS5 — the hostname is resolved by the proxy). The
+scheme is mandatory: a schemeless value is treated by Go as an HTTP
+proxy, and an HTTP CONNECT sent to a SOCKS port will not work.
+
+Authentication is the userinfo in the URL
+(`socks5://user:pass@host:port`): SOCKS5 — RFC 1929 login/password,
+HTTP(S) — Basic. Percent-encode special characters in the
+login/password, otherwise the URL parser silently truncates the value.
+
+Container: everything outbound through SOCKS5, loopback direct:
+
+```sh
+podman run ... \
+  -e HTTP_PROXY="socks5://user:pass%21@192.0.2.10:1080" \
+  -e HTTPS_PROXY="socks5://user:pass%21@192.0.2.10:1080" \
+  -e NO_PROXY="localhost,127.0.0.1" \
+  git.yadr00.internal/build/khrazhevnik
+```
+
+These variables affect outbound fetch requests only — the
+`public_listen`/`admin_listen` listeners are not proxied. The loopback
+exception in `NO_PROXY` is needed by utilities running next to the app
+(self-bootstrap curl, etc.) that read the same variables. CI coverage:
+distro-test with the `use_socks_proxy` input.
+
 ## Validation
 
 Fail-fast at startup, with the list of **all** problems reported at

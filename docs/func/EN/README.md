@@ -25,7 +25,7 @@ instructions; details requiring separate treatment are documented here.
 | File | Contents |
 |---|---|
 | [quickstart.md](quickstart.md) | Quick start: container installation, bootstrap, the first remote, cache verification. |
-| [config.md](config.md) | Configuration: all TOML sections, the `KHRZ_*` env, `file://` secrets, validation. |
+| [config.md](config.md) | Configuration: all TOML sections, the `KHRZ_*` env, `file://` secrets, validation, the upstream proxy (HTTP/HTTPS/SOCKS5). |
 | [api.md](api.md) | Admin REST API: authentication, endpoints, error codes. |
 | [ui.md](ui.md) | Web admin UI: screens and typical operations. |
 | [deploy.md](deploy.md) | Deployment: the quadlet, docker, bootstrap, client setup, image build. |

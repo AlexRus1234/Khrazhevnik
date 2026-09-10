@@ -26,7 +26,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 | Файл | Содержание |
 |---|---|
 | [quickstart.md](quickstart.md) | Быстрый старт: установка контейнера, bootstrap, первый remote, проверка кеша. |
-| [config.md](config.md) | Конфигурация: все секции TOML, env `KHRZ_*`, секреты `file://`, валидация. |
+| [config.md](config.md) | Конфигурация: все секции TOML, env `KHRZ_*`, секреты `file://`, валидация, прокси upstream (HTTP/HTTPS/SOCKS5). |
 | [api.md](api.md) | REST API админки: аутентификация, эндпоинты, коды ошибок. |
 | [ui.md](ui.md) | Веб-админка: экраны и типовые операции. |
 | [deploy.md](deploy.md) | Развёртывание: quadlet, docker, bootstrap, настройка клиентов, сборка образа. |

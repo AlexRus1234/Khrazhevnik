@@ -152,6 +152,12 @@ enabled = true
   драйвера обязательны его поля (у s3 — endpoint/region/bucket/ключи).
 - Уровень логов — env `KHRZ_LOG_LEVEL` (`debug|info|warn|error`,
   default `info`), читается при старте.
+- Прокси исходящих upstream-запросов (кеш-фетчи и mirror-sync) —
+  стандартные env `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` без префикса
+  `KHRZ_` (схемы `http(s)://` и `socks5(h)://`, авторизация userinfo
+  в URL; `ALL_PROXY` не читается), через `http.ProxyFromEnvironment`
+  исходящего клиента. Подробности — `docs/func/ru/config.md`
+  («Прокси исходящих запросов»).
 
 ## REST API
 
