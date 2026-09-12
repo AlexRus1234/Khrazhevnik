@@ -35,3 +35,11 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   encoding resolve to the same cache object. Same bug class as the
   Fedora caret `^` (CI fact #6). Incident 2026-09-12
   (TEST-KHRZ-ARCH).
+
+### Changed
+
+- **UI (dashboard):** the "Recent transactions" panel now stretches to
+  fill the remaining window height — the feed scrolls inside the panel
+  (table header pinned) instead of the whole page; when space is tight
+  the panel shrinks to a minimum height while keeping internal
+  scrolling.

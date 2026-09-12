@@ -205,35 +205,37 @@ function pct(ratio: number): string {
       <p v-else class="dim">{{ t('dashboard.perEcoEmpty') }}</p>
     </div>
 
-    <div class="panel">
+    <div class="panel txns">
       <h2>{{ t('dashboard.txns') }}</h2>
       <!-- Шапка таблицы живёт всегда: пустой буфер — dim-строка под
            таблицей, но колонки на месте (e2e-приёмка сессии 101
            ассертит заголовки и на пустой ленте). -->
-      <table>
-        <thead>
-          <tr>
-            <th>{{ t('dashboard.colTime') }}</th>
-            <th>{{ t('dashboard.colEco') }}</th>
-            <th>{{ t('dashboard.colPath') }}</th>
-            <th>{{ t('dashboard.colStatus') }}</th>
-            <th>{{ t('dashboard.colSize') }}</th>
-            <th>{{ t('dashboard.colError') }}</th>
-          </tr>
-        </thead>
-        <tbody v-if="txns.length > 0">
-          <tr v-for="(txn, i) in txns" :key="txn.at + txn.path + i">
-            <td>{{ formatTime(txn.at) }}</td>
-            <td>{{ txn.ecosystem }}</td>
-            <td class="path" :title="txn.path">{{ txn.path }}</td>
-            <td>
-              <span class="badge" :class="txn.status.toLowerCase()">{{ txn.status }}</span>
-            </td>
-            <td>{{ formatBytes(txn.size) }}</td>
-            <td :class="txn.error === '' ? 'dim' : 'error'">{{ txn.error }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="txn-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>{{ t('dashboard.colTime') }}</th>
+              <th>{{ t('dashboard.colEco') }}</th>
+              <th>{{ t('dashboard.colPath') }}</th>
+              <th>{{ t('dashboard.colStatus') }}</th>
+              <th>{{ t('dashboard.colSize') }}</th>
+              <th>{{ t('dashboard.colError') }}</th>
+            </tr>
+          </thead>
+          <tbody v-if="txns.length > 0">
+            <tr v-for="(txn, i) in txns" :key="txn.at + txn.path + i">
+              <td>{{ formatTime(txn.at) }}</td>
+              <td>{{ txn.ecosystem }}</td>
+              <td class="path" :title="txn.path">{{ txn.path }}</td>
+              <td>
+                <span class="badge" :class="txn.status.toLowerCase()">{{ txn.status }}</span>
+              </td>
+              <td>{{ formatBytes(txn.size) }}</td>
+              <td :class="txn.error === '' ? 'dim' : 'error'">{{ txn.error }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <p v-if="txns.length === 0" class="dim">{{ t('dashboard.txnsEmpty') }}</p>
     </div>
 
@@ -280,6 +282,39 @@ function pct(ratio: number): string {
 </template>
 
 <style scoped>
+/* Дашборд растягивается на всю высоту окна (без прокрутки страницы,
+   пока контент влезает): панели статистики — по контенту, панель
+   транзакций забирает остаток. */
+section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Лента транзакций скроллится внутри панели, а не страницы; при
+   нехватке высоты (малое окно/высокая таблица по экосистемам)
+   сжимается до 14rem, но скролл остаётся внутренним. */
+.panel.txns {
+  flex: 1;
+  min-height: 14rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.txn-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Шапка закреплена при прокрутке ленты; фон обязателен — строки
+   уезжают под шапку, прозрачность просвечивала бы. */
+.txn-scroll thead th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+}
+
 /* Пути бывают длинными (cache/<eco>/<remote>/<path>) — обрезка в
    пределах ячейки, полный путь в title (план сессии 101). */
 td.path {

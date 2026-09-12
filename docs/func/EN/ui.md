@@ -51,7 +51,11 @@ upstream and to clients (`per_ecosystem` from `/cache/stats`).
 
 Below — the **Recent transactions** panel: a feed of the latest
 client requests to the cache — time, ecosystem, path, status
-(HIT/MISS/STALE/ERROR), size, error text. The feed is updated in the
+(HIT/MISS/STALE/ERROR), size, error text. The panel stretches to
+fill the remaining window height (the dashboard is a single screen):
+the feed scrolls inside the panel with a pinned table header; when
+space is tight the panel shrinks to a minimum while keeping internal
+scrolling. The feed is updated in the
 shared 2-second task polling and by the «Refresh» button; the buffer
 is in-memory (the last 50) — after a server restart the history
 starts from zero.
