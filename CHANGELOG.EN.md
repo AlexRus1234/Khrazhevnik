@@ -26,6 +26,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-09-12
+
 ### Fixed
 
 - **Cache:** the `ValidateKey` whitelist now allows `:` — Arch epoch
@@ -35,6 +37,12 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   encoding resolve to the same cache object. Same bug class as the
   Fedora caret `^` (CI fact #6). Incident 2026-09-12
   (TEST-KHRZ-ARCH).
+
+### Added
+
+- **CI:** Forgejo/GitHub/Codeberg releases now get a body — the
+  `[X.Y.Z]` section from CHANGELOG.md is written into the release
+  automatically (the body used to be created empty).
 
 ### Changed
 

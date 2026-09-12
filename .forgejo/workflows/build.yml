@@ -392,6 +392,23 @@ jobs:
           cp khrazhevnik-ci "$ARTIFACT_NAME"
           sha256sum "$ARTIFACT_NAME" | tee "${ARTIFACT_NAME}.sha256"
 
+      - name: Release notes from CHANGELOG
+        # Секция [X.Y.Z] из CHANGELOG.md → $GITHUB_ENV: body релиза на
+        # Forgejo/GitHub/Codeberg (до этого релизы создавались с пустым
+        # body). Нет секции (sha-сборка) → пустой body, как раньше.
+        if: success() && (github.event.inputs.push_to_registry == 'true' || github.event.inputs.publish_github == 'true' || github.event.inputs.publish_codeberg == 'true')
+        run: |
+          awk -v ver="[${VERSION#v}]" '
+            index($0, "## " ver) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          {
+            echo "RELEASE_NOTES<<KHRZ_EOF"
+            cat release-notes.md
+            echo "KHRZ_EOF"
+          } >> "$GITHUB_ENV"
+
       - name: Publish to Forgejo Packages
         if: success() && github.event.inputs.push_to_registry == 'true'
         env:
@@ -416,7 +433,7 @@ jobs:
           RELEASE_ID="$(curl -fsSL --user "alexrus:${UPLOAD_TOKEN}" \
             "$API/releases/tags/${VERSION}" 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)"
           if [ -z "$RELEASE_ID" ]; then
-            BODY="$(jq -n --arg tag "$VERSION" '{tag_name:$tag, name:$tag, draft:false, prerelease:($tag | test("-"))}')"
+            BODY="$(jq -n --arg tag "$VERSION" --arg notes "$RELEASE_NOTES" '{tag_name:$tag, name:$tag, body:$notes, draft:false, prerelease:($tag | test("-"))}')"
             RELEASE="$(curl -fsSL -X POST \
               --user "alexrus:${UPLOAD_TOKEN}" \
               -H 'Content-Type: application/json' \
@@ -447,7 +464,7 @@ jobs:
           PUBLISH_FILES="$ARTIFACT_NAME ${ARTIFACT_NAME}.sha256"
           echo "Files to publish: $PUBLISH_FILES"
           API="https://api.github.com/repos/AlexRus1234/Khrazhevnik"
-          BODY="$(jq -n --arg tag "$VERSION" '{tag_name:$tag, name:$tag, draft:false, prerelease:($tag | test("-"))}')"
+          BODY="$(jq -n --arg tag "$VERSION" --arg notes "$RELEASE_NOTES" '{tag_name:$tag, name:$tag, body:$notes, draft:false, prerelease:($tag | test("-"))}')"
           RELEASE="$(curl -fsSL -X POST \
             -H "Authorization: Bearer ${RELEASE_TOKEN}" \
             -H 'Accept: application/vnd.github+json' \
@@ -478,7 +495,7 @@ jobs:
           PUBLISH_FILES="$ARTIFACT_NAME ${ARTIFACT_NAME}.sha256"
           echo "Files to publish: $PUBLISH_FILES"
           API="https://codeberg.org/api/v1/repos/AlexRus1234/Khrazhevnik"
-          BODY="$(jq -n --arg tag "$VERSION" '{tag_name:$tag, name:$tag, draft:false, prerelease:($tag | test("-"))}')"
+          BODY="$(jq -n --arg tag "$VERSION" --arg notes "$RELEASE_NOTES" '{tag_name:$tag, name:$tag, body:$notes, draft:false, prerelease:($tag | test("-"))}')"
           RELEASE="$(curl -fsSL -X POST \
             -H "Authorization: token ${RELEASE_TOKEN}" \
             -H 'Content-Type: application/json' \
@@ -498,6 +515,7 @@ jobs:
         run: |
           rm -f khrazhevnik-ci \
                 khrazhevnik-*linux-amd64 khrazhevnik-*linux-amd64.sha256 \
+                release-notes.md \
                 coverage.out cover-unit.out cover-int.out
 
   # Сборка OCI-образа → push по входам push_image_* в 5 реестров.
