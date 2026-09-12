@@ -318,6 +318,45 @@ func TestProxyCaretRpmName(t *testing.T) {
 	}
 }
 
+// TestProxyEpochPkgName — epoch-версии Arch кладут «:» в имя файла
+// (nftables-1:1.1.7-3-x86_64.pkg.tar.zst; инцидент 2026-09-12:
+// InvalidKeyError «символ ':'» → 400, pacman откатывал транзакцию из
+// 46 пакетов). pacman/libfetch шлёт «:» сырым (легальный pchar);
+// %-написание %3A и сырое «:» — один объект кеша.
+func TestProxyEpochPkgName(t *testing.T) {
+	hits := 0
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/pkg/extra/os/x86_64/nftables-1:1.1.7-3-x86_64.pkg.tar.zst" {
+			hits++
+		}
+		_, _ = io.WriteString(w, "payload")
+	})
+
+	// Как на проводе от pacman: сырое «:» в пути → 200 + payload.
+	rec := get(t, h, "/t/pkg/extra/os/x86_64/nftables-1:1.1.7-3-x86_64.pkg.tar.zst")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("raw-запрос = %d, тело %q", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "payload" {
+		t.Fatalf("тело = %q, хочу payload", rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Cache"); got != "MISS" {
+		t.Errorf("X-Cache raw-запроса = %q, хочу MISS", got)
+	}
+
+	// %3A-написание — тот же объект кеша: HIT, upstream не дёргается.
+	rec = get(t, h, "/t/pkg/extra/os/x86_64/nftables-1%3a1.1.7-3-x86_64.pkg.tar.zst")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%%3A-запрос = %d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Cache"); got != "HIT" {
+		t.Errorf("X-Cache %%3A-запроса = %q, хочу HIT", got)
+	}
+	if hits != 1 {
+		t.Errorf("upstream получил %d запросов, хочу 1 (один объект на оба написания)", hits)
+	}
+}
+
 func TestProxyErrorCodes(t *testing.T) {
 	t.Run("404 upstream → 404 клиенту", func(t *testing.T) {
 		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404) })

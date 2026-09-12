@@ -43,6 +43,10 @@ func TestValidateKey(t *testing.T) {
 		// CI-факт №6: aribb24 через прокси падал 400/«All mirrors
 		// were tried» на единственном пакете с ^ из 182).
 		"cache/rpm-md/2/packages/a/aribb24-1.0.3^20160216git5e9be27-5.fc44.x86_64.rpm",
+		// «:» — epoch-версии Arch (pkgver с epoch «1:1.1.7-3» лежит
+		// в имени файла целиком; инцидент 2026-09-12: nftables падал
+		// 400, транзакция pacman из 46 пакетов откатывалась).
+		"cache/pacman/6/extra/os/x86_64/nftables-1:1.1.7-3-x86_64.pkg.tar.zst",
 	}
 	for _, key := range valid {
 		if err := ValidateKey(key); err != nil {
