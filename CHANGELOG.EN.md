@@ -26,6 +26,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-09-12
+
 ### Fixed
 
 - **UI (dashboard):** the "Recent transactions" panel's internal
