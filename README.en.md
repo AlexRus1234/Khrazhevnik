@@ -76,6 +76,7 @@ The web admin UI (`/ui/`).
 
 - [Screenshots](#screenshots)
 - [Features](#features)
+- [Performance](#performance)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Deployment and security](#deployment-and-security)
@@ -184,6 +185,27 @@ decompression limit and fuzzing since the first adapter.
 - A single path-traversal check point for all request paths
 
 A detailed description is provided in [`docs/func/EN/`](docs/func/EN/).
+
+---
+
+## Performance
+
+Measured on a live homelab instance (S3 + PostgreSQL on a separate
+NAS, VM 4 vCPU / 8 GB; methodology and full tables — in
+[`docs/func/EN/benchmarks.md`](docs/func/EN/benchmarks.md), scenarios —
+in [`bench/`](bench/README.md)):
+
+| Metric | Value |
+|---|---|
+| Instance CPU at saturation | ≤1.6% (of 4 vCPU) at ~340 req/s and ~300 MB/s delivery |
+| RAM | 26 MB idle; peak 981 MB (`memory.peak` cgroup) under maximum load |
+| Reliability | 0 5xx responses over 269 GB delivered (~150k requests, all runs) |
+| apt clients | 50 parallel machines: a full `apt update` + install in ~5 s/machine; 200 machines saturate the network path (~2.4 Gbit/s) |
+
+The profile's bottleneck is the S3 read path (RustFS: 85–91% CPU at
+saturation, sublinear stream scaling), not Khrazhevnik itself: the
+PostgreSQL catalog sustains hundreds of thousands of SELECTs at ≤1.8%
+CPU.
 
 ---
 
@@ -439,6 +461,7 @@ scoped API token `Bearer khz_...` (CI scripts: `admin`,
 ├── migrations/<driver>/      # Embedded goose migrations (per-DBMS directory)
 ├── web/                      # Vue 3 + Vite + TypeScript SPA (bundle → core/web/assets)
 ├── deploy/                   # Containerfile (node → golang → scratch) + quadlet/
+├── bench/                    # k6 load scenarios + CPU/RAM samplers (methodology — docs/func/EN/benchmarks.md)
 ├── test/                     # integration/ (in-process + binary-smoke), smoke/
 ├── docs/                     # ARCHITECTURE/SPECIFICATION/TESTING/ROADMAP/HISTORY; func/EN/
 └── .forgejo/workflows/       # CI: build, tests, e2e, OCI
@@ -489,6 +512,10 @@ multi-arch).
 | `make image` | OCI image from `deploy/Containerfile` (`PLATFORMS`, `TAG`) |
 | `make smoke` | Live container smoke test (locally, before a release) |
 | `make clean` | Remove `bin/`, `coverage/`, restore the web-assets stub |
+
+Load testing of a live instance (k6 scenarios, CPU/RAM samplers,
+methodology) lives in [`bench/`](bench/README.md) (runbook in Russian);
+reference results — in [`docs/func/EN/benchmarks.md`](docs/func/EN/benchmarks.md).
 
 On a fresh clone, the web-assets stub takes effect first (Go commands
 build without the frontend); the real bundle — `make web-build`. All

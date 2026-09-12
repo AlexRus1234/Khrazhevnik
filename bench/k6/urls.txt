@@ -1,0 +1,41 @@
+# Хражевник — список объектов для нагрузочных сценариев (bench/k6).
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Формат: <путь на публичном порту>|<класс>
+#   meta  — индексы/метаданные (dists/, repodata/, *.db, APKINDEX);
+#   small — пакет < 1 MiB;  mid — 1–10 MiB;  large — > 10 MiB.
+# Путь = /<eco>/<remote>/<путь upstream>; имена remotes — как настроены
+# на инстансе (GET /api/v1/remotes). Перед прогоном убедиться, что пути
+# существуют (прогрев вернёт 200) и классы не протухли по размеру:
+# класс — фильтр сценариев, а не точная метрика.
+#
+# Ниже — дефолт для remote «debian» (apt, https://deb.debian.org/debian).
+# Пулы пакетов привязаны к текущему stable: после смене релиза проверить.
+
+# --- apt/debian: метаданные ---
+/apt/debian/dists/stable/InRelease|meta
+/apt/debian/dists/stable/Release|meta
+/apt/debian/dists/stable/main/binary-amd64/Packages.gz|meta
+/apt/debian/dists/stable/main/binary-amd64/Packages.xz|meta
+
+# --- apt/debian: пакеты (пути сняты с Packages индекса stable на
+# 2026-09-11; после смены релиза перегенерировать) ---
+/apt/debian/pool/main/b/bc/bc_1.07.1-4_amd64.deb|small
+/apt/debian/pool/main/h/hello/hello_2.10-5_amd64.deb|small
+/apt/debian/pool/main/l/less/less_668-1_amd64.deb|small
+/apt/debian/pool/main/t/tar/tar_1.35+dfsg-3.1_amd64.deb|small
+/apt/debian/pool/main/b/bash/bash_5.2.37-2+b9_amd64.deb|mid
+/apt/debian/pool/main/w/wget/wget_1.25.0-2_amd64.deb|mid
+/apt/debian/pool/main/g/git/git_2.47.3-0+deb13u1_amd64.deb|mid
+/apt/debian/pool/main/v/vim/vim_9.1.1230-2_amd64.deb|mid
+/apt/debian/pool/main/c/coreutils/coreutils_9.7-3_amd64.deb|mid
+/apt/debian/pool/main/g/glibc/libc6_2.41-12+deb13u3_amd64.deb|mid
+/apt/debian/pool/main/l/linux-signed-amd64/linux-image-6.12.94+deb13-amd64_6.12.94-1_amd64.deb|large
+
+# --- Примеры прочих экосистем: раскомментировать/поправить под свои
+# remotes и прогреть перед использованием (классы по фактическому размеру):
+# /apk/alpine/x86_64/APKINDEX.tar.gz|meta
+# /apk/alpine/x86_64/apk-tools-2.14.4-r3.apk|mid
+# /pacman/arch/core/os/x86_64/core.db.tar.zst|meta
+# /pacman/arch/core/os/x86_64/pacman-7.0.0-4-x86_64.pkg.tar.zst|mid
+# /rpm/fedora/repodata/repomd.xml|meta

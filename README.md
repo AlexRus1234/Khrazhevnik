@@ -75,6 +75,7 @@ read-only rootfs) под rootless podman quadlet.
 
 - [Скриншоты](#скриншоты)
 - [Возможности](#возможности)
+- [Производительность](#производительность)
 - [Быстрый старт](#быстрый-старт)
 - [Конфигурация](#конфигурация)
 - [Развёртывание и безопасность](#развёртывание-и-безопасность)
@@ -176,6 +177,26 @@ read-only rootfs) под rootless podman quadlet.
 - Единая точка path-traversal для всех путей из запросов
 
 Подробное описание приведено в [`docs/func/ru/`](docs/func/ru/).
+
+---
+
+## Производительность
+
+Замер живого homelab-инстанса (S3 + PostgreSQL на отдельном NAS, ВМ
+4 vCPU / 8 GB; методика и полные таблицы — в
+[`docs/func/ru/benchmarks.md`](docs/func/ru/benchmarks.md), сценарии —
+в [`bench/`](bench/README.md)):
+
+| Метрика | Значение |
+|---|---|
+| CPU инстанса при насыщении | ≤1.6% (из 4 vCPU) при ~340 запросах/с и ~300 МБ/с отдачи |
+| RAM | 26 МБ в idle; пик 981 МБ (`memory.peak` cgroup) под максимальной нагрузкой |
+| Надёжность | 0 ответов 5xx за 269 ГБ отдачи (~150 тыс. запросов, все прогоны) |
+| apt-клиенты | 50 параллельных машин: полный `apt update` + установка ~5 с/машину; 200 машин — упор в сетевой тракт (~2.4 Гбит/с) |
+
+Узкое место профиля — read-path S3-хранилища (RustFS: 85–91% CPU при
+насыщении, сублинейный масштаб стримов), а не Хражевник: каталог на
+PostgreSQL при сотнях тысяч SELECT держит ≤1.8% CPU.
 
 ---
 
@@ -423,6 +444,7 @@ scoped API-токен `Bearer khz_...` (CI-скрипты: `admin`,
 ├── migrations/<driver>/      # Embedded goose-миграции (по каталогу на СУБД)
 ├── web/                      # Vue 3 + Vite + TypeScript SPA (бандл → core/web/assets)
 ├── deploy/                   # Containerfile (node → golang → scratch) + quadlet/
+├── bench/                    # Нагрузочные сценарии k6 + сэмплеры CPU/RAM (методика — docs/func/ru/benchmarks.md)
 ├── test/                     # integration/ (in-process + binary-smoke), smoke/
 ├── docs/                     # ARCHITECTURE/SPECIFICATION/TESTING/ROADMAP/HISTORY; func/ru/
 └── .forgejo/workflows/       # CI: сборка, тесты, e2e, OCI
@@ -470,6 +492,10 @@ multi-arch).
 | `make web-dev` | Dev-сервер Vite с прокси `/api` на `:30202` |
 | `make image` | OCI-образ из `deploy/Containerfile` (`PLATFORMS`, `TAG`) |
 | `make smoke` | Дымовой тест живого контейнера (локально, перед релизом) |
+
+Нагрузочное тестирование живого инстанса (k6-сценарии, сэмплеры
+CPU/RAM, методика) — в [`bench/`](bench/README.md), эталонные
+результаты — в [`docs/func/ru/benchmarks.md`](docs/func/ru/benchmarks.md).
 | `make clean` | Удалить `bin/`, `coverage/`, восстановить заглушку web-assets |
 
 При новом клонировании репозитория сначала срабатывает заглушка
