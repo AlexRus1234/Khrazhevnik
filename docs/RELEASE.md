@@ -107,6 +107,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 ## 4. Публикация
 
+- [ ] Прокрутить [CHANGELOG.md](../CHANGELOG.md) и
+      [CHANGELOG.EN.md](../CHANGELOG.EN.md): секция [Unreleased] →
+      `[X.Y.Z] — дата релиза`, сверху свежий пустой [Unreleased];
+      тело секции релиза — основа release notes ниже.
 - [ ] Тег `vX.Y.Z` на коммите после всех правок.
 - [ ] Workflow с `push_to_registry=true`, `publish_github=true`,
       `publish_codeberg=true` (секреты `UPLOAD_TOKEN`/`TOKEN_GITHUB`/
