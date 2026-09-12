@@ -26,6 +26,16 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **UI (dashboard):** the "Recent transactions" panel's internal
+  scrolling promised in 1.0.1 did not work — the flex chain had no
+  definite height (`.app` only has `min-height`), so with content
+  taller than the window the panel stretched to its content and the
+  whole page scrolled. The dashboard section now has a definite
+  height of "window minus chrome" — the feed scrolls inside the panel
+  at any window size.
+
 ## [1.0.1] — 2026-09-12
 
 ### Fixed

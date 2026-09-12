@@ -93,12 +93,8 @@ body {
   flex-direction: column;
 }
 
-/* Колонка, а не блок: вложенный экран (дашборд) может растянуть
-   секцию на остаток высоты окна (flex: 1 у корневой section). */
 .content {
   flex: 1;
-  display: flex;
-  flex-direction: column;
   padding: 1rem;
   max-width: 75rem;
   width: 100%;
