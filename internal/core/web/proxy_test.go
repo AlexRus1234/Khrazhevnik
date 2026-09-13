@@ -18,7 +18,10 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -815,5 +818,288 @@ func TestProxyRangeMetric(t *testing.T) {
 	body := scrapeMetrics(t, exporter)
 	if !strings.Contains(body, `khrazhevnik_cache_range_responses_total{ecosystem="t"} 1`) {
 		t.Errorf("нет per-eco счётчика 206:\n%s", body)
+	}
+}
+
+// multipartPart — разобранная часть multipart/byteranges.
+type multipartPart struct {
+	contentRange string
+	contentType  string
+	body         string
+}
+
+// parseMultipartBody разбирает тело multipart/byteranges по boundary из
+// Content-Type (test-parser по boundary — так контракт проверяется без
+// знания точного оверхеда, который считает сервер).
+func parseMultipartBody(t *testing.T, rec *httptest.ResponseRecorder) []multipartPart {
+	t.Helper()
+	media, params, err := mime.ParseMediaType(rec.Header().Get("Content-Type"))
+	if err != nil {
+		t.Fatalf("Content-Type %q не парсится: %v", rec.Header().Get("Content-Type"), err)
+	}
+	if media != "multipart/byteranges" {
+		t.Fatalf("media-type = %q, хочу multipart/byteranges", media)
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		t.Fatalf("нет boundary в Content-Type %q", rec.Header().Get("Content-Type"))
+	}
+	mr := multipart.NewReader(rec.Body, boundary)
+	var parts []multipartPart
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("NextPart: %v", err)
+		}
+		data, err := io.ReadAll(p)
+		if err != nil {
+			t.Fatalf("чтение части: %v", err)
+		}
+		parts = append(parts, multipartPart{
+			contentRange: p.Header.Get("Content-Range"),
+			contentType:  p.Header.Get("Content-Type"),
+			body:         string(data),
+		})
+	}
+	return parts
+}
+
+// TestProxyMultipartRange — красный до фикса: bytes=0-9,20-29 → 206
+// multipart/byteranges, части byte-exact и с корректным Content-Range
+// каждой части.
+func TestProxyMultipartRange(t *testing.T) {
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-test")
+		_, _ = io.WriteString(w, rangeFixture)
+	})
+	if rec := get(t, h, "/t/pkg/a.bin"); rec.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", rec.Code)
+	}
+	rec := getRange(t, h, "/t/pkg/a.bin", "bytes=0-9,20-29")
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("multipart-ответ = %d, хочу 206 (тело %q)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Accept-Ranges"); got != "bytes" {
+		t.Errorf("Accept-Ranges = %q, хочу bytes", got)
+	}
+	if got := rec.Header().Get("X-Cache"); got != "HIT" {
+		t.Errorf("X-Cache = %q, хочу HIT", got)
+	}
+	parts := parseMultipartBody(t, rec)
+	if len(parts) != 2 {
+		t.Fatalf("частей %d, хочу 2", len(parts))
+	}
+	want := []struct{ cr, body string }{
+		{"bytes 0-9/30", rangeFixture[0:10]},
+		{"bytes 20-29/30", rangeFixture[20:30]},
+	}
+	for i, w := range want {
+		if parts[i].contentRange != w.cr {
+			t.Errorf("часть %d: Content-Range = %q, хочу %q", i, parts[i].contentRange, w.cr)
+		}
+		if parts[i].body != w.body {
+			t.Errorf("часть %d: тело = %q, хочу %q", i, parts[i].body, w.body)
+		}
+		if parts[i].contentType != "application/x-test" {
+			t.Errorf("часть %d: Content-Type = %q, хочу application/x-test", i, parts[i].contentType)
+		}
+	}
+}
+
+// TestProxyMultipartThreePartsOrder — порядок частей равен порядку в
+// заголовке (parseByteRanges сохраняет его, RFC 9110 сортировки не
+// требует): запрос в убывающем порядке → части в том же порядке.
+func TestProxyMultipartThreePartsOrder(t *testing.T) {
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, rangeFixture)
+	})
+	if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", rec.Code)
+	}
+	rec := getRange(t, h, "/t/pkg/a.deb", "bytes=25-29,10-19,0-4")
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("multipart-ответ = %d, хочу 206", rec.Code)
+	}
+	parts := parseMultipartBody(t, rec)
+	if len(parts) != 3 {
+		t.Fatalf("частей %d, хочу 3", len(parts))
+	}
+	for i, want := range []string{"bytes 25-29/30", "bytes 10-19/30", "bytes 0-4/30"} {
+		if parts[i].contentRange != want {
+			t.Errorf("часть %d: Content-Range = %q, хочу %q", i, parts[i].contentRange, want)
+		}
+	}
+}
+
+// TestProxyMultipart256Green — ровно на капе: 256 однобайтных диапазонов
+// → 206, все части верны, объявленный Content-Length совпадает с телом.
+func TestProxyMultipart256Green(t *testing.T) {
+	const size = 300
+	fixture := strings.Repeat("0123456789", size/10)
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, fixture)
+	})
+	if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", rec.Code)
+	}
+	var rb strings.Builder
+	rb.WriteString("bytes=")
+	for i := 0; i < 256; i++ {
+		if i > 0 {
+			rb.WriteByte(',')
+		}
+		fmt.Fprintf(&rb, "%d-%d", i, i)
+	}
+	rec := getRange(t, h, "/t/pkg/a.deb", rb.String())
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("256 диапазонов = %d, хочу 206", rec.Code)
+	}
+	bodyLen := rec.Body.Len()
+	parts := parseMultipartBody(t, rec)
+	if len(parts) != 256 {
+		t.Fatalf("частей %d, хочу 256", len(parts))
+	}
+	for i, p := range parts {
+		if p.body != fixture[i:i+1] {
+			t.Errorf("часть %d: тело = %q, хочу %q", i, p.body, fixture[i:i+1])
+			break
+		}
+	}
+	if cl := rec.Header().Get("Content-Length"); cl != fmt.Sprint(bodyLen) {
+		t.Errorf("Content-Length = %s, хочу %d (точная длина multipart-тела)", cl, bodyLen)
+	}
+}
+
+// TestProxyMultipartCapOver — свыше капа (257) → честный 200-полный,
+// Content-Type не multipart.
+func TestProxyMultipartCapOver(t *testing.T) {
+	const size = 300
+	fixture := strings.Repeat("0123456789", size/10)
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, fixture)
+	})
+	if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", rec.Code)
+	}
+	var rb strings.Builder
+	rb.WriteString("bytes=")
+	for i := 0; i < 257; i++ {
+		if i > 0 {
+			rb.WriteByte(',')
+		}
+		fmt.Fprintf(&rb, "%d-%d", i, i)
+	}
+	rec := getRange(t, h, "/t/pkg/a.deb", rb.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("257 диапазонов = %d, хочу 200-полный", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); strings.HasPrefix(got, "multipart/") {
+		t.Errorf("Content-Type = %q, не должен быть multipart", got)
+	}
+	if got := rec.Body.String(); got != fixture {
+		t.Errorf("тело = %d байт, хочу полное (%d)", len(got), size)
+	}
+}
+
+// countingStorage — FakeStorage со счётчиком ОТКРЫТЫХ ридеров GetRange:
+// обрыв отдачи обязан закрыть ридер (утечка ловится фактическим счётчиком).
+type countingStorage struct {
+	*testutil.FakeStorage
+	open atomic.Int64
+}
+
+func (s *countingStorage) GetRange(ctx context.Context, key string, start, length int64) (io.ReadCloser, error) {
+	rc, err := s.FakeStorage.GetRange(ctx, key, start, length)
+	if err != nil {
+		return nil, err
+	}
+	s.open.Add(1)
+	return &countingReadCloser{ReadCloser: rc, open: &s.open}, nil
+}
+
+type countingReadCloser struct {
+	io.ReadCloser
+	open *atomic.Int64
+}
+
+func (c *countingReadCloser) Close() error {
+	c.open.Add(-1)
+	return c.ReadCloser.Close()
+}
+
+// limitWriter — ResponseWriter, обрывающий запись после limit байт:
+// инжект сбоя в boundary (правило 10), имитация ушедшего посреди выдачи
+// клиента без платформозависимого TCP-обрыва. Дедлайны не поддерживает —
+// stallWriter молча деградирует.
+type limitWriter struct {
+	hdr    http.Header
+	n      int64
+	limit  int64
+	status int
+}
+
+func (w *limitWriter) Header() http.Header {
+	if w.hdr == nil {
+		w.hdr = http.Header{}
+	}
+	return w.hdr
+}
+
+func (w *limitWriter) WriteHeader(code int) { w.status = code }
+
+func (w *limitWriter) Write(p []byte) (int, error) {
+	if w.n >= w.limit {
+		return 0, io.ErrClosedPipe
+	}
+	if remaining := w.limit - w.n; int64(len(p)) > remaining {
+		w.n += remaining
+		return int(remaining), io.ErrClosedPipe
+	}
+	w.n += int64(len(p))
+	return len(p), nil
+}
+
+// TestProxyMultipartClientAbort — обрыв клиента посреди multipart-тела
+// закрывает открытый ридер: счётчик открытых возвращается к нулю.
+func TestProxyMultipartClientAbort(t *testing.T) {
+	clock := testutil.NewManualClock(time.Unix(0, 0))
+	st := &countingStorage{FakeStorage: testutil.NewFakeStorage(clock)}
+	const key = "cache/t/remote/a.deb"
+	fixture := strings.Repeat("A", 64*1024)
+	ctx := context.Background()
+	wr, err := st.Put(ctx, key)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, err := wr.Write([]byte(fixture)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := wr.Commit(ctx); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	obj, err := st.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	lw := &limitWriter{limit: 1024}
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.Header.Set("Range", "bytes=0-32767,32768-65535")
+	serveRanged(lw, req, obj.Meta,
+		func() (io.ReadCloser, error) {
+			o, err := st.Get(ctx, key)
+			if err != nil {
+				return nil, err
+			}
+			return o.Body, nil
+		},
+		func(start, length int64) (io.ReadCloser, error) { return st.GetRange(ctx, key, start, length) },
+		nil, nil,
+	)
+	if got := st.open.Load(); got != 0 {
+		t.Fatalf("после обрыва открыто ридеров: %d, хочу 0", got)
 	}
 }

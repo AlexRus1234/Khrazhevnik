@@ -14,13 +14,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// Range-раздача (волна Range-206, сессия 111): единая точка семантики
-// 200/206/416 для прокси-кеша и личных репо. Мульти-диапазоны пока
-// деградируют в 200-полный (multipart — сессия 112), If-Range — 113.
+// Range-раздача (волна Range-206, сессии 111–112): единая точка семантики
+// 200/206/416 для прокси-кеша и личных репо. Multi-диапазоны до капа
+// (multipart — сессия 112), If-Range — 113.
 
 package web
 
 import (
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -52,7 +54,8 @@ type byteRange struct {
 //
 // Семантика ошибок: синтаксический мусор и запрос без диапазонов — 200-
 // полный (сервер MAY игнорировать Range); ни одного пересечения — 416;
-// ровно один диапазон — 206; больше одного — 200-полный до сессии 112.
+// ровно один диапазон — 206; от 2 до maxMultipartRanges — 206
+// multipart/byteranges; больше — 200-полный.
 func serveRanged(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -79,10 +82,20 @@ func serveRanged(
 		sendFull(w, r, openFull, onBytes)
 		return
 	}
-	if len(ranges) != 1 {
-		// 0 (пустой Range) или >1: multipart/byteranges — TODO(сессия
-		// 112); до неё честный 200-полный.
+	if len(ranges) == 0 {
+		// Пустой Range (например, "bytes=") — полное тело.
 		sendFull(w, r, openFull, onBytes)
+		return
+	}
+	if len(ranges) > 1 {
+		if len(ranges) > maxMultipartRanges {
+			// Свыше капа — честный 200-полный: 256-частный ответ на
+			// мегабайты заголовков дороже повторной выдачи, а librepo
+			// при 200 сам режет max_ranges пополам и сходится вниз.
+			sendFull(w, r, openFull, onBytes)
+			return
+		}
+		serveMultipart(w, r, meta, ranges, openRange, onBytes, onRange)
 		return
 	}
 
@@ -134,6 +147,133 @@ func serveRanged(
 	}
 }
 
+// maxMultipartRanges — предел числа диапазонов в multipart/byteranges.
+// 256 — стартовое max_ranges librepo (zck_get_missing_range): dnf5/zchunk
+// шлёт не больше и сходится без деградации, получив 200-полный (librepo
+// режет max_ranges вдвое). Свыше — не отдаём: 256-частный ответ на
+// мегабайты заголовков дороже повторной выдачи тела.
+const maxMultipartRanges = 256
+
+// serveMultipart отдаёт >1 диапазона как multipart/byteranges. Тело и
+// Content-Length просчитаны заранее, до WriteHeader: длины частей и
+// оверхед разделителей известны, а stall-writer/write-deadline любят
+// предсказуемый размер. Части строго последовательны — один открытый
+// ридер в моменте (256 FD не копятся), Close — deferred в итерации.
+func serveMultipart(
+	w http.ResponseWriter,
+	r *http.Request,
+	meta port.Meta,
+	ranges []byteRange,
+	openRange func(start, length int64) (io.ReadCloser, error),
+	onBytes func(int64),
+	onRange func(),
+) {
+	// Граница случайна только против коллизии с телом (не секрет): 16
+	// байт crypto/rand. port.Rand сюда не прокинуть без расширения Deps
+	// — сознательно: на контракты это не влияет.
+	var raw [16]byte
+	if _, err := cryptorand.Read(raw[:]); err != nil {
+		// Документировано как невозможное; fail-closed к ошибке лучше
+		// сломанного multipart (открытого ридера ещё нет).
+		http.Error(w, "proxy error", http.StatusInternalServerError)
+		return
+	}
+	boundary := hex.EncodeToString(raw[:])
+	contentType := w.Header().Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	// Точный Content-Length: сумма длин тел + константный каркас частей
+	// + финальная граница. Всё известно до записи.
+	total := int64(len("--" + boundary + "--\r\n"))
+	for _, rg := range ranges {
+		total += rg.length
+		total += int64(partOverhead(boundary, contentType, formatContentRange(rg.start, rg.length, meta.Size)))
+	}
+
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Type", "multipart/byteranges; boundary="+boundary)
+	w.Header().Set("Content-Length", formatInt(total))
+	if r.Method == http.MethodHead {
+		// Тело не открывается: счётчики честны (0 байт тела), размер
+		// multipart-обёртки объявлен.
+		w.WriteHeader(http.StatusPartialContent)
+		if onRange != nil {
+			onRange()
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusPartialContent)
+	sw := newStallWriter(w)
+	var sent int64
+	final := false
+	for _, rg := range ranges {
+		n, err := writeMultipartPart(sw, boundary, contentType, meta.Size, rg, openRange)
+		sent += n
+		if err != nil {
+			// Статус уже отправлен: обрыв клиента/декодера — честно
+			// прекращаем и закрываем ридер (defer в helper'е), а не
+			// пишем дальше в мёртвое соединение.
+			break
+		}
+		final = true
+	}
+	if final {
+		// Закрывающая граница; её обрыв клиента метрику байт не двигает
+		// (sent — байты ТЕЛА).
+		_, _ = io.WriteString(sw, "--"+boundary+"--\r\n")
+	}
+	if onBytes != nil {
+		onBytes(sent)
+	}
+	if onRange != nil {
+		onRange()
+	}
+}
+
+// writeMultipartPart пишет одну часть и возвращает число скопированных
+// байт ТЕЛА (каркас не считается: onBytes — байты объекта, как в
+// однодиапазонной ветке). Ридер закрывается defer'ом до следующей части,
+// так что в моменте открыт максимум один.
+func writeMultipartPart(
+	w io.Writer,
+	boundary, contentType string,
+	size int64,
+	rg byteRange,
+	openRange func(start, length int64) (io.ReadCloser, error),
+) (int64, error) {
+	body, err := openRange(rg.start, rg.length)
+	if err != nil {
+		return 0, err
+	}
+	defer body.Close()
+	head := "--" + boundary + "\r\n" +
+		"Content-Range: " + formatContentRange(rg.start, rg.length, size) + "\r\n" +
+		"Content-Type: " + contentType + "\r\n\r\n"
+	if _, err := io.WriteString(w, head); err != nil {
+		return 0, err
+	}
+	n, err := io.CopyBuffer(w, body, make([]byte, 32*1024))
+	if err != nil {
+		return n, err
+	}
+	if _, err := io.WriteString(w, "\r\n"); err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+// partOverhead — байты каркаса одной части: "--B\r\n", два заголовка,
+// пустая строка и CRLF после данных. Длина тела сюда не входит.
+func partOverhead(boundary, contentType, contentRange string) int {
+	return len("--"+boundary+"\r\n") +
+		len("Content-Range: "+contentRange+"\r\n") +
+		len("Content-Type: "+contentType+"\r\n") +
+		len("\r\n") + len("\r\n")
+}
+
 // sendFull — ветка полного тела (200): заголовки вызывающего сохранены,
 // добавляется только Accept-Ranges. На HEAD тело не открывается.
 func sendFull(w http.ResponseWriter, r *http.Request, openFull func() (io.ReadCloser, error), onBytes func(int64)) {
@@ -175,7 +315,8 @@ func formatContentRange(start, length, size int64) string {
 // не открывает его наружу, а семантика stdlib — контракт волны). Возврат:
 // синтаксическая ошибка → мусорный Range (200-полный); errNoOverlap → ни
 // одного пересечения (416); иначе — нормализованные диапазоны, включая
-// суффиксные bytes=-N.
+// суффиксные bytes=-N. Порядок сохраняется как в заголовке (RFC 9110 не
+// требует сортировки; multipart-части идут в этом же порядке).
 //
 //nolint:gocyclo // ветвления — семантика RFC 9110 и stdlib-порта, не сложность логики
 func parseByteRanges(s string, size int64) ([]byteRange, error) {
