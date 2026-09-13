@@ -1,3 +1,6 @@
+> **Это зеркало репозитория. Оригинал находится по адресу:**
+> [https://git.alexrus1234.ru/AlexRus1234/Khrazhevnik](https://git.alexrus1234.ru/AlexRus1234/Khrazhevnik)
+
 <!--
 Хражевник — кеш-прокси и зеркало linux-репозиториев
 Copyright (C) 2026 AlexRus1234

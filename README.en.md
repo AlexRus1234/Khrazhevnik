@@ -1,3 +1,6 @@
+> **This is a mirror repository. The original is available at:**
+> [https://git.alexrus1234.ru/AlexRus1234/Khrazhevnik](https://git.alexrus1234.ru/AlexRus1234/Khrazhevnik)
+
 <!--
 Khrazhevnik — caching proxy and mirror for Linux package repositories
 Copyright (C) 2026 AlexRus1234
