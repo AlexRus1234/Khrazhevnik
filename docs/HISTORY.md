@@ -281,3 +281,22 @@ httptest-фикстур реальных форматов — от remote до H
 синхронизированы с кодом (107). Генераторы личных репо не тронуты
 (pacman — tar.zst, rpm-md — .gz: валидные rpm-md/pacman-форматы);
 инвариант зеркала не изменился — метаданные upstream побайтово.
+
+## Range-206 — срезы вместо полных тел (сессии 108–116) ✅
+
+**Статус: завершена (2026-09-13).** Волна по факту владельца
+2026-09-13: dnf5 за прокси падал на `.zck` («primary data not present»)
+— Range/206 в проекте не существовал, `proxy.go` всегда отдавал полное
+тело. Порт хранилища получил `GetRange` (fs + s3, `InvalidRangeError`,
+byte-exact срез — 108/109), движок — `FetchMeta`/`OpenBody`/`OpenRange`
+(resolve без открытия тела, один resolve на клиентский запрос, 110),
+единый web-хелпер `serveRanged`: 206 одиночный и
+`multipart/byteranges` (кап 256), 416 + `Content-Range: bytes */N`,
+мусорный Range → 200-полный, `If-Range` (сильный ETag / дата),
+`Accept-Ranges` и метрика `khrazhevnik_cache_range_responses_total`
+(111–113); та же семантика на :29202, деградация `If-Range` на fs — нет
+ETag, работает по `Last-Modified` (114); integration
+`proxy_range_test.go` + обязательная зелёная fedora-нога distro-test с
+шагом verify-range (206-счётчик после `dnf install`, 115); доки
+синхронизированы с кодом (116). Генераторы личных репо не тронуты;
+sync-ограничение `.zck` (Enumerate `UnsupportedError`) сохранено.

@@ -73,6 +73,19 @@ and a raw `+` yield the same object; double encoding (`%252b`) — 400.
 case is case-sensitive and preserved — `cache/apt/<id>/pool/Foo.deb`
 and `.../pool/foo.deb` are different objects.)
 
+## Range serving
+
+Public port :29202 understands HTTP Range for personal repository objects
+(`GET /repo/<name>/<path>`): `206` with an exact `Content-Range`,
+`multipart/byteranges` up to 256 ranges, `416` for an unsatisfiable
+range, `If-Range`. A slice is a byte-exact substring of the object; the
+response headers are the same as for a full serve (`ETag`/`Last-Modified`/
+`Content-Length`). Without Range the behavior is unchanged.
+
+`If-Range` by ETag: on s3 the ETag is present and works fully; fs objects
+have no ETag — the tag form does not match (the response is the full
+body), while `If-Range` by a `Last-Modified` date (file mtime) works.
+
 ## apt
 
 - **Upload:** `pool/...` with the extensions

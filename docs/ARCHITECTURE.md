@@ -46,7 +46,7 @@ runtime-плагины (задел сохранён контрактами), п�
 |------------------|-----------------------------------------------------------------|
 | Модульность      | Compile-time реестр (Caddy-style): `init()` + blank-import в wire |
 | Скелет           | `core/{port,domain,engine,web}` + `mod/*`; depguard в CI         |
-| Инвариант кеша   | Метаданные upstream отдаются **побайтово** — подписи/чексуммы валидны |
+| Инвариант кеша   | Метаданные upstream и их срезы отдаются **побайтово** — подписи/чексуммы валидны |
 | Экосистемы v1    | apt; rpm-md (dnf+zypper одним адаптером); pacman; apk; nix      |
 | Storage          | Интерфейс + реализации: fs (posix) и s3 (первичный для прод)    |
 | БД               | Плагин через TOML: sqlite (modernc) / postgres (pgx) / mariadb  |
@@ -70,7 +70,9 @@ internal/core/
   dbtalk/     мини-шим SQL-диалектов каталога: Placeholder/Upsert/эпоха
   engine/     usecase-логика: cache, mirror, publish, auth; без net/http
   registry/   compile-time реестр модулей
-  web/        chi-роутеры, middleware, TaskRegistry, embed SPA; тонкая доставка
+  web/        chi-роутеры, middleware, TaskRegistry, embed SPA; тонкая доставка;
+              range.go:serveRanged — единая точка Range-семантики (200/206/416,
+              multipart кап 256, If-Range) для прокси и личных репо (:29202)
   metrics/    leaf-пакет счётчиков (breaks import cycles)
 internal/mod/             МОДУЛИ (каждый регистрируется в init())
   ecosystem/  apt/, rpmmmd/, pacman/, apk/, nix/

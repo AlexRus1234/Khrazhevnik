@@ -49,6 +49,37 @@ loopback — a proxy on the same host reaches it via `127.0.0.1:30202`.
   (e.g. nginx's 1m) cut them off with a 413 before the app sees them.
 - No WebSocket needed: the admin UI polls over plain HTTP.
 
+## Range requests (206)
+
+Khrazhevnik supports HTTP Range (RFC 9110): a client may request a slice
+of an object (`Range: bytes=…`) and receive `206 Partial Content` with an
+exact `Content-Range`; 2 to 256 ranges — `multipart/byteranges`, an
+unsatisfiable range — `416` with `Content-Range: bytes */N`. Responses on
+the Range path carry `Accept-Ranges: bytes`. `If-Range` is supported too
+(a strong ETag or a `Last-Modified` date): a mismatched validator yields
+the full body `200`; syntactically garbage Range is ignored by the server
+(`200` full, RFC 9110 MAY).
+
+This is not exotic: dnf5 downloads `.zck` zchunk metadata as ranges by
+default — librepo assembles chunks from slices (a lead with a single
+range, the body as multipart up to 256 parts). The proxy must therefore
+pass Range through to Khrazhevnik without slicing or buffering the
+response. `proxy_buffering off` (nginx) does not get in the way; a caching
+layer on the proxy remains forbidden (see above).
+
+Verification (the first 100 bytes of an index via the domain):
+
+```sh
+curl -s -D - -o /dev/null -r 0-99 \
+  https://pkg.example.org/apt/debian/dists/stable/Release | head
+# → HTTP/1.1 206 Partial Content
+#   Content-Range: bytes 0-99/<size>
+#   Accept-Ranges: bytes
+```
+
+Without `-r` the response is `200` with the full body (same headers +
+Accept-Ranges on the Range path).
+
 ## `trusted_proxies` — mandatory
 
 The `/login` rate limit and the audit derive the client address from

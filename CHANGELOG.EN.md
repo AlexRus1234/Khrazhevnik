@@ -37,6 +37,31 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   engine` on 20 concurrent `EnsureFirstUser` calls (contract suite;
   reproduced over a 400-iteration run, fixed by the retry).
 
+### Added
+
+- **Range serving (206/416):** the proxy and the personal-repo public
+  port (:29202) understand HTTP Range — a single slice `206` with an
+  exact `Content-Range`, `multipart/byteranges` up to 256 ranges (cap =
+  librepo's initial `max_ranges`), `416` with `Content-Range: bytes */N`,
+  `Accept-Ranges: bytes` on 200/206 of the Range path, `If-Range` (a
+  strong ETag or a `Last-Modified` date), garbage Range → 200 full
+  (RFC 9110 MAY). A slice is byte-exact — the byte-exact serving
+  invariant is extended to substrings. Fixes dnf5 failing behind the
+  proxy on zchunk metadata (`primary data not present`): dnf5/librepo
+  downloads `.zck` as ranges. The storage port gained `GetRange`
+  (fs + s3), the engine — `FetchMeta`/`OpenBody`/`OpenRange` (resolve
+  without opening the body, one resolve per client request). Metric
+  `khrazhevnik_cache_range_responses_total{ecosystem}`; the distro-test
+  fedora leg became mandatory and verifies the 206 fact after
+  `dnf install` (verify-range).
+
+### Changed
+
+- **Proxy and :29202:** HEAD requests with Range return the 206/416
+  headers without opening the body — byte counters are honest (0 body
+  bytes); the single point of Range semantics is `web.serveRanged` for
+  the proxy and personal repositories.
+
 ## [1.0.2] — 2026-09-12
 
 ### Fixed

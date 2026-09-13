@@ -47,6 +47,30 @@ major.
   (контрактный suite; воспроизведено 400-итерационным прогоном,
   исправлено retry).
 
+### Добавлено
+
+- **Range-раздача (206/416):** прокси и публичный порт личных репо
+  (:29202) понимают HTTP Range — одиночный срез `206` с точным
+  `Content-Range`, `multipart/byteranges` до 256 диапазонов (кап —
+  стартовое `max_ranges` librepo), `416` с `Content-Range: bytes */N`,
+  `Accept-Ranges: bytes` на 200/206 Range-пути, `If-Range` (сильный
+  ETag или дата `Last-Modified`), мусорный Range → 200-полный
+  (RFC 9110 MAY). Срез byte-exact — инвариант побайтовой раздачи
+  расширен на подстроки. Закрывает падение dnf5 за прокси на
+  zchunk-метаданных (`primary data not present`): dnf5/librepo качает
+  `.zck` диапазонами. Порт хранилища получил
+  `GetRange` (fs + s3), движок — `FetchMeta`/`OpenBody`/`OpenRange`
+  (resolve без открытия тела, один resolve на клиентский запрос).
+  Метрика `khrazhevnik_cache_range_responses_total{ecosystem}`;
+  fedora-нога distro-test стала обязательной и проверяет факт 206 после
+  `dnf install` (verify-range).
+
+### Изменено
+
+- **Прокси и :29202:** HEAD-запросы с Range отдают заголовки 206/416
+  без открытия тела — счётчики байт честны (0 байт тела); единая точка
+  Range-семантики — `web.serveRanged` для прокси и личных репо.
+
 ## [1.0.2] — 2026-09-12
 
 ### Исправлено

@@ -72,6 +72,19 @@ curl -s -X POST http://127.0.0.1:30202/api/v1/repos/1/reindex \
 case-чувствителен и сохраняется, `cache/apt/<id>/pool/Foo.deb` и
 `.../pool/foo.deb` — разные объекты.)
 
+## Range-раздача
+
+Публичный порт :29202 понимает HTTP Range для объектов личных репо
+(`GET /repo/<name>/<путь>`): `206` с точным `Content-Range`,
+`multipart/byteranges` до 256 диапазонов, `416` на неудовлетворимый
+диапазон, `If-Range`. Срез — byte-exact подстрока объекта; заголовки
+ответа те же, что у полной выдачи (`ETag`/`Last-Modified`/
+`Content-Length`). Без Range поведение не меняется.
+
+`If-Range` по ETag: на s3 ETag есть — работает полностью; у fs-объектов
+ETag отсутствует — тег-форма не сработает (ответ — полное тело), а
+`If-Range` по дате `Last-Modified` (mtime файла) работает.
+
 ## apt
 
 - **Upload:** `pool/...` с расширениями `.deb/.udeb/.ddeb/.dsc/.orig.tar.*/.debian.tar.*`.

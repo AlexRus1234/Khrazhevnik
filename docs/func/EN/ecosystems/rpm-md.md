@@ -50,6 +50,14 @@ gpgcheck=1
 
 `gpgcheck=1` works without changes: upstream signatures are preserved.
 
+zchunk metadata (`.zck`) works through the proxy: if repomd offers a
+`.zck` variant, dnf5/librepo (the default) downloads chunks as Range
+requests — a lead with a single range, the body as `multipart/byteranges`
+up to 256 parts. Khrazhevnik serves them `206` byte-exact (the Range-206
+wave); no separate `.gz` variant is needed for the proxy. The limitation
+remains only for the **mirror** (sync): `Enumerate` does not parse `.zck`
+— an honest `UnsupportedError` (fork 103–107).
+
 ## Personal repository
 
 Upload `.rpm/.drpm/.src.rpm` anywhere under the repository root EXCEPT

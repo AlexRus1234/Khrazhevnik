@@ -115,6 +115,31 @@ Unit-only цифра (~67% на момент внедрения) была зан
   форматов (pacman gzip-БД, rpm-md zst-primary) — remote → sync
   succeeded → MISS → HIT, byte-exact.
 
+## Range-раздача (волна «Range-206»)
+
+Прокси и :29202 отдают срезы (сессии 108–115); закреплены кейсы:
+
+- контракт `Storage.GetRange` — общий storage-suite на fs и s3
+  (minio-контейнер): срез `[start, start+length)` byte-exact
+  относительно `Get`, `InvalidRangeError` на выход за границы и мусор,
+  `NotFoundError` на отсутствующий ключ;
+- движок (`FetchMeta`/`OpenBody`/`OpenRange`): resolve без открытия
+  тела (`HIT`/`MISS`/`STALE` совпадают с `FetchStatus`, счётчик
+  открытых тел не растёт), `OpenRange` == срезу полного тела,
+  `InvalidRangeError` проходит наружу;
+- web-хелпер `serveRanged`: 206 single (края/суффикс/open-ended), 416 +
+  `bytes */N`, мусорный Range → 200, multipart до 256 частей (порядок,
+  точный `Content-Length`), обрыв клиента закрывает ридеры, `If-Range`
+  (совпадение ETag/даты, `W/`-слабый тег, без Range), кап 257 → 200,
+  метрика 206;
+- integration `proxy_range_test.go` (build-tag) — полный GET → MISS,
+  `bytes=100-199` → 206 byte-exact, повтор → HIT 206 с идентичными
+  заголовками, суффикс/416/мусор, multipart, If-Range;
+- distro-test, **fedora-нога обязательна**: `dnf install` качает `.zck`
+  диапазонами, шаг verify-range требует
+  `khrazhevnik_cache_range_responses_total > 0` в `/metrics`; падение
+  ноги — стоп волны (не «волатильность»).
+
 ## Надёжность
 
 Graceful shutdown каскадом; идемпотентные миграции; resume sync-задач

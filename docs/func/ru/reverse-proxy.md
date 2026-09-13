@@ -47,6 +47,37 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   прокси (например 1m у nginx) режут его 413-м до достижений приложения.
 - WebSocket не нужен: админка поллит обычным HTTP.
 
+## Range-запросы (206)
+
+Хражевник поддерживает HTTP Range (RFC 9110): клиент может запросить
+срез объекта (`Range: bytes=…`) и получить `206 Partial Content` с
+точным `Content-Range`; от 2 до 256 диапазонов — `multipart/byteranges`,
+неудовлетворимый диапазон — `416` с `Content-Range: bytes */N`. На
+ответах Range-пути выставляется `Accept-Ranges: bytes`. Поддерживается
+и `If-Range` (сильный ETag или дата `Last-Modified`): несовпавший
+валидатор — полное тело `200`; синтаксический мусор в Range сервер
+игнорирует (`200`-полный, RFC 9110 MAY).
+
+Это не экзотика: dnf5 по умолчанию качает метаданные `.zck` zchunk
+диапазонами — librepo собирает чанки из срезов (lead одним диапазоном,
+тело — multipart до 256 частей). Поэтому прокси обязан пропускать Range
+до Хражевника, не срезать и не буферизовать ответ. `proxy_buffering off`
+(nginx) этому не мешает; кеширующий слой на прокси по-прежнему
+запрещён (см. выше).
+
+Проверка (первые 100 байт индекса через домен):
+
+```sh
+curl -s -D - -o /dev/null -r 0-99 \
+  https://pkg.example.org/apt/debian/dists/stable/Release | head
+# → HTTP/1.1 206 Partial Content
+#   Content-Range: bytes 0-99/<size>
+#   Accept-Ranges: bytes
+```
+
+Без `-r` ответ — `200` с полным телом (те же заголовки + Accept-Ranges
+на Range-пути).
+
 ## `trusted_proxies` — обязательно
 
 Rate-limit `/login` и аудит считают адрес клиента по `RemoteAddr`;
