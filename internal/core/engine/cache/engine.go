@@ -151,6 +151,28 @@ func (e *Engine) FetchStatus(ctx context.Context, eco port.Ecosystem, ecosystemP
 	return e.fetch(ctx, eco, ecosystemPath)
 }
 
+// FetchMeta — resolve кеша БЕЗ открытия тела: возвращает метаданные
+// (Meta.Key — ключ хранилища для OpenBody/OpenRange) и исход
+// HIT|MISS|STALE. Один клиентский запрос = один resolve и N открытий
+// (Range/multipart), txn пишется один. Тело начнётся позже — парсинг
+// Range нужен только Size.
+func (e *Engine) FetchMeta(ctx context.Context, eco port.Ecosystem, ecosystemPath string) (port.Meta, string, error) {
+	return e.fetchMeta(ctx, eco, ecosystemPath)
+}
+
+// OpenBody открывает тело зафиксированного объекта по ключу хранилища из
+// Meta.Key; закрытие — за вызывающим.
+func (e *Engine) OpenBody(ctx context.Context, key string) (io.ReadCloser, error) {
+	return e.open(ctx, key)
+}
+
+// OpenRange открывает срез [start, start+length) тела по ключу хранилища.
+// Несуществующий диапазон — *domain.InvalidRangeError (web-слой отдаёт
+// 416, сессия 111).
+func (e *Engine) OpenRange(ctx context.Context, key string, start, length int64) (io.ReadCloser, error) {
+	return e.storage.GetRange(ctx, key, start, length)
+}
+
 // PrefetchResult — итог prefetch: статус кеша и размер объекта для
 // прогресса зеркала. Downloaded — байты, реальнотянутые из upstream
 // (0 у HIT и 304-ревалидации); Bytes — полный размер объекта в кеше.
@@ -248,7 +270,7 @@ func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class 
 	}
 	if negErr := e.negativeError(m, target.StorageKey); negErr != nil {
 		if indexErr == nil {
-			if _, _, ok := e.staleServe(ctx, negErr, &indexed, m); ok {
+			if _, _, ok := e.staleServeMeta(ctx, negErr, &indexed, m); ok {
 				return PrefetchResult{Status: statusStale, Bytes: indexed.Size}, &domain.StaleError{Have: indexed.ETag}
 			}
 		}
@@ -263,7 +285,7 @@ func (e *Engine) prefetchMutable(ctx context.Context, target port.Target, class 
 		return e.revalidate(ctx, target, class, &old, m, wait)
 	})
 	if err != nil {
-		if _, _, ok := e.staleServe(ctx, err, old, m); ok {
+		if _, _, ok := e.staleServeMeta(ctx, err, old, m); ok {
 			return PrefetchResult{Status: statusStale, Bytes: old.Size}, &domain.StaleError{Have: old.ETag}
 		}
 		return PrefetchResult{}, err
@@ -327,14 +349,7 @@ func (e *Engine) fetch(ctx context.Context, eco port.Ecosystem, ecosystemPath st
 	resolved := true
 	defer func() {
 		if resolved {
-			e.txns.record(Txn{
-				At:        e.clock.Now(),
-				Ecosystem: eco.Name(),
-				Path:      ecosystemPath,
-				Status:    status,
-				Err:       errText(err),
-				Size:      obj.Size,
-			})
+			e.recordTxn(eco.Name(), ecosystemPath, status, err, obj.Size)
 		}
 	}()
 	class, err := eco.Classify(target.UpstreamPath)
@@ -350,6 +365,45 @@ func (e *Engine) fetch(ctx context.Context, eco port.Ecosystem, ecosystemPath st
 	return e.fetchMutable(ctx, target, class, e.metrics.ForEcosystem(eco.Name()))
 }
 
+// recordTxn пишет клиентскую транзакцию кеша в ring-историю.
+func (e *Engine) recordTxn(ecoName, ecosystemPath, status string, err error, size int64) {
+	e.txns.record(Txn{
+		At:        e.clock.Now(),
+		Ecosystem: ecoName,
+		Path:      ecosystemPath,
+		Status:    status,
+		Err:       errText(err),
+		Size:      size,
+	})
+}
+
+// fetchMeta — resolve-путь FetchMeta: та же маршрутизация, что у fetch
+// (Resolve/Classify/метрики/txn), но без открытия тела.
+func (e *Engine) fetchMeta(ctx context.Context, eco port.Ecosystem, ecosystemPath string) (meta port.Meta, status string, err error) {
+	target, ok := eco.Resolve(ecosystemPath)
+	if !ok {
+		return port.Meta{}, "", &domain.NotFoundError{What: "путь", Key: ecosystemPath}
+	}
+	resolved := true
+	defer func() {
+		if resolved {
+			e.recordTxn(eco.Name(), ecosystemPath, status, err, meta.Size)
+		}
+	}()
+	class, err := eco.Classify(target.UpstreamPath)
+	if err != nil {
+		return port.Meta{}, "", err
+	}
+	if err := class.Validate(); err != nil {
+		return port.Meta{}, "", err
+	}
+	m := e.metrics.ForEcosystem(eco.Name())
+	if class.Kind == domain.KindImmutable {
+		return e.fetchImmutableMeta(ctx, target, class, m)
+	}
+	return e.fetchMutableMeta(ctx, target, class, m)
+}
+
 func (e *Engine) fetchImmutable(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache) (port.Object, string, error) {
 	if err := e.negativeError(m, target.StorageKey); err != nil {
 		return port.Object{}, "", err
@@ -357,11 +411,39 @@ func (e *Engine) fetchImmutable(ctx context.Context, target port.Target, class d
 	// resilience: refetch при сбойном HIT — сбой чтения кеша (в т.ч.
 	// недоступное хранилище) деградирует в MISS; лежащий целиком носитель
 	// вернёт UnavailableError с write-пути fetch'а (503), а не 503 на
-	// каждом чтении (сессия 60).
+	// каждом чтении (сессия 60). HIT открывает тело сразу (cached) — сбой
+	// Get обязан деградировать, resolve-only проверка это потеряла бы.
 	if obj, err := e.cached(ctx, target.StorageKey); err == nil {
 		m.Hits.Add(1)
 		return obj, statusHit, nil
 	}
+	meta, status, err := e.fetchImmutableMiss(ctx, target, class, m)
+	if err != nil {
+		return port.Object{}, status, err
+	}
+	obj, err := e.openObject(ctx, meta)
+	if err != nil {
+		return port.Object{}, "", err
+	}
+	return obj, status, nil
+}
+
+// fetchImmutableMeta — immutable-путь FetchMeta: HIT по resolve (тело не
+// открывается), MISS — через общий singleflight.
+func (e *Engine) fetchImmutableMeta(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache) (port.Meta, string, error) {
+	if err := e.negativeError(m, target.StorageKey); err != nil {
+		return port.Meta{}, "", err
+	}
+	if meta, err := e.resolve(ctx, target.StorageKey); err == nil {
+		m.Hits.Add(1)
+		return meta, statusHit, nil
+	}
+	return e.fetchImmutableMiss(ctx, target, class, m)
+}
+
+// fetchImmutableMiss — общий MISS-путь immutable (Fetch и FetchMeta):
+// singleflight, затем финальный resolve без открытия тела.
+func (e *Engine) fetchImmutableMiss(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache) (port.Meta, string, error) {
 	m.Misses.Add(1)
 	_, err, _ := e.flights.Do(target.StorageKey, func() (any, error) {
 		if _, statErr := e.storage.Stat(ctx, target.StorageKey); statErr == nil {
@@ -371,17 +453,13 @@ func (e *Engine) fetchImmutable(ctx context.Context, target port.Target, class d
 		return nil, err
 	})
 	if err != nil {
-		return port.Object{}, "", err
+		return port.Meta{}, "", err
 	}
-	key, meta, err := e.resolve(ctx, target.StorageKey)
+	meta, err := e.resolve(ctx, target.StorageKey)
 	if err != nil {
-		return port.Object{}, "", err
+		return port.Meta{}, "", err
 	}
-	obj, err := e.openObject(ctx, key, meta)
-	if err != nil {
-		return port.Object{}, "", err
-	}
-	return obj, statusMiss, nil
+	return meta, statusMiss, nil
 }
 
 // mutableResult — итог успешной ревалидации: участники singleflight
@@ -391,25 +469,44 @@ type mutableResult struct {
 	revalidated bool
 }
 
+// fetchMutable — объектный путь: fetchMutableMeta + открытие тела.
+// STALE-исход возвращает и ошибку, и тело протухшей версии — как раньше.
 func (e *Engine) fetchMutable(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache) (port.Object, string, error) {
+	meta, status, err := e.fetchMutableMeta(ctx, target, class, m)
+	if status == "" {
+		return port.Object{}, "", err
+	}
+	obj, oerr := e.openObject(ctx, meta)
+	if oerr != nil {
+		return port.Object{}, "", oerr
+	}
+	return obj, status, err
+}
+
+// fetchMutableMeta — mutable-путь без открытия тела (Fetch и FetchMeta):
+// HIT по индексу, stale-if-error и финальная мета версии — через
+// resolveAt; тело откроет вызывающий.
+//
+//nolint:gocyclo // mutable-paths: HIT/negative/revalidate/stale — одна атомарная операция
+func (e *Engine) fetchMutableMeta(ctx context.Context, target port.Target, class domain.Class, m *metrics.Cache) (port.Meta, string, error) {
 	indexed, indexErr := e.index.ObjectMeta(ctx, target.StorageKey)
 	if indexErr == nil && !indexed.Expired(e.clock.Now()) {
 		// resilience: refetch при сбойном HIT — как в fetchImmutable
 		// (сессия 60): сбой чтения кеша деградирует в ревалидацию,
 		// а не обрывает раздачу.
-		if obj, err := e.cachedAt(ctx, indexed); err == nil {
+		if meta, err := e.resolveAt(ctx, indexed); err == nil {
 			m.Hits.Add(1)
-			return obj, statusHit, nil
+			return meta, statusHit, nil
 		}
 	}
 	// свежий 404/5xx не должен долбить upstream каждым клиентом
 	if negErr := e.negativeError(m, target.StorageKey); negErr != nil {
 		if indexErr == nil {
-			if obj, stale, ok := e.staleServe(ctx, negErr, &indexed, m); ok {
-				return obj, statusStale, stale
+			if meta, stale, ok := e.staleServeMeta(ctx, negErr, &indexed, m); ok {
+				return meta, statusStale, stale
 			}
 		}
-		return port.Object{}, "", negErr
+		return port.Meta{}, "", negErr
 	}
 	m.Misses.Add(1)
 	var old *domain.ObjectMeta
@@ -420,28 +517,28 @@ func (e *Engine) fetchMutable(ctx context.Context, target port.Target, class dom
 		return e.revalidate(ctx, target, class, &old, m, nil)
 	})
 	if err != nil {
-		if obj, stale, ok := e.staleServe(ctx, err, old, m); ok {
-			return obj, statusStale, stale
+		if meta, stale, ok := e.staleServeMeta(ctx, err, old, m); ok {
+			return meta, statusStale, stale
 		}
-		return port.Object{}, "", err
+		return port.Meta{}, "", err
 	}
 	if res == nil {
 		// исполнитель полёта увидел свежую запись — перечитываем индекс
-		return e.serveReloaded(ctx, target, m)
+		return e.serveReloadedMeta(ctx, target, m)
 	}
 	r, ok := res.(*mutableResult)
 	if !ok {
-		return port.Object{}, "", fmt.Errorf("кеш: неожиданный тип результата полёта %T", res)
+		return port.Meta{}, "", fmt.Errorf("кеш: неожиданный тип результата полёта %T", res)
 	}
-	obj, err := e.cachedAt(ctx, r.meta)
+	meta, err := e.resolveAt(ctx, r.meta)
 	if err != nil {
-		return port.Object{}, "", err
+		return port.Meta{}, "", err
 	}
 	if r.revalidated {
 		m.Hits.Add(1)
-		return obj, statusHit, nil
+		return meta, statusHit, nil
 	}
-	return obj, statusMiss, nil
+	return meta, statusMiss, nil
 }
 
 // revalidate — тело singleflight-полёта mutable-объекта: двойная
@@ -467,35 +564,36 @@ func (e *Engine) revalidate(ctx context.Context, target port.Target, class domai
 	return &mutableResult{meta: meta, revalidated: rev}, nil
 }
 
-// serveReloaded отдаёт запись, освеженную параллельным полётом.
-func (e *Engine) serveReloaded(ctx context.Context, target port.Target, m *metrics.Cache) (port.Object, string, error) {
+// serveReloadedMeta отдаёт мету записи, освеженной параллельным полётом,
+// без открытия тела (тело откроет вызывающий).
+func (e *Engine) serveReloadedMeta(ctx context.Context, target port.Target, m *metrics.Cache) (port.Meta, string, error) {
 	cur, curErr := e.index.ObjectMeta(ctx, target.StorageKey)
 	if curErr != nil {
-		return port.Object{}, "", curErr
+		return port.Meta{}, "", curErr
 	}
-	obj, err := e.cachedAt(ctx, cur)
+	meta, err := e.resolveAt(ctx, cur)
 	if err != nil {
-		return port.Object{}, "", err
+		return port.Meta{}, "", err
 	}
 	m.Hits.Add(1)
-	return obj, statusHit, nil
+	return meta, statusHit, nil
 }
 
-// staleServe отдаёт протухшую копию вместо ошибки upstream
-// (RFC 5861 stale-if-error). Только для сбойного upstream: 404 —
-// авторитетное «объекта больше нет», маскировать его stale-копией
-// нельзя.
-func (e *Engine) staleServe(ctx context.Context, cause error, old *domain.ObjectMeta, m *metrics.Cache) (port.Object, *domain.StaleError, bool) {
+// staleServeMeta отдаёт мету протухшей копии вместо ошибки upstream
+// (RFC 5861 stale-if-error) без открытия тела. Только для сбойного
+// upstream: 404 — авторитетное «объекта больше нет», маскировать его
+// stale-копией нельзя.
+func (e *Engine) staleServeMeta(ctx context.Context, cause error, old *domain.ObjectMeta, m *metrics.Cache) (port.Meta, *domain.StaleError, bool) {
 	var up *domain.UpstreamError
 	if old == nil || !e.cfg.StaleIfError || !errors.As(cause, &up) {
-		return port.Object{}, nil, false
+		return port.Meta{}, nil, false
 	}
-	obj, err := e.cachedAt(ctx, *old)
+	meta, err := e.resolveAt(ctx, *old)
 	if err != nil {
-		return port.Object{}, nil, false
+		return port.Meta{}, nil, false
 	}
 	m.StaleServed.Add(1)
-	return obj, &domain.StaleError{Have: old.ETag}, true
+	return meta, &domain.StaleError{Have: old.ETag}, true
 }
 
 //nolint:gocyclo // разбор статуса, bounded-стрим и транзакционный коммит — одна атомарная операция
@@ -785,15 +883,15 @@ func (e *Engine) cached(ctx context.Context, key string) (port.Object, error) {
 	return obj, nil
 }
 
-// resolve отдаёт ключ хранилища и метаданные объекта БЕЗ открытия тела:
-// Range-раздаче нужен Size до открытия, а тело откроется позже и,
-// возможно, не раз (multipart — сессия 112). Заголовки immutable-объектов
-// fs-хранилище не знает — их дополняет in-memory таблица e.meta (как в
-// cached).
-func (e *Engine) resolve(ctx context.Context, key string) (string, port.Meta, error) {
+// resolve отдаёт метаданные объекта БЕЗ открытия тела (Meta.Key — ключ
+// хранилища для OpenBody/OpenRange): Range-раздаче нужен Size до
+// открытия, а тело откроется позже и, возможно, не раз (multipart —
+// сессия 112). Заголовки immutable-объектов fs-хранилище не знает — их
+// дополняет in-memory таблица e.meta (как в cached).
+func (e *Engine) resolve(ctx context.Context, key string) (port.Meta, error) {
 	meta, err := e.storage.Stat(ctx, key)
 	if err != nil {
-		return "", port.Meta{}, err
+		return port.Meta{}, err
 	}
 	e.mu.RLock()
 	m, ok := e.meta[key]
@@ -801,20 +899,19 @@ func (e *Engine) resolve(ctx context.Context, key string) (string, port.Meta, er
 	if ok {
 		meta.ETag, meta.ContentType, meta.ModTime = m.ETag, m.ContentType, m.LastModified
 	}
-	return key, meta, nil
+	return meta, nil
 }
 
 // resolveAt — resolve по индексной записи: StorageKey говорит, где лежат
 // байты (пустой — сам Key, записи до версионирования); ETag/CT/ModTime
 // версии — из самой записи.
-func (e *Engine) resolveAt(ctx context.Context, m domain.ObjectMeta) (string, port.Meta, error) {
-	key := m.BytesKey()
-	meta, err := e.storage.Stat(ctx, key)
+func (e *Engine) resolveAt(ctx context.Context, m domain.ObjectMeta) (port.Meta, error) {
+	meta, err := e.storage.Stat(ctx, m.BytesKey())
 	if err != nil {
-		return "", port.Meta{}, err
+		return port.Meta{}, err
 	}
 	meta.ETag, meta.ContentType, meta.ModTime = m.ETag, m.ContentType, m.LastModified
-	return key, meta, nil
+	return meta, nil
 }
 
 // open открывает тело зафиксированного объекта; закрытие — за
@@ -829,22 +926,12 @@ func (e *Engine) open(ctx context.Context, key string) (io.ReadCloser, error) {
 
 // openObject собирает объект из resolve+open: один resolve на запрос,
 // открытий — сколько потребует раздача (Range/multipart).
-func (e *Engine) openObject(ctx context.Context, key string, meta port.Meta) (port.Object, error) {
-	body, err := e.open(ctx, key)
+func (e *Engine) openObject(ctx context.Context, meta port.Meta) (port.Object, error) {
+	body, err := e.open(ctx, meta.Key)
 	if err != nil {
 		return port.Object{}, err
 	}
 	return port.Object{Meta: meta, Body: body}, nil
-}
-
-// cachedAt достаёт объект по индексной записи (resolveAt+open):
-// StorageKey говорит, где лежат байты.
-func (e *Engine) cachedAt(ctx context.Context, meta domain.ObjectMeta) (port.Object, error) {
-	key, pm, err := e.resolveAt(ctx, meta)
-	if err != nil {
-		return port.Object{}, err
-	}
-	return e.openObject(ctx, key, pm)
 }
 
 // versionedKey строит ключ новой версии mutable-объекта: суффикс из
