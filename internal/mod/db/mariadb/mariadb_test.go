@@ -95,6 +95,9 @@ func TestRetryable(t *testing.T) {
 	if !isRetryable(&mysql.MySQLError{Number: errLockWaitTimeout}) {
 		t.Error("1205 (lock_wait_timeout) должен быть retryable")
 	}
+	if !isRetryable(&mysql.MySQLError{Number: errAutoIncReadFailed}) {
+		t.Error("1467 (autoinc read failed) должен быть retryable")
+	}
 	// уникальный конфликт — НЕ retryable
 	if isRetryable(&mysql.MySQLError{Number: errDupEntry}) {
 		t.Error("1062 (dup) не должен быть retryable")

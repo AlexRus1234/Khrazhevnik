@@ -60,7 +60,8 @@ const (
 	// FROM DUAL обязателен: MariaDB не допускает WHERE у SELECT без FROM.
 	// Конкуренты под RR сводятся к дедлоку на gap-локе пустой таблицы —
 	// его гасит retry обёртки call (1213), проигравший переоценивает
-	// NOT EXISTS и получает RowsAffected=0.
+	// NOT EXISTS и получает RowsAffected=0. Транзиентный 1467 (гонка
+	// чтения автоинкремента тем же INSERT…SELECT) гасит тот же retry.
 	sqlUserInsertFirst = `INSERT INTO users (username, password_hash, role, token_version, created_at)
 		SELECT ?, ?, ?, ?, ? FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM users)`
 	sqlUserSelect = `SELECT id, username, password_hash, role, token_version, created_at FROM users`

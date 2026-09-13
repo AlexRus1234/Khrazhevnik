@@ -51,15 +51,16 @@ const (
 // MySQL-коды ошибок (драйвер не экспортирует константы — имена из
 // документации MariaDB/MySQL).
 const (
-	errDupEntry        uint16 = 1062 // ER_DUP_ENTRY: UNIQUE-нарушение
-	errNoRefRow        uint16 = 1452 // ER_NO_REFERENCED_ROW_2: FK на INSERT
-	errRowReferenced   uint16 = 1451 // ER_ROW_IS_REFERENCED_2: FK на DELETE
-	errLockDeadlock    uint16 = 1213 // ER_LOCK_DEADLOCK
-	errLockWaitTimeout uint16 = 1205 // ER_LOCK_WAIT_TIMEOUT
-	errBadNull         uint16 = 1048 // ER_BAD_NULL_ERROR: NOT NULL
-	errCheckViolated   uint16 = 4025 // ER_CHECK_CONSTRAINT_VIOLATED
-	errDataTooLong     uint16 = 1406 // ER_DATA_TOO_LONG: длиннее колонки
-	errWrongValue      uint16 = 1366 // ER_TRUNCATED_WRONG_VALUE: тип значения
+	errDupEntry          uint16 = 1062 // ER_DUP_ENTRY: UNIQUE-нарушение
+	errNoRefRow          uint16 = 1452 // ER_NO_REFERENCED_ROW_2: FK на INSERT
+	errRowReferenced     uint16 = 1451 // ER_ROW_IS_REFERENCED_2: FK на DELETE
+	errLockDeadlock      uint16 = 1213 // ER_LOCK_DEADLOCK
+	errLockWaitTimeout   uint16 = 1205 // ER_LOCK_WAIT_TIMEOUT
+	errAutoIncReadFailed uint16 = 1467 // ER_AUTOINC_READ_FAILED: гонка автоинкремента
+	errBadNull           uint16 = 1048 // ER_BAD_NULL_ERROR: NOT NULL
+	errCheckViolated     uint16 = 4025 // ER_CHECK_CONSTRAINT_VIOLATED
+	errDataTooLong       uint16 = 1406 // ER_DATA_TOO_LONG: длиннее колонки
+	errWrongValue        uint16 = 1366 // ER_TRUNCATED_WRONG_VALUE: тип значения
 )
 
 // init регистрирует фабрику в compile-time реестре.
@@ -178,14 +179,18 @@ func retryPause(attempt int) time.Duration {
 	return 200 * time.Millisecond
 }
 
-// isRetryable распознаёт дедлок (1213) и lock_wait_timeout (1205).
+// isRetryable распознаёт транзиентные конфликты InnoDB: дедлок (1213),
+// lock_wait_timeout (1205) и сбой чтения автоинкремента (1467). Последний
+// ловит гонку INSERT…SELECT WHERE NOT EXISTS на пустой таблице (bootstrap
+// EnsureFirstUser): при повторе проигравший видит строку победителя и
+// отдаёт RowsAffected=0 — без ошибки наружу.
 func isRetryable(err error) bool {
 	var myErr *mysql.MySQLError
 	if !errors.As(err, &myErr) {
 		return false
 	}
 	switch myErr.Number {
-	case errLockDeadlock, errLockWaitTimeout:
+	case errLockDeadlock, errLockWaitTimeout, errAutoIncReadFailed:
 		return true
 	}
 	return false
