@@ -728,9 +728,12 @@ jobs:
   # ставят пакеты через Хражевник (pull-through живых upstream), кеш
   # доказан фактами (X-Cache: HIT + /api/v1/cache/stats). Матрица
   # (сессия 73): одна нога = одна экосистема v1 (debian/fedora/arch/
-  # alpine/nix); fail-fast: false — красная волатильная нога (nix:
-  # eval-тарбол nixpkgs качается с github мимо binary-cache; fedora:
-  # полное dnf-дерево) не топит остальные. DooD, а не PinP: сокет
+  # alpine/nix); fail-fast: false — красная нога не топит остальные.
+  # Сессия 115: волатильной остаётся только nix (eval-тарбол nixpkgs
+  # качается с github мимо binary-cache — вне протокола Range); fedora
+  # после Range-фикса dnf5+zchunk детерминирована: её краснота = стоп
+  # волны, а не «лог владельцу», verify-range доказывает 206-путь.
+  # DooD, а не PinP: сокет
   # /run/user/968/podman/podman.sock — демон ХОСТОВЫЙ, job-контейнер лишь
   # клиент: mount /proc не выполняется, ограничение rootless-раннера на
   # вложенность (см. комментарий oci job) касалось podman ВНУТРИ job-
@@ -1043,6 +1046,20 @@ jobs:
             -H "Authorization: Bearer $TOKEN" \
             http://localhost:30202/api/v1/cache/stats \
             | jq -e '.hits>0 and .bytes_from_upstream>0'
+
+      - name: Verify range path
+        # Сессия 115: обязательное доказательство, что dnf5 реально качал
+        # .zck-метаданные диапазонами (librepo/zchunk Range) через
+        # Хражевник, а не получил их полным телом. /metrics — admin-only
+        # (:30202), TOKEN из Bootstrap admin + remote. Без continue-on-error:
+        # нулевой счётчик = волна Range-206 не принята.
+        if: matrix.name == 'fedora'
+        run: |
+          set -eu
+          metrics="$(podman exec khrz-app-${{ matrix.name }} curl -sfS \
+            -H "Authorization: Bearer $TOKEN" \
+            http://localhost:30202/metrics)"
+          grep -q 'khrazhevnik_cache_range_responses_total{.*} [1-9]' <<<"$metrics"
 
       - name: Dump logs on failure
         if: failure()
