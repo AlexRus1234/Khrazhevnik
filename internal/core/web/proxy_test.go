@@ -613,6 +613,17 @@ func getRange(t *testing.T, h http.Handler, path, value string) *httptest.Respon
 	return rec
 }
 
+// getRangeIf — GET с заголовками Range и If-Range.
+func getRangeIf(t *testing.T, h http.Handler, path, value, ifRange string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Range", value)
+	req.Header.Set("If-Range", ifRange)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
 // TestProxySingleRange — однодиапазонный 206 byte-exact (сессия 111):
 // прогретый кеш, Range: bytes=10-19 → 206, тело == fixture[10:20],
 // Content-Range/Content-Length/Accept-Ranges/X-Cache корректны.
@@ -818,6 +829,127 @@ func TestProxyRangeMetric(t *testing.T) {
 	body := scrapeMetrics(t, exporter)
 	if !strings.Contains(body, `khrazhevnik_cache_range_responses_total{ecosystem="t"} 1`) {
 		t.Errorf("нет per-eco счётчика 206:\n%s", body)
+	}
+}
+
+// TestProxyIfRangeETagMatch — If-Range с ETag первого ответа совпал:
+// диапазон применяется (206), тело — запрошенный срез (сессия 113).
+func TestProxyIfRangeETagMatch(t *testing.T) {
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = io.WriteString(w, rangeFixture)
+	})
+	first := get(t, h, "/t/pkg/a.deb")
+	if first.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", first.Code)
+	}
+	etag := first.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("ответ без ETag — нечего слать в If-Range")
+	}
+	rec := getRangeIf(t, h, "/t/pkg/a.deb", "bytes=10-19", etag)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("совпавший If-Range = %d, хочу 206 (тело %q)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != rangeFixture[10:20] {
+		t.Errorf("тело = %q, хочу %q", got, rangeFixture[10:20])
+	}
+}
+
+// TestProxyIfRangeETagMismatch — красный до фикса: чужой ETag в If-Range
+// заставляет отдать полное тело 200, а не срез чужой версии.
+func TestProxyIfRangeETagMismatch(t *testing.T) {
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = io.WriteString(w, rangeFixture)
+	})
+	if first := get(t, h, "/t/pkg/a.deb"); first.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", first.Code)
+	}
+	rec := getRangeIf(t, h, "/t/pkg/a.deb", "bytes=10-19", `"other"`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("несовпавший If-Range = %d, хочу 200-полный (тело %q)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != rangeFixture {
+		t.Errorf("тело = %q, хочу полное", got)
+	}
+}
+
+// TestProxyIfRangeWeakNotMatched — слабый тег клиента (W/"x") не
+// валидатор для If-Range: наш сильный тег "x" он не матчит → 200.
+func TestProxyIfRangeWeakNotMatched(t *testing.T) {
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = io.WriteString(w, rangeFixture)
+	})
+	first := get(t, h, "/t/pkg/a.deb")
+	if first.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", first.Code)
+	}
+	rec := getRangeIf(t, h, "/t/pkg/a.deb", "bytes=10-19", "W/"+first.Header().Get("ETag"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("слабый If-Range = %d, хочу 200-полный (тело %q)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != rangeFixture {
+		t.Errorf("тело = %q, хочу полное", got)
+	}
+}
+
+// TestProxyIfRangeDateForm — If-Range датой: равная Last-Modified
+// (секундная точность) → 206, сдвиг ±1с → 200-полный.
+func TestProxyIfRangeDateForm(t *testing.T) {
+	lastMod := time.Date(2026, 8, 20, 10, 30, 0, 0, time.UTC)
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Last-Modified", lastMod.Format(http.TimeFormat))
+		_, _ = io.WriteString(w, rangeFixture)
+	})
+	first := get(t, h, "/t/pkg/a.deb")
+	if first.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", first.Code)
+	}
+	header := first.Header().Get("Last-Modified")
+	if header == "" {
+		t.Fatal("ответ без Last-Modified — нечего слать в If-Range")
+	}
+	rec := getRangeIf(t, h, "/t/pkg/a.deb", "bytes=10-19", header)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("совпавшая дата = %d, хочу 206", rec.Code)
+	}
+	if got := rec.Body.String(); got != rangeFixture[10:20] {
+		t.Errorf("тело = %q, хочу %q", got, rangeFixture[10:20])
+	}
+	parsed, err := http.ParseTime(header)
+	if err != nil {
+		t.Fatalf("Last-Modified %q не парсится: %v", header, err)
+	}
+	for _, delta := range []time.Duration{-time.Second, time.Second} {
+		off := parsed.Add(delta).Format(http.TimeFormat)
+		rec := getRangeIf(t, h, "/t/pkg/a.deb", "bytes=10-19", off)
+		if rec.Code != http.StatusOK {
+			t.Errorf("дата %q (сдвиг %v) = %d, хочу 200-полный", off, delta, rec.Code)
+		}
+	}
+}
+
+// TestProxyIfRangeWithoutRange — If-Range без Range не активен:
+// обычный 200-полный, тело не режется.
+func TestProxyIfRangeWithoutRange(t *testing.T) {
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = io.WriteString(w, rangeFixture)
+	})
+	if first := get(t, h, "/t/pkg/a.deb"); first.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", first.Code)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/t/pkg/a.deb", nil)
+	req.Header.Set("If-Range", `"other"`)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("If-Range без Range = %d, хочу 200", rec.Code)
+	}
+	if got := rec.Body.String(); got != rangeFixture {
+		t.Errorf("тело = %q, хочу полное", got)
 	}
 }
 

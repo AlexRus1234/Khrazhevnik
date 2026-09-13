@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"khrazhevnik/internal/core/port"
 )
@@ -69,6 +70,15 @@ func serveRanged(
 	if raw == "" || meta.Size < 0 {
 		// Без Range — полное тело. При неизвестном размере суффиксы и
 		// 416 неразрешимы — тоже полное тело.
+		sendFull(w, r, openFull, onBytes)
+		return
+	}
+
+	// If-Range (RFC 9110 §13.1.5) до разбора Range: валидатор совпал —
+	// диапазон применяется, иначе отдаём полное тело. Отдать срез от
+	// ДРУГОЙ версии байт опаснее, чем полное тело, — клиент склеит мусор
+	// и обвинит чексумму upstream.
+	if !ifRangeAllows(r.Header.Get("If-Range"), meta) {
 		sendFull(w, r, openFull, onBytes)
 		return
 	}
@@ -145,6 +155,33 @@ func serveRanged(
 	if onRange != nil {
 		onRange()
 	}
+}
+
+// ifRangeAllows — решение по If-Range (RFC 9110 §13.1.5), принимается до
+// разбора Range. Валидатор совпал → true (диапазон применяется); не
+// совпал или его у нас нет → false (полное тело). Семантика:
+//   - значение в кавычках (сильный или W/-слабый тег) — точное сравнение
+//     строк с meta.ETag; слабый тег клиента (W/"x") с нашим сильным ("x")
+//     не совпадает, своих слабых мы не выдаём, пустой ETag — не совпадение;
+//   - иначе HTTP-дата (http.ParseTime), сравнивается UTC-секунда с
+//     meta.ModTime (HTTP-дата секундная — дробная часть не мешает);
+//   - ни тег, ни дата / нет валидатора (ETag пуст и ModTime zero) → false.
+func ifRangeAllows(ifRange string, meta port.Meta) bool {
+	if ifRange == "" {
+		// If-Range не задан — Range применяется безусловно.
+		return true
+	}
+	if strings.HasPrefix(ifRange, `"`) || strings.HasPrefix(ifRange, "W/") {
+		return meta.ETag != "" && ifRange == meta.ETag
+	}
+	t, err := http.ParseTime(ifRange)
+	if err != nil {
+		return false
+	}
+	if meta.ModTime.IsZero() {
+		return false
+	}
+	return t.UTC().Truncate(time.Second).Equal(meta.ModTime.UTC().Truncate(time.Second))
 }
 
 // maxMultipartRanges — предел числа диапазонов в multipart/byteranges.
