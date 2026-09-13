@@ -276,16 +276,20 @@ type fakeUpload struct {
 // установленном s3Err отвечают ошибкой S3 с соответствующим статусом
 // (минio выводит код из статуса для ответов без тела) — проверка
 // маппинга кодов в доменные классы (сессия 60). object — тело объекта
-// для ranged-GET (206 с Content-Range); invalidRange — 416 InvalidRange.
+// для ranged-GET (206 с Content-Range); invalidRange — 416 InvalidRange;
+// headIgnoresRange — S3-подобный HEAD (полный размер, Range игнорируется),
+// по умолчанию HEAD minio-подобный — Content-Length среза (CI-факт
+// 2026-09-13).
 type fakeS3 struct {
-	uploads      []fakeUpload
-	aborts       atomic.Int32
-	mu           sync.Mutex
-	listed       []string
-	aborted      []string
-	s3Err        string
-	object       []byte
-	invalidRange bool
+	uploads          []fakeUpload
+	aborts           atomic.Int32
+	mu               sync.Mutex
+	listed           []string
+	aborted          []string
+	s3Err            string
+	object           []byte
+	invalidRange     bool
+	headIgnoresRange bool
 }
 
 func (f *fakeS3) listedPrefixes() []string {
@@ -357,11 +361,13 @@ func (f *fakeS3) objectError(w http.ResponseWriter) {
 // objectResponse — объектные GET/HEAD: обычные s3Err-ошибки
 // (objectError); при заданном object — 200/HEAD-размер или 206 с
 // Content-Range по заголовку Range; invalidRange — 416 с S3-XML
-// кода InvalidRange (тесты сессии 109).
+// кода InvalidRange (тесты сессии 109). HEAD: minio-подобный отдаёт
+// Content-Length среза, S3-подобный (headIgnoresRange) — полный размер.
 func (f *fakeS3) objectResponse(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	object := f.object
 	invalid := f.invalidRange
+	headIgnores := f.headIgnoresRange
 	f.mu.Unlock()
 	if invalid {
 		w.Header().Set("Content-Type", "application/xml")
@@ -376,14 +382,16 @@ func (f *fakeS3) objectResponse(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("ETag", `"fixed"`)
 	w.Header().Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
-	if r.Method == http.MethodHead {
+	if r.Method == http.MethodHead && headIgnores {
+		// S3-класс: Range на HEAD игнорируется — полный размер, 200.
 		w.Header().Set("Content-Length", strconv.Itoa(len(object)))
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	start, end := int64(0), int64(len(object))-1
 	if rng := r.Header.Get("Range"); rng != "" {
-		if _, err := fmt.Sscanf(rng, "bytes=%d-%d", &start, &end); err != nil {
+		if _, err := fmt.Sscanf(rng, "bytes=%d-%d", &start, &end); err != nil ||
+			start < 0 || start >= int64(len(object)) || start > end || end >= int64(len(object)) {
 			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 			return
 		}
@@ -391,10 +399,12 @@ func (f *fakeS3) objectResponse(w http.ResponseWriter, r *http.Request) {
 	slice := object[start : end+1]
 	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(object)))
 	w.Header().Set("Content-Length", strconv.Itoa(len(slice)))
-	w.WriteHeader(http.StatusPartialContent)
-	if r.Method == http.MethodGet {
-		_, _ = w.Write(slice)
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
 	}
+	w.WriteHeader(http.StatusPartialContent)
+	_, _ = w.Write(slice)
 }
 
 func newFakeClient(t *testing.T, f *fakeS3) *minio.Client {
@@ -585,6 +595,30 @@ func TestS3GetRangeNoSuchKeyIsNotFound(t *testing.T) {
 	var nf *domain.NotFoundError
 	if !errors.As(err, &nf) {
 		t.Fatalf("GetRange отсутствующего = %v, хочу NotFoundError", err)
+	}
+}
+
+// TestS3GetRangeS3StyleHeadIgnoresRange — S3-класс носителей игнорирует
+// Range на HEAD (полный Content-Length), MinIO — действует (срез).
+// На S3-подобном: валидный срез проходит локальную сверку против
+// полного размера (узнанного из Stat), за концом — InvalidRangeError
+// с честным Size.
+func TestS3GetRangeS3StyleHeadIgnoresRange(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeS3{object: []byte("0123456789"), headIgnoresRange: true}
+	s := newFakeStorage(t, f)
+	rc, err := s.GetRange(ctx, "cache/ranged/a.deb", 0, 10)
+	if err != nil {
+		t.Fatalf("валидный полный срез на S3-подобном носителе = %v", err)
+	}
+	_ = rc.Close()
+	_, err = s.GetRange(ctx, "cache/ranged/a.deb", 8, 5)
+	var ire *domain.InvalidRangeError
+	if !errors.As(err, &ire) {
+		t.Fatalf("8+5 за концом = %v, хочу InvalidRangeError", err)
+	}
+	if ire.Size != 10 {
+		t.Errorf("Size = %d, хочу 10 (полный размер из Stat)", ire.Size)
 	}
 }
 

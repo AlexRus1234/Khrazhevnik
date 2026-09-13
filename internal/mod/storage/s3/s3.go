@@ -203,14 +203,15 @@ func (s *Storage) GetRange(ctx context.Context, key string, start, length int64)
 		_ = obj.Close()
 		return nil, s.mapRangeError(err, key, start, length)
 	}
-	// Факт probe minio-go v7.3.0: Stat на ranged-объекте — HEAD, который
-	// Range игнорирует (RFC 9110), и отдаёт ПОЛНЫЙ размер объекта; сверка
-	// info.Size с length (план) дала бы «10 байт вместо 3» на каждом
-	// валидном срезе. Вместо неё — локальная проверка диапазона против
-	// размера, узнанного из того же Stat: за концом — InvalidRangeError
-	// без второго раунд-трипа (это не «HEAD-предпроверка» — HEAD и так
-	// единственный способ маппить NoSuchKey до возвращения ридера).
-	if start < 0 || length <= 0 || start+length > info.Size {
+	// Факты probe: носители расходятся в семантике HEAD c Range —
+	// MinIO отдаёт Content-Length СРЕЗА (Range действенен и на HEAD,
+	// CI-факт 2026-09-13: «размер 3» на валидном срезе 2+3), S3-класс —
+	// полный размер (RFC 9110 игнорирует Range на HEAD). info.Size ==
+	// length ⇒ носитель сам подтвердил срез — доверяем без перепроверки;
+	// иначе info.Size — полный размер (узнан из того же Stat, без лишнего
+	// раунд-трипа) и проверяем местность диапазона → InvalidRangeError.
+	// Окончательный арбитр байтов — 206 GET при первом Read.
+	if info.Size != length && start+length > info.Size {
 		_ = obj.Close()
 		return nil, &domain.InvalidRangeError{Key: key, Start: start, Length: length, Size: info.Size}
 	}
