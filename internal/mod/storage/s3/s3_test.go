@@ -390,10 +390,20 @@ func (f *fakeS3) objectResponse(w http.ResponseWriter, r *http.Request) {
 	}
 	start, end := int64(0), int64(len(object))-1
 	if rng := r.Header.Get("Range"); rng != "" {
-		if _, err := fmt.Sscanf(rng, "bytes=%d-%d", &start, &end); err != nil ||
-			start < 0 || start >= int64(len(object)) || start > end || end >= int64(len(object)) {
+		openEnd := false
+		if _, err := fmt.Sscanf(rng, "bytes=%d-%d", &start, &end); err != nil {
+			if _, err := fmt.Sscanf(rng, "bytes=%d-", &start); err != nil {
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
+			openEnd = true
+		}
+		if start < 0 || start >= int64(len(object)) || (!openEnd && (start > end || end >= int64(len(object)))) {
 			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 			return
+		}
+		if openEnd {
+			end = int64(len(object)) - 1
 		}
 	}
 	slice := object[start : end+1]
@@ -619,6 +629,24 @@ func TestS3GetRangeS3StyleHeadIgnoresRange(t *testing.T) {
 	}
 	if ire.Size != 10 {
 		t.Errorf("Size = %d, хочу 10 (полный размер из Stat)", ire.Size)
+	}
+}
+
+// TestS3GetRangeInvalidBounds — длина <=0 / отрицательный start
+// отвергаются до носителя: SetRange(length<=0) даёт открытый «bytes=N-»,
+// реальный minio его принимает — CI-факт 2026-09-13: GetRange(2,-1)
+// возвращал ридер без ошибки (репродукция фейком open-end Head-среза).
+func TestS3GetRangeInvalidBounds(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeS3{object: []byte("0123456789")}
+	s := newFakeStorage(t, f)
+	for _, tc := range []struct {
+		start, length int64
+	}{{2, -1}, {2, 0}, {-1, 3}, {2, -5}} {
+		var ire *domain.InvalidRangeError
+		if _, err := s.GetRange(ctx, "cache/ranged/a.deb", tc.start, tc.length); !errors.As(err, &ire) {
+			t.Fatalf("GetRange(%d,%d): хочу InvalidRangeError, получено %v", tc.start, tc.length, err)
+		}
 	}
 }
 

@@ -188,10 +188,18 @@ func (s *Storage) GetRange(ctx context.Context, key string, start, length int64)
 	if err := s.checkKey(ctx, key); err != nil {
 		return nil, err
 	}
+	// Явный гвард до SetRange: SetRange(start, start+length-1) при
+	// length<=0 даёт end==start-1 → ветка «0 < start && end == 0» →
+	// открытый «bytes=N-», который реальный minio принимает — контракт
+	// length<=0 → InvalidRangeError вместили сюда (CI-факт 2026-09-13:
+	// GetRange(2,-1) вернул ридер без ошибки).
+	if start < 0 || length <= 0 {
+		return nil, &domain.InvalidRangeError{Key: key, Start: start, Length: length, Size: -1}
+	}
 	opts := minio.GetObjectOptions{}
 	if err := opts.SetRange(start, start+length-1); err != nil {
-		// SetRange ошибается только на отрицательных/переполненных
-		// границах — те же правила, что в локальной проверке fs.
+		// SetRange ошибается только на переполненных границах (start<0
+		// и length<=0 отсеяны выше).
 		return nil, &domain.InvalidRangeError{Key: key, Start: start, Length: length, Size: -1}
 	}
 	obj, err := s.client.GetObject(ctx, s.bucket, key, opts)
