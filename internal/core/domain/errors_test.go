@@ -46,6 +46,7 @@ func TestErrorsIsAs(t *testing.T) {
 		{&KeyMaterialError{What: "ключ подписи", Path: "keys/private.asc", Err: errors.New("обрезан")}, &KeyMaterialError{}},
 		{&UpstreamError{URL: "https://up", Status: 404}, &UpstreamError{}},
 		{&UpstreamError{URL: "https://up", Status: 0, Err: errors.New("timeout")}, &UpstreamError{}},
+		{&InvalidRangeError{Key: "cache/a", Start: 10, Length: 1, Size: 5}, &InvalidRangeError{}},
 	}
 	// Каждая ошибка матчится по типу через Is на свежем экземпляре,
 	// текст не пуст, чужой тип не матчится.
@@ -108,5 +109,16 @@ func TestConflictErrorTexts(t *testing.T) {
 	}
 	if got := (&ConflictError{What: "w", Key: "k", Reason: "r"}).Error(); got != `конфликт: w "k": r` {
 		t.Errorf("текст с причиной = %q", got)
+	}
+}
+
+func TestInvalidRangeErrorText(t *testing.T) {
+	err := &InvalidRangeError{Key: "cache/a", Start: 10, Length: 3, Size: 5}
+	if got := err.Error(); got != `невалидный диапазон 10+3 для "cache/a" (размер 5)` {
+		t.Errorf("текст = %q", got)
+	}
+	// Size = -1 — легальный вариант «носитель размер не сказал» (s3).
+	if got := (&InvalidRangeError{Key: "k", Start: 0, Length: 1, Size: -1}).Error(); got != `невалидный диапазон 0+1 для "k" (размер -1)` {
+		t.Errorf("текст без размера = %q", got)
 	}
 }

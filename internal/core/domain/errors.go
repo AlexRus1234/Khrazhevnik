@@ -53,6 +53,28 @@ func (e *NotFoundError) Is(target error) bool {
 	return ok
 }
 
+// InvalidRangeError — запрошенный диапазон GetRange не существует:
+// отрицательный start, нулевая/отрицательная длина или срез за концом
+// объекта. Size = -1 означает «носитель размер не сообщил» (s3 отвечает
+// ошибкой без тела объекта).
+type InvalidRangeError struct {
+	Key    string
+	Start  int64
+	Length int64
+	Size   int64
+}
+
+// Error реализует интерфейс error.
+func (e *InvalidRangeError) Error() string {
+	return fmt.Sprintf("невалидный диапазон %d+%d для %q (размер %d)", e.Start, e.Length, e.Key, e.Size)
+}
+
+// Is поддерживает errors.Is(err, &InvalidRangeError{}).
+func (e *InvalidRangeError) Is(target error) bool {
+	_, ok := target.(*InvalidRangeError)
+	return ok
+}
+
 // ConflictError — конфликт уникальности или версии (already exists,
 // несовместимое состояние).
 type ConflictError struct {

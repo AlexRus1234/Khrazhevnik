@@ -67,6 +67,26 @@ func (s *FakeStorage) Get(ctx context.Context, key string) (port.Object, error) 
 	return port.Object{Meta: obj.meta, Body: io.NopCloser(bytes.NewReader(obj.data))}, nil
 }
 
+// GetRange возвращает независимый ридер поверх среза зафиксированных
+// байт; правила ошибок — как у боевых носителей (InvalidRangeError до
+// обращения к данным).
+func (s *FakeStorage) GetRange(ctx context.Context, key string, start, length int64) (io.ReadCloser, error) {
+	if err := validateKey(ctx, key); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	obj, ok := s.objects[key]
+	if !ok {
+		return nil, &domain.NotFoundError{What: "объект", Key: key}
+	}
+	size := int64(len(obj.data))
+	if start < 0 || length <= 0 || start+length > size {
+		return nil, &domain.InvalidRangeError{Key: key, Start: start, Length: length, Size: size}
+	}
+	return io.NopCloser(bytes.NewReader(obj.data[start : start+length])), nil
+}
+
 // Stat возвращает метаданные зафиксированного объекта.
 func (s *FakeStorage) Stat(ctx context.Context, key string) (port.Meta, error) {
 	if err := validateKey(ctx, key); err != nil {

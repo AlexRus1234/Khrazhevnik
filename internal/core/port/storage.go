@@ -67,6 +67,14 @@ type Writer interface {
 //     транзиентный сбой носителя «опустошает» репозиторий.
 type Storage interface {
 	Get(ctx context.Context, key string) (Object, error)
+	// GetRange возвращает ридер поверх среза [start, start+length)
+	// зафиксированных байтов объекта. Ключи проходят domain.ValidateKey,
+	// как у Get; отсутствующий объект — *domain.NotFoundError;
+	// start<0, length<=0 или start+length больше размера —
+	// *domain.InvalidRangeError. Тело — подстрока Get (byte-exact):
+	// сегменты .zck librepo склеиваются только из совпадающих байтов.
+	// Body закрывает вызывающий; каждая выдача — независимый ридер.
+	GetRange(ctx context.Context, key string, start, length int64) (io.ReadCloser, error)
 	Stat(ctx context.Context, key string) (Meta, error)
 	Put(ctx context.Context, key string) (Writer, error)
 	Delete(ctx context.Context, key string) error

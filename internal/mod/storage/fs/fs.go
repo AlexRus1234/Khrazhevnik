@@ -25,6 +25,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"iter"
 	"math"
@@ -119,6 +120,35 @@ func (s *Storage) Get(ctx context.Context, key string) (port.Object, error) {
 		Meta: metaFrom(key, st),
 		Body: f,
 	}, nil
+}
+
+// GetRange возвращает ридер поверх среза [start, start+length) файла.
+// Диапазон сверяется с размером до чтения; SectionReader — не Closer,
+// файл закрывает обёртка. Отсутствующий объект — NotFound, диапазон за
+// концом/отрицательный — InvalidRangeError (волна Range-206, сессия 108).
+func (s *Storage) GetRange(ctx context.Context, key string, start, length int64) (io.ReadCloser, error) {
+	path, err := s.objectPath(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	st, err := os.Lstat(path)
+	if err != nil {
+		return nil, mapPathError(err, key)
+	}
+	if st.IsDir() {
+		return nil, &domain.NotFoundError{What: "объект", Key: key}
+	}
+	if start < 0 || length <= 0 || start+length > st.Size() {
+		return nil, &domain.InvalidRangeError{Key: key, Start: start, Length: length, Size: st.Size()}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, mapPathError(err, key)
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{io.NewSectionReader(f, start, length), f}, nil
 }
 
 // Stat возвращает метаданные объекта (Lstat — без следования symlink).

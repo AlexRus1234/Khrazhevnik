@@ -19,6 +19,7 @@ package fs
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -403,6 +404,68 @@ func TestCryptoRandUUID4(t *testing.T) {
 	// версия 4: 14-й символ (index 14) — '4'
 	if u[14] != '4' {
 		t.Fatalf("UUID4 версия не 4: %q", u[14])
+	}
+}
+
+// TestGetRangeSlicesBoundaries — срезы в середине и на краях файла;
+// соседние срезы не перекрываются (fs-специфика поверх контракта
+// getRangeSlices, сессия 108).
+func TestGetRangeSlicesBoundaries(t *testing.T) {
+	ctx := context.Background()
+	st := newTest(t)
+	putCommit(t, st, "cache/ranged/b.deb", "0123456789")
+
+	for _, tc := range []struct {
+		start, length int64
+		want          string
+	}{
+		{0, 10, "0123456789"},
+		{0, 1, "0"},
+		{9, 1, "9"},
+		{4, 3, "456"},
+	} {
+		rc, err := st.GetRange(ctx, "cache/ranged/b.deb", tc.start, tc.length)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := io.ReadAll(rc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = rc.Close()
+		if string(got) != tc.want {
+			t.Fatalf("GetRange(%d,%d) = %q, хочу %q", tc.start, tc.length, got, tc.want)
+		}
+	}
+}
+
+// TestGetRangeIndependentReaders — два GetRange подряд читаются оба до
+// конца: каждая выдача — независимый ридер (контракт порта).
+func TestGetRangeIndependentReaders(t *testing.T) {
+	ctx := context.Background()
+	st := newTest(t)
+	putCommit(t, st, "cache/ranged/c.deb", "abcdef")
+
+	rc1, err := st.GetRange(ctx, "cache/ranged/c.deb", 0, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc2, err := st.GetRange(ctx, "cache/ranged/c.deb", 3, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := io.ReadAll(rc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := io.ReadAll(rc2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc1.Close()
+	_ = rc2.Close()
+	if string(first) != "abc" || string(second) != "def" {
+		t.Fatalf("ридеры перекрылись: %q + %q", first, second)
 	}
 }
 

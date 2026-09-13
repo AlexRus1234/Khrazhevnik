@@ -20,11 +20,14 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -272,14 +275,17 @@ type fakeUpload struct {
 // Сети и контейнеров не нужно. Объектные запросы (GET/HEAD/PUT) при
 // установленном s3Err отвечают ошибкой S3 с соответствующим статусом
 // (минio выводит код из статуса для ответов без тела) — проверка
-// маппинга кодов в доменные классы (сессия 60).
+// маппинга кодов в доменные классы (сессия 60). object — тело объекта
+// для ranged-GET (206 с Content-Range); invalidRange — 416 InvalidRange.
 type fakeS3 struct {
-	uploads []fakeUpload
-	aborts  atomic.Int32
-	mu      sync.Mutex
-	listed  []string
-	aborted []string
-	s3Err   string
+	uploads      []fakeUpload
+	aborts       atomic.Int32
+	mu           sync.Mutex
+	listed       []string
+	aborted      []string
+	s3Err        string
+	object       []byte
+	invalidRange bool
 }
 
 func (f *fakeS3) listedPrefixes() []string {
@@ -319,10 +325,10 @@ func (f *fakeS3) handler(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>` +
 				`<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">us-east-1</LocationConstraint>`))
 		default:
-			f.objectError(w)
+			f.objectResponse(w, r)
 		}
 	case http.MethodHead, http.MethodPut:
-		f.objectError(w)
+		f.objectResponse(w, r)
 	case http.MethodDelete:
 		f.mu.Lock()
 		f.aborted = append(f.aborted, q.Get("uploadId"))
@@ -345,6 +351,49 @@ func (f *fakeS3) objectError(w http.ResponseWriter) {
 		w.WriteHeader(http.StatusNotFound)
 	default:
 		w.WriteHeader(http.StatusForbidden)
+	}
+}
+
+// objectResponse — объектные GET/HEAD: обычные s3Err-ошибки
+// (objectError); при заданном object — 200/HEAD-размер или 206 с
+// Content-Range по заголовку Range; invalidRange — 416 с S3-XML
+// кода InvalidRange (тесты сессии 109).
+func (f *fakeS3) objectResponse(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	object := f.object
+	invalid := f.invalidRange
+	f.mu.Unlock()
+	if invalid {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		_, _ = w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>` +
+			`<Error><Code>InvalidRange</Code><Message>The requested range is not satisfiable</Message></Error>`))
+		return
+	}
+	if len(object) == 0 {
+		f.objectError(w)
+		return
+	}
+	w.Header().Set("ETag", `"fixed"`)
+	w.Header().Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
+	if r.Method == http.MethodHead {
+		w.Header().Set("Content-Length", strconv.Itoa(len(object)))
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	start, end := int64(0), int64(len(object))-1
+	if rng := r.Header.Get("Range"); rng != "" {
+		if _, err := fmt.Sscanf(rng, "bytes=%d-%d", &start, &end); err != nil {
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+	}
+	slice := object[start : end+1]
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(object)))
+	w.Header().Set("Content-Length", strconv.Itoa(len(slice)))
+	w.WriteHeader(http.StatusPartialContent)
+	if r.Method == http.MethodGet {
+		_, _ = w.Write(slice)
 	}
 }
 
@@ -474,6 +523,68 @@ func TestCommitWithAccessDeniedIsUnavailable(t *testing.T) {
 	var un *domain.UnavailableError
 	if !errors.As(err, &un) {
 		t.Fatalf("Commit при AccessDenied = %v, хочу UnavailableError", err)
+	}
+}
+
+// TestS3GetRangeSlices — ranged-GET отдаёт ровно срез тела (факты
+// minio-go: Stat на ranged-объекте — HEAD с полным размером, срез
+// приходит в GET при чтении); сверка байтов с эталоном (сессия 109).
+func TestS3GetRangeSlices(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeS3{object: []byte("0123456789")}
+	s := newFakeStorage(t, f)
+	rc, err := s.GetRange(ctx, "cache/ranged/a.deb", 2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	if string(got) != "234" {
+		t.Fatalf("GetRange(2,3) = %q, хочу %q", got, "234")
+	}
+	rc, err = s.GetRange(ctx, "cache/ranged/a.deb", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	if string(full) != "0123456789" {
+		t.Fatalf("GetRange(0,10) = %q, хочу полный срез", full)
+	}
+}
+
+// TestS3GetRangeInvalidRange — S3-ответ кодом InvalidRange (416) маппится
+// в domain.InvalidRangeError с нашими Start/Length (Size -1: носитель
+// размер не сообщает — без HEAD-предпроверки, решение владельца).
+func TestS3GetRangeInvalidRange(t *testing.T) {
+	ctx := context.Background()
+	f := &fakeS3{object: []byte("0123456789"), invalidRange: true}
+	s := newFakeStorage(t, f)
+	_, err := s.GetRange(ctx, "cache/ranged/a.deb", 10, 1)
+	var ire *domain.InvalidRangeError
+	if !errors.As(err, &ire) {
+		t.Fatalf("GetRange за концом = %v, хочу InvalidRangeError", err)
+	}
+	if ire.Start != 10 || ire.Length != 1 || ire.Key != "cache/ranged/a.deb" {
+		t.Fatalf("поля InvalidRangeError = %+v", ire)
+	}
+}
+
+// TestS3GetRangeNoSuchKeyIsNotFound — отсутствующий объект при
+// ranged-GET — NotFoundError, как у Get (контракт порта, сессия 108).
+func TestS3GetRangeNoSuchKeyIsNotFound(t *testing.T) {
+	ctx := context.Background()
+	s := newFakeStorage(t, &fakeS3{s3Err: minio.NoSuchKey})
+	_, err := s.GetRange(ctx, "cache/x", 0, 1)
+	var nf *domain.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("GetRange отсутствующего = %v, хочу NotFoundError", err)
 	}
 }
 

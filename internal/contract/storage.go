@@ -51,6 +51,7 @@ func StorageSuite(t *testing.T, open func(t *testing.T) port.Storage) {
 	t.Run("parent_key_not_object", func(t *testing.T) { parentKeyNotObject(t, newSt(t)) })
 	t.Run("canceled_context", func(t *testing.T) { canceledContext(t, newSt(t)) })
 	t.Run("reserved_tmp_namespace", func(t *testing.T) { reservedTmp(t, newSt(t)) })
+	t.Run("getRangeSlices", func(t *testing.T) { getRangeSlices(t, newSt(t)) })
 }
 
 func commitGetStatListDelete(t *testing.T, st port.Storage) {
@@ -302,6 +303,66 @@ func reservedTmp(t *testing.T, st port.Storage) {
 		if err := st.Delete(ctx, key); !errors.As(err, &ike) {
 			t.Fatalf("Delete(%q): %v", key, err)
 		}
+	}
+}
+
+// getRangeSlices — контракт GetRange: срезы byte-exact относительно
+// Get, границы за концом/отрицательные — InvalidRangeError, отсутствующий
+// ключ — NotFoundError (сессия 108, волна Range-206).
+func getRangeSlices(t *testing.T, st port.Storage) {
+	ctx := context.Background()
+	const key = "cache/ranged/a.deb"
+	put(t, st, key, "0123456789")
+
+	rc, err := st.GetRange(ctx, key, 2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mid, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	if string(mid) != "234" {
+		t.Fatalf("GetRange(2,3) = %q, хочу %q", mid, "234")
+	}
+
+	full, err := st.Get(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := io.ReadAll(full.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = full.Body.Close()
+	rc, err = st.GetRange(ctx, key, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromRange, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rc.Close()
+	if !bytes.Equal(fromRange, all) {
+		t.Fatalf("GetRange(0,10) = %q, Get = %q", fromRange, all)
+	}
+
+	for _, tc := range []struct {
+		start, length int64
+	}{
+		{10, 1}, {-1, 3}, {2, 0}, {2, -1}, {8, 3},
+	} {
+		var ire *domain.InvalidRangeError
+		if _, err := st.GetRange(ctx, key, tc.start, tc.length); !errors.As(err, &ire) {
+			t.Fatalf("GetRange(%d,%d): хочу InvalidRangeError, получено %v", tc.start, tc.length, err)
+		}
+	}
+
+	var nfe *domain.NotFoundError
+	if _, err := st.GetRange(ctx, "cache/ranged/absent.deb", 0, 1); !errors.As(err, &nfe) {
+		t.Fatalf("GetRange отсутствующего: хочу NotFoundError, получено %v", err)
 	}
 }
 

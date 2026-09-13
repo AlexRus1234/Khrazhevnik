@@ -178,6 +178,60 @@ func (s *Storage) Get(ctx context.Context, key string) (port.Object, error) {
 	return port.Object{Meta: metaFrom(key, info), Body: obj}, nil
 }
 
+// GetRange возвращает ридер поверх среза [start, start+length) одним
+// ranged GetObject (SetRange). Без HEAD-предпроверки размера — размер
+// мира знает вызывающий, лишний раунд-трип на каждый ranged-GET недопустим
+// (dnf5 шлёт их сотни на одни .zck-метаданные); за-размером полагаемся
+// на S3-ответ InvalidRange, разбираемый локально (волна Range-206,
+// сессия 109).
+func (s *Storage) GetRange(ctx context.Context, key string, start, length int64) (io.ReadCloser, error) {
+	if err := s.checkKey(ctx, key); err != nil {
+		return nil, err
+	}
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetRange(start, start+length-1); err != nil {
+		// SetRange ошибается только на отрицательных/переполненных
+		// границах — те же правила, что в локальной проверке fs.
+		return nil, &domain.InvalidRangeError{Key: key, Start: start, Length: length, Size: -1}
+	}
+	obj, err := s.client.GetObject(ctx, s.bucket, key, opts)
+	if err != nil {
+		return nil, s.mapRangeError(err, key, start, length)
+	}
+	info, err := obj.Stat()
+	if err != nil {
+		_ = obj.Close()
+		return nil, s.mapRangeError(err, key, start, length)
+	}
+	// Факт probe minio-go v7.3.0: Stat на ranged-объекте — HEAD, который
+	// Range игнорирует (RFC 9110), и отдаёт ПОЛНЫЙ размер объекта; сверка
+	// info.Size с length (план) дала бы «10 байт вместо 3» на каждом
+	// валидном срезе. Вместо неё — локальная проверка диапазона против
+	// размера, узнанного из того же Stat: за концом — InvalidRangeError
+	// без второго раунд-трипа (это не «HEAD-предпроверка» — HEAD и так
+	// единственный способ маппить NoSuchKey до возвращения ридера).
+	if start < 0 || length <= 0 || start+length > info.Size {
+		_ = obj.Close()
+		return nil, &domain.InvalidRangeError{Key: key, Start: start, Length: length, Size: info.Size}
+	}
+	return obj, nil
+}
+
+// mapRangeError — разбор ошибки ranged-GET: S3 отвечает 416 (диагноз
+// носителя). Разбор — по образцу существующего mapS3Error, но по коду
+// И статусу: minio выводит код из статуса, когда тела нет (HEAD по
+// протоколу тел не несёт) — Code становится «416 Requested Range Not
+// Satisfiable», а не «InvalidRange». Size -1: размер носитель в этом
+// ответе не сообщил. Существующий mapS3Error не тронут (сигнатура без
+// диапазонов). Известны start/length, поля заполняются честно.
+func (s *Storage) mapRangeError(err error, key string, start, length int64) error {
+	resp := minio.ToErrorResponse(err)
+	if resp.Code == minio.InvalidRange || resp.StatusCode == 416 {
+		return &domain.InvalidRangeError{Key: key, Start: start, Length: length, Size: -1}
+	}
+	return mapS3Error(err, key)
+}
+
 // Stat возвращает метаданные объекта (HEAD).
 func (s *Storage) Stat(ctx context.Context, key string) (port.Meta, error) {
 	if err := s.checkKey(ctx, key); err != nil {
