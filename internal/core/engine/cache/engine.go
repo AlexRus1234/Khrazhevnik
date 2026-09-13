@@ -373,7 +373,11 @@ func (e *Engine) fetchImmutable(ctx context.Context, target port.Target, class d
 	if err != nil {
 		return port.Object{}, "", err
 	}
-	obj, err := e.cached(ctx, target.StorageKey)
+	key, meta, err := e.resolve(ctx, target.StorageKey)
+	if err != nil {
+		return port.Object{}, "", err
+	}
+	obj, err := e.openObject(ctx, key, meta)
 	if err != nil {
 		return port.Object{}, "", err
 	}
@@ -763,6 +767,9 @@ func (e *Engine) copyBody(ctx context.Context, w port.Writer, body io.Reader, m 
 	return n, nil
 }
 
+// cached достаёт объект по ключу хранилища одним Get: HIT-проверка
+// immutable открывает тело сразу — сбой чтения кеша деградирует в MISS
+// (resilience, сессия 60), отдельный Stat эту гарантию потерял бы.
 func (e *Engine) cached(ctx context.Context, key string) (port.Object, error) {
 	obj, err := e.storage.Get(ctx, key)
 	if err != nil {
@@ -778,19 +785,66 @@ func (e *Engine) cached(ctx context.Context, key string) (port.Object, error) {
 	return obj, nil
 }
 
-// cachedAt достаёт объект по индексной записи: StorageKey говорит, где
-// лежат байты (пустой — сам Key, записи до версионирования).
-func (e *Engine) cachedAt(ctx context.Context, meta domain.ObjectMeta) (port.Object, error) {
-	key := meta.StorageKey
-	if key == "" {
-		key = meta.Key
+// resolve отдаёт ключ хранилища и метаданные объекта БЕЗ открытия тела:
+// Range-раздаче нужен Size до открытия, а тело откроется позже и,
+// возможно, не раз (multipart — сессия 112). Заголовки immutable-объектов
+// fs-хранилище не знает — их дополняет in-memory таблица e.meta (как в
+// cached).
+func (e *Engine) resolve(ctx context.Context, key string) (string, port.Meta, error) {
+	meta, err := e.storage.Stat(ctx, key)
+	if err != nil {
+		return "", port.Meta{}, err
 	}
+	e.mu.RLock()
+	m, ok := e.meta[key]
+	e.mu.RUnlock()
+	if ok {
+		meta.ETag, meta.ContentType, meta.ModTime = m.ETag, m.ContentType, m.LastModified
+	}
+	return key, meta, nil
+}
+
+// resolveAt — resolve по индексной записи: StorageKey говорит, где лежат
+// байты (пустой — сам Key, записи до версионирования); ETag/CT/ModTime
+// версии — из самой записи.
+func (e *Engine) resolveAt(ctx context.Context, m domain.ObjectMeta) (string, port.Meta, error) {
+	key := m.BytesKey()
+	meta, err := e.storage.Stat(ctx, key)
+	if err != nil {
+		return "", port.Meta{}, err
+	}
+	meta.ETag, meta.ContentType, meta.ModTime = m.ETag, m.ContentType, m.LastModified
+	return key, meta, nil
+}
+
+// open открывает тело зафиксированного объекта; закрытие — за
+// вызывающим.
+func (e *Engine) open(ctx context.Context, key string) (io.ReadCloser, error) {
 	obj, err := e.storage.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return obj.Body, nil
+}
+
+// openObject собирает объект из resolve+open: один resolve на запрос,
+// открытий — сколько потребует раздача (Range/multipart).
+func (e *Engine) openObject(ctx context.Context, key string, meta port.Meta) (port.Object, error) {
+	body, err := e.open(ctx, key)
 	if err != nil {
 		return port.Object{}, err
 	}
-	obj.Meta.ETag, obj.Meta.ContentType, obj.Meta.ModTime = meta.ETag, meta.ContentType, meta.LastModified
-	return obj, nil
+	return port.Object{Meta: meta, Body: body}, nil
+}
+
+// cachedAt достаёт объект по индексной записи (resolveAt+open):
+// StorageKey говорит, где лежат байты.
+func (e *Engine) cachedAt(ctx context.Context, meta domain.ObjectMeta) (port.Object, error) {
+	key, pm, err := e.resolveAt(ctx, meta)
+	if err != nil {
+		return port.Object{}, err
+	}
+	return e.openObject(ctx, key, pm)
 }
 
 // versionedKey строит ключ новой версии mutable-объекта: суффикс из
