@@ -26,6 +26,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-09-13
+
 ### Fixed
 
 - **DB (mariadb):** the transient `1467 ER_AUTOINC_READ_FAILED` error
@@ -36,8 +38,6 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `Error 1467 (HY000): Failed to read auto-increment value from storage
   engine` on 20 concurrent `EnsureFirstUser` calls (contract suite;
   reproduced over a 400-iteration run, fixed by the retry).
-
-### Added
 
 - **Range serving (206/416):** the proxy and the personal-repo public
   port (:29202) understand HTTP Range — a single slice `206` with an
