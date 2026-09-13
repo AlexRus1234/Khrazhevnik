@@ -77,6 +77,22 @@ func getPublic(t *testing.T, env *repoEnv, path string) *httptest.ResponseRecord
 	return rec
 }
 
+// getPublicRange — GET публичного роутера с Range/If-Range (волна
+// Range-206 на :29202): заголовки выставляются до ServeHTTP.
+func getPublicRange(t *testing.T, env *repoEnv, path, rangeHdr, ifRange string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	if rangeHdr != "" {
+		req.Header.Set("Range", rangeHdr)
+	}
+	if ifRange != "" {
+		req.Header.Set("If-Range", ifRange)
+	}
+	rec := httptest.NewRecorder()
+	env.public.ServeHTTP(rec, req)
+	return rec
+}
+
 // TestPublicRepoFileHTMLContentIsDownloadedNotRendered — ядро аудита
 // 2026-08-30 (stored-XSS): объект, тело которого начинается с
 // «<html», отдаётся с Content-Type application/octet-stream (тип по
@@ -458,5 +474,121 @@ func TestPublicRepoFilePercentEscapedPlus(t *testing.T) {
 	rec = getPublic(t, env, "/repo/alice/pool/main/g/g++_1.0_amd64.deb")
 	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), body) {
 		t.Errorf("GET raw-пути = %d, тело %q", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRepoFileSingleRange — :29202 понимает одиночный Range тем же
+// serveRanged, что прокси-кеш (волна Range-206): объект, залитый через
+// admin-API, bytes=0-9 → 206, тело == первые 10 байт.
+func TestRepoFileSingleRange(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	uploadRepoObject(t, env, repoID, "pool/main/a/foo.deb", []byte(rangeFixture))
+
+	rec := getPublicRange(t, env, "/repo/alice/pool/main/a/foo.deb", "bytes=0-9", "")
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("Range-ответ = %d, хочу 206 (тело %q)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != rangeFixture[0:10] {
+		t.Errorf("тело = %q, хочу %q", got, rangeFixture[0:10])
+	}
+	if got := rec.Header().Get("Content-Range"); got != "bytes 0-9/30" {
+		t.Errorf("Content-Range = %q, хочу bytes 0-9/30", got)
+	}
+	if got := rec.Header().Get("Content-Length"); got != "10" {
+		t.Errorf("Content-Length = %q, хочу 10", got)
+	}
+	if got := rec.Header().Get("Accept-Ranges"); got != "bytes" {
+		t.Errorf("Accept-Ranges = %q, хочу bytes", got)
+	}
+}
+
+// TestRepoFileRange416AndGarbage — крайние Range: ни один диапазон не
+// пересекается с объектом → 416 + Content-Range: bytes */N; мусорный
+// синтаксис — сервер MAY игнорировать → 200-полный (RFC 9110).
+func TestRepoFileRange416AndGarbage(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	uploadRepoObject(t, env, repoID, "pool/main/a/foo.deb", []byte(rangeFixture))
+
+	rec := getPublicRange(t, env, "/repo/alice/pool/main/a/foo.deb", "bytes=100-200", "")
+	if rec.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("416-ответ = %d, хочу 416 (тело %q)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Range"); got != "bytes */30" {
+		t.Errorf("Content-Range = %q, хочу bytes */30", got)
+	}
+
+	rec = getPublicRange(t, env, "/repo/alice/pool/main/a/foo.deb", "bytes=zzz", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("мусорный Range = %d, хочу 200-полный", rec.Code)
+	}
+	if got := rec.Body.String(); got != rangeFixture {
+		t.Errorf("мусорный Range: тело = %q, хочу полное", got)
+	}
+}
+
+// TestRepoFileMultipart — два диапазона → 206 multipart/byteranges;
+// части разбираются тем же тест-парсером, что suite прокси (сессия 112,
+// один пакет — переиспользование без дубля).
+func TestRepoFileMultipart(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	uploadRepoObject(t, env, repoID, "pool/main/a/foo.bin", []byte(rangeFixture))
+
+	rec := getPublicRange(t, env, "/repo/alice/pool/main/a/foo.bin", "bytes=0-9,20-29", "")
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("multipart-ответ = %d, хочу 206 (тело %q)", rec.Code, rec.Body.String())
+	}
+	parts := parseMultipartBody(t, rec)
+	if len(parts) != 2 {
+		t.Fatalf("частей %d, хочу 2", len(parts))
+	}
+	want := []struct{ cr, body string }{
+		{"bytes 0-9/30", rangeFixture[0:10]},
+		{"bytes 20-29/30", rangeFixture[20:30]},
+	}
+	for i, w := range want {
+		if parts[i].contentRange != w.cr {
+			t.Errorf("часть %d: Content-Range = %q, хочу %q", i, parts[i].contentRange, w.cr)
+		}
+		if parts[i].body != w.body {
+			t.Errorf("часть %d: тело = %q, хочу %q", i, parts[i].body, w.body)
+		}
+	}
+}
+
+// TestRepoFileIfRangeLastModified — у fs-объектов ETag нет (порт:
+// «fs их не знает»), поэтому If-Range работает только датой: совпавшая
+// с Last-Modified → диапазон применяется (206), чужая → 200-полный.
+func TestRepoFileIfRangeLastModified(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	uploadRepoObject(t, env, repoID, "pool/main/a/foo.deb", []byte(rangeFixture))
+
+	first := getPublic(t, env, "/repo/alice/pool/main/a/foo.deb")
+	if first.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", first.Code)
+	}
+	lastMod := first.Header().Get("Last-Modified")
+	if lastMod == "" {
+		t.Fatal("нет Last-Modified: If-Range датой не проверить")
+	}
+
+	rec := getPublicRange(t, env, "/repo/alice/pool/main/a/foo.deb", "bytes=0-9", lastMod)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("If-Range (совпавшая дата) = %d, хочу 206", rec.Code)
+	}
+	if got := rec.Body.String(); got != rangeFixture[0:10] {
+		t.Errorf("тело = %q, хочу %q", got, rangeFixture[0:10])
+	}
+
+	foreign := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).Format(http.TimeFormat)
+	rec = getPublicRange(t, env, "/repo/alice/pool/main/a/foo.deb", "bytes=0-9", foreign)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("If-Range (чужая дата) = %d, хочу 200-полный", rec.Code)
+	}
+	if got := rec.Body.String(); got != rangeFixture {
+		t.Errorf("If-Range (чужая дата): тело = %q, хочу полное", got)
 	}
 }

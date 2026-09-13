@@ -82,7 +82,23 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 			writeProxyError(w, err)
 			return
 		}
-		obj, err := d.Storage.Get(r.Context(), key)
+		// Range понимает serveRanged (волна Range-206, сессии 111–113):
+		// мета берётся Storage.Stat БЕЗ открытия тела — телу нужен
+		// только Size, а откроется оно внутри хелпера (при multipart —
+		// не раз). HEAD-цена Stat платится только когда клиент прислал
+		// Range; без Range — прежний путь Storage.Get.
+		ranged := r.Header.Get("Range") != ""
+		var meta port.Meta
+		var obj port.Object
+		if ranged {
+			meta, err = d.Storage.Stat(r.Context(), key)
+		} else {
+			obj, err = d.Storage.Get(r.Context(), key)
+			if err == nil {
+				defer obj.Body.Close()
+				meta = obj.Meta
+			}
+		}
 		if err != nil {
 			var nf *domain.NotFoundError
 			if errors.As(err, &nf) {
@@ -92,7 +108,6 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 			writeProxyError(w, err)
 			return
 		}
-		defer obj.Body.Close()
 		// Аудит 2026-08-30 (stored-XSS): Content-Type строго по
 		// расширению, не по содержимому — upload валидирует только
 		// путь, а тело, начинающееся с «<html», без этого отдаётся
@@ -102,11 +117,11 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 		// расширение; неизвестное — octet-stream (fail closed к
 		// «скачиванию», не к «рендеру»). Тело при этом byte-exact.
 		w.Header().Set("Content-Type", repoContentType(rest))
-		if obj.Meta.ETag != "" {
-			w.Header().Set("ETag", obj.Meta.ETag)
+		if meta.ETag != "" {
+			w.Header().Set("ETag", meta.ETag)
 		}
-		if !obj.Meta.ModTime.IsZero() {
-			w.Header().Set("Last-Modified", obj.Meta.ModTime.UTC().Format(http.TimeFormat))
+		if !meta.ModTime.IsZero() {
+			w.Header().Set("Last-Modified", meta.ModTime.UTC().Format(http.TimeFormat))
 		}
 		// Immutable-объекты (пакеты) — публичный кеш-клиент.
 		// apt/dnf советуют Cache-Control: immutable для content-addressed.
@@ -121,8 +136,30 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 		} else if repo.Ecosystem == "nix" && strings.HasSuffix(rest, ".narinfo") {
 			w.Header().Set("Cache-Control", "no-cache")
 		}
-		if obj.Meta.Size >= 0 {
-			w.Header().Set("Content-Length", formatInt(obj.Meta.Size))
+		if meta.Size >= 0 {
+			w.Header().Set("Content-Length", formatInt(meta.Size))
+		}
+		// If-Range: у fs-объектов ETag отсутствует (порт: «fs их не
+		// знает») — тег-форма не сработает, а Last-Modified (mtime)
+		// выведет 206; на s3 ETag есть и работает полностью.
+		if ranged {
+			// onBytes/onRange не заводим: per-eco счётчики объекта и 206
+			// живут в кеш-движке, а публичный порт репо идёт мимо него;
+			// /metrics расширять под repo — отдельное решение.
+			serveRanged(w, r, meta,
+				func() (io.ReadCloser, error) {
+					full, gErr := d.Storage.Get(r.Context(), key)
+					if gErr != nil {
+						return nil, gErr
+					}
+					return full.Body, nil
+				},
+				func(start, length int64) (io.ReadCloser, error) {
+					return d.Storage.GetRange(r.Context(), key, start, length)
+				},
+				nil, nil,
+			)
+			return
 		}
 		// stallWriter: write-deadline на соединение (аудит 2026-08-27) —
 		// медленный читатель отваливается, а не держит FD и ридер Storage.
