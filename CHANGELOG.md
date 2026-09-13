@@ -35,6 +35,18 @@ major.
 
 ## [Unreleased]
 
+### Исправлено
+
+- **БД (mariadb):** транзиентная ошибка `1467 ER_AUTOINC_READ_FAILED`
+  при гонке bootstrap-пользователя (`EnsureFirstUser`) больше не
+  вылетает наружу — отнесена к retryable-конфликтам InnoDB (1213/1205):
+  проигравший писатель повторяет `INSERT…SELECT WHERE NOT EXISTS` и
+  видит строку победителя (`RowsAffected=0`). Проявлялось как
+  периодическое `Error 1467 (HY000): Failed to read auto-increment
+  value from storage engine` на 20 параллельных `EnsureFirstUser`
+  (контрактный suite; воспроизведено 400-итерационным прогоном,
+  исправлено retry).
+
 ## [1.0.2] — 2026-09-12
 
 ### Исправлено

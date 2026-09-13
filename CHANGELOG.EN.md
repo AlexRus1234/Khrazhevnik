@@ -26,6 +26,17 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **DB (mariadb):** the transient `1467 ER_AUTOINC_READ_FAILED` error
+  during the bootstrap-user race (`EnsureFirstUser`) no longer escapes —
+  it is now treated as an InnoDB retryable conflict (1213/1205): the
+  losing writer re-runs `INSERT…SELECT WHERE NOT EXISTS` and sees the
+  winner's row (`RowsAffected=0`). It surfaced as an intermittent
+  `Error 1467 (HY000): Failed to read auto-increment value from storage
+  engine` on 20 concurrent `EnsureFirstUser` calls (contract suite;
+  reproduced over a 400-iteration run, fixed by the retry).
+
 ## [1.0.2] — 2026-09-12
 
 ### Fixed
