@@ -49,6 +49,7 @@ type Handler struct {
 	ecoHits, ecoMisses, ecoStale, ecoNegative        *prometheus.Desc
 	ecoUpstreamErrors, ecoBytesFromUp, ecoBytesToCli *prometheus.Desc
 	ecoPackages                                      *prometheus.Desc
+	rangeResponses                                   *prometheus.Desc
 	// Гистограммы — stateful, живут между scrape.
 	requestLatency *prometheus.HistogramVec
 	objectBytes    *prometheus.HistogramVec
@@ -92,6 +93,10 @@ func NewHandler(cache *Cache, registry *prometheus.Registry) *Handler {
 		// immutable-объектов; сброс статистики и рестарт легитимно
 		// роняют его, counter-семантика монотонности здесь ложная.
 		ecoPackages: prometheus.NewDesc("khrazhevnik_cache_ecosystem_packages", "Cached immutable objects (packages) per ecosystem.", []string{"ecosystem"}, nil),
+		// Counter 206-ответов Range-раздачи (сессия 111). Имя без
+		// `_ecosystem_`-инфикса: глобальной серии-двойника нет, лейбл
+		// ecosystem и так разводит серии.
+		rangeResponses: prometheus.NewDesc("khrazhevnik_cache_range_responses_total", "Partial-content (206) responses served per ecosystem.", []string{"ecosystem"}, nil),
 		requestLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "khrazhevnik_request_duration_seconds",
 			Help:    "Request latency in seconds across both public and admin listeners.",
@@ -128,6 +133,7 @@ func (h *Handler) Describe(ch chan<- *prometheus.Desc) {
 	ch <- h.ecoBytesFromUp
 	ch <- h.ecoBytesToCli
 	ch <- h.ecoPackages
+	ch <- h.rangeResponses
 }
 
 // Collect собирает текущие значения счётчиков из Cache. Вызывается
@@ -153,6 +159,7 @@ func (h *Handler) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(h.ecoBytesFromUp, prometheus.CounterValue, float64(m.BytesFromUpstream.Load()), name)
 		ch <- prometheus.MustNewConstMetric(h.ecoBytesToCli, prometheus.CounterValue, float64(m.BytesToClients.Load()), name)
 		ch <- prometheus.MustNewConstMetric(h.ecoPackages, prometheus.GaugeValue, float64(m.Packages.Load()), name)
+		ch <- prometheus.MustNewConstMetric(h.rangeResponses, prometheus.CounterValue, float64(m.Ranges.Load()), name)
 	})
 	ch <- prometheus.MustNewConstMetric(h.hits, prometheus.CounterValue, float64(hits))
 	ch <- prometheus.MustNewConstMetric(h.misses, prometheus.CounterValue, float64(misses))
@@ -188,4 +195,11 @@ func (h *Handler) ObserveObjectBytes(ecosystem string, bytes float64) {
 		return
 	}
 	h.objectBytes.WithLabelValues(ecosystem).Observe(bytes)
+}
+
+// ObserveRangeResponse фиксирует 206-ответ Range-раздачи в per-eco
+// счётчике (сессия 111). Отдельно от ObjectBytes: 206 считается один раз
+// на ответ, независимо от размера среза.
+func (h *Handler) ObserveRangeResponse(ecosystem string) {
+	h.cache.ForEcosystem(ecosystem).Ranges.Add(1)
 }

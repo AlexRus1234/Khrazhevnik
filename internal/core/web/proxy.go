@@ -42,7 +42,45 @@ func handleProxy(d Deps) http.HandlerFunc {
 			return
 		}
 		path := "/" + prefix + "/" + tail
-		obj, status, err := d.Cache.FetchStatus(r.Context(), eco, path)
+		if r.Header.Get("Range") == "" {
+			// Без Range — сегодняшний путь: FetchStatus открывает тело
+			// сразу, Range-семантика хелпера не нужна.
+			obj, status, err := d.Cache.FetchStatus(r.Context(), eco, path)
+			if err != nil {
+				var stale *domain.StaleError
+				if errors.As(err, &stale) {
+					w.Header().Set("X-Cache", statusStale)
+					w.Header().Set("Warning", `111 khrazhevnik "revalidation failed"`)
+				} else {
+					writeProxyError(w, err)
+					return
+				}
+			} else {
+				w.Header().Set("X-Cache", status)
+			}
+			defer obj.Body.Close()
+			setProxyHeaders(w, path, obj.Meta)
+			// stallWriter: медленный читатель отвалится по write-deadline,
+			// а не будет держать FD и tmp-объект вечно (аудит 2026-08-27).
+			n, err := io.CopyBuffer(newStallWriter(w), obj.Body, make([]byte, 32*1024))
+			if err != nil {
+				// Обрыв (клиент ушёл или write-deadline stallWriter) — не
+				// ошибка отдачи: n байт реально ушли, счётчики честны; но
+				// сам факт diagnosable — иначе «почему PM рвёт соединение»
+				// неотличим от полной выдачи.
+				d.logger().Debug("прокси: клиент оборвал выдачу", "eco", eco.Name(), "path", path, "bytes", n, "err", err)
+			}
+			d.Cache.AddBytesToClients(eco.Name(), n)
+			// object_bytes — точка прокси-отдачи (byte-exact путь, аудит
+			// 2026-08-30): размер скопированного тела + имя экосистемы.
+			if d.Metrics != nil {
+				d.Metrics.ObserveObjectBytes(eco.Name(), float64(n))
+			}
+			return
+		}
+		// Range: resolve без открытия тела — телу нужен только Size, а
+		// откроется оно в serveRanged (возможно, не раз — multipart).
+		meta, status, err := d.Cache.FetchMeta(r.Context(), eco, path)
 		if err != nil {
 			var stale *domain.StaleError
 			if errors.As(err, &stale) {
@@ -55,42 +93,50 @@ func handleProxy(d Deps) http.HandlerFunc {
 		} else {
 			w.Header().Set("X-Cache", status)
 		}
-		defer obj.Body.Close()
-		if obj.Meta.ETag != "" {
-			w.Header().Set("ETag", obj.Meta.ETag)
-		}
-		// Content-Type — allowlist, не passthrough (ревью 2026-09-04,
-		// сессия 78): злой remote может объявить text/html на любом пути,
-		// и браузер отрендерит его в origin зеркала (фишинг/дефейс от
-		// имени доверенного домена); nosniff запрещает лишь переинтер-
-		// претацию объявленного типа, сам честно объявленный text/html
-		// он не чинит. Инвариант byte-exact — про байты ТЕЛА, не заголов-
-		// ка: заголовок ответа инстанс и так ставит сам (Content-Type,
-		// nosniff), а пакетным менеджерам тип безразличен — целостность
-		// они проверяют чексуммами и подписями в байтах.
-		w.Header().Set("Content-Type", proxyContentType(path, obj.Meta.ContentType))
-		if !obj.Meta.ModTime.IsZero() {
-			w.Header().Set("Last-Modified", obj.Meta.ModTime.UTC().Format(http.TimeFormat))
-		}
-		if obj.Meta.Size >= 0 {
-			w.Header().Set("Content-Length", formatInt(obj.Meta.Size))
-		}
-		// stallWriter: медленный читатель отвалится по write-deadline,
-		// а не будет держать FD и tmp-объект вечно (аудит 2026-08-27).
-		n, err := io.CopyBuffer(newStallWriter(w), obj.Body, make([]byte, 32*1024))
-		if err != nil {
-			// Обрыв (клиент ушёл или write-deadline stallWriter) — не
-			// ошибка отдачи: n байт реально ушли, счётчики честны; но
-			// сам факт diagnosable — иначе «почему PM рвёт соединение»
-			// неотличим от полной выдачи.
-			d.logger().Debug("прокси: клиент оборвал выдачу", "eco", eco.Name(), "path", path, "bytes", n, "err", err)
-		}
-		d.Cache.AddBytesToClients(eco.Name(), n)
-		// object_bytes — точка прокси-отдачи (byte-exact путь, аудит
-		// 2026-08-30): размер скопированного тела + имя экосистемы.
-		if d.Metrics != nil {
-			d.Metrics.ObserveObjectBytes(eco.Name(), float64(n))
-		}
+		setProxyHeaders(w, path, meta)
+		serveRanged(w, r, meta,
+			func() (io.ReadCloser, error) { return d.Cache.OpenBody(r.Context(), meta.Key) },
+			func(start, length int64) (io.ReadCloser, error) {
+				return d.Cache.OpenRange(r.Context(), meta.Key, start, length)
+			},
+			func(n int64) {
+				d.Cache.AddBytesToClients(eco.Name(), n)
+				if d.Metrics != nil {
+					d.Metrics.ObserveObjectBytes(eco.Name(), float64(n))
+				}
+			},
+			func() {
+				if d.Metrics != nil {
+					d.Metrics.ObserveRangeResponse(eco.Name())
+				}
+			},
+		)
+	}
+}
+
+// setProxyHeaders — общие заголовки прокси-ответа из метаданных
+// (ETag/Content-Type/Last-Modified/Content-Length). Range-путь обязан
+// дать те же заголовки, что полная выдача: контракт MISS↔HIT
+// идентичности заголовков (сессия 69) распространяется и на 206.
+//
+// Content-Type — allowlist, не passthrough (ревью 2026-09-04, сессия 78):
+// злой remote может объявить text/html на любом пути, и браузер отрендерит
+// его в origin зеркала (фишинг/дефейс от имени доверенного домена);
+// nosniff запрещает лишь переинтерпретацию объявленного типа, сам честно
+// объявленный text/html он не чинит. Инвариант byte-exact — про байты
+// ТЕЛА, не заголовка: заголовок ответа инстанс и так ставит сам
+// (Content-Type, nosniff), а пакетным менеджерам тип безразличен —
+// целостность они проверяют чексуммами и подписями в байтах.
+func setProxyHeaders(w http.ResponseWriter, path string, meta port.Meta) {
+	if meta.ETag != "" {
+		w.Header().Set("ETag", meta.ETag)
+	}
+	w.Header().Set("Content-Type", proxyContentType(path, meta.ContentType))
+	if !meta.ModTime.IsZero() {
+		w.Header().Set("Last-Modified", meta.ModTime.UTC().Format(http.TimeFormat))
+	}
+	if meta.Size >= 0 {
+		w.Header().Set("Content-Length", formatInt(meta.Size))
 	}
 }
 

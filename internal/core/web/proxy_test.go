@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -592,5 +593,227 @@ func TestMetricsObjectBytesObserved(t *testing.T) {
 	}
 	if !strings.Contains(body, `khrazhevnik_object_bytes_sum{ecosystem="t"} 7`) {
 		t.Errorf("сумма object_bytes != 7 байтам:\n%s", body)
+	}
+}
+
+// rangeFixture — 30 байт, различимых по индексу: срезы проверяются
+// побайтово без сверки с «полным» телом-строкой.
+const rangeFixture = "0123456789abcdefghijklmnopqrst"
+
+// getRange — GET с заголовком Range.
+func getRange(t *testing.T, h http.Handler, path, value string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Range", value)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestProxySingleRange — однодиапазонный 206 byte-exact (сессия 111):
+// прогретый кеш, Range: bytes=10-19 → 206, тело == fixture[10:20],
+// Content-Range/Content-Length/Accept-Ranges/X-Cache корректны.
+func TestProxySingleRange(t *testing.T) {
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, rangeFixture)
+	})
+	if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", rec.Code)
+	}
+	rec := getRange(t, h, "/t/pkg/a.deb", "bytes=10-19")
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("Range-ответ = %d, хочу 206 (тело %q)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != rangeFixture[10:20] {
+		t.Errorf("тело = %q, хочу %q", got, rangeFixture[10:20])
+	}
+	if got := rec.Header().Get("Content-Range"); got != "bytes 10-19/30" {
+		t.Errorf("Content-Range = %q, хочу bytes 10-19/30", got)
+	}
+	if got := rec.Header().Get("Content-Length"); got != "10" {
+		t.Errorf("Content-Length = %q, хочу 10", got)
+	}
+	if got := rec.Header().Get("Accept-Ranges"); got != "bytes" {
+		t.Errorf("Accept-Ranges = %q, хочу bytes", got)
+	}
+	if got := rec.Header().Get("X-Cache"); got != "HIT" {
+		t.Errorf("X-Cache = %q, хочу HIT", got)
+	}
+}
+
+// TestProxyRangeSuffixAndEdge — суффиксные и крайние формы диапазонов
+// нормализуются парсером: bytes=-N, bytes=0-(size-1), bytes=(size-1)-
+// (size-1), open-ended.
+func TestProxyRangeSuffixAndEdge(t *testing.T) {
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, rangeFixture)
+	})
+	if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", rec.Code)
+	}
+	cases := []struct {
+		name         string
+		header       string
+		contentRange string
+		want         string
+	}{
+		{"суффикс", "bytes=-5", "bytes 25-29/30", rangeFixture[25:30]},
+		{"весь объект", "bytes=0-29", "bytes 0-29/30", rangeFixture},
+		{"последний байт", "bytes=29-29", "bytes 29-29/30", rangeFixture[29:30]},
+		{"open-ended", "bytes=20-", "bytes 20-29/30", rangeFixture[20:30]},
+		{"end за размером", "bytes=10-99", "bytes 10-29/30", rangeFixture[10:30]},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := getRange(t, h, "/t/pkg/a.deb", tc.header)
+			if rec.Code != http.StatusPartialContent {
+				t.Fatalf("%s = %d, хочу 206", tc.header, rec.Code)
+			}
+			if got := rec.Body.String(); got != tc.want {
+				t.Errorf("тело = %q, хочу %q", got, tc.want)
+			}
+			if got := rec.Header().Get("Content-Range"); got != tc.contentRange {
+				t.Errorf("Content-Range = %q, хочу %q", got, tc.contentRange)
+			}
+		})
+	}
+}
+
+// rangeCountStorage — FakeStorage со счётчиками открытий полного тела
+// (Get) и среза (GetRange): 416 обязан не открывать ни того, ни другого.
+type rangeCountStorage struct {
+	*testutil.FakeStorage
+	gets   atomic.Int64
+	ranges atomic.Int64
+}
+
+func (s *rangeCountStorage) Get(ctx context.Context, key string) (port.Object, error) {
+	s.gets.Add(1)
+	return s.FakeStorage.Get(ctx, key)
+}
+
+func (s *rangeCountStorage) GetRange(ctx context.Context, key string, start, length int64) (io.ReadCloser, error) {
+	s.ranges.Add(1)
+	return s.FakeStorage.GetRange(ctx, key, start, length)
+}
+
+// newRangeProxyEnv — как newProxyEnv, но с инжектированным хранилищем
+// (счётчики открытий тела) и без лишних возвратов.
+func newRangeProxyEnv(t *testing.T, h http.HandlerFunc, st port.Storage) (http.Handler, *metrics.Handler) {
+	t.Helper()
+	up := httptest.NewServer(h)
+	t.Cleanup(up.Close)
+	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	m := metrics.NewCache()
+	exporter := metrics.NewHandler(m, prometheus.NewRegistry())
+	engine := cacheengine.New(st, testutil.NewFakeObjectIndex(), up.Client(), clock,
+		cacheengine.Config{StaleIfError: true, NegativeTTL404: 5 * time.Minute, NegativeTTL5xx: 30 * time.Second}, m)
+	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: 40 * time.Second}
+	return BuildPublicRouter(Deps{Version: "test", Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}, Metrics: exporter}), exporter
+}
+
+// TestProxyRange416 — ни один диапазон не пересекается: 416 +
+// Content-Range: bytes */N, тело не открывается.
+func TestProxyRange416(t *testing.T) {
+	cs := &rangeCountStorage{FakeStorage: testutil.NewFakeStorage(testutil.NewManualClock(time.Unix(0, 0)))}
+	h, _ := newRangeProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, rangeFixture)
+	}, cs)
+	if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", rec.Code)
+	}
+	getsBefore, rangesBefore := cs.gets.Load(), cs.ranges.Load()
+
+	for _, hdr := range []string{"bytes=30-", "bytes=100-200"} {
+		rec := getRange(t, h, "/t/pkg/a.deb", hdr)
+		if rec.Code != http.StatusRequestedRangeNotSatisfiable {
+			t.Fatalf("%s = %d, хочу 416 (тело %q)", hdr, rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Range"); got != "bytes */30" {
+			t.Errorf("%s: Content-Range = %q, хочу bytes */30", hdr, got)
+		}
+	}
+	if cs.gets.Load() != getsBefore || cs.ranges.Load() != rangesBefore {
+		t.Errorf("416 открыл тело: Get %d→%d, GetRange %d→%d",
+			getsBefore, cs.gets.Load(), rangesBefore, cs.ranges.Load())
+	}
+}
+
+// TestProxyGarbageRangeIgnored — синтаксический мусор Range игнорируется:
+// сервер MAY его не понимать, ответ — полный 200 (RFC 9110).
+func TestProxyGarbageRangeIgnored(t *testing.T) {
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, rangeFixture)
+	})
+	if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusOK {
+		t.Fatalf("прогрев = %d", rec.Code)
+	}
+	for _, hdr := range []string{"bytes=abc", "bytes=5-2", "items=0-5", "bytes=-", "bytes=,", "chunks=1-2"} {
+		rec := getRange(t, h, "/t/pkg/a.deb", hdr)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%q = %d, хочу 200-полный", hdr, rec.Code)
+			continue
+		}
+		if got := rec.Body.String(); got != rangeFixture {
+			t.Errorf("%q: тело = %q, хочу полное", hdr, got)
+		}
+	}
+}
+
+// TestProxyRangeMissFillsThenSlices — холодный кеш: Range-запрос качает
+// полный объект ровно один раз (upstream), затем 206 из кеша; повтор —
+// HIT 206 с идентичными заголовками (контракт сессии 69 на 206).
+func TestProxyRangeMissFillsThenSlices(t *testing.T) {
+	fixture := strings.Repeat("Z", 300)
+	upstreamHits := 0
+	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		_, _ = io.WriteString(w, fixture)
+	})
+
+	first := getRange(t, h, "/t/pkg/a.deb", "bytes=0-99")
+	if first.Code != http.StatusPartialContent {
+		t.Fatalf("MISS Range = %d, тело %q", first.Code, first.Body.String())
+	}
+	if got := first.Body.String(); got != fixture[:100] {
+		t.Errorf("тело = %d байт, хочу 100", len(got))
+	}
+	if got := first.Header().Get("X-Cache"); got != "MISS" {
+		t.Errorf("X-Cache первого = %q, хочу MISS", got)
+	}
+	if upstreamHits != 1 {
+		t.Fatalf("upstream дёрнут %d раз, хочу 1 (закеширован полный объект)", upstreamHits)
+	}
+
+	second := getRange(t, h, "/t/pkg/a.deb", "bytes=0-99")
+	if second.Code != http.StatusPartialContent {
+		t.Fatalf("HIT Range = %d", second.Code)
+	}
+	if got := second.Header().Get("X-Cache"); got != "HIT" {
+		t.Errorf("X-Cache второго = %q, хочу HIT", got)
+	}
+	if upstreamHits != 1 {
+		t.Errorf("upstream дёрнут %d раз, хочу 1", upstreamHits)
+	}
+	for _, hdr := range []string{"Content-Range", "Content-Length", "Content-Type", "Accept-Ranges", "ETag"} {
+		if got, want := second.Header().Get(hdr), first.Header().Get(hdr); got != want {
+			t.Errorf("заголовок %s: HIT %q != MISS %q (контракт идентичности)", hdr, got, want)
+		}
+	}
+}
+
+// TestProxyRangeMetric — 206-ответ инкрементит per-eco счётчик
+// khrazhevnik_cache_range_responses_total (сессия 111).
+func TestProxyRangeMetric(t *testing.T) {
+	h, _, _, exporter, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, rangeFixture)
+	})
+	get(t, h, "/t/pkg/a.deb")
+	if rec := getRange(t, h, "/t/pkg/a.deb", "bytes=0-4"); rec.Code != http.StatusPartialContent {
+		t.Fatalf("Range = %d, хочу 206", rec.Code)
+	}
+	body := scrapeMetrics(t, exporter)
+	if !strings.Contains(body, `khrazhevnik_cache_range_responses_total{ecosystem="t"} 1`) {
+		t.Errorf("нет per-eco счётчика 206:\n%s", body)
 	}
 }
