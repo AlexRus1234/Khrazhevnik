@@ -78,6 +78,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("repos", func(t *testing.T) { repoSuite(t, newCat(t)) })
 	t.Run("remotes", func(t *testing.T) { remoteSuite(t, newCat(t)) })
 	t.Run("jobs", func(t *testing.T) { jobSuite(t, newCat(t)) })
+	t.Run("job_by_remote", func(t *testing.T) { jobByRemoteSuite(t, newCat(t)) })
 	t.Run("audit", func(t *testing.T) { auditSuite(t, newCat(t)) })
 	t.Run("audit_limit_cap", func(t *testing.T) { auditLimitCapSuite(t, newCat(t)) })
 	t.Run("object_index", func(t *testing.T) { objectIndexSuite(t, newCat(t)) })
@@ -514,6 +515,38 @@ func jobSuite(t *testing.T, c Catalog) {
 		t.Fatal(err)
 	}
 	wantNotFound(t, c.Jobs.DeleteJob(ctx, j.ID))
+}
+
+// jobByRemoteSuite — точечный JobByRemote (сессия 117): lookup по
+// remote_id без полного обхода Jobs(); нет задачи — NotFound.
+func jobByRemoteSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	rm, err := c.Remotes.CreateRemote(ctx, domain.Remote{
+		Name: "mirror", Ecosystem: "apt", BaseURL: "https://up.example", Mode: domain.ModeMirror, CreatedAt: fixed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := c.Jobs.CreateJob(ctx, domain.SyncJob{
+		RemoteID: rm.ID, State: domain.StatePending,
+		Interval: time.Hour, LastRunAt: fixed, Cursor: "etag:1", UpdatedAt: fixed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.Jobs.JobByRemote(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("JobByRemote: %v", err)
+	}
+	if got.ID != j.ID || got.RemoteID != rm.ID || got.State != domain.StatePending ||
+		got.Interval != time.Hour || got.Cursor != "etag:1" || !got.LastRunAt.Equal(fixed) {
+		t.Fatalf("JobByRemote = %+v, хочу %+v", got, j)
+	}
+	if err := c.Jobs.DeleteJob(ctx, j.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Jobs.JobByRemote(ctx, rm.ID)
+	wantNotFound(t, err)
 }
 
 func auditSuite(t *testing.T, c Catalog) {

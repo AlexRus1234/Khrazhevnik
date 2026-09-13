@@ -26,6 +26,15 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **DB:** index `idx_sync_jobs_remote_id` on `sync_jobs(remote_id)`
+  (migration 0008, all three dialects); `JobStore.JobByRemote` — a
+  point lookup instead of a full `Jobs()` scan in
+  `mirror.findJobByRemote` (called on every `touchJob` of an active
+  sync, `ProgressInterval=2s`). Fulfills the ROADMAP promise of a
+  `sync_jobs` remote_id index.
+
 ## [1.0.3] — 2026-09-13
 
 ### Fixed

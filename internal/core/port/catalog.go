@@ -90,6 +90,9 @@ type JobStore interface {
 	CreateJob(ctx context.Context, j domain.SyncJob) (domain.SyncJob, error)
 	Job(ctx context.Context, id int64) (domain.SyncJob, error)
 	Jobs(ctx context.Context) ([]domain.SyncJob, error)
+	// JobByRemote — задача по remote_id. Отсутствующая — *domain.NotFoundError;
+	// на один remote бывает максимум одна задача (дедуп сессии 38).
+	JobByRemote(ctx context.Context, remoteID int64) (domain.SyncJob, error)
 	UpdateJob(ctx context.Context, j domain.SyncJob) error
 	DeleteJob(ctx context.Context, id int64) error
 }

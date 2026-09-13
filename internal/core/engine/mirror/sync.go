@@ -26,7 +26,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 
 	"khrazhevnik/internal/core/domain"
 )
@@ -149,21 +148,11 @@ func (e *Engine) touchJob(ctx context.Context, remote domain.Remote, files int64
 	return e.jobs.UpdateJob(ctx, job)
 }
 
-// findJobByRemote ищет sync_job по remote_id. NotFound, если нет.
-// Полный обход Jobs — осознанно: v1-масштаб (remotes — единицы-десятки)
-// делает индекс по remote_id лишним; завести при росте — пост-v1
-// (ревью 2026-09-03).
+// findJobByRemote ищет sync_job по remote_id точечным lookup'ом
+// (JobByRemote; на один remote задача одна — дедуп сессии 38).
+// NotFound, если нет.
 func (e *Engine) findJobByRemote(ctx context.Context, remoteID int64) (domain.SyncJob, error) {
-	jobs, err := e.jobs.Jobs(ctx)
-	if err != nil {
-		return domain.SyncJob{}, err
-	}
-	for _, j := range jobs {
-		if j.RemoteID == remoteID {
-			return j, nil
-		}
-	}
-	return domain.SyncJob{}, &domain.NotFoundError{What: "sync-задача", Key: strconv.FormatInt(remoteID, 10)}
+	return e.jobs.JobByRemote(ctx, remoteID)
 }
 
 // isNotFound — короткая обёртка errors.As для *NotFoundError.

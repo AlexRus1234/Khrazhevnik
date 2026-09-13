@@ -450,6 +450,18 @@ func (s *FakeJobStore) Job(_ context.Context, id int64) (domain.SyncJob, error) 
 	return j, nil
 }
 
+// JobByRemote возвращает задачу по remote_id.
+func (s *FakeJobStore) JobByRemote(_ context.Context, remoteID int64) (domain.SyncJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, j := range s.byID {
+		if j.RemoteID == remoteID {
+			return j, nil
+		}
+	}
+	return domain.SyncJob{}, &domain.NotFoundError{What: "sync-задача", Key: strconv.FormatInt(remoteID, 10)}
+}
+
 // Jobs отдаёт все задачи по возрастанию ID.
 func (s *FakeJobStore) Jobs(_ context.Context) ([]domain.SyncJob, error) {
 	s.mu.Lock()

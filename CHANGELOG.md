@@ -35,6 +35,15 @@ major.
 
 ## [Unreleased]
 
+### Изменено
+
+- **БД:** индекс `idx_sync_jobs_remote_id` на `sync_jobs(remote_id)`
+  (миграция 0008, все три диалекта); `JobStore.JobByRemote` —
+  точечный lookup вместо полного обхода `Jobs()` в
+  `mirror.findJobByRemote` (вызывался на каждом `touchJob` активного
+  sync, `ProgressInterval=2s`). Закрыто обещание ROADMAP «заодно
+  индекс sync_jobs по remote_id».
+
 ## [1.0.3] — 2026-09-13
 
 ### Исправлено

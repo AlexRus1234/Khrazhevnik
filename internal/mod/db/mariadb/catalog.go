@@ -113,11 +113,12 @@ const (
 
 	sqlJobInsert = `INSERT INTO sync_jobs (remote_id, state, interval_sec, last_run_at, ` + "`cursor`" + `, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)`
-	sqlJobSelect = `SELECT id, remote_id, state, interval_sec, last_run_at, ` + "`cursor`" + `, updated_at FROM sync_jobs`
-	sqlJobByID   = sqlJobSelect + ` WHERE id = ?`
-	sqlJobAll    = sqlJobSelect + ` ORDER BY id`
-	sqlJobUpdate = `UPDATE sync_jobs SET remote_id = ?, state = ?, interval_sec = ?, last_run_at = ?, ` + "`cursor`" + ` = ?, updated_at = ? WHERE id = ?`
-	sqlJobDelete = `DELETE FROM sync_jobs WHERE id = ?`
+	sqlJobSelect   = `SELECT id, remote_id, state, interval_sec, last_run_at, ` + "`cursor`" + `, updated_at FROM sync_jobs`
+	sqlJobByID     = sqlJobSelect + ` WHERE id = ?`
+	sqlJobByRemote = sqlJobSelect + ` WHERE remote_id = ?`
+	sqlJobAll      = sqlJobSelect + ` ORDER BY id`
+	sqlJobUpdate   = `UPDATE sync_jobs SET remote_id = ?, state = ?, interval_sec = ?, last_run_at = ?, ` + "`cursor`" + ` = ?, updated_at = ? WHERE id = ?`
+	sqlJobDelete   = `DELETE FROM sync_jobs WHERE id = ?`
 )
 
 // Аудит, индекс mutable-объектов и отзывы JWT-сессий. `key` —
@@ -624,6 +625,18 @@ func (s *Store) Job(ctx context.Context, id int64) (domain.SyncJob, error) {
 	})
 	if err != nil {
 		return domain.SyncJob{}, mapRead(err, "sync-задача", strconv.FormatInt(id, 10))
+	}
+	return j, nil
+}
+
+// JobByRemote возвращает задачу по remote_id (точечный lookup, индекс
+// 0008). Отсутствующая — NotFound; на один remote задача одна (дедуп).
+func (s *Store) JobByRemote(ctx context.Context, remoteID int64) (domain.SyncJob, error) {
+	j, err := call(ctx, s, func() (domain.SyncJob, error) {
+		return scanJob(s.db.QueryRowContext(ctx, sqlJobByRemote, remoteID))
+	})
+	if err != nil {
+		return domain.SyncJob{}, mapRead(err, "sync-задача", strconv.FormatInt(remoteID, 10))
 	}
 	return j, nil
 }
