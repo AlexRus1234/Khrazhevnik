@@ -135,7 +135,10 @@ jobs:
       minio:
         # minio/minio: запуск `server /data`; креды — env MINIO_ROOT_*.
         # health/live — встроенный liveness-эндпойнт минио.
-        image: minio/minio
+        # Docker Hub-репозиторий minio/minio удалён (MinIO прекратил
+        # публикацию community-образов, 2025-10); образ берём из quay,
+        # пин на последний community-релиз — воспроизводимость сборок.
+        image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
