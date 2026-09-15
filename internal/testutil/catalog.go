@@ -187,6 +187,24 @@ func (s *FakeObjectIndex) DeleteObjectMeta(_ context.Context, key string) error 
 	return nil
 }
 
+// ForEachObjectMeta перебирает записи в порядке key; ошибка fn
+// прерывает обход и возвращается наружу как есть.
+func (s *FakeObjectIndex) ForEachObjectMeta(_ context.Context, fn func(domain.ObjectMeta) error) error {
+	s.mu.Lock()
+	out := make([]domain.ObjectMeta, 0, len(s.byKey))
+	for _, m := range s.byKey {
+		out = append(out, m)
+	}
+	s.mu.Unlock()
+	slices.SortFunc(out, func(a, b domain.ObjectMeta) int { return cmp.Compare(a.Key, b.Key) })
+	for _, m := range out {
+		if err := fn(m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // FakeAuditLog — slice-реализация port.AuditLog: записи по возрастанию
 // ID (как у боевого адаптера БД), keyset-пагинация AuditEntries.
 // Нужен тестам админ-API и audit-middleware (сессия 09).

@@ -114,6 +114,13 @@ type ObjectIndex interface {
 	ObjectMeta(ctx context.Context, key string) (domain.ObjectMeta, error)
 	PutObjectMeta(ctx context.Context, m domain.ObjectMeta) error
 	DeleteObjectMeta(ctx context.Context, key string) error
+	// ForEachObjectMeta перебирает все записи в порядке key, отдавая
+	// каждую колбэку; ошибка fn прерывает обход и возвращается наружу
+	// как есть. Референс-набор sweeper'а волны «Гигиена»: полный обход
+	// нужен для сверки живых storage_key; реализуется стримом (курсор
+	// rows, без OFFSET), чтобы контракт не зависел от объёма.
+	// Строки с пустым storage_key (до-0003 записи) входят в обход.
+	ForEachObjectMeta(ctx context.Context, fn func(domain.ObjectMeta) error) error
 }
 
 // StatsStore — персистентный снапшот per-eco счётчиков статистики

@@ -82,6 +82,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("audit", func(t *testing.T) { auditSuite(t, newCat(t)) })
 	t.Run("audit_limit_cap", func(t *testing.T) { auditLimitCapSuite(t, newCat(t)) })
 	t.Run("object_index", func(t *testing.T) { objectIndexSuite(t, newCat(t)) })
+	t.Run("iterate_object_meta", func(t *testing.T) { iterateObjectMetaSuite(t, newCat(t)) })
 	t.Run("stats_snapshot", func(t *testing.T) { statsSnapshotSuite(t, newCat(t)) })
 	t.Run("revocations", func(t *testing.T) { revocationsSuite(t, newCat(t)) })
 	t.Run("noop_update", func(t *testing.T) { noopUpdateSuite(t, newCat(t)) })
@@ -671,6 +672,57 @@ func objectIndexSuite(t *testing.T, c Catalog) {
 	}
 	if _, err := c.ObjIndex.ObjectMeta(ctx, boundary.Key); err != nil {
 		t.Fatalf("ObjectMeta(ключ 767 байт): %v", err)
+	}
+}
+
+// iterateObjectMetaSuite — полный обход индекса (сессия 118):
+// записи идут в порядке key, все три на месте; ошибка колбэка на
+// второй строке прерывает обход и возвращается наружу как есть.
+func iterateObjectMetaSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	// Ключи уже в лексикографическом порядке: обход обязан их сохранить.
+	keys := []string{
+		"cache/apt/1/dists/stable/Release",
+		"cache/pacman/1/core.db",
+		"cache/rpm-md/1/repodata/primary.xml.gz",
+	}
+	for i, k := range keys {
+		if err := c.ObjIndex.PutObjectMeta(ctx, domain.ObjectMeta{
+			Key: k, StorageKey: fmt.Sprintf("sk-%d", i), Size: int64(i + 1),
+			ETag: fmt.Sprintf(`"e%d"`, i), ContentType: "text/plain", LastModified: fixed,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []string
+	if err := c.ObjIndex.ForEachObjectMeta(ctx, func(m domain.ObjectMeta) error {
+		got = append(got, m.Key)
+		return nil
+	}); err != nil {
+		t.Fatalf("ForEachObjectMeta: %v", err)
+	}
+	if len(got) != len(keys) {
+		t.Fatalf("обход вернул %d записей, хочу %d: %v", len(got), len(keys), got)
+	}
+	for i := range keys {
+		if got[i] != keys[i] {
+			t.Fatalf("порядок обхода = %v, хочу %v", got, keys)
+		}
+	}
+	sentinel := errors.New("stop iteration")
+	seen := 0
+	err := c.ObjIndex.ForEachObjectMeta(ctx, func(domain.ObjectMeta) error {
+		seen++
+		if seen == 2 {
+			return sentinel
+		}
+		return nil
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("ошибка колбэка наружу = %v, хочу sentinel как есть", err)
+	}
+	if seen != 2 {
+		t.Fatalf("обход после ошибки колбэка дошёл до %d-й записи, хочу 2", seen)
 	}
 }
 

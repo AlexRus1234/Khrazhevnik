@@ -131,6 +131,7 @@ const (
 		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`
 	sqlAuditPage     = `SELECT id, ts, actor, action, object, result, detail FROM audit_log WHERE id > $1 ORDER BY id LIMIT $2`
 	sqlObjMetaGet    = `SELECT key, storage_key, etag, size, content_type, last_modified, expires_at FROM object_index WHERE key = $1`
+	sqlObjMetaAll    = `SELECT key, storage_key, etag, size, content_type, last_modified, expires_at FROM object_index ORDER BY key`
 	sqlObjMetaDelete = `DELETE FROM object_index WHERE key = $1`
 
 	sqlRevPurge = `DELETE FROM revoked_sessions WHERE expires_at < $1`
@@ -787,6 +788,30 @@ func (s *Store) PutObjectMeta(ctx context.Context, m domain.ObjectMeta) error {
 func (s *Store) DeleteObjectMeta(ctx context.Context, key string) error {
 	_, err := call(ctx, s, func() (sql.Result, error) {
 		return s.db.ExecContext(ctx, sqlObjMetaDelete, key)
+	})
+	return err
+}
+
+// ForEachObjectMeta перебирает все записи индекса в порядке key
+// (стрим по курсору rows); ошибка fn прерывает обход и возвращается
+// наружу как есть.
+func (s *Store) ForEachObjectMeta(ctx context.Context, fn func(domain.ObjectMeta) error) error {
+	_, err := call(ctx, s, func() (struct{}, error) {
+		rows, err := s.db.QueryContext(ctx, sqlObjMetaAll)
+		if err != nil {
+			return struct{}{}, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			m, err := scanObjectMeta(rows)
+			if err != nil {
+				return struct{}{}, err
+			}
+			if err := fn(m); err != nil {
+				return struct{}{}, err
+			}
+		}
+		return struct{}{}, rows.Err()
 	})
 	return err
 }
