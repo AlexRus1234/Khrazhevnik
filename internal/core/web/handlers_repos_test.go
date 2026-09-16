@@ -31,6 +31,7 @@ import (
 
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/engine/auth"
+	"khrazhevnik/internal/core/engine/storagegc"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/testutil"
 )
@@ -709,6 +710,152 @@ func TestRepoUploadFailureAuditAction(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("неудачный upload не записан под repo.object.upload — ушёл под fallback-имя (записи: %+v)", entries)
+	}
+}
+
+// deleteRepo — DELETE /api/v1/repos/{id} с admin-сессией.
+func deleteRepo(h http.Handler, env *repoEnv, id int64) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/repos/"+itoaRepo(id), nil)
+	req.RemoteAddr = "10.0.0.9:1"
+	req.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// awaitTaskLabel опрашивает реестр, пока задача kind|label не достигнет
+// want (или таймаут).
+func awaitTaskLabel(t *testing.T, r *TaskRegistry, kind, label, want string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, s := range r.Snapshots() {
+			if s.Kind == kind && s.Label == label && s.State == want {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("задача %s|%s не перешла в %s", kind, label, want)
+}
+
+// TestRepoDeleteSweepsStoragePrefix — DELETE репозитория запускает
+// фоновую задачу gc|repo-<id> (сессия 122), которая выметает префикс
+// repo/<id>/ и не трогает чужие ключи.
+func TestRepoDeleteSweepsStoragePrefix(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	prefix := "repo/" + itoaRepo(repoID) + "/"
+	gcPut(t, env.storage, prefix+"pool/main/a/foo.deb")
+	gcPut(t, env.storage, "repo/999/pool/main/a/keep.deb")
+	sweeper := storagegc.New(env.storage, testutil.NewFakeObjectIndex(), env.repos, env.clock, 0)
+	tasks := NewTaskRegistry(4, env.clock, nil)
+	h := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Repos: env.repos, Storage: env.storage, Audit: env.audit,
+		Tasks: tasks, StorageGC: sweeper, Clock: env.clock,
+	})
+	rec := deleteRepo(h, env, repoID)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE repo = %d, хочу 204 (тело %s)", rec.Code, rec.Body.String())
+	}
+	awaitTaskLabel(t, tasks, "gc", "repo-"+itoaRepo(repoID), taskSucceeded)
+	if gcHas(t, env.storage, prefix+"pool/main/a/foo.deb") {
+		t.Error("объект удалённого репо не выметен")
+	}
+	if !gcHas(t, env.storage, "repo/999/pool/main/a/keep.deb") {
+		t.Error("чужой префикс repo/999/ тронут")
+	}
+	if _, err := env.repos.Repo(t.Context(), repoID); err == nil {
+		t.Error("репо осталась в каталоге")
+	}
+}
+
+// TestRepoDeleteWithoutSweeperKeepsObjects — StorageGC=nil (деградация):
+// DELETE остаётся 204, объекты сохраняются (прежнее поведение).
+func TestRepoDeleteWithoutSweeperKeepsObjects(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	key := "repo/" + itoaRepo(repoID) + "/pool/main/a/foo.deb"
+	gcPut(t, env.storage, key)
+	rec := deleteRepo(env.admin, env, repoID)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE без sweeper = %d, хочу 204 (тело %s)", rec.Code, rec.Body.String())
+	}
+	if !gcHas(t, env.storage, key) {
+		t.Error("объект удалён без StorageGC — деградация должна сохранять прежнее поведение")
+	}
+}
+
+// TestRepoDeleteTaskLimitStillDeletes — воркеры заняты: Start вернёт
+// ErrTaskLimit, но DELETE не фейлится (best-effort), репо удалено.
+func TestRepoDeleteTaskLimitStillDeletes(t *testing.T) {
+	env := newRepoEnv(t)
+	repoID := createRepoViaAPI(t, env, "alice", 2)
+	sweeper := storagegc.New(env.storage, testutil.NewFakeObjectIndex(), env.repos, env.clock, 0)
+	tasks := NewTaskRegistry(1, env.clock, nil)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	if _, err := tasks.Start("gc", "busy", func(context.Context, Progress) error {
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("занять воркер: %v", err)
+	}
+	h := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Repos: env.repos, Storage: env.storage, Audit: env.audit,
+		Tasks: tasks, StorageGC: sweeper, Clock: env.clock,
+	})
+	rec := deleteRepo(h, env, repoID)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE при занятых воркерах = %d, хочу 204 (тело %s)", rec.Code, rec.Body.String())
+	}
+	if _, err := env.repos.Repo(t.Context(), repoID); err == nil {
+		t.Error("репо осталась в каталоге при отказе старта задачи")
+	}
+}
+
+// deleteFailRepoStore — каталог, чей DeleteRepo всегда падает.
+type deleteFailRepoStore struct {
+	*testutil.FakeRepoStore
+}
+
+func (*deleteFailRepoStore) DeleteRepo(context.Context, int64) error {
+	return &domain.UnavailableError{What: "каталог", Reason: "сбой БД"}
+}
+
+// TestRepoDeleteFailureAuditAction — неудачный DeleteRepo пишется в
+// аудит под repo.delete (не fallback-именем delete.repos): action
+// ставится в контекст ДО мутации (сессия 87).
+func TestRepoDeleteFailureAuditAction(t *testing.T) {
+	env := newRepoEnv(t)
+	fail := &deleteFailRepoStore{FakeRepoStore: env.repos}
+	tasks := NewTaskRegistry(2, env.clock, nil)
+	h := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		Repos: fail, Storage: env.storage, Audit: env.audit,
+		Tasks: tasks, Clock: env.clock,
+	})
+	rec := deleteRepo(h, env, 1)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("DELETE при сбое каталога = %d, хочу 503 (тело %s)", rec.Code, rec.Body.String())
+	}
+	entries, err := env.audit.AuditEntries(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Action == "repo.delete" {
+			found = true
+			if e.Result != "503" {
+				t.Errorf("result = %q, хочу 503", e.Result)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("неудачный DELETE не записан под repo.delete — ушёл под fallback-имя (записи: %+v)", entries)
 	}
 }
 

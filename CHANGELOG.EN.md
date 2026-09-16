@@ -50,6 +50,13 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `mirror.findJobByRemote` (called on every `touchJob` of an active
   sync, `ProgressInterval=2s`). Fulfills the ROADMAP promise of a
   `sync_jobs` remote_id index.
+- **Repositories:** `DELETE /api/v1/repos/{id}` now sweeps the
+  `repo/<id>/` objects out of storage immediately — via a background
+  task (kind=`gc`, label=`repo-<id>`) instead of accumulating an orphan
+  prefix until the next sweeping cleanup. A task failure does not fail
+  the DELETE: the periodic sweep picks up the remainder. Synchronous
+  deletion in the handler was rejected — on s3 thousands of Deletes
+  would hold the HTTP request for minutes.
 
 ## [1.0.3] — 2026-09-13
 

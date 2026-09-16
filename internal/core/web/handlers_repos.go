@@ -22,7 +22,9 @@
 package web
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -200,21 +202,33 @@ func handleUpdateRepo(d Deps) http.HandlerFunc {
 }
 
 // handleDeleteRepo — DELETE /api/v1/repos/{id}. Права каскадом (FK
-// ON DELETE CASCADE); объекты storage остаются — v1 не делает batch-
-// delete по префиксу (документируем как расхождение: осиротевшие
-// repo/<id>/ накапливаются, выметающей чистки в v1 нет — см. ROADMAP;
-// убрать можно только ручным delete).
+// ON DELETE CASCADE); объекты хранилища repo/<id>/ выметает фоновая
+// задача gc|repo-<id> сразу после удаления (storagegc.SweepRepoPrefix,
+// сессия 122) — синхронное удаление в хендлере отклонено: на s3 это
+// тысячи Delete ≈ минуты, HTTP-запрос завис бы. Сбой задачи не фейлит
+// DELETE: остаток подбирает периодический sweep (сессия 120).
 func handleDeleteRepo(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseInt64URLParam(w, r, "id")
 		if !ok {
 			return
 		}
+		// Action до мутации (урок сессии 87): и неудачный DeleteRepo, и
+		// старт задачи чистки уходят в аудит под repo.delete.
+		*r = *r.WithContext(WithAuditAction(r.Context(), "repo.delete"))
 		if err := d.Repos.DeleteRepo(r.Context(), id); err != nil {
 			writeErr(w, err)
 			return
 		}
-		*r = *r.WithContext(WithAuditAction(r.Context(), "repo.delete"))
+		if d.StorageGC != nil && d.Tasks != nil {
+			// Best-effort: ответ DELETE не меняется (204) при сбое или
+			// отказе старта (лимит воркеров TaskRegistry) — остаток
+			// префикса подберёт периодический sweep.
+			_, _ = d.Tasks.Start("gc", fmt.Sprintf("repo-%d", id), func(ctx context.Context, _ Progress) error {
+				_, err := d.StorageGC.SweepRepoPrefix(ctx, id)
+				return err
+			})
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
