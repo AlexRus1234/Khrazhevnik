@@ -32,6 +32,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"khrazhevnik/internal/core/domain"
@@ -52,9 +53,11 @@ const deleteConcurrency = 4
 
 // Result — итоги одного прохода. Каждый объект cache/ и repo/ попадает
 // ровно в один из счётчиков scanned; orphan'ы считаются и в dry-run
-// (иначе ревизия перед чисткой бессмысленна).
+// (иначе ревизия перед чисткой бессмысленна). Duration — время прохода
+// (для гистограммы метрик), измеряется часами Sweeper'а.
 type Result struct {
 	DryRun        bool
+	Duration      time.Duration
 	CacheScanned  int64
 	CacheOrphans  int64
 	RepoScanned   int64
@@ -78,6 +81,15 @@ type Sweeper struct {
 	// OnSweep — хук метрик после каждого прохода (nil-safe), наполнение
 	// — в wire (сессия 120); ошибка прохода передаётся как есть.
 	OnSweep func(res Result, err error)
+	// OnError — колбэк ошибок периодического тика Run (инжектится wire'ом,
+	// как Scheduler.ErrorHook): сбой прохода не гасит цикл, но и не
+	// теряется молча. Ручные вызовы наверх ошибку возвращают сами.
+	OnError func(error)
+
+	// mu охраняет cancel/done — поля жизненного цикла Run/Stop.
+	mu     sync.Mutex
+	cancel context.CancelFunc // nil до Run и после Stop
+	done   chan struct{}      // закрытие = горутина-тикер вышла
 }
 
 // New собирает sweeper. grace — минимальный возраст кандидата по
@@ -105,8 +117,10 @@ func New(storage port.Storage, index port.ObjectIndex, repos port.RepoStore, clo
 // ничего не удаляя. Ошибка индекса/каталога или листинга — fail-closed:
 // «не удалось перечислить» никогда не маскируется под «объектов нет».
 func (s *Sweeper) Sweep(ctx context.Context, dryRun bool) (Result, error) {
+	start := s.clock.Now()
 	res := Result{DryRun: dryRun}
 	err := s.sweep(ctx, &res, dryRun)
+	res.Duration = s.clock.Now().Sub(start)
 	return s.report(res, err)
 }
 
@@ -114,8 +128,10 @@ func (s *Sweeper) Sweep(ctx context.Context, dryRun bool) (Result, error) {
 // удаления репозитория (сессия 122). Без dry-run: смысл вызова —
 // освободить префикс, который больше не принадлежит живому репо.
 func (s *Sweeper) SweepRepoPrefix(ctx context.Context, repoID int64) (Result, error) {
+	start := s.clock.Now()
 	var res Result
 	err := s.sweepRepoPrefix(ctx, &res, repoID)
+	res.Duration = s.clock.Now().Sub(start)
 	return s.report(res, err)
 }
 
@@ -264,4 +280,58 @@ func (s *Sweeper) deleteKey(ctx context.Context, key string, size int64, res *Re
 	}
 	res.Deleted++
 	res.BytesFreed += size
+}
+
+// Run запускает горутину-тикер периодической чистки: раз в interval —
+// Sweep(ctx, false). Тикер — time.Ticker, а не port.Clock: момент
+// снятия времени не важен, часы Sweeper'а нужны лишь домену (grace,
+// Duration). Отличие от statskeeper.Run: тик идёт в runCtx БЕЗ
+// WithoutCancel — обход хранилища длинный, отмена между ключами зашита
+// в Sweep (сессия 119), и shutdown не должен ждать целого прохода
+// ради короткого флаша, как у статистики. Ошибка тика — в OnError,
+// цикл продолжает тикать. interval <= 0 недопустим (time.Ticker
+// паникует) — его отсекает wire.
+func (s *Sweeper) Run(ctx context.Context, interval time.Duration) {
+	runCtx, cancel := context.WithCancel(ctx)
+	s.mu.Lock()
+	s.cancel = cancel
+	s.done = make(chan struct{})
+	done := s.done
+	s.mu.Unlock()
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				if _, err := s.Sweep(runCtx, false); err != nil && s.OnError != nil {
+					s.OnError(err)
+				}
+			}
+		}
+	}()
+}
+
+// Stop гасит тикер и ждёт выхода горутины. Финального прохода НЕТ, в
+// отличие от финального флаша statskeeper: чистка не теряет данные
+// (остаток подберёт следующий запуск), а полный обход хранилища на
+// выходе растянул бы бюджет shutdown. Повторный Stop идемпотентен.
+func (s *Sweeper) Stop(ctx context.Context) error {
+	s.mu.Lock()
+	cancel, done := s.cancel, s.done
+	s.cancel, s.done = nil, nil
+	s.mu.Unlock()
+	if cancel == nil {
+		return nil
+	}
+	cancel()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -382,5 +383,84 @@ func TestSweepListErrorFailClosed(t *testing.T) {
 		env.index, env.repos, env.clock, 0)
 	if _, err := sw.Sweep(context.Background(), false); err == nil {
 		t.Fatal("Sweep вернул nil при ошибке листинга")
+	}
+}
+
+// TestSweeperRunTicks — периодический keeper зовёт Sweep на тике, Stop
+// гасит горутину и ждёт её выхода (сессия 120).
+func TestSweeperRunTicks(t *testing.T) {
+	env := newGCEnv(t)
+	sw := New(env.storage, env.index, env.repos, env.clock, 0)
+	var calls atomic.Int64
+	sw.OnSweep = func(Result, error) { calls.Add(1) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sw.Run(ctx, 5*time.Millisecond)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if calls.Load() == 0 {
+		t.Fatal("тик не вызвал Sweep")
+	}
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel()
+	if err := sw.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	settled := calls.Load()
+	time.Sleep(20 * time.Millisecond)
+	if calls.Load() != settled {
+		t.Error("после Stop тики продолжаются")
+	}
+}
+
+// TestSweeperRunCanceled — отмена родительского ctx гасит тикер, Stop
+// после этого не виснет (сессия 120).
+func TestSweeperRunCanceled(t *testing.T) {
+	env := newGCEnv(t)
+	sw := New(env.storage, env.index, env.repos, env.clock, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	sw.Run(ctx, time.Hour)
+	cancel()
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel()
+	if err := sw.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop после отмены ctx: %v", err)
+	}
+}
+
+// TestSweeperRunReportsErrors — сбой прохода уходит в OnError, цикл не
+// гаснет (сессия 120).
+func TestSweeperRunReportsErrors(t *testing.T) {
+	env := newGCEnv(t)
+	sw := New(&listErrStorage{FakeStorage: env.storage, err: errors.New("носитель недоступен")},
+		env.index, env.repos, env.clock, 0)
+	errs := make(chan error, 4)
+	sw.OnError = func(err error) {
+		select {
+		case errs <- err:
+		default:
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sw.Run(ctx, 5*time.Millisecond)
+
+	select {
+	case <-errs:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnError не получил ошибку тика")
+	}
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopCancel()
+	if err := sw.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
 	}
 }

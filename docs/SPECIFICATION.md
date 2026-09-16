@@ -132,6 +132,8 @@ admin_listen = ":30202"
 
 [storage]
 driver = "fs"                    # fs | s3
+gc_interval = "24h"              # период фоновой выметающей чистки хранилища; 0 = выключено
+gc_grace = "168h"                # мин. возраст кандидата на вымет; строго > 0 (0 = ногострел)
 [storage.fs]
 path = "/var/lib/khrazhevnik/store"
 [storage.s3]

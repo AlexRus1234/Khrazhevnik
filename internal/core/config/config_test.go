@@ -64,6 +64,8 @@ func TestLoadDefaults(t *testing.T) {
 		{"admin_listen", cfg.Server.AdminListen, ":30202"},
 		{"storage.driver", cfg.Storage.Driver, "fs"},
 		{"storage.fs.path", cfg.Storage.FS.Path, "/var/lib/khrazhevnik/store"},
+		{"storage.gc_interval", cfg.Storage.GCInterval.Duration, 24 * time.Hour},
+		{"storage.gc_grace", cfg.Storage.GCGrace.Duration, 7 * 24 * time.Hour},
 		{"database.driver", cfg.Database.Driver, "sqlite"},
 		{"database.dsn", cfg.Database.DSN, "/var/lib/khrazhevnik/khrazhevnik.db"},
 		{"auth.jwt_secret", cfg.Auth.JWTSecret, "topsecret-topsecret-topsecret-0123456789"},
@@ -103,6 +105,8 @@ public_listen = "127.0.0.1:13000"
 
 [storage]
 driver = "s3"
+gc_interval = "6h"
+gc_grace = "48h"
 [storage.s3]
 endpoint = "https://s3.example"
 region = "ru"
@@ -153,6 +157,9 @@ enabled = false
 	}
 	if cfg.Storage.S3.SpoolDir != defaultS3Spool {
 		t.Errorf("storage.s3.spool_dir: дефолт не подставился, got %q", cfg.Storage.S3.SpoolDir)
+	}
+	if cfg.Storage.GCInterval.Duration != 6*time.Hour || cfg.Storage.GCGrace.Duration != 48*time.Hour {
+		t.Errorf("storage gc = %v / %v", cfg.Storage.GCInterval.Duration, cfg.Storage.GCGrace.Duration)
 	}
 	if cfg.Database.Driver != "postgres" || cfg.Database.DSN != "postgres://u:p@localhost/khrazhevnik" {
 		t.Errorf("database = %+v", cfg.Database)
@@ -412,6 +419,46 @@ stats_flush_interval = "0s"
 `)
 	if _, err := Load(path, withJWT(nil)); err != nil {
 		t.Errorf("stats_flush_interval = 0 легален, got %v", err)
+	}
+}
+
+// TestLoadStorageGCInterval — ручки выметающей чистки: отрицательный
+// gc_interval и неположительный gc_grace — ошибки конфига; interval=0
+// («выключено») легален (сессия 120).
+func TestLoadStorageGCInterval(t *testing.T) {
+	path := writeTemp(t, "conf.toml", `
+[storage]
+gc_interval = "-5s"
+`)
+	_, err := Load(path, withJWT(nil))
+	if err == nil || !strings.Contains(err.Error(), "storage.gc_interval") {
+		t.Fatalf("отрицательный gc_interval прошёл валидацию: %v", err)
+	}
+
+	path = writeTemp(t, "conf-grace-zero.toml", `
+[storage]
+gc_grace = "0s"
+`)
+	_, err = Load(path, withJWT(nil))
+	if err == nil || !strings.Contains(err.Error(), "storage.gc_grace") {
+		t.Fatalf("gc_grace = 0 прошёл валидацию (ногострел): %v", err)
+	}
+
+	path = writeTemp(t, "conf-grace-neg.toml", `
+[storage]
+gc_grace = "-1h"
+`)
+	_, err = Load(path, withJWT(nil))
+	if err == nil || !strings.Contains(err.Error(), "storage.gc_grace") {
+		t.Fatalf("отрицательный gc_grace прошёл валидацию: %v", err)
+	}
+
+	path = writeTemp(t, "conf-off.toml", `
+[storage]
+gc_interval = "0s"
+`)
+	if _, err := Load(path, withJWT(nil)); err != nil {
+		t.Errorf("gc_interval = 0 легален (чистка выключена), got %v", err)
 	}
 }
 

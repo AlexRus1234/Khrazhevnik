@@ -44,6 +44,7 @@ import (
 	mirrorengine "khrazhevnik/internal/core/engine/mirror"
 	publishengine "khrazhevnik/internal/core/engine/publish"
 	statskeeper "khrazhevnik/internal/core/engine/statskeeper"
+	"khrazhevnik/internal/core/engine/storagegc"
 	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/core/registry"
@@ -110,6 +111,12 @@ type App struct {
 	// cache_stats (сессия 96); nil при stats_flush_interval=0 или
 	// без модуля БД. Stop вызывается из graceful shutdown каскада.
 	StatsKeeper *statskeeper.Keeper
+	// Sweeper — консервативная выметающая чистка хранилища (сессия 119)
+	// с периодическим keeper-циклом (сессия 120); nil без модуля БД.
+	// Sweeper есть и при storage.gc_interval=0 (цикл выключен, ручной
+	// проход — сессия 121). Stop вызывается из graceful shutdown
+	// каскада.
+	Sweeper *storagegc.Sweeper
 }
 
 // Таймауты upstream-соединения: обрыв установки соединения и ожидания
@@ -244,10 +251,15 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	scheduler.UnclaimSync = func(name string) { tasks.Release("sync", name) }
 	scheduler.DebugHook = func(msg string) { log.Debug("mirror scheduler", "msg", msg) }
 	scheduler.Start(context.Background())
+	// storagegc (сессия 120): периодическая выметающая чистка хранилища
+	// — keeper-горутина рядом с движком (прецедент statskeeper выше).
+	sweeper, gcMetrics := wireStorageGC(cfg, storage, catalog, log)
 	var metricsHandler http.Handler
 	var metricsExporter *metrics.Handler
 	if cfg.Metrics.Enabled {
-		metricsExporter = metrics.NewHandler(cacheEngine.Metrics(), newPromRegistry())
+		reg := newPromRegistry()
+		gcMetrics.Register(reg)
+		metricsExporter = metrics.NewHandler(cacheEngine.Metrics(), reg)
 		metricsHandler = metricsExporter.MetricsHandler()
 	}
 	return &App{
@@ -268,6 +280,7 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		Signer:         signer,
 		NarSigner:      narSigner,
 		StatsKeeper:    statsKeeper,
+		Sweeper:        sweeper,
 	}, nil
 }
 
@@ -281,6 +294,31 @@ func newPromRegistry() *prometheus.Registry {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	return reg
+}
+
+// wireStorageGC собирает выметающую чистку хранилища (storagegc, сессия
+// 120) и её коллектор метрик. Деградация без срезов каталога (нет БД) —
+// nil-Sweeper: чистить нечего, сверять живые storage_key/репозитории
+// не с чем (образец statskeeper в wireApp). Sweeper создаётся и при
+// gc_interval=0 — ручной проход (сессия 121) ходит в тот же экземпляр;
+// фоновый keeper-цикл поднимается только при interval > 0. OnSweep
+// наполняет метрики из Result, OnError — сбой тика в лог, как
+// Scheduler.ErrorHook. gcMetrics создаётся всегда: nil-проверки в хуке
+// не нужны, при выключенных метриках счётчики просто не экспортируются.
+func wireStorageGC(cfg config.Config, storage port.Storage, catalog registry.CatalogSet, log *slog.Logger) (*storagegc.Sweeper, *metrics.StorageGC) {
+	gcMetrics := metrics.NewStorageGC()
+	if catalog.ObjIndex == nil || catalog.Repos == nil {
+		return nil, gcMetrics
+	}
+	sweeper := storagegc.New(storage, catalog.ObjIndex, catalog.Repos, systemClock{}, cfg.Storage.GCGrace.Duration)
+	sweeper.OnSweep = func(res storagegc.Result, err error) {
+		gcMetrics.ObserveRun(res.Deleted, res.BytesFreed, res.FailedDeletes, res.Duration.Seconds())
+	}
+	sweeper.OnError = func(err error) { log.Error("storage gc", "err", err) }
+	if cfg.Storage.GCInterval.Duration > 0 {
+		sweeper.Run(context.Background(), cfg.Storage.GCInterval.Duration)
+	}
+	return sweeper, gcMetrics
 }
 
 // wireRepoAdapters собирает RepoAdapter'ы из compile-time реестра по
@@ -511,6 +549,7 @@ func wireEcosystems(cfg config.Config, remotes port.RemoteStore) (map[string]por
 const (
 	schedulerStopBudget = 10 * time.Second
 	tasksWaitBudget     = 15 * time.Second
+	gcStopBudget        = 10 * time.Second
 	statsFlushBudget    = 5 * time.Second
 	drainDeletesBudget  = 5 * time.Second
 )
@@ -519,8 +558,10 @@ const (
 // задач и ждёт их завершения в рамках таймаута каскада (server.go).
 // Зеркало: сначала стопаем scheduler (per-remote тикеры), затем
 // TaskRegistry (ручные sync и потенциальные publish — сессия 14),
-// затем keeper статистики (финальный флаш cache_stats — сессия 96),
-// затем дожимаем фоновые удаления прошлых версий mutable-объектов.
+// затем keeper чистки хранилища (гашение тикера без финального
+// прохода — сессия 120), затем keeper статистики (финальный флаш
+// cache_stats — сессия 96), затем дожимаем фоновые удаления прошлых
+// версий mutable-объектов.
 // Каждой стадии — своя доля бюджета; ошибки агрегируются, ни одна
 // стадия не пропускается из-за ошибки предыдущей.
 func (a *App) WaitTasks(ctx context.Context) error {
@@ -537,6 +578,13 @@ func (a *App) WaitTasks(ctx context.Context) error {
 		defer cancel()
 		if err := a.Tasks.WaitAll(tctx); err != nil {
 			errs = append(errs, fmt.Errorf("tasks wait: %w", err))
+		}
+	}
+	if a.Sweeper != nil {
+		gctx, cancel := context.WithTimeout(ctx, gcStopBudget)
+		defer cancel()
+		if err := a.Sweeper.Stop(gctx); err != nil {
+			errs = append(errs, fmt.Errorf("storage gc stop: %w", err))
 		}
 	}
 	if a.StatsKeeper != nil {

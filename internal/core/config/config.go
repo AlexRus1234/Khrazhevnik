@@ -60,6 +60,14 @@ type Storage struct {
 	Driver string    `toml:"driver"`
 	FS     FSStorage `toml:"fs"`
 	S3     S3Storage `toml:"s3"`
+	// GCInterval/GCGrace — периодическая выметающая чистка хранилища
+	// волны «Гигиена» (storagegc): остатки удалённых репо (repo/<id>/)
+	// и осиротевшие версии mutable-объектов. GCInterval=0 — легальное
+	// «выключено» (как stats_flush_interval); GCGrace — минимальный
+	// возраст кандидата, строго > 0: ноль удалял бы свежие версии
+	// раньше, чем их перестанет видеть читатель (ногострел).
+	GCInterval Duration `toml:"gc_interval"`
+	GCGrace    Duration `toml:"gc_grace"`
 }
 
 // FSStorage — posix-хранилище (mod/storage/fs).
@@ -181,6 +189,8 @@ const (
 	defaultNegTTL404    = 5 * time.Minute
 	defaultNegTTL5xx    = 30 * time.Second
 	defaultStatsFlush   = time.Minute
+	defaultGCInterval   = 24 * time.Hour
+	defaultGCGrace      = 7 * 24 * time.Hour
 	defaultWorkers      = 4
 	defaultJitter       = 10 * time.Minute
 	defaultMaxBandwidth = int64(0)       // безлимит
@@ -195,7 +205,7 @@ const (
 func defaultConfig() Config {
 	return Config{
 		Server:  Server{PublicListen: defaultPublicListen, AdminListen: defaultAdminListen},
-		Storage: Storage{Driver: DriverFS, FS: FSStorage{Path: defaultFSPath}, S3: S3Storage{SpoolDir: defaultS3Spool}},
+		Storage: Storage{Driver: DriverFS, FS: FSStorage{Path: defaultFSPath}, S3: S3Storage{SpoolDir: defaultS3Spool}, GCInterval: Duration{defaultGCInterval}, GCGrace: Duration{defaultGCGrace}},
 		Database: Database{
 			Driver: DriverSQLite,
 			DSN:    defaultSQLiteDSN,
@@ -304,6 +314,7 @@ func (c Config) validate() []error {
 	problems = append(problems, checkListen("server.admin_listen", c.Server.AdminListen)...)
 	problems = append(problems, c.validateHTTP()...)
 	problems = append(problems, c.validateStorage()...)
+	problems = append(problems, c.validateStorageGC()...)
 	problems = append(problems, c.validateDatabase()...)
 
 	if c.Auth.JWTSecret == "" {
@@ -429,6 +440,21 @@ func (c Config) validateStorage() []error {
 			"конфигурация: storage.driver: неизвестный драйвер %q (доступны: %s, %s)",
 			c.Storage.Driver, DriverFS, DriverS3)}
 	}
+}
+
+// validateStorageGC проверяет ручки периодической чистки: интервал 0 —
+// легальное «выключено», отрицательный — опечатка; grace строго
+// положителен (0 = удаление свежих версий, ногострел).
+func (c Config) validateStorageGC() []error {
+	var problems []error
+	if c.Storage.GCInterval.Duration < 0 {
+		problems = append(problems, errors.New(
+			"конфигурация: storage.gc_interval: не может быть отрицательным (0 — периодическая чистка выключена)"))
+	}
+	if c.Storage.GCGrace.Duration <= 0 {
+		problems = append(problems, positiveField("storage.gc_grace"))
+	}
+	return problems
 }
 
 // validateDatabase проверяет драйвер каталога и DSN.

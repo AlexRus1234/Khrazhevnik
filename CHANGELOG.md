@@ -35,6 +35,16 @@ major.
 
 ## [Unreleased]
 
+### Добавлено
+
+- **Хранилище:** периодическая выметающая чистка (storagegc, сессии
+  119–120) — осиротевшие версии mutable-объектов кеша и объекты
+  `repo/<id>/` удалённых репозиториев; ручки `storage.gc_interval`
+  (дефолт `24h`, `0` = выключено) и `storage.gc_grace` (дефолт `168h`,
+  строго `> 0`), метрики `khrazhevnik_storage_gc_*` (runs/deleted/
+  bytes/failed/duration). Keeper-горутина гасится в каскаде shutdown
+  без финального прохода.
+
 ### Изменено
 
 - **БД:** индекс `idx_sync_jobs_remote_id` на `sync_jobs(remote_id)`

@@ -26,6 +26,16 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Storage:** periodic sweeping cleanup (storagegc, sessions 119–120) —
+  orphaned versions of mutable cache objects and `repo/<id>/` objects of
+  deleted repositories; knobs `storage.gc_interval` (default `24h`,
+  `0` = disabled) and `storage.gc_grace` (default `168h`, strictly
+  `> 0`), metrics `khrazhevnik_storage_gc_*` (runs/deleted/bytes/failed/
+  duration). The keeper goroutine is stopped in the shutdown cascade
+  without a final pass.
+
 ### Changed
 
 - **DB:** index `idx_sync_jobs_remote_id` on `sync_jobs(remote_id)`

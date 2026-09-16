@@ -75,6 +75,8 @@ Secret=s3-key,env=KHRZ_STORAGE__S3__SECRET_ACCESS_KEY
 | Ключ     | Default | Env                    | Назначение            |
 |----------|---------|------------------------|-----------------------|
 | `driver` | `fs`    | `KHRZ_STORAGE__DRIVER` | `fs` \| `s3`          |
+| `gc_interval` | `24h` | `KHRZ_STORAGE__GC_INTERVAL` | Период фоновой выметающей чистки хранилища (осиротевшие версии mutable-объектов кеша и `repo/<id>/` удалённых репо); `0` = выключено |
+| `gc_grace` | `168h` (7 суток) | `KHRZ_STORAGE__GC_GRACE` | Мин. возраст кандидата на вымет (ModTime старше `now−gc_grace`); строго `> 0` — ноль удалял бы свежие версии |
 
 ### `[storage.fs]`
 
