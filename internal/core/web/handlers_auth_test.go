@@ -423,3 +423,104 @@ func TestAuthBodyLimit(t *testing.T) {
 		t.Error("oversized /auth/login что-то записал")
 	}
 }
+
+// TestPasswordChangeSelf — POST /auth/password (сессия 125): 200 +
+// свежий токен, прежний гаснет бампом token_version; неверный старый —
+// 403, короткий новый — 400, без сессии — 401; все попытки аудируются
+// под настоящим именем user.password.change.
+func TestPasswordChangeSelf(t *testing.T) {
+	a, _ := handlerAuth(t)
+	auditLog := testutil.NewFakeAuditLog()
+	h := BuildAdminRouter(Deps{Auth: a, Audit: auditLog})
+	admin, err := a.CreateUser(t.Context(), "admin", "old-horse-1", domain.RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := a.IssueSession(t.Context(), admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"old_password":"old-horse-1","new_password":"new-horse-1"}`
+	w := callJSON(h, http.MethodPost, "/api/v1/auth/password", "10.2.0.1:1", body, session)
+	if w.Code != http.StatusOK {
+		t.Fatalf("смена пароля = %d, хочу 200 (тело %s)", w.Code, w.Body.String())
+	}
+	fresh, _ := responseMap(t, w)["token"].(string)
+	if fresh == "" {
+		t.Fatal("ответ без свежего токена")
+	}
+	if _, err := a.ValidateSession(t.Context(), fresh); err != nil {
+		t.Fatalf("свежий токен невалиден: %v", err)
+	}
+	// Прежний токен погашен бампом token_version (401 на защищённом роуте).
+	if w := callJSON(h, http.MethodPost, "/api/v1/auth/logout", "10.2.0.1:2", "", session); w.Code != http.StatusUnauthorized {
+		t.Fatalf("прежний токен = %d, хочу 401", w.Code)
+	}
+	// Неверный старый пароль — 403 (движок: ForbiddenError).
+	if w := callJSON(h, http.MethodPost, "/api/v1/auth/password", "10.2.0.2:1", `{"old_password":"nope-horse","new_password":"new-horse-2"}`, fresh); w.Code != http.StatusForbidden {
+		t.Fatalf("неверный старый = %d, хочу 403", w.Code)
+	}
+	// Короткий новый — 400 validation_error.
+	if w := callJSON(h, http.MethodPost, "/api/v1/auth/password", "10.2.0.3:1", `{"old_password":"new-horse-1","new_password":"short"}`, fresh); w.Code != http.StatusBadRequest {
+		t.Fatalf("короткий новый = %d, хочу 400", w.Code)
+	}
+	// Без сессии — 401.
+	if w := callJSON(h, http.MethodPost, "/api/v1/auth/password", "10.2.0.4:1", body, ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("без сессии = %d, хочу 401", w.Code)
+	}
+	entries, err := auditLog.AuditEntries(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen, sawRejected := false, false
+	for _, e := range entries {
+		switch {
+		case e.Action == "user.password.change" && e.Result == domain.AuditOK:
+			seen = true
+		case e.Action == "user.password.change" && e.Result == "401":
+			sawRejected = true
+		case e.Action == "create.auth.password":
+			t.Errorf("fallback-имя действия в трейле: %+v", e)
+		}
+	}
+	if !seen {
+		t.Error("нет успешной записи user.password.change")
+	}
+	if !sawRejected {
+		t.Error("401 без записи user.password.change")
+	}
+}
+
+// TestPasswordChangeRateLimit — self-маршрут под общим login-limiter'ом
+// (решение владельца): 11-я попытка с одного IP за минуту — 429 (брут
+// старого пароля за краденой сессией — та же поверхность, что login).
+func TestPasswordChangeRateLimit(t *testing.T) {
+	a, _ := handlerAuth(t)
+	h := BuildAdminRouter(Deps{Auth: a})
+	if _, err := a.CreateUser(t.Context(), "admin", "old-horse-1", domain.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	const ip = "10.3.0.9:1"
+	for i := 0; i < 10; i++ {
+		// Кривой bearer: лимитер считает попытку до auth-проверки.
+		if w := callJSON(h, http.MethodPost, "/api/v1/auth/password", ip, `{}`, "garbage"); w.Code != http.StatusUnauthorized {
+			t.Fatalf("попытка %d = %d, хочу 401", i+1, w.Code)
+		}
+	}
+	if w := callJSON(h, http.MethodPost, "/api/v1/auth/password", ip, `{}`, "garbage"); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("11-я попытка = %d, хочу 429", w.Code)
+	}
+}
+
+// TestPasswordRoutesDegraded — без auth-сервиса (Auth==nil) маршруты
+// смены пароля не регистрируются: 404, как logout (fail-closed, а не
+// молчаливая смена без проверки).
+func TestPasswordRoutesDegraded(t *testing.T) {
+	h := BuildAdminRouter(Deps{})
+	if w := callJSON(h, http.MethodPost, "/api/v1/auth/password", "10.4.0.1:1", `{}`, ""); w.Code != http.StatusNotFound {
+		t.Fatalf("self при Auth==nil = %d, хочу 404", w.Code)
+	}
+	if w := callJSON(h, http.MethodPost, "/api/v1/users/1/password", "10.4.0.1:1", `{}`, ""); w.Code != http.StatusNotFound {
+		t.Fatalf("admin при Auth==nil = %d, хочу 404", w.Code)
+	}
+}

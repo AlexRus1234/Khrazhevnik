@@ -34,6 +34,7 @@ import (
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/engine/cache"
 	"khrazhevnik/internal/core/metrics"
+	authmw "khrazhevnik/internal/core/web/middleware"
 )
 
 // remoteOut — DTO ответа remote: ID и поля без аудиторских мусора.
@@ -587,6 +588,41 @@ func handleDeleteUser(d Deps) http.HandlerFunc {
 		// user.delete для движковой и middleware-записи.
 		*r = *r.WithContext(WithAuditAction(r.Context(), "user.delete"))
 		if err := d.Auth.DeleteUser(r.Context(), id); err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// handleUserPassword — POST /api/v1/users/{id}/password (admin): смена
+// пароля пользователя без старого (AdminSetPassword, сессия 124).
+// 204 без тела: админ меняет чужой пароль; для себя — /auth/password
+// (он возвращает свежий JWT). Движок бампит token_version: JWT-сессии
+// цели гаснут, khz_-токены переживают (прецедент сессии 67).
+func handleUserPassword(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseInt64URLParam(w, r, "id")
+		if !ok {
+			return
+		}
+		u, ok := authmw.UserFromContext(r.Context())
+		if !ok {
+			// Маршрут под adminAuth: контекст без пользователя — рассинхрон
+			// middleware, fail-closed.
+			writeErrCode(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var in struct {
+			NewPassword string `json:"new_password"`
+		}
+		if !decodeJSON(w, r, &in) {
+			return
+		}
+		// Action до движка (урок сессии 87): отклонённая мутация видна в
+		// трейле под настоящим именем, а не fallback-именем create.users.
+		*r = *r.WithContext(WithAuditAction(r.Context(), "user.password.set"))
+		if err := d.Auth.AdminSetPassword(r.Context(), u.Username, id, in.NewPassword); err != nil {
 			writeErr(w, err)
 			return
 		}

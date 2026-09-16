@@ -53,12 +53,14 @@ Mutations (non-GET) are written to the audit log.
 | POST   | `/api/v1/setup`      | empty users table (atomic), optional `X-Setup-Token` header; rate limit 10/min              | 201/400/403| Create the first admin `{username,password}` (password ≥ 8 bytes) |
 | POST   | `/api/v1/auth/login` | —                                                                                           | 200/401    | `{username,password}` → `{token}` (JWT; TTL is `auth.session_ttl`); rate limit 10/min |
 | POST   | `/api/v1/auth/logout`| session                                                                                     | 204        | Persistent JWT revocation (survives a restart; catalog failure — 503) |
+| POST   | `/api/v1/auth/password`| session; rate limit 10/min                                                                | 200/400/403/413 | `{old_password,new_password}` → `{token}` — change your own password with the old one verified; `token_version` is bumped: other JWT sessions die, `khz_` tokens survive. A wrong old password — 403 `forbidden` |
 
-Status code notes: `setup`/`login` above the 10/min per-IP limit — 429;
-a password longer than 72 bytes (the bcrypt boundary) — 413 `too_large`
-on `setup`/`login`/`POST /users`. The minimum password length is 8
-bytes: anything shorter (including empty) — 400 `validation_error` on
-`setup` and `POST /users`; on `login` a short password is a regular
+Status code notes: `setup`/`login`/`auth/password` above the 10/min
+per-IP limit — 429; a password longer than 72 bytes (the bcrypt
+boundary) — 413 `too_large` on `setup`/`login`/`auth/password`/
+`POST /users`. The minimum password length is 8 bytes: anything shorter
+(including empty) — 400 `validation_error` on `setup`, `auth/password`
+and `POST /users`; on `login` a short password is a regular
 `401 invalid_credentials`.
 
 ## Users and API tokens (admin)
@@ -68,6 +70,7 @@ bytes: anything shorter (including empty) — 400 `validation_error` on
 | GET    | `/api/v1/users`                           | 200        | List users                                                     |
 | POST   | `/api/v1/users`                           | 201/400    | `{username,password,role?}` (role is `admin`/`user`, default `user`); password ≥ 8 bytes, otherwise 400 `validation_error` |
 | DELETE | `/api/v1/users/{id}`                      | 204/404    | Deletion; the user's API tokens are revoked via cascade (FK ON DELETE CASCADE) and are never returned — the counter does not return them |
+| POST   | `/api/v1/users/{id}/password`             | 204/400/404/413 | `{new_password}` — an admin sets a user's password without the old one (password ≥ 8 bytes); `token_version` is bumped: the target's JWT sessions die, `khz_` tokens survive. For an admin's own password — `/auth/password` (returns a fresh JWT) |
 | POST   | `/api/v1/users/{id}/api-tokens`           | 201/400    | `{name,scopes[],ttl}` → `{token,id,name,scopes,expires_at}`; the token is shown **once** |
 | GET    | `/api/v1/users/{id}/api-tokens`           | 200        | List tokens (no secrets)                                       |
 | DELETE | `/api/v1/users/{id}/api-tokens/{tokenID}` | 204/404    | Token revocation                                               |

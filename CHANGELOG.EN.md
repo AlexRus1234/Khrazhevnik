@@ -28,6 +28,12 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ### Added
 
+- **API:** password change — `POST /api/v1/auth/password` (self: the old
+  password is verified, the response carries a fresh JWT; under the
+  common login rate limit, audited as `user.password.change`) and
+  `POST /api/v1/users/{id}/password` (admin: no old password, 204;
+  audited as `user.password.set`). Both bump `token_version`: JWT
+  sessions die, `khz_` tokens survive (session 67 precedent).
 - **Storage:** periodic sweeping cleanup (storagegc, sessions 119–120) —
   orphaned versions of mutable cache objects and `repo/<id>/` objects of
   deleted repositories; knobs `storage.gc_interval` (default `24h`,

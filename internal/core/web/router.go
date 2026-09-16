@@ -239,6 +239,12 @@ func BuildAdminRouter(d Deps) http.Handler {
 			// audit наружнее auth — 401/logout тоже запись; action кладём
 			// до auth: при reject хендлер не выполняется (аудит 2026-08-30).
 			api.With(auditWrap, auditAction("auth.logout"), authmw.RequireSession(d.Auth)).Post("/auth/logout", handleLogout(d))
+			// /auth/password — self-смена пароля. Под общим login-limiter'ом
+			// (решение владельца, сессия 125): брут старого пароля за
+			// краденой сессией — та же поверхность, инфраструктура
+			// бесплатная. audit наружнее auth (прецедент logout): 401/403
+			// пишутся под настоящим именем действия.
+			api.With(auditWrap, auditAction("user.password.change"), limiter.Middleware, authmw.RequireSession(d.Auth)).Post("/auth/password", handlePasswordChange(d))
 
 			// adminAuth — auth-цепочка для admin-only роутов: сессия
 			// админа или admin-scoped API-токен. /metrics выше использует
@@ -251,6 +257,7 @@ func BuildAdminRouter(d Deps) http.Handler {
 				users.Get("/", handleUsers(d))
 				users.Post("/", handleCreateUser(d))
 				users.Delete("/{id}", handleDeleteUser(d))
+				users.Post("/{id}/password", handleUserPassword(d))
 				users.Post("/{id}/api-tokens", handleCreateToken(d))
 				users.Get("/{id}/api-tokens", handleListTokens(d))
 				users.Delete("/{id}/api-tokens/{tokenID}", handleRevokeToken(d))

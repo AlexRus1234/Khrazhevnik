@@ -1430,3 +1430,51 @@ func TestStorageGCUnavailable(t *testing.T) {
 		t.Fatalf("код = %q (тело %s), хочу storage_gc_unavailable", e.Code, rec.Body.String())
 	}
 }
+
+// TestAdminSetPasswordRoute — POST /users/{id}/password (сессия 125):
+// 204, token_version цели вырос (JWT-сессии цели гаснут), не-админ —
+// 403, мусорный id — 404; аудит под user.password.set.
+func TestAdminSetPasswordRoute(t *testing.T) {
+	env := newAdminEnv(t)
+	// Не-админ (user) на admin-маршрут — 403.
+	if w := callAdmin(env, http.MethodPost, "/api/v1/users/1/password", `{"new_password":"reset-horse-2"}`, env.jwtUser); w.Code != http.StatusForbidden {
+		t.Fatalf("не-админ = %d, хочу 403", w.Code)
+	}
+	// Мусорный id — 404 (ресурса нет).
+	if w := callAdmin(env, http.MethodPost, "/api/v1/users/abc/password", `{"new_password":"reset-horse-3"}`, env.jwtAdmin); w.Code != http.StatusNotFound {
+		t.Fatalf("мусорный id = %d, хочу 404", w.Code)
+	}
+	before, err := env.auth.User(t.Context(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// id=2 — пользователь user (admin создан первым).
+	rec := callAdmin(env, http.MethodPost, "/api/v1/users/2/password", `{"new_password":"reset-horse-1"}`, env.jwtAdmin)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("admin set password = %d, хочу 204 (тело %s)", rec.Code, rec.Body.String())
+	}
+	after, err := env.auth.User(t.Context(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.TokenVersion != before.TokenVersion+1 {
+		t.Errorf("token_version = %d, хочу %d", after.TokenVersion, before.TokenVersion+1)
+	}
+	// JWT-сессия цели погашена бампом token_version.
+	if w := callAdmin(env, http.MethodGet, "/api/v1/users", "", env.jwtUser); w.Code != http.StatusUnauthorized {
+		t.Fatalf("сессия цели = %d, хочу 401", w.Code)
+	}
+	entries, err := env.audit.AuditEntries(t.Context(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	for _, e := range entries {
+		if e.Action == "user.password.set" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Error("нет записи аудита user.password.set")
+	}
+}

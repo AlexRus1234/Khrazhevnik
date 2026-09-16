@@ -37,6 +37,12 @@ major.
 
 ### Добавлено
 
+- **API:** смена пароля — `POST /api/v1/auth/password` (self: проверка
+  старого пароля, ответ со свежим JWT; под общим login-rate-limit,
+  аудит `user.password.change`) и `POST /api/v1/users/{id}/password`
+  (admin: без старого, 204; аудит `user.password.set`). Обе бампят
+  `token_version`: JWT-сессии гаснут, `khz_`-токены переживают
+  (прецедент сессии 67).
 - **Хранилище:** периодическая выметающая чистка (storagegc, сессии
   119–120) — осиротевшие версии mutable-объектов кеша и объекты
   `repo/<id>/` удалённых репозиториев; ручки `storage.gc_interval`

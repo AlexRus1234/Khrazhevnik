@@ -36,6 +36,13 @@ type credentials struct {
 	Password string `json:"password"`
 }
 
+// passwordChange — тело смены собственного пароля (self-маршрут):
+// старый пароль как подтверждение личности, новый — вместо него.
+type passwordChange struct {
+	OldPassword string `json:"old_password"`
+	NewPassword string `json:"new_password"`
+}
+
 // handleSetup — POST /api/v1/setup: первый админ. Атомарность —
 // EnsureFirstAdmin (один INSERT ... WHERE NOT EXISTS): параллельные
 // вызовы в bootstrap-окне завершает ровно один победитель, остальные —
@@ -116,5 +123,37 @@ func handleLogout(d Deps) http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// handlePasswordChange — POST /api/v1/auth/password: смена собственного
+// пароля после проверки старого. Движок бампит token_version — все
+// прочие JWT-сессии гаснут; свежий JWT в ответе оставляет текущую SPA
+// залогиненной (иначе пользователь сам себя разлогинил бы). Аудит —
+// движковый и middleware под одним именем user.password.change.
+func handlePasswordChange(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := authmw.UserFromContext(r.Context())
+		if !ok {
+			// Маршрут под RequireSession: без пользователя в контексте
+			// запрос не должен доходить сюда — fail-closed 401.
+			writeErrCode(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var in passwordChange
+		if !decodeJSON(w, r, &in) {
+			return
+		}
+		updated, err := d.Auth.ChangePassword(r.Context(), u.Username, u.ID, in.OldPassword, in.NewPassword)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		token, err := d.Auth.IssueSession(r.Context(), updated)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"token": token})
 	}
 }

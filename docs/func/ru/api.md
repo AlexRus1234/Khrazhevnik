@@ -53,12 +53,14 @@ API.
 | POST  | `/api/v1/setup`     | пустая таблица users (атомарно), опц. заголовок `X-Setup-Token`; rate-limit 10/min | 201/400/403 | Создать первого админа `{username,password}` (пароль ≥ 8 байт) |
 | POST  | `/api/v1/auth/login`| —    | 200/401   | `{username,password}` → `{token}` (JWT; TTL — `auth.session_ttl`); rate-limit 10/min |
 | POST  | `/api/v1/auth/logout`| session | 204    | Персистентный отзыв JWT (переживает рестарт; сбой каталога — 503) |
+| POST  | `/api/v1/auth/password`| session; rate-limit 10/min | 200/400/403/413 | `{old_password,new_password}` → `{token}` — смена своего пароля с проверкой старого; `token_version` бампится: прочие JWT-сессии гаснут, `khz_`-токены переживают. Неверный старый — 403 `forbidden` |
 
-Сноска кодов: `setup`/`login` сверх лимита 10/min с IP — 429; пароль
-длиннее 72 байт (граница bcrypt) — 413 `too_large` на `setup`/`login`/
-`POST /users`. Минимальная длина пароля — 8 байт: короче (в т.ч.
-пустой) — 400 `validation_error` на `setup` и `POST /users`; на
-`login` короткий пароль — обычный `401 invalid_credentials`.
+Сноска кодов: `setup`/`login`/`auth/password` сверх лимита 10/min с
+IP — 429; пароль длиннее 72 байт (граница bcrypt) — 413 `too_large` на
+`setup`/`login`/`auth/password`/`POST /users`. Минимальная длина
+пароля — 8 байт: короче (в т.ч. пустой) — 400 `validation_error` на
+`setup`, `auth/password` и `POST /users`; на `login` короткий пароль —
+обычный `401 invalid_credentials`.
 
 ## Пользователи и API-токены (admin)
 
@@ -67,6 +69,7 @@ API.
 | GET   | `/api/v1/users`                           | 200       | Список пользователей   |
 | POST  | `/api/v1/users`                           | 201/400   | `{username,password,role?}` (role — `admin`/`user`, по умолчанию `user`); пароль ≥ 8 байт, иначе 400 `validation_error` |
 | DELETE| `/api/v1/users/{id}`                      | 204/404   | Удаление; API-токены пользователя отзываются каскадом (FK ON DELETE CASCADE) и не возвращаются — счётчик их не возвращает |
+| POST  | `/api/v1/users/{id}/password`             | 204/400/404/413 | `{new_password}` — смена пароля админом без старого (пароль ≥ 8 байт); `token_version` бампится: JWT-сессии цели гаснут, `khz_`-токены переживают. Админу для себя — `/auth/password` (возвращает свежий JWT) |
 | POST  | `/api/v1/users/{id}/api-tokens`           | 201/400   | `{name,scopes[],ttl}` → `{token,id,name,scopes,expires_at}`; токен показывается **один раз** |
 | GET   | `/api/v1/users/{id}/api-tokens`           | 200       | Список токенов (без секретов) |
 | DELETE| `/api/v1/users/{id}/api-tokens/{tokenID}` | 204/404   | Отзыв токена           |

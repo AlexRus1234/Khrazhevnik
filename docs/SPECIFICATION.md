@@ -234,10 +234,11 @@ enabled = true
 | POST  | `/api/v1/setup`            | — (пустая БД), `X-Setup-Token`; rate-limit 10/min | 201/403 | Первый админ. Атомарно: `INSERT ... WHERE NOT EXISTS` (EnsureFirstUser) — параллельные вызовы создают ровно одного админа, проигравшие — 403 `setup_already_done` |
 | POST  | `/api/v1/auth/login`       | —           | 200/401 | Выдача JWT; rate-limit 10/min      |
 | POST  | `/api/v1/auth/logout`      | session     | 204 | Персистентный отзыв JWT (переживает рестарт; сбой каталога — 503) |
+| POST  | `/api/v1/auth/password`    | session; rate-limit 10/min | 200/400/403/413 | Смена своего пароля `{old_password,new_password}` (новый ≥ 8 байт) → свежий JWT `{token}`; `token_version` бампится: прочие JWT-сессии гаснут, `khz_`-токены переживают. Неверный старый — 403 |
 
-Сноска кодов: `setup`/`login` сверх лимита 10/min с IP — 429; пароль
-длиннее 72 байт (граница bcrypt) — 413 `too_large` на `setup`/`login`/
-создании пользователя.
+Сноска кодов: `setup`/`login`/`auth/password` сверх лимита 10/min с
+IP — 429; пароль длиннее 72 байт (граница bcrypt) — 413 `too_large` на
+`setup`/`login`/`auth/password`/создании пользователя.
 
 ### Управление upstream'ами
 
@@ -394,6 +395,7 @@ in-memory, не персистится; персистентное состоя�
 | GET   | `/api/v1/users`                           | admin  | 200 | Список пользователей    |
 | POST  | `/api/v1/users`                           | admin  | 201 | Создание пользователя   |
 | DELETE| `/api/v1/users/{id}`                      | admin  | 204 | Удаление пользователя   |
+| POST  | `/api/v1/users/{id}/password`             | admin  | 204/400/404/413 | Смена пароля пользователя админом (без старого; новый ≥ 8 байт); `token_version` бампится — JWT-сессии цели гаснут, `khz_`-токены переживают. Для смены своего пароля — `/auth/password` (возвращает свежий JWT) |
 | POST  | `/api/v1/users/{id}/api-tokens`           | admin  | 201 | Выпуск scoped-токена    |
 | GET   | `/api/v1/users/{id}/api-tokens`           | admin  | 200 | Список токенов          |
 | DELETE| `/api/v1/users/{id}/api-tokens/{tokenID}` | admin  | 204 | Отзыв токена            |
