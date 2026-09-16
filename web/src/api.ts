@@ -127,6 +127,22 @@ export async function login(username: string, password: string): Promise<string>
   return out.token
 }
 
+// changePassword — POST /auth/password: смена собственного пароля со
+// старым. Сервер бампит token_version (прочие JWT-сессии гаснут) и
+// отдаёт свежий токен — им заменяем текущий, чтобы SPA не разлогинилась.
+export async function changePassword(oldPassword: string, newPassword: string): Promise<string> {
+  const out = await request<{ token: string }>('POST', '/auth/password', {
+    body: { old_password: oldPassword, new_password: newPassword },
+  })
+  return out.token
+}
+
+// adminSetPassword — POST /users/{id}/password: админ меняет чужой
+// пароль без старого (204 без тела).
+export async function adminSetPassword(id: number, newPassword: string): Promise<void> {
+  await request('POST', `/users/${id}/password`, { body: { new_password: newPassword } })
+}
+
 // setup — POST /setup: первый админ (пустая БД), опциональный
 // X-Setup-Token (KHRZ_SETUP_TOKEN на сервере).
 export async function setup(username: string, password: string, setupToken: string): Promise<void> {

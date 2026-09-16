@@ -34,6 +34,11 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `POST /api/v1/users/{id}/password` (admin: no old password, 204;
   audited as `user.password.set`). Both bump `token_version`: JWT
   sessions die, `khz_` tokens survive (session 67 precedent).
+- **UI:** password change in the “Users” section (session 126) — a
+  “Change your password” block (current/new + confirmation,
+  `minlength=8`) that swaps the token on the fly (the session survives),
+  plus a “Change password” action for an admin over a user; i18n ru/en,
+  an e2e smoke of signing in with the new password.
 - **Storage:** periodic sweeping cleanup (storagegc, sessions 119–120) —
   orphaned versions of mutable cache objects and `repo/<id>/` objects of
   deleted repositories; knobs `storage.gc_interval` (default `24h`,

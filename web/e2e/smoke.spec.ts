@@ -265,3 +265,44 @@ test('дашборд: панель «Последние транзакции»',
     await expect(txnsPanel.getByRole('columnheader', { name: col })).toBeVisible()
   }
 })
+
+// Идёт последним: меняет пароль admin, от которого зависят предыдущие
+// тесты (serial, retries=0; global-setup поднимает сервер с пустой БД
+// на каждый прогон, так что состояние между прогонами не течёт).
+test('пользователи: смена своего пароля и вход новым', async ({ page }) => {
+  const NEW_PASSWORD = 'e2e-password-2'
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/users"]')
+  await expect(page.getByRole('heading', { name: 'Пользователи' })).toBeVisible()
+
+  // Смена собственного пароля: блок над таблицей. Свежий JWT из ответа
+  // кладётся на место старого — сессия остаётся живой (иначе logout
+  // пришлось бы делать принудительно).
+  const self = page.locator('.panel', { hasText: 'Смена своего пароля' })
+  await self.getByLabel('Текущий пароль', { exact: true }).fill(PASSWORD)
+  await self.getByLabel('Новый пароль', { exact: true }).fill(NEW_PASSWORD)
+  await self.getByLabel('Новый пароль ещё раз', { exact: true }).fill(NEW_PASSWORD)
+  await self.getByRole('button', { name: 'Сменить пароль' }).click()
+  await expect(self.getByText('Пароль изменён')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Выйти' }).click()
+  await expect(page.getByRole('button', { name: 'Войти' })).toBeVisible()
+
+  // Старый пароль отозван (token_version бампнут) — не пускает.
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.locator('p.error')).toHaveText('неверный логин или пароль')
+
+  // Новый — вход на дашборд.
+  await page.getByLabel('Пароль', { exact: true }).fill(NEW_PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+})

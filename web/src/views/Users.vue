@@ -18,7 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { request } from '../api'
+import { adminSetPassword, changePassword, request, setToken } from '../api'
 import { errText } from '../errors'
 import { formatTime, parseDuration } from '../format'
 import { t } from '../i18n'
@@ -53,6 +53,23 @@ const tError = ref<Record<number, string>>({})
 // Сырой токен показывается один раз: server хранит только sha256.
 const freshToken = ref<Record<number, { token: string; name: string }>>({})
 const copied = ref(false)
+
+// Смена своего пароля: сервер отдаёт свежий JWT (token_version бампнут),
+// кладём его на место старого — иначе текущая сессия гасла бы.
+const sOld = ref('')
+const sNew = ref('')
+const sConfirm = ref('')
+const sError = ref('')
+const sOk = ref('')
+const sBusy = ref(false)
+
+// Админская смена чужого пароля: диалог-панель под целью pwUser.
+const pwUser = ref<User | null>(null)
+const pNew = ref('')
+const pConfirm = ref('')
+const pError = ref('')
+const pOk = ref('')
+const pBusy = ref(false)
 
 async function load(): Promise<void> {
   try {
@@ -93,6 +110,57 @@ async function removeUser(u: User): Promise<void> {
     await load()
   } catch (e) {
     error.value = errText(e)
+  }
+}
+
+function pwSet(u: User): void {
+  pwUser.value = u
+  pNew.value = ''
+  pConfirm.value = ''
+  pError.value = ''
+  pOk.value = ''
+}
+
+async function changeSelf(): Promise<void> {
+  if (sBusy.value) return
+  sError.value = ''
+  sOk.value = ''
+  if (sNew.value !== sConfirm.value) {
+    sError.value = t('login.passwordMismatch')
+    return
+  }
+  sBusy.value = true
+  try {
+    setToken(await changePassword(sOld.value, sNew.value))
+    sOld.value = ''
+    sNew.value = ''
+    sConfirm.value = ''
+    sOk.value = t('users.passwordSelf.ok')
+  } catch (e) {
+    sError.value = errText(e)
+  } finally {
+    sBusy.value = false
+  }
+}
+
+async function changeAdmin(): Promise<void> {
+  const u = pwUser.value
+  if (!u || pBusy.value) return
+  pError.value = ''
+  pOk.value = ''
+  if (pNew.value !== pConfirm.value) {
+    pError.value = t('login.passwordMismatch')
+    return
+  }
+  pBusy.value = true
+  try {
+    await adminSetPassword(u.id, pNew.value)
+    pwUser.value = null
+    pOk.value = t('users.passwordAdmin.ok', { name: u.username })
+  } catch (e) {
+    pError.value = errText(e)
+  } finally {
+    pBusy.value = false
   }
 }
 
@@ -219,6 +287,83 @@ function zeroTime(iso: string | undefined): boolean {
     </div>
 
     <div class="panel">
+      <h2>{{ t('users.passwordSelf.title') }}</h2>
+      <form class="grid" @submit.prevent="changeSelf">
+        <div class="row">
+          <label class="field"
+            >{{ t('users.passwordSelf.old') }}
+            <input
+              v-model="sOld"
+              type="password"
+              minlength="8"
+              required
+              autocomplete="current-password"
+            />
+          </label>
+          <label class="field"
+            >{{ t('users.passwordSelf.new') }}
+            <input
+              v-model="sNew"
+              type="password"
+              minlength="8"
+              required
+              autocomplete="new-password"
+            />
+          </label>
+          <label class="field"
+            >{{ t('users.passwordSelf.confirm') }}
+            <input
+              v-model="sConfirm"
+              type="password"
+              minlength="8"
+              required
+              autocomplete="new-password"
+            />
+          </label>
+          <button class="btn primary" type="submit" :disabled="sBusy">
+            {{ t('users.passwordSelf.submit') }}
+          </button>
+        </div>
+        <p v-if="sError" class="error">{{ sError }}</p>
+        <p v-if="sOk" class="ok">{{ sOk }}</p>
+      </form>
+    </div>
+
+    <div v-if="pwUser" class="panel">
+      <h2>{{ t('users.passwordAdmin.title', { name: pwUser.username }) }}</h2>
+      <form class="grid" @submit.prevent="changeAdmin">
+        <div class="row">
+          <label class="field"
+            >{{ t('users.passwordAdmin.new') }}
+            <input
+              v-model="pNew"
+              type="password"
+              minlength="8"
+              required
+              autocomplete="new-password"
+            />
+          </label>
+          <label class="field"
+            >{{ t('users.passwordAdmin.confirm') }}
+            <input
+              v-model="pConfirm"
+              type="password"
+              minlength="8"
+              required
+              autocomplete="new-password"
+            />
+          </label>
+          <button class="btn primary" type="submit" :disabled="pBusy">
+            {{ t('common.save') }}
+          </button>
+          <button class="btn" type="button" @click="pwUser = null">{{ t('common.cancel') }}</button>
+        </div>
+        <p v-if="pError" class="error">{{ pError }}</p>
+      </form>
+    </div>
+
+    <div class="panel">
+      <p v-if="pOk" class="ok">{{ pOk }}</p>
       <table v-if="users.length > 0">
         <thead>
           <tr>
@@ -241,6 +386,7 @@ function zeroTime(iso: string | undefined): boolean {
                   <button class="btn" @click="toggleTokens(u)">
                     {{ expanded === u.id ? t('users.tokensHide') : t('users.tokensShow') }}
                   </button>
+                  <button class="btn" @click="pwSet(u)">{{ t('users.passwordAdmin.action') }}</button>
                   <button class="btn danger" @click="removeUser(u)">{{ t('common.delete') }}</button>
                 </div>
               </td>
