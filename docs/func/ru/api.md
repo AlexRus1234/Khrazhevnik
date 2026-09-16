@@ -191,6 +191,23 @@ HIT/MISS/STALE/error. Буфер — in-memory на 50 записей (prefetch 
 и битые пути не пишутся), пагинации нет; `limit` — «не более N»,
 целое 1–50, невалидный → 400 `validation_error`.
 
+## Обслуживание хранилища (admin)
+
+| Метод | Путь                 | Код             | Назначение                                |
+|-------|----------------------|-----------------|-------------------------------------------|
+| POST  | `/api/v1/storage/gc` | 202/409/429/503 | Ручной проход выметающей чистки хранилища (осиротевшие версии mutable-объектов кеша и `repo/<id>/` удалённых репо) |
+
+Запускает фоновую задачу (kind=`gc`, label=`storage`) и возвращает
+`{"task_id": …}`; прогресс — через `GET /api/v1/tasks/{id}`.
+Идемпотентности нет: пока задача активна, повторный POST — 409
+`task_duplicate`; превышен лимит воркеров — 429 `task_limit`. Мутация
+аудируется (`storage.gc`).
+
+`?dry_run=1` (или `true`) — ревизия без удалений: проход только считает
+кандидатов, счётчики видны в логе задачи, объекты остаются на месте.
+Без параметра — боевой проход. Если модуль чистки не собран
+(деградация без каталога) — 503 `storage_gc_unavailable`.
+
 ## Коды ошибок
 
 `not_found`, `conflict`, `forbidden`, `admin_required` (force-only
@@ -201,4 +218,4 @@ HIT/MISS/STALE/error. Буфер — in-memory на 50 записей (prefetch 
 `stale`, `task_duplicate`, `task_limit`, `invalid_json`,
 `setup_already_done`, `invalid_setup_token`, `invalid_credentials`,
 `tasks_unavailable`, `mirror_unavailable`, `publish_unavailable`,
-`unsupported`, `internal`.
+`storage_gc_unavailable`, `unsupported`, `internal`.

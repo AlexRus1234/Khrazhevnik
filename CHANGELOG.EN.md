@@ -35,6 +35,12 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `> 0`), metrics `khrazhevnik_storage_gc_*` (runs/deleted/bytes/failed/
   duration). The keeper goroutine is stopped in the shutdown cascade
   without a final pass.
+- **API:** manual run of the sweeping storage cleanup —
+  `POST /api/v1/storage/gc` (admin, audited as `storage.gc`): a
+  background task (kind=`gc`, label=`storage`), 202 + `task_id`;
+  `?dry_run=1|true` — a revision pass without deletions (candidate
+  counters in the task log); 409 while the task is active, 429 on the
+  worker limit, 503 without the cleanup module.
 
 ### Changed
 

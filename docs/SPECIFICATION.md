@@ -421,6 +421,21 @@ stale_served,negative_hits,upstream_errors}_total`,
 в фоновых операциях кеша; плюс runtime-коллекторы Go
 (`go_*` — heap/goroutines/GC) и процесса (`process_*` — CPU/fd/uptime).
 
+### Обслуживание хранилища
+
+| Метод | Путь                  | Auth  | Код             | Назначение                          |
+|-------|-----------------------|-------|-----------------|-------------------------------------|
+| POST  | `/api/v1/storage/gc`  | admin | 202/409/429/503 | Ручной проход выметающей чистки хранилища как фоновая задача (kind=`gc`, label=`storage`), аудируется (`storage.gc`); 409 — активная задача того же ключа, 429 — лимит воркеров, 503 — деградация без `storagegc` |
+
+Ответ 202 — `{"task_id": …}`; статус прохода и счётчики — в снимке
+задачи (`GET /api/v1/tasks/{id}`, kind=`gc`). `?dry_run=1|true` — ревизия
+без удалений: кандидаты и счётчики видны в логе задачи, объекты
+остаются на месте. По умолчанию (без параметра) проход боевой. Grace и
+набор правил кандидатов — из `storagegc.Sweeper` (сессии 119–120):
+осиротевшие версии mutable-объектов кеша и `repo/<id>/` удалённых
+репозиториев. Без `Sweeper` (нет срезов каталога) — 503
+`storage_gc_unavailable`.
+
 ### Коды ошибок
 
 `not_found`, `conflict`, `forbidden`, `admin_required` (force-only
@@ -431,7 +446,7 @@ stale_served,negative_hits,upstream_errors}_total`,
 `stale`, `task_duplicate`, `task_limit`, `invalid_json`,
 `setup_already_done`, `invalid_setup_token`, `invalid_credentials`,
 `tasks_unavailable`, `mirror_unavailable`, `publish_unavailable`,
-`unsupported`, `internal`.
+`storage_gc_unavailable`, `unsupported`, `internal`.
 
 ## Экосистемы
 

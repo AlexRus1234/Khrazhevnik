@@ -30,6 +30,7 @@ import (
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/engine/auth"
 	cacheengine "khrazhevnik/internal/core/engine/cache"
+	"khrazhevnik/internal/core/engine/storagegc"
 	"khrazhevnik/internal/core/port"
 	"khrazhevnik/internal/testutil"
 )
@@ -1235,5 +1236,197 @@ func TestRemoteAuditActionsUnified(t *testing.T) {
 		if !seen {
 			t.Errorf("нет записи %v — операция ушла под другое имя", key)
 		}
+	}
+}
+
+// gcHarness — живой storagegc.Sweeper на фейках: контрактам
+// POST /api/v1/storage/gc (сессия 121) нужен настоящий движок чистки, а
+// не заглушка (референс-наборы строятся по живому индексу/каталогу).
+type gcHarness struct {
+	env     *adminEnv
+	clock   *testutil.ManualClock
+	storage *testutil.FakeStorage
+	index   *testutil.FakeObjectIndex
+	repos   *testutil.FakeRepoStore
+	tasks   *TaskRegistry
+	handler http.Handler
+}
+
+func newGCHarness(t *testing.T) *gcHarness {
+	t.Helper()
+	env := newAdminEnv(t)
+	// Свои часы: сдвиг ModTime кандидатов в прошлое не должен заодно
+	// просрочить admin-JWT (SessionTTL=1h на часах env).
+	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	storage := testutil.NewFakeStorage(clock)
+	index := testutil.NewFakeObjectIndex()
+	repos := testutil.NewFakeRepoStore()
+	sweeper := storagegc.New(storage, index, repos, clock, 0)
+	tasks := NewTaskRegistry(2, clock, nil)
+	h := BuildAdminRouter(Deps{
+		Log: nil, Version: "test", Auth: env.auth, SetupToken: "setup",
+		StorageGC: sweeper, Tasks: tasks, Audit: env.audit, Clock: clock,
+	})
+	return &gcHarness{env: env, clock: clock, storage: storage, index: index, repos: repos, tasks: tasks, handler: h}
+}
+
+// post — POST с admin-сессией.
+func (g *gcHarness) post(t *testing.T, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, path, nil)
+	r.Header.Set("Authorization", "Bearer "+g.env.jwtAdmin)
+	rec := httptest.NewRecorder()
+	g.handler.ServeHTTP(rec, r)
+	return rec
+}
+
+const (
+	gcLiveKey = "cache/foo/Release-v0000000000001"
+	gcOldKey  = "cache/foo/Release-v0000000000002"
+)
+
+// seedOrphans — живой mutable-объект со строкой индекса, осиротевшая
+// старая версия, живое репо 1 и префикс удалённого repo/999/.
+func (g *gcHarness) seedOrphans(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := g.repos.CreateRepo(ctx, domain.Repo{Name: "live"}); err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+	for _, k := range []string{gcLiveKey, gcOldKey, "repo/1/pkg/a.deb", "repo/999/pkg/x.deb"} {
+		gcPut(t, g.storage, k)
+	}
+	if err := g.index.PutObjectMeta(ctx, domain.ObjectMeta{Key: "cache/foo/Release", StorageKey: gcLiveKey}); err != nil {
+		t.Fatalf("PutObjectMeta: %v", err)
+	}
+	// ModTime кандидатов сдвигаем в прошлое (grace=0 — кандидат строго
+	// старше now): версия уже заменена строкой индекса.
+	g.clock.Advance(time.Hour)
+}
+
+func gcPut(t *testing.T, st port.Storage, key string) {
+	t.Helper()
+	ctx := context.Background()
+	w, err := st.Put(ctx, key)
+	if err != nil {
+		t.Fatalf("Put(%q): %v", key, err)
+	}
+	if _, err := w.Write([]byte("payload")); err != nil {
+		t.Fatalf("Write(%q): %v", key, err)
+	}
+	if err := w.Commit(ctx); err != nil {
+		t.Fatalf("Commit(%q): %v", key, err)
+	}
+}
+
+func gcHas(t *testing.T, st port.Storage, key string) bool {
+	t.Helper()
+	_, err := st.Stat(context.Background(), key)
+	if err == nil {
+		return true
+	}
+	var nf *domain.NotFoundError
+	if errors.As(err, &nf) {
+		return false
+	}
+	t.Fatalf("Stat(%q): %v", key, err)
+	return false
+}
+
+// TestStorageGCSweep — POST /api/v1/storage/gc: 202 + task_id, задача
+// доходит до succeeded и выметает осиротевшую версию кеша и префикс
+// удалённого репо; живые объекты не тронуты. Аудит — storage.gc/ok.
+func TestStorageGCSweep(t *testing.T) {
+	g := newGCHarness(t)
+	g.seedOrphans(t)
+	rec := g.post(t, "/api/v1/storage/gc")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST gc = %d, хочу 202 (тело %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.TaskID == "" {
+		t.Fatal("task_id пуст")
+	}
+	awaitState(t, g.tasks, resp.TaskID, taskSucceeded)
+	if gcHas(t, g.storage, gcOldKey) {
+		t.Error("осиротевшая версия кеша не выметена")
+	}
+	if gcHas(t, g.storage, "repo/999/pkg/x.deb") {
+		t.Error("префикс удалённого репо не выметен")
+	}
+	for _, k := range []string{gcLiveKey, "repo/1/pkg/a.deb"} {
+		if !gcHas(t, g.storage, k) {
+			t.Errorf("живой объект %q удалён", k)
+		}
+	}
+	e := lastAudit(t, g.env.audit)
+	if e.Action != "storage.gc" || e.Result != domain.AuditOK {
+		t.Errorf("аудит: %+v, хочу storage.gc/ok", e)
+	}
+}
+
+// TestStorageGCDryRun — ?dry_run=true: задача succeeded, но ни один
+// объект не удалён (ревизия перед боевым запуском).
+func TestStorageGCDryRun(t *testing.T) {
+	g := newGCHarness(t)
+	g.seedOrphans(t)
+	rec := g.post(t, "/api/v1/storage/gc?dry_run=true")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST gc dry_run = %d, хочу 202 (тело %s)", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		TaskID string `json:"task_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	awaitState(t, g.tasks, resp.TaskID, taskSucceeded)
+	if !gcHas(t, g.storage, gcOldKey) || !gcHas(t, g.storage, "repo/999/pkg/x.deb") {
+		t.Error("dry-run удалил объекты")
+	}
+}
+
+// TestStorageGCDuplicate — активная задача gc|storage → 409
+// task_duplicate (не запускается второй проход).
+func TestStorageGCDuplicate(t *testing.T) {
+	g := newGCHarness(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	if _, err := g.tasks.Start("gc", "storage", func(context.Context, Progress) error {
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("занять ключ gc|storage: %v", err)
+	}
+	rec := g.post(t, "/api/v1/storage/gc")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("POST gc при активной задаче = %d, хочу 409 (тело %s)", rec.Code, rec.Body.String())
+	}
+	var e apiError
+	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || e.Code != "task_duplicate" {
+		t.Fatalf("код = %q (тело %s), хочу task_duplicate", e.Code, rec.Body.String())
+	}
+}
+
+// TestStorageGCUnavailable — деградация без Sweeper → 503
+// storage_gc_unavailable (задача не запускается).
+func TestStorageGCUnavailable(t *testing.T) {
+	env := newAdminEnv(t)
+	h := BuildAdminRouter(Deps{Auth: env.auth, Tasks: env.tasks, Clock: env.clock})
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/storage/gc", nil)
+	r.Header.Set("Authorization", "Bearer "+env.jwtAdmin)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST gc без Sweeper = %d, хочу 503 (тело %s)", rec.Code, rec.Body.String())
+	}
+	var e apiError
+	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || e.Code != "storage_gc_unavailable" {
+		t.Fatalf("код = %q (тело %s), хочу storage_gc_unavailable", e.Code, rec.Body.String())
 	}
 }

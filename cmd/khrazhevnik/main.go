@@ -113,6 +113,7 @@ func run(ctx context.Context, configPath string) error {
 			Tasks:            app.Tasks,
 			Mirror:           app.Mirror,
 			Publish:          app.Publish,
+			StorageGC:        app.Sweeper,
 			OnRemotesChanged: app.NotifyRemotesChanged,
 			MetricsHandler:   app.MetricsHandler,
 			Metrics:          app.Metrics,

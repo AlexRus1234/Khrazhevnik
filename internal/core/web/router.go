@@ -31,6 +31,7 @@ import (
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/engine/auth"
 	"khrazhevnik/internal/core/engine/cache"
+	"khrazhevnik/internal/core/engine/storagegc"
 	"khrazhevnik/internal/core/metrics"
 	"khrazhevnik/internal/core/port"
 	authmw "khrazhevnik/internal/core/web/middleware"
@@ -78,6 +79,11 @@ type Deps struct {
 	// Publish — обёртка движка publish для /repos/{id}/reindex (сессия 14);
 	// nil в деградированном режиме — handleReindexRepo отдаёт 503.
 	Publish PublishAPI
+	// StorageGC — выметающая чистка хранилища (storagegc, сессии 119–120):
+	// ручной запуск задачи POST /storage/gc (сессия 121). nil в
+	// деградированном режиме (нет срезов каталога) — handleStorageGC
+	// отдаёт 503, как Publish выше. Grace живёт в Sweeper (wire).
+	StorageGC *storagegc.Sweeper
 	// Signer — подписчик метаданных личных репозиториев (сессия 15):
 	// отдаёт публичный ключ через GET /repo/<name>/key.asc на публичном
 	// порту :29202. nil в деградированном режиме — роут /key.asc не
@@ -295,6 +301,11 @@ func BuildAdminRouter(d Deps) http.Handler {
 				tasks.Get("/", handleListTasks(d))
 				tasks.Get("/{id}", handleGetTask(d))
 			})
+
+			// /storage/gc — ручной запуск выметающей чистки хранилища
+			// (сессия 121): мутация, поэтому под auditWrap; admin-only.
+			// dry_run — query-параметр, тела у запуска нет.
+			api.With(auditWrap, adminAuth).Post("/storage/gc", handleStorageGC(d))
 
 			// /cache/stats — статистика кеша; admin-only.
 			api.With(adminAuth).Get("/cache/stats", handleCacheStats(d))

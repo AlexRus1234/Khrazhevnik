@@ -23,6 +23,8 @@
 package web
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -249,6 +251,44 @@ func handleGetTask(d Deps) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, task.Snapshot())
+	}
+}
+
+// handleStorageGC — POST /api/v1/storage/gc?dry_run=true → 202 + task-id
+// (сессия 121): ручной проход выметающей чистки хранилища (storagegc,
+// сессии 119–120) как фоновая задача TaskRegistry (kind=gc,
+// label=storage). Повторный запуск при активной задаче — 409, лимит
+// воркеров — 429 (маппинг statusFor, как у sync/reindex). dry_run —
+// query-параметр (?dry_run=1|true), а не тело: у запуска тела нет,
+// decodeJSON на пустом теле — лишняя ветка. В dry-run проход только
+// считает кандидатов (счётчики — в логе задачи), удалений нет. Grace
+// берётся из Sweeper (назначен wire'ом) — хендлер его не знает.
+func handleStorageGC(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.StorageGC == nil || d.Tasks == nil {
+			writeErrCode(w, http.StatusServiceUnavailable, "storage_gc_unavailable")
+			return
+		}
+		q := r.URL.Query().Get("dry_run")
+		dryRun := q == "1" || q == "true"
+		// Action до запуска задачи (урок сессии 87): и 409/429, и запись
+		// middleware идут под storage.gc, а не fallback-именем create.storage.
+		*r = *r.WithContext(WithAuditAction(r.Context(), "storage.gc"))
+		taskID, err := d.Tasks.Start("gc", "storage", func(ctx context.Context, p Progress) error {
+			res, err := d.StorageGC.Sweep(ctx, dryRun)
+			if err != nil {
+				return err
+			}
+			p.Log(fmt.Sprintf("проход завершён: cache %d/%d сирот, repo %d/%d, удалено %d (%s), сбоев удаления %d",
+				res.CacheScanned, res.CacheOrphans, res.RepoScanned, res.RepoOrphans,
+				res.Deleted, humanBytes(res.BytesFreed), res.FailedDeletes))
+			return nil
+		})
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"task_id": taskID})
 	}
 }
 

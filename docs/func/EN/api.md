@@ -195,6 +195,24 @@ panel, not an audit log): `{at, ecosystem, path, status, size, error}`;
 pagination; `limit` means "at most N", an integer 1–50, invalid values
 → 400 `validation_error`.
 
+## Storage maintenance (admin)
+
+| Method | Path                 | Code            | Purpose                                          |
+|--------|----------------------|-----------------|--------------------------------------------------|
+| POST   | `/api/v1/storage/gc` | 202/409/429/503 | Manual run of the sweeping storage cleanup (orphaned versions of mutable cache objects and `repo/<id>/` of deleted repos) |
+
+Starts a background task (kind=`gc`, label=`storage`) and returns
+`{"task_id": …}`; poll progress via `GET /api/v1/tasks/{id}`. It is not
+idempotent: while the task is active a repeated POST returns 409
+`task_duplicate`; when the worker limit is exhausted — 429 `task_limit`.
+The mutation is audited (`storage.gc`).
+
+`?dry_run=1` (or `true`) — a revision pass without deletions: only
+candidates are counted, the counters are visible in the task log, objects
+stay in place. Without the parameter it is a live pass. If the cleanup
+module is not wired (degraded, no catalog) — 503
+`storage_gc_unavailable`.
+
 ## Error codes
 
 `not_found`, `conflict`, `forbidden`, `admin_required` (a force-only
@@ -205,5 +223,5 @@ body > 1 MiB), `length_required` (411, upload without
 `Content-Length`), `quota_exceeded`, `stale`, `task_duplicate`,
 `task_limit`, `invalid_json`, `setup_already_done`,
 `invalid_setup_token`, `invalid_credentials`, `tasks_unavailable`,
-`mirror_unavailable`, `publish_unavailable`, `unsupported`,
-`internal`.
+`mirror_unavailable`, `publish_unavailable`,
+`storage_gc_unavailable`, `unsupported`, `internal`.
