@@ -28,11 +28,13 @@ import (
 
 const maxBcryptPassword = 72
 
-// minPasswordLen — минимальная длина пароля при создании учётки:
-// пустой/короткий пароль проходил bcrypt как валидный, а маршрута
-// смены пароля в API нет — слабость была бы перманентной (внешнее
-// ревью раунд 5). 8 — минимальный индустриальный; сложнее не нужно:
-// bcrypt-стоимость и rate-limit /login несут остальное.
+// minPasswordLen — минимальная длина пароля при создании и смене
+// учётки: пустой/короткий пароль проходил bcrypt как валидный, а
+// смена пароля ходит через тот же hashPassword — слабость не должна
+// заводиться ни при bootstrap, ни при set/change (внешнее ревью
+// раунд 5; маршруты — сессия 125). 8 — минимальный индустриальный;
+// сложнее не нужно: bcrypt-стоимость и rate-limit /login несут
+// остальное.
 const minPasswordLen = 8
 
 // Границы стоимости bcrypt (параллельны валидации конфига): ниже 4
@@ -214,8 +216,9 @@ func (s *Service) EnsureFirstAdmin(ctx context.Context, username, password strin
 }
 
 // hashPassword validates password size limits (both ends: empty/short
-// passwords must be impossible to create — there is no password-change
-// route yet, so a weak account would be permanent) and hashes the value
+// passwords must be impossible to create or set — смена пароля
+// (ChangePassword/AdminSetPassword) идёт через эту же точку, так что
+// слабый пароль нельзя ни завести, ни назначить) and hashes the value
 // with the configured cost.
 func (s *Service) hashPassword(password string) ([]byte, error) {
 	if len([]byte(password)) < minPasswordLen {
@@ -466,6 +469,60 @@ func (s *Service) InvalidateUserSessions(ctx context.Context, id int64) error {
 	}
 	u.TokenVersion++
 	return s.cfg.Users.UpdateUser(ctx, u)
+}
+
+// ChangePassword replaces the password of the account identified by
+// userID after proving knowledge of the old one. Бампится только
+// token_version: JWT-сессии гаснут все (ValidateSession сверяет ver с
+// БД на каждом запросе), а khz_-токены выживают — VerifyAPIToken
+// версию не смотрит осознанно (сессия 67), иначе смена пароля глушила
+// бы CI-агентов с repo-scope. Полный пользователь возвращается
+// web-слою, который сам выпускает свежий JWT (IssueSession).
+func (s *Service) ChangePassword(ctx context.Context, actor string, userID int64, oldPassword, newPassword string) (domain.User, error) {
+	u, err := s.cfg.Users.User(ctx, userID)
+	if err != nil {
+		return domain.User{}, err
+	}
+	if _, err := s.VerifyPassword(ctx, u.Username, oldPassword); err != nil {
+		return domain.User{}, err
+	}
+	hash, err := s.hashPassword(newPassword)
+	if err != nil {
+		return domain.User{}, err
+	}
+	u.PasswordHash = string(hash)
+	u.TokenVersion++
+	if err := s.cfg.Users.UpdateUser(ctx, u); err != nil {
+		return domain.User{}, err
+	}
+	actx, cancel := auditCtx(ctx)
+	defer cancel()
+	s.audit(actx, actor, "user.password.change", fmt.Sprintf("user:%d", userID), domain.AuditOK, "")
+	return u, nil
+}
+
+// AdminSetPassword sets a new password without the old one: право
+// «админ» проверяет web-слой (маршрут под adminAuth, сессия 125),
+// движок не дублирует. Бампит token_version по тем же причинам, что
+// ChangePassword: гасит JWT-сессии, khz_-токены выживают.
+func (s *Service) AdminSetPassword(ctx context.Context, actor string, userID int64, newPassword string) error {
+	u, err := s.cfg.Users.User(ctx, userID)
+	if err != nil {
+		return err
+	}
+	hash, err := s.hashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	u.PasswordHash = string(hash)
+	u.TokenVersion++
+	if err := s.cfg.Users.UpdateUser(ctx, u); err != nil {
+		return err
+	}
+	actx, cancel := auditCtx(ctx)
+	defer cancel()
+	s.audit(actx, actor, "user.password.set", fmt.Sprintf("user:%d", userID), domain.AuditOK, "")
+	return nil
 }
 
 // IssueAPIToken returns the raw secret separately; it is never persisted.

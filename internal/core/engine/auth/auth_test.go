@@ -785,6 +785,118 @@ func TestAdminScopeTokenRequiresLiveAdminRole(t *testing.T) {
 	}
 }
 
+// Смена своего пароля: старый JWT гаснет (ValidateSession сверяет ver),
+// свежий JWT на обновлённого пользователя валиден, роль/имя не
+// затёрты full-row UpdateUser, TokenVersion ровно +1 (сессия 124).
+func TestChangePassword(t *testing.T) {
+	a, _ := newTestAuth(t)
+	ctx := context.Background()
+	oldToken, err := a.Login(ctx, "alice", "correct-horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := a.ChangePassword(ctx, "alice", 1, "correct-horse", "new-horse-1")
+	if err != nil {
+		t.Fatalf("смена пароля: %v", err)
+	}
+	if updated.Username != "alice" || updated.Role != domain.RoleAdmin {
+		t.Fatalf("full-row UpdateUser затёр учётку: %+v", updated)
+	}
+	if updated.TokenVersion != 2 {
+		t.Fatalf("TokenVersion = %d, хочу 2", updated.TokenVersion)
+	}
+	if _, err := a.ValidateSession(ctx, oldToken); !errors.Is(err, &domain.ForbiddenError{}) {
+		t.Fatalf("старый JWT жив после смены пароля: %v", err)
+	}
+	fresh, err := a.IssueSession(ctx, updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ValidateSession(ctx, fresh); err != nil {
+		t.Fatalf("свежий JWT отклонён: %v", err)
+	}
+	if _, err := a.Login(ctx, "alice", "new-horse-1"); err != nil {
+		t.Fatalf("логин новым паролем: %v", err)
+	}
+	// Неверный старый — Forbidden, версия не тронута.
+	if _, err := a.ChangePassword(ctx, "alice", 1, "wrong-old", "new-horse-2"); !errors.Is(err, &domain.ForbiddenError{}) {
+		t.Fatalf("неверный старый пароль: %v, хочу ForbiddenError", err)
+	}
+	u, _ := a.User(ctx, 1)
+	if u.TokenVersion != 2 {
+		t.Fatalf("неудачная смена сбампила версию: %d", u.TokenVersion)
+	}
+	// Границы нового пароля — из hashPassword.
+	if _, err := a.ChangePassword(ctx, "alice", 1, "new-horse-1", "short"); !errors.Is(err, &domain.ValidationError{}) {
+		t.Fatalf("короткий новый: %v, хочу ValidationError", err)
+	}
+	if _, err := a.ChangePassword(ctx, "alice", 1, "new-horse-1", strings.Repeat("x", 73)); !errors.Is(err, &domain.TooLargeError{}) {
+		t.Fatalf("длинный новый: %v, хочу TooLargeError", err)
+	}
+	// Несуществующий пользователь — NotFound прокидывается.
+	if _, err := a.ChangePassword(ctx, "ghost", 999, "whatever-1", "new-horse-3"); !errors.Is(err, &domain.NotFoundError{}) {
+		t.Fatalf("несуществующий id: %v, хочу NotFoundError", err)
+	}
+}
+
+// Админ-установка нового пароля: без старого, bump TokenVersion,
+// несуществующий id — NotFoundError (сессия 124).
+func TestAdminSetPassword(t *testing.T) {
+	a, _ := newTestAuth(t)
+	ctx := context.Background()
+	oldToken, err := a.Login(ctx, "alice", "correct-horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.AdminSetPassword(ctx, "admin", 1, "reset-horse-1"); err != nil {
+		t.Fatalf("admin set: %v", err)
+	}
+	u, _ := a.User(ctx, 1)
+	if u.TokenVersion != 2 || u.Username != "alice" || u.Role != domain.RoleAdmin {
+		t.Fatalf("admin set испортил пользователя: %+v", u)
+	}
+	if _, err := a.ValidateSession(ctx, oldToken); !errors.Is(err, &domain.ForbiddenError{}) {
+		t.Fatalf("старый JWT жив после admin set: %v", err)
+	}
+	if _, err := a.Login(ctx, "alice", "reset-horse-1"); err != nil {
+		t.Fatalf("логин новым паролем: %v", err)
+	}
+	if err := a.AdminSetPassword(ctx, "admin", 999, "reset-horse-2"); !errors.Is(err, &domain.NotFoundError{}) {
+		t.Fatalf("несуществующий id: %v, хочу NotFoundError", err)
+	}
+	if err := a.AdminSetPassword(ctx, "admin", 1, "short"); !errors.Is(err, &domain.ValidationError{}) {
+		t.Fatalf("короткий новый: %v, хочу ValidationError", err)
+	}
+}
+
+// Аудит обеих точек смены пароля: action'ы различаются, actor — тот,
+// кто действие выполняет (сессия 124).
+func TestPasswordChangeAudit(t *testing.T) {
+	log := &testutil.FakeAuditLog{}
+	a, err := New(Config{Users: testutil.NewFakeUserStore(), Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, Audit: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := a.CreateUser(ctx, "alice", "correct-horse", domain.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ChangePassword(ctx, "alice", 1, "correct-horse", "new-horse-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.AdminSetPassword(ctx, "root", 1, "reset-horse-1"); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := log.AuditEntries(ctx, 0, 20)
+	got := map[string]string{}
+	for _, e := range entries {
+		got[e.Action] = e.Actor
+	}
+	if got["user.password.change"] != "alice" || got["user.password.set"] != "root" {
+		t.Fatalf("аудит смены пароля: %v", got)
+	}
+}
+
 func TestAPITokenExpiryInvalidTouchAndScopeErrors(t *testing.T) {
 	a, tf := newTestAuth(t)
 	u, _ := a.User(context.Background(), 1)
