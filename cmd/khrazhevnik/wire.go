@@ -60,6 +60,7 @@ import (
 	_ "khrazhevnik/internal/mod/ecosystem/nix"
 	_ "khrazhevnik/internal/mod/ecosystem/pacman"
 	_ "khrazhevnik/internal/mod/ecosystem/rpmmmd"
+	_ "khrazhevnik/internal/mod/ecosystem/xbps"
 	_ "khrazhevnik/internal/mod/sign/ed25519"
 	_ "khrazhevnik/internal/mod/sign/openpgp"
 	_ "khrazhevnik/internal/mod/storage/fs"

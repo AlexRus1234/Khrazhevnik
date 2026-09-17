@@ -26,6 +26,13 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Added
+
+- **XBPS (session 129):** the xbps ecosystem (Void Linux): cache proxy —
+  repodata/package classification, the `/xbps/` prefix (the adapter is
+  registered; index parsing and mirroring come in the following sessions
+  of the wave).
+
 ### Changed
 
 - **Docs (session 128):** the XBPS ROADMAP is brought in line with the
