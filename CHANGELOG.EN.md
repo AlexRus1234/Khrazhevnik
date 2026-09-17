@@ -26,6 +26,14 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **Docs (session 128):** the XBPS ROADMAP is brought in line with the
+  format facts — a flat layout (`<arch>-repodata` in the root, not
+  `current/<arch>/`), `.sig2` signatures are RSA-4096 PKCS#1 v1.5/SHA-256
+  (not ed25519), the key is embedded in `index-meta.plist` (client-side
+  TOFU import); the v1.2 wave lives in the `v1.2.0dev` branch.
+
 ## [1.1.0] — 2026-09-17
 
 ### Added
