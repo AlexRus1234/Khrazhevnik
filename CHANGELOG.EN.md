@@ -32,6 +32,9 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   repodata/package classification, the `/xbps/` prefix (the adapter is
   registered; index parsing and mirroring come in the following sessions
   of the wave).
+- **XBPS (session 130):** xbps proxy integration — repodata and packages
+  byte-exact, a repeated request returns `X-Cache: HIT`, mutable repodata
+  revalidation (304 without a body), negative-cache 404 (integration test).
 
 ### Changed
 
