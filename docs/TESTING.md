@@ -24,6 +24,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 |-------------------------|---------------|----------------------------------|
 | core/domain             | 100%          | unit                             |
 | core/engine             | ≥90%          | unit + fakes (testutil)          |
+| core/engine/storagegc   | ≥90%          | unit + fakes (ModTime-инжект)    |
 | mod/ecosystem/* (парсеры)| ≥90%         | unit + golden + fuzz             |
 | mod/storage, mod/db     | ≥85%          | контрактные suite на всех драйверах |
 | core/web                | 60–80%        | httptest API-тесты               |
@@ -139,6 +140,42 @@ Unit-only цифра (~67% на момент внедрения) была зан
   диапазонами, шаг verify-range требует
   `khrazhevnik_cache_range_responses_total > 0` в `/metrics`; падение
   ноги — стоп волны (не «волатильность»).
+
+## Выметающая чистка и смена пароля (волна «Гигиена»)
+
+Хранилище выметает консервативный sweeper (сессии 117–123), пароль
+меняется через API (124–126); закреплены кейсы:
+
+- контракт каталога (общий suite, три драйвера): `JobByRemote` —
+  roundtrip полей и `NotFoundError` после `DeleteJob`;
+  `ForEachObjectMeta` — полный обход в порядке key, включая строки с
+  пустым `storage_key` (до-0003), fn-ошибка прерывает итерацию и
+  возвращается наружу;
+- юнит `engine/storagegc/gc_test.go` (правило 17 — контракты, не
+  механику): живая версия (`storage_key` строки == ключ) не тронута;
+  старая версия (строка указывает на новый ключ) удалена при grace=0 и
+  жива при `grace=24h` (ModTime от инжектируемых часов); «чужое имя»
+  без строки `object_index` не тронуто; `repo/` живого репо не тронут,
+  мёртвого — выметен; dry-run — счётчики без удалений; `NotFoundError`
+  от Delete не считается сбоем; ошибка `List` — fail-closed (проход
+  завершается ошибкой);
+- unit storagegc: `Run`+ManualClock — тик вызывает `Sweep` (счётчик
+  через `OnSweep`), ctx-отмена гасит, `Stop` ждёт; config — дефолты и
+  негативы (`gc_interval < 0`, `gc_grace ≤ 0`); метрики после прохода;
+- web: `POST /storage/gc` — 202+`task_id` → задача succeeded, объекты
+  выметены; `?dry_run` — объекты живы; 409 при активной задаче; 503
+  без Sweeper; аудит `storage.gc`; `DELETE /repos/{id}` запускает
+  фон-задачу `repo-<id>`, а при отсутствии Sweeper/занятых воркерах
+  DELETE всё равно 204; пароль — self 200 + свежий JWT (прежний 401),
+  неверный старый 403, короткий 400, 11-я попытка 429, admin 204 +
+  `token_version` +1, аудит `user.password.change`/`user.password.set`;
+- integration `storage_gc_test.go` (build-tag): реальные fs+sqlite,
+  `gc_interval=0` (только ручной проход), сев versioned-ключей и
+  `object_index` вторым подключением к DSN, `os.Chtimes` для grace;
+  POST → succeeded → orphan выметен, живое цело; dry-run не удаляет;
+  `/metrics` — `khrazhevnik_storage_gc_deleted_keys_total > 0`;
+- e2e (Playwright): смена своего пароля в форме → logout → вход новым
+  паролем.
 
 ## Надёжность
 

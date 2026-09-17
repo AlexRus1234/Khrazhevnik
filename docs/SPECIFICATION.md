@@ -566,7 +566,9 @@ khrazhevnik -config khrazhevnik.toml -add-remote apt/debian=https://deb.debian.o
 sync и include-фильтры); 0005 — `revoked_sessions` (персистентный
 отзыв JWT-сессий, сессия 25); 0006 — FK `api_tokens.user_id` →
 ON DELETE CASCADE; 0007 — `cache_stats` (снапшот per-eco счётчиков
-статистики кеша, переживает рестарт; флаш/загрузка — сессия 96).
+статистики кеша, переживает рестарт; флаш/загрузка — сессия 96);
+0008 — индекс `idx_sync_jobs_remote_id` на `sync_jobs(remote_id)`
+(точечный `JobByRemote` вместо полного обхода — сессия 117).
 `schema_migrations` — служебная таблица goose.
 
 | Таблица        | Назначение                                        |

@@ -93,6 +93,13 @@ Creation/deletion of users, issuance of scoped API tokens
 once — copy it immediately), revocation of tokens, a list of the
 active ones.
 
+Password change: a **Change your password** block (current/new +
+confirmation) — on success the session token is refreshed on the fly
+([REST](api.md) `POST /auth/password`) and the other JWT sessions die;
+the **Change password** action in a table row lets an admin set a
+user's password without the old one (`POST /users/{id}/password`).
+Issued `khz_` tokens survive the change.
+
 ## Audit
 
 A log of mutations (actor/action/object/result/detail) with loading of

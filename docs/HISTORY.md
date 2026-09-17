@@ -300,3 +300,30 @@ ETag, работает по `Last-Modified` (114); integration
 шагом verify-range (206-счётчик после `dnf install`, 115); доки
 синхронизированы с кодом (116). Генераторы личных репо не тронуты;
 sync-ограничение `.zck` (Enumerate `UnsupportedError`) сохранено.
+
+## Гигиена — выметающая чистка + смена пароля (сессии 117–127) ✅
+
+**Статус: завершена (2026-09-16).** Волна по решению владельца
+2026-09-13 (итоги ревью [ROADMAP.md](ROADMAP.md)): закрыты два
+«Известных ограничения» — осиротевшие versioned-ключи mutable-объектов
+и `repo/<id>/` удалённых репозиториев (M4-Р5) — и UX-хвост ревью
+раунда 5 (смена пароля через API), плюс обещанный индекс `sync_jobs`.
+Каталог: индекс `idx_sync_jobs_remote_id` (миграция 0008, три
+диалекта) и точечный `JobStore.JobByRemote` вместо полного обхода
+`Jobs()` в `mirror.findJobByRemote` (117); `ObjectIndex.ForEachObjectMeta`
+— стриминговый обход `object_index` как референс-набор sweeper'а (118);
+движок `engine/storagegc` — консервативные правила кандидатов
+(versioned-суффикс, отсутствие в живом наборе, строка логического
+ключа с другим `storage_key`, grace по ModTime), dry-run и точечная
+чистка префикса репо (119); keeper с конфигом
+`storage.gc_interval`/`storage.gc_grace` и метриками
+`khrazhevnik_storage_gc_*` (120); ручной запуск
+`POST /api/v1/storage/gc` (202, задача kind=`gc`, `?dry_run`, аудит
+`storage.gc`) (121); `DELETE /repos/{id}` запускает немедленную чистку
+`repo/<id>/` фоновой задачей, периодический sweep — подстраховка от
+сбоев (122); integration end-to-end на живой сборке (123). Смена
+пароля: `ChangePassword`/`AdminSetPassword` с bump `token_version`
+(JWT-сессии гаснут, `khz_`-токены переживают) (124), маршруты
+`POST /auth/password` (self, свежий JWT) и
+`POST /users/{id}/password` (admin, 204) (125), UI-формы в разделе
+«Пользователи» + e2e (126); синхронизация документации (127).
