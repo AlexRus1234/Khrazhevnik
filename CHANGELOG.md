@@ -35,6 +35,8 @@ major.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-17
+
 ### Добавлено
 
 - **API:** смена пароля — `POST /api/v1/auth/password` (self: проверка

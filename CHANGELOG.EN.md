@@ -26,6 +26,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-17
+
 ### Added
 
 - **API:** password change — `POST /api/v1/auth/password` (self: the old
