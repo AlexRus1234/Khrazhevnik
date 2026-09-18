@@ -46,6 +46,10 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `&lt;`/`&amp;` entities); caps of 64 KiB per field / 4096 array elements /
   1M records, typed `ErrBadPlist`, unknown keys skipped (proplib forward
   compatibility).
+- **XBPS (session 133):** the xbps pkgver parser (`SplitPkgver`/
+  `SplitRevision`/`Filename`) — names with dashes/`++`/digits, an `_N`
+  revision made of digits only, garbage becomes a `ValidationError`; a
+  table of live Void names plus fuzzing.
 
 ### Changed
 
