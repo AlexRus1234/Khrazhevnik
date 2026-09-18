@@ -78,6 +78,7 @@ type Adapter struct {
 	remotes port.RemoteStore
 	clock   port.Clock
 	rules   []compiledRule
+	sums    *checksumIndex
 
 	mu            sync.RWMutex
 	remoteCache   map[string]remoteEntry
@@ -107,6 +108,7 @@ func New(remotes port.RemoteStore, clock port.Clock) (*Adapter, error) {
 		remotes:       remotes,
 		clock:         clock,
 		rules:         compileRules(),
+		sums:          newChecksumIndex(),
 		remoteCache:   map[string]remoteEntry{},
 		reloadTimeout: remoteReloadTimeout,
 	}, nil
@@ -126,6 +128,8 @@ func (a *Adapter) URLPrefix() string { return Name }
 // регистр (byte-exact к upstream); StorageKey тоже БЕЗ лоуэркейса —
 // имена пакетов Void регистрочувствительны (Mustache, Gifsicle —
 // живые факты), лоуэркейс, как в apk, дал бы коллизии разных пакетов.
+// Checksum заполняется SHA256 из filename-sha256 индекса (если Enumerate
+// уже разбирал repodata); без sync — честная деградация к Content-Length.
 func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 	prefix := "/" + Name + "/"
 	if !strings.HasPrefix(ecosystemPath, prefix) {
@@ -143,11 +147,15 @@ func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 		return port.Target{}, false
 	}
 	base := strings.TrimRight(remote.BaseURL, "/")
-	return port.Target{
+	target := port.Target{
 		UpstreamURL:  base + upstreamPath,
 		UpstreamPath: upstreamPath,
 		StorageKey:   "cache/" + Name + "/" + strconv.FormatInt(remote.ID, 10) + upstreamPath,
-	}, true
+	}
+	if sum, ok := a.sums.lookup(remote.ID, upstreamPath); ok {
+		target.Checksum = sum
+	}
+	return target, true
 }
 
 // Classify делит объекты xbps по изменчивости. Пакеты (.xbps) — immutable
@@ -168,16 +176,8 @@ func (a *Adapter) Classify(upstreamPath string) (domain.Class, error) {
 	return domain.Mutable(mutableUnknownTTL), nil
 }
 
-// Enumerate — задел под sync зеркала: разбор repodata и перечисление
-// пакетов по include-архитектурам появляются в сессии 135 (enumerate.go).
-// До этого честный отказ, а не пустой список: пустой sync выглядел бы
-// как успешный и молча стёр бы зеркало.
-func (a *Adapter) Enumerate(context.Context, domain.Remote, port.MetaFetcher) ([]string, error) {
-	return nil, &domain.UnsupportedError{
-		What: "enumerate",
-		Why:  "xbps: разбор <arch>-repodata ещё не реализован (сессия 135 волны XBPS)",
-	}
-}
+// Enumerate — в enumerate.go: разбор `<arch>-repodata` и перечисление
+// пакетов с их `.sig2` по include-архитектурам (сессия 135).
 
 // lookupRemote возвращает Remote по имени из кеша; при истечении TTL
 // перечитывает весь список remotes (KISS: remotes обычно единицы).

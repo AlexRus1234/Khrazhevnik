@@ -57,6 +57,15 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `libxml2`, `python3-pip`, `Mustache`), `&lt;`/`&amp;` entities, `~` in a
   version, `filename-sha256` case, a public key in `index-meta.plist`
   (input for signing sessions 139/141).
+- **XBPS (session 135):** xbps mirroring — `Enumerate` over the include
+  architectures (`<arch>-repodata`): package paths
+  `<pkgver>.<arch>.xbps` are built by `Filename()` (session 133), each
+  gets a `.sig2` signature; a noarch package appears once in the result
+  (deduplicated by a seen map). The SHA256 from the `filename-sha256`
+  field (64 hex validated) populates the remote checksum table —
+  `Resolve` exposes it in `Target.Checksum`; an invalid sha256 and
+  `.sig2` honestly degrade to Content-Length verification. A partial
+  sync does not overwrite the table.
 
 ### Changed
 

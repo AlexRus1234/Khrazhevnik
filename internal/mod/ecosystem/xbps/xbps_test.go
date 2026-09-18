@@ -219,15 +219,3 @@ func TestResolveTraversalRemoteName(t *testing.T) {
 		}
 	}
 }
-
-// TestEnumerateNotYetImplemented фиксирует честный отказ до сессии 135:
-// пустой список выглядел бы как успешный sync и стёр бы зеркало.
-func TestEnumerateNotYetImplemented(t *testing.T) {
-	_, err := newTestAdapter(t).Enumerate(context.Background(), domain.Remote{
-		Name: "void", Ecosystem: Name, Include: []string{"x86_64"},
-	}, nil)
-	var uns *domain.UnsupportedError
-	if !errors.As(err, &uns) {
-		t.Fatalf("Enumerate = %v, хочу *UnsupportedError", err)
-	}
-}

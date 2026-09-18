@@ -63,6 +63,14 @@ major.
   (`0ad`, `libstdc++`, `libxml2`, `python3-pip`, `Mustache`), энтити
   `&lt;`/`&amp;`, `~` в версии, регистр `filename-sha256`, public-key в
   `index-meta.plist` (вход подписи 139/141).
+- **XBPS (сессия 135):** зеркало xbps — `Enumerate` по
+  include-архитектурам (`<arch>-repodata`): пути пакетов
+  `<pkgver>.<arch>.xbps` строятся `Filename()` (сессия 133), к каждому
+  добавлена подпись `.sig2`; noarch-пакет входит в результат один раз
+  (дедуп seen-картой). SHA256 из поля `filename-sha256` (валидация 64
+  hex) наполняет таблицу чексумм remote — `Resolve` отдаёт её в
+  `Target.Checksum`; невалидный sha256 и `.sig2` честно деградируют к
+  сверке Content-Length. Частичный sync таблицу не затирает.
 
 ### Изменено
 
