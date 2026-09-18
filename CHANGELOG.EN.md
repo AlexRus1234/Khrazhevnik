@@ -50,6 +50,13 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `SplitRevision`/`Filename`) — names with dashes/`++`/digits, an `_N`
   revision made of digits only, garbage becomes a `ValidationError`; a
   table of live Void names plus fuzzing.
+- **XBPS (session 134):** fuzzing of the repodata composition
+  (`FuzzParseRepoData`: zstd→tar→index.plist as a single target, a counter
+  callback with no accumulation) and a golden fixture
+  `testdata/repodata-golden.zst` — 5+ real packages (`0ad`, `libstdc++`,
+  `libxml2`, `python3-pip`, `Mustache`), `&lt;`/`&amp;` entities, `~` in a
+  version, `filename-sha256` case, a public key in `index-meta.plist`
+  (input for signing sessions 139/141).
 
 ### Changed
 

@@ -33,13 +33,14 @@ type tarFile struct {
 }
 
 // newRepoZstd собирает zstd(9)+pax-tar из записей (формат repodata).
-// Порядок записей задаёт вызывающий.
-func newRepoZstd(t *testing.T, files ...tarFile) []byte {
-	t.Helper()
+// Порядок записей задаёт вызывающий. testing.TB — хелпер переиспользует
+// и фаззер (seed-корпус FuzzParseRepoData).
+func newRepoZstd(tb testing.TB, files ...tarFile) []byte {
+	tb.Helper()
 	var buf bytes.Buffer
 	zw, err := zstd.NewWriter(&buf, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	tw := tar.NewWriter(zw)
 	for _, f := range files {
@@ -47,19 +48,19 @@ func newRepoZstd(t *testing.T, files ...tarFile) []byte {
 			Name: f.name, Typeflag: tar.TypeReg, Mode: 0o644,
 			Size: int64(len(f.data)), Format: tar.FormatPAX,
 		}); err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 		if len(f.data) > 0 {
 			if _, err := tw.Write(f.data); err != nil {
-				t.Fatal(err)
+				tb.Fatal(err)
 			}
 		}
 	}
 	if err := tw.Close(); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	if err := zw.Close(); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return buf.Bytes()
 }

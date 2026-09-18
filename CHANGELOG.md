@@ -57,6 +57,12 @@ major.
   `SplitRevision`/`Filename`) — имена с дефисами/`++`/цифрами, ревизия
   `_N` только из цифр, мусор — `ValidationError`; таблица живых имён
   Void и фаззинг.
+- **XBPS (сессия 134):** фаззинг композиции repodata (`FuzzParseRepoData`:
+  zstd→tar→index.plist одним таргетом, колбэк-счётчик без накопления) и
+  golden-фикстура `testdata/repodata-golden.zst` — 5+ реальных пакетов
+  (`0ad`, `libstdc++`, `libxml2`, `python3-pip`, `Mustache`), энтити
+  `&lt;`/`&amp;`, `~` в версии, регистр `filename-sha256`, public-key в
+  `index-meta.plist` (вход подписи 139/141).
 
 ### Изменено
 
