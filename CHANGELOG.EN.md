@@ -40,6 +40,12 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `stage.plist` skipped); a 1 GiB decompression cap and a 64 KiB meta-entry
   cap, typed format errors (`ErrBadZstd`/`ErrBadTar`/`ErrIndexMissing`/
   `ErrIndexNotFirst`/`ErrDecompressTooLarge`).
+- **XBPS (session 132):** streaming XML-plist parser for `index.plist` — the
+  `pkgname` → fields dictionary is delivered to a callback entry by entry (no
+  ~20 MiB XML in memory), `encoding/xml` only (stdlib decodes
+  `&lt;`/`&amp;` entities); caps of 64 KiB per field / 4096 array elements /
+  1M records, typed `ErrBadPlist`, unknown keys skipped (proplib forward
+  compatibility).
 
 ### Changed
 

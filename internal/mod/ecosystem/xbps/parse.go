@@ -65,13 +65,15 @@ const (
 	zstdMagic = "\x28\xb5\x2f\xfd"
 )
 
-// Ошибки контейнера — типизированные, сравнение через errors.Is.
+// Ошибки контейнера и index.plist — типизированные, сравнение через
+// errors.Is.
 var (
 	ErrBadZstd            = errors.New("xbps: некорректный zstd-поток")
 	ErrBadTar             = errors.New("xbps: некорректный tar-поток repodata")
 	ErrIndexMissing       = errors.New("xbps: в repodata отсутствует index.plist")
 	ErrIndexNotFirst      = errors.New("xbps: index.plist не первая запись repodata")
 	ErrDecompressTooLarge = errors.New("xbps: декомпрессия превысила лимит")
+	ErrBadPlist           = errors.New("xbps: некорректный XML-plist index.plist")
 )
 
 // OpenRepoData разворачивает контейнер repodata: zstd по magic → tar.

@@ -48,6 +48,11 @@ major.
   `stage.plist` — skip); капы декомпрессии 1 GiB и meta-записи 64 KiB,
   типизированные ошибки формата (`ErrBadZstd`/`ErrBadTar`/
   `ErrIndexMissing`/`ErrIndexNotFirst`/`ErrDecompressTooLarge`).
+- **XBPS (сессия 132):** streaming XML-plist парсер `index.plist` — словарь
+  `pkgname` → поля отдаётся колбэком по записи (без сборки ~20 MiB XML в карту),
+  только `encoding/xml` (энтити `&lt;`/`&amp;` раскодирует stdlib); лимиты поля
+  64 KiB / массива 4096 / записей 1 млн, типизированная ошибка `ErrBadPlist`,
+  скип неизвестных ключей (forward-совместимость proplib).
 
 ### Изменено
 
