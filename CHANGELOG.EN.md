@@ -35,6 +35,11 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 - **XBPS (session 130):** xbps proxy integration — repodata and packages
   byte-exact, a repeated request returns `X-Cache: HIT`, mutable repodata
   revalidation (304 without a body), negative-cache 404 (integration test).
+- **XBPS (session 131):** streaming parser of the xbps repodata container
+  (zstd+tar: `index.plist` as a stream, `index-meta.plist` as bytes,
+  `stage.plist` skipped); a 1 GiB decompression cap and a 64 KiB meta-entry
+  cap, typed format errors (`ErrBadZstd`/`ErrBadTar`/`ErrIndexMissing`/
+  `ErrIndexNotFirst`/`ErrDecompressTooLarge`).
 
 ### Changed
 

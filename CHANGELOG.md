@@ -43,6 +43,11 @@ major.
 - **XBPS (сессия 130):** интеграция xbps-прокси — repodata и пакеты
   побайтово, повторный запрос `X-Cache: HIT`, ревалидация mutable
   repodata (304 без тела), negative-кеш 404 (integration-тест).
+- **XBPS (сессия 131):** streaming-парсер контейнера xbps repodata
+  (zstd+tar: `index.plist` — потоком, `index-meta.plist` — байтами,
+  `stage.plist` — skip); капы декомпрессии 1 GiB и meta-записи 64 KiB,
+  типизированные ошибки формата (`ErrBadZstd`/`ErrBadTar`/
+  `ErrIndexMissing`/`ErrIndexNotFirst`/`ErrDecompressTooLarge`).
 
 ### Изменено
 
