@@ -28,6 +28,13 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [1.2.1] — 2026-09-19
 
+### Changed
+
+- CI: the distro-test Cleanup now prunes old images
+  (`podman image prune -f --filter until=2h`) — the runner runs out of
+  disk space (`cmd/go` crashing with SIGBUS in telemetry mmap when the
+  disk fills up); the filter leaves fresh images of parallel jobs alone.
+
 ### Fixed
 
 - CI: the void distro-test leg — the `voidlinux/voidlinux:latest` image

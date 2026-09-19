@@ -37,6 +37,13 @@ major.
 
 ## [1.2.1] — 2026-09-19
 
+### Изменено
+
+- CI: distro-test Cleanup выметает старые образы
+  (`podman image prune -f --filter until=2h`) — на раннере кончается
+  место (падение `cmd/go` с SIGBUS в mmap телеметрии при переполнении
+  диска); свежие образы параллельных job'ов фильтр не трогает.
+
 ### Исправлено
 
 - CI: void-нога distro-test — образ `voidlinux/voidlinux:latest` отстаёт

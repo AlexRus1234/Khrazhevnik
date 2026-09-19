@@ -1100,9 +1100,12 @@ jobs:
       - name: Cleanup
         # -v — anonymous volume /var/lib/khrazhevnik со sqlite/store.
         # Строго свои ресурсы, БЕЗ system prune: демон общий с другими
-        # job'ами раннера.
+        # job'ами раннера. image prune --filter until=2h — выметаем
+        # образы, осевшие от прошлых прогонов (у раннера кончается
+        # место; свежие образы других параллельных job'ов не трогаем).
         if: always()
         run: |
           podman rm -fv khrz-app-${{ matrix.name }} khrz-${{ matrix.name }} || true
           podman network rm khrz-${{ matrix.name }}-net || true
           podman rmi -f localhost/khrazhevnik:test-${{ matrix.name }} || true
+          podman image prune -f --filter until=2h || true
