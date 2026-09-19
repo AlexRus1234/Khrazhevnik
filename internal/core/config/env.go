@@ -128,7 +128,7 @@ func ecosystemEnvKeys(fv reflect.Value) []string {
 // список нужен здесь, а не в registry, потому что config.Load идёт
 // до сбора модулей.
 func knownEcosystemNames() []string {
-	return []string{"apt", "rpm-md", "pacman", "apk", "nix"}
+	return []string{"apt", "rpm-md", "pacman", "apk", "nix", "xbps"}
 }
 
 // applyLeafEnv применяет значение env к полю-листу, если оно задано.

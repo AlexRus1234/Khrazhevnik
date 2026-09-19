@@ -82,16 +82,16 @@ func TestLoadDefaults(t *testing.T) {
 		{"mirror.max_bandwidth", cfg.Mirror.MaxBandwidth.Bytes, int64(0)},
 		{"signing.keys_dir", cfg.Signing.KeysDir, "/var/lib/khrazhevnik/keys"},
 		{"metrics.enabled", cfg.Metrics.Enabled, true},
-		// Экосистемы v1 включены по умолчанию (M2): apt, rpm-md, pacman,
-		// apk, nix — все enabled=true в дефолтном конфиге.
-		{"ecosystems", len(cfg.Ecosystem), 5},
+		// Экосистемы v1 включены по умолчанию (M2 + волна XBPS): apt,
+		// rpm-md, pacman, apk, nix, xbps — все enabled=true в дефолте.
+		{"ecosystems", len(cfg.Ecosystem), 6},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
 			t.Errorf("%s = %v, хочу %v", c.name, c.got, c.want)
 		}
 	}
-	for _, name := range []string{"apt", "rpm-md", "pacman", "apk", "nix"} {
+	for _, name := range []string{"apt", "rpm-md", "pacman", "apk", "nix", "xbps"} {
 		if !cfg.Ecosystem[name].Enabled {
 			t.Errorf("дефолтная экосистема %q должна быть enabled", name)
 		}
@@ -244,8 +244,8 @@ enabled = true
 	if !cfg.Ecosystem["rpm-md"].Enabled {
 		t.Error("rpm-md должен быть включён (дефолт + env)")
 	}
-	if len(cfg.Ecosystem) != 5 {
-		t.Errorf("хочу 5 экосистем (дефолт), got %d: %+v", len(cfg.Ecosystem), cfg.Ecosystem)
+	if len(cfg.Ecosystem) != 6 {
+		t.Errorf("хочу 6 экосистем (дефолт), got %d: %+v", len(cfg.Ecosystem), cfg.Ecosystem)
 	}
 }
 
