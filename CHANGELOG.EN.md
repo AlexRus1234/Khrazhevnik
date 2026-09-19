@@ -80,6 +80,11 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `props.plist` read into the `Props` type; `files.plist` and the payload
   are skipped as a stream; a shared 1 GiB decompression cap and a
   `props.plist` ≤ 1 MiB cap, typed errors `ErrBadAr`/`ErrPropsMissing`.
+- **XBPS (session 138):** fuzzing of the `.xbps` package ar parser
+  (`FuzzOpenPackage`) — seeds for all three compression branches
+  (raw/zstd/gzip), truncations at ar header boundaries (8/60/68 bytes),
+  garbage with a valid zstd magic, an oversized member-size field;
+  invariants: no panics, deterministic error and `Props` shape.
 
 ### Changed
 
