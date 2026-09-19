@@ -35,6 +35,14 @@ major.
 
 ## [Unreleased]
 
+### Исправлено
+
+- CI: void-нога distro-test — образ `voidlinux/voidlinux:latest` отстаёт
+  от снапшота upstream, `xbps-install` отказывался ставить пакет
+  («The 'xbps' package must be updated», exit 16) — перед целевым
+  пакетом синк индексов и обновление самого менеджера
+  (`xbps-install -S -y`; `xbps-install -u -y xbps`).
+
 ### Изменено
 
 - Доки: ROADMAP «Текущий статус» синхронизирован с фактом релиза

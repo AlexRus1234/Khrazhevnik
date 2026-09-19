@@ -26,6 +26,14 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- CI: the void distro-test leg — the `voidlinux/voidlinux:latest` image
+  lags the upstream snapshot, so `xbps-install` refused to install a
+  package ("The 'xbps' package must be updated", exit 16); index sync and
+  a manager self-update now precede the target package
+  (`xbps-install -S -y`; `xbps-install -u -y xbps`).
+
 ### Changed
 
 - Docs: the ROADMAP "Current status" section synced with the released

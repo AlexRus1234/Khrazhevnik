@@ -899,6 +899,13 @@ jobs:
               echo 'repository=http://khrz-app-void:29202/xbps/void' \
                 > /etc/xbps.d/00-repository-main.conf
               # TOFU-импорт ключа Void из index-meta: -y отвечает yes.
+              # Образ voidlinux/voidlinux:latest отстаёт от текущего
+              # снапшота upstream: xbps видит более новый xbps в индексе
+              # и отказывается ставить («The 'xbps' package must be
+              # updated»), exit 16. Сначала синк индексов и обновление
+              # самого менеджера, потом целевой пакет.
+              xbps-install -S -y
+              xbps-install -u -y xbps
               xbps-install -S -y htop
 
     steps:
