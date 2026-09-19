@@ -85,6 +85,12 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   (raw/zstd/gzip), truncations at ar header boundaries (8/60/68 bytes),
   garbage with a valid zstd magic, an oversized member-size field;
   invariants: no panics, deterministic error and `Props` shape.
+- **XBPS (session 139):** instance RSA-4096 signer (the `.sig2` xbps
+  format) — `port.RsaSigner`/`RsaSignerInjector` and the
+  `mod/sign/rsasha256` module: PKCS#1 v1.5 over a SHA-256 digest, the
+  private key `xbps-rsa.key` (PKCS#1 PEM, 0600, atomic, no overwrite),
+  the public one as SPKI-PEM (`PUBLIC KEY`) for index-meta and the key
+  endpoint; passphrase unsupported, corrupt key material is fatal at start.
 
 ### Changed
 

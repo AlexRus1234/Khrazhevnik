@@ -63,6 +63,7 @@ import (
 	_ "khrazhevnik/internal/mod/ecosystem/xbps"
 	_ "khrazhevnik/internal/mod/sign/ed25519"
 	_ "khrazhevnik/internal/mod/sign/openpgp"
+	_ "khrazhevnik/internal/mod/sign/rsasha256"
 	_ "khrazhevnik/internal/mod/storage/fs"
 	_ "khrazhevnik/internal/mod/storage/s3"
 )
@@ -108,6 +109,9 @@ type App struct {
 	// деградированном режиме: nix narinfo не переподписываются (отдаются
 	// как есть, подписи upstream валидны, если клиент им доверяет).
 	NarSigner port.NarSigner
+	// RsaSigner — xbps .sig2-подписчик (rsasha256, сессия 139). nil в
+	// деградированном режиме: xbps-пакеты личных репо не подписываются.
+	RsaSigner port.RsaSigner
 	// StatsKeeper — фоновый флаш per-eco счётчиков статистики в
 	// cache_stats (сессия 96); nil при stats_flush_interval=0 или
 	// без модуля БД. Stop вызывается из graceful shutdown каскада.
@@ -230,15 +234,11 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	// keygen упал по «мягкой» причине — логируем и работаем без подписи);
 	// битый ключевой материал — ошибка старта (сессия 40). Внедряется в
 	// RepoAdapter'ы через port.SignerInjector (v1 — только apt).
-	signer, err := wireSigner(cfg, log)
+	signer, narSigner, rsaSigner, err := wireSigners(cfg, log)
 	if err != nil {
 		return nil, err
 	}
-	narSigner, err := wireNarSigner(cfg, log)
-	if err != nil {
-		return nil, err
-	}
-	publishAdapters := wireRepoAdapters(signer, narSigner, systemClock{})
+	publishAdapters := wireRepoAdapters(signer, narSigner, rsaSigner, systemClock{})
 	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, systemClock{}, publishAdapters)
 	publishAPI := publishSyncer{engine: publishEngine, repos: catalog.Repos, tasks: tasks}
 	scheduler := mirrorengine.NewScheduler(mirrorEngine, catalog.Remotes, uuidRand{}, systemClock{}, cfg.Mirror.IntervalJitter.Duration)
@@ -280,6 +280,7 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		Scheduler:      scheduler,
 		Signer:         signer,
 		NarSigner:      narSigner,
+		RsaSigner:      rsaSigner,
 		StatsKeeper:    statsKeeper,
 		Sweeper:        sweeper,
 	}, nil
@@ -331,9 +332,11 @@ func wireStorageGC(cfg config.Config, storage port.Storage, catalog registry.Cat
 // clock внедряется в адаптеры с метками времени в индексах
 // (port.ClockInjector — apt Release/rpm-md repomd, сессия 24).
 // narSigner (если не nil) внедряется в адаптеры, реализующие
-// port.NarSignerInjector (v1 — nix: переподпись narinfo). Возвращает
-// карту name → RepoAdapter для движка publish.
-func wireRepoAdapters(signer port.Signer, narSigner port.NarSigner, clock port.Clock) map[string]port.RepoAdapter {
+// port.NarSignerInjector (v1 — nix: переподпись narinfo); rsaSigner
+// (если не nil) — в адаптеры с port.RsaSignerInjector (v1 — xbps:
+// .sig2-подпись пакетов). Возвращает карту name → RepoAdapter для
+// движка publish.
+func wireRepoAdapters(signer port.Signer, narSigner port.NarSigner, rsaSigner port.RsaSigner, clock port.Clock) map[string]port.RepoAdapter {
 	out := map[string]port.RepoAdapter{}
 	for _, name := range registry.Ecosystems() {
 		factory, err := registry.RepoAdapter(name)
@@ -359,9 +362,35 @@ func wireRepoAdapters(signer port.Signer, narSigner port.NarSigner, clock port.C
 				inj.SetNarSigner(narSigner)
 			}
 		}
+		if rsaSigner != nil {
+			if inj, ok := adapter.(port.RsaSignerInjector); ok {
+				inj.SetRsaSigner(rsaSigner)
+			}
+		}
 		out[name] = adapter
 	}
 	return out
+}
+
+// wireSigners собирает все подписчики инстанса (openpgp/ed25519/
+// rsasha256) одним шагом: каждый — из compile-time реестра, деградация
+// без регистрации не фатальна, битый ключевой материал фатален (см.
+// wireSigner/wireNarSigner/wireRsaSigner). Вынесено из wireApp, чтобы
+// не раздувать его цикломатическую сложность.
+func wireSigners(cfg config.Config, log *slog.Logger) (port.Signer, port.NarSigner, port.RsaSigner, error) {
+	signer, err := wireSigner(cfg, log)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	narSigner, err := wireNarSigner(cfg, log)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	rsaSigner, err := wireRsaSigner(cfg, log)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return signer, narSigner, rsaSigner, nil
 }
 
 // wireNarSigner собирает nix narinfo-подписчик из compile-time реестра
@@ -388,6 +417,33 @@ func wireNarSigner(cfg config.Config, log *slog.Logger) (port.NarSigner, error) 
 		return nil, nil
 	}
 	log.Info("nix signing: narinfo-ключ готов", "keys_dir", cfg.Signing.KeysDir, "pubkey", signer.PubKeyB64())
+	return signer, nil
+}
+
+// wireRsaSigner собирает xbps .sig2-подписчик из compile-time реестра
+// (rsasha256, сессия 139). Отсутствие регистрации — не фатально:
+// логируем и возвращаем nil (xbps-репо не подписываются). Битый
+// ключевой материал (domain.KeyMaterialError) фатален — старт падает
+// (прецедент wireNarSigner/wireSigner): смена/регенерация xbps-ключа
+// молча инвалидировала бы все ранее подписанные .sig2. Ключ
+// генерируется на первом старте в cfg.Signing.KeysDir (файл
+// xbps-rsa.key, 0600), грузится на повторных.
+func wireRsaSigner(cfg config.Config, log *slog.Logger) (port.RsaSigner, error) {
+	factory, err := registry.RsaSigner("rsasha256")
+	if err != nil {
+		log.Error("xbps signing: модуль rsasha256 не слинкован — xbps-репо не подписываются", "err", err)
+		return nil, nil
+	}
+	signer, err := factory(cfg.Signing)
+	if err != nil {
+		var km *domain.KeyMaterialError
+		if errors.As(err, &km) {
+			return nil, fmt.Errorf("xbps signing: %w", err)
+		}
+		log.Error("xbps signing: инициализация подписчика не удалась — xbps-репо не подписываются", "err", err, "keys_dir", cfg.Signing.KeysDir)
+		return nil, nil
+	}
+	log.Info("xbps signing: xbps-rsa-ключ готов", "keys_dir", cfg.Signing.KeysDir)
 	return signer, nil
 }
 

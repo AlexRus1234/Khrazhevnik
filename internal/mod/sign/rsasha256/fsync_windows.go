@@ -14,6 +14,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// Package sign — реализации подписчиков: openpgp (go-crypto,
-// port.Signer для apt), ed25519 (nix narinfo) и rsasha256 (xbps .sig2).
-package sign
+//go:build windows
+
+package rsasha256
+
+// fsyncDir — no-op: Windows не даёт открыть каталог на запись для
+// FlushFileBuffers, целостность метаданных NTFS обеспечивает
+// журналирование. Прод-контейнер — scratch Linux, там работает
+// unix-вариант.
+func fsyncDir(string) error { return nil }

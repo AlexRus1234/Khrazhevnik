@@ -39,6 +39,7 @@ func resetForTesting(t *testing.T) {
 	s.repoadapter = map[string]RepoAdapterFactory{}
 	s.signer = map[string]SignerFactory{}
 	s.narsigner = map[string]NarSignerFactory{}
+	s.rsasigner = map[string]RsaSignerFactory{}
 }
 
 func TestStorageRegisterAndLookup(t *testing.T) {
