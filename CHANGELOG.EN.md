@@ -28,96 +28,58 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ### Added
 
-- **XBPS (session 129):** the xbps ecosystem (Void Linux): cache proxy —
-  repodata/package classification, the `/xbps/` prefix (the adapter is
-  registered; index parsing and mirroring come in the following sessions
-  of the wave).
-- **XBPS (session 130):** xbps proxy integration — repodata and packages
-  byte-exact, a repeated request returns `X-Cache: HIT`, mutable repodata
-  revalidation (304 without a body), negative-cache 404 (integration test).
-- **XBPS (session 131):** streaming parser of the xbps repodata container
-  (zstd+tar: `index.plist` as a stream, `index-meta.plist` as bytes,
-  `stage.plist` skipped); a 1 GiB decompression cap and a 64 KiB meta-entry
-  cap, typed format errors (`ErrBadZstd`/`ErrBadTar`/`ErrIndexMissing`/
-  `ErrIndexNotFirst`/`ErrDecompressTooLarge`).
-- **XBPS (session 132):** streaming XML-plist parser for `index.plist` — the
-  `pkgname` → fields dictionary is delivered to a callback entry by entry (no
-  ~20 MiB XML in memory), `encoding/xml` only (stdlib decodes
-  `&lt;`/`&amp;` entities); caps of 64 KiB per field / 4096 array elements /
-  1M records, typed `ErrBadPlist`, unknown keys skipped (proplib forward
-  compatibility).
-- **XBPS (session 133):** the xbps pkgver parser (`SplitPkgver`/
-  `SplitRevision`/`Filename`) — names with dashes/`++`/digits, an `_N`
-  revision made of digits only, garbage becomes a `ValidationError`; a
-  table of live Void names plus fuzzing.
-- **XBPS (session 134):** fuzzing of the repodata composition
-  (`FuzzParseRepoData`: zstd→tar→index.plist as a single target, a counter
-  callback with no accumulation) and a golden fixture
-  `testdata/repodata-golden.zst` — 5+ real packages (`0ad`, `libstdc++`,
-  `libxml2`, `python3-pip`, `Mustache`), `&lt;`/`&amp;` entities, `~` in a
-  version, `filename-sha256` case, a public key in `index-meta.plist`
-  (input for signing sessions 139/141).
-- **XBPS (session 135):** xbps mirroring — `Enumerate` over the include
-  architectures (`<arch>-repodata`): package paths
-  `<pkgver>.<arch>.xbps` are built by `Filename()` (session 133), each
-  gets a `.sig2` signature; a noarch package appears once in the result
-  (deduplicated by a seen map). The SHA256 from the `filename-sha256`
-  field (64 hex validated) populates the remote checksum table —
-  `Resolve` exposes it in `Target.Checksum`; an invalid sha256 and
-  `.sig2` honestly degrade to Content-Length verification. A partial
-  sync does not overwrite the table.
-- **XBPS (session 136):** xbps mirroring end to end (integration) — sync
-  downloads repodata + packages + `.sig2`, a repeated sync makes not a
-  single upstream request (resume diff via `Storage.Stat`), a shared
-  noarch package from two arch indexes is downloaded exactly once; a body
-  that does not match `filename-sha256` fails the sync and does NOT commit
-  the object (Abort, ARCHITECTURE §4 invariant), and after the upstream is
-  fixed and the negative window expires the repeated sync succeeds.
-- **XBPS (session 137):** `.xbps` package ar parser (`OpenPackage`) —
-  compression auto-detected by magic (zstd `28 B5 2F FD`, gzip `1F 8B`,
-  raw ar `!<arch>\n`; xz becomes `ErrUnsupportedCompression`), classic
-  ar members (`props.plist`/`./props.plist`) walked and only
-  `props.plist` read into the `Props` type; `files.plist` and the payload
-  are skipped as a stream; a shared 1 GiB decompression cap and a
-  `props.plist` ≤ 1 MiB cap, typed errors `ErrBadAr`/`ErrPropsMissing`.
-- **XBPS (session 138):** fuzzing of the `.xbps` package ar parser
-  (`FuzzOpenPackage`) — seeds for all three compression branches
-  (raw/zstd/gzip), truncations at ar header boundaries (8/60/68 bytes),
-  garbage with a valid zstd magic, an oversized member-size field;
-  invariants: no panics, deterministic error and `Props` shape.
-- **XBPS (session 139):** instance RSA-4096 signer (the `.sig2` xbps
-  format) — `port.RsaSigner`/`RsaSignerInjector` and the
-  `mod/sign/rsasha256` module: PKCS#1 v1.5 over a SHA-256 digest, the
-  private key `xbps-rsa.key` (PKCS#1 PEM, 0600, atomic, no overwrite),
-  the public one as SPKI-PEM (`PUBLIC KEY`) for index-meta and the key
-  endpoint; passphrase unsupported, corrupt key material is fatal at start.
-- **XBPS (session 140):** streaming `index.plist` writer for xbps
-  (`WriteIndexPlist`) — proplib XML-plist via `encoding/xml` tokens
-  (stdlib encodes `&`/`<`/`>` entities), deterministic reindex (records by
-  `pkgname`, fields alphabetically, empty ones omitted), lossless roundtrip
-  with the session 132 parser; 10k records streamed without accumulation.
-- **XBPS (session 141):** personal xbps repo generator (an `xbps-rindex
-  --add --sign --sign-pkg` analogue): flat `.xbps` →
-  `<arch>-repodata` (zstd level 9 + pax-tar: index.plist/
-  index-meta.plist/stage.plist), noarch packages enter every arch group, a
-  `.sig2` for each package (RSA/SHA-256 with the instance key), the public
-  key embedded in index-meta.plist (base64 PEM); without a key — repodata
-  without `.sig2`; a mismatched filename or a broken package is an honest
-  task error.
-- **XBPS (session 142):** the `GET /repo/<name>/xbps-key` endpoint (the
-  instance's RSA key PEM) for fingerprint verification during TOFU import;
-  it is registered only when a signer is live, an unknown repo is a 404;
+- **xbps (Void Linux) — caching proxy and mirror:** the sixth ecosystem —
+  the `/xbps/` prefix, case-sensitive classification (packages `*.xbps`
+  and signatures `*.sig2`/`*.sig` are immutable forever, the root
+  `<arch>-repodata` is mutable 5m, everything else mutable 1m). Proxy:
+  metadata and packages byte-exact, a repeated request returns
+  `X-Cache: HIT`, mutable index revalidation (304 without a body),
+  negative-cache 404. Mirror: `Enumerate` over the include architectures
+  (`<arch>-repodata`), package paths `<pkgver>.<arch>.xbps` built by
+  `Filename()`, noarch included once (deduplicated), the SHA256 from
+  `filename-sha256` (64 hex) populates the remote checksum table
+  (`Target.Checksum`); sync with a resume diff, a body with a wrong sha256
+  fails the sync and does NOT commit the object (Abort, §4 invariant), a
+  partial sync does not overwrite the table.
+- **xbps — metadata and package parsers (streaming + fuzzing):** the
+  `<arch>-repodata` container (zstd+tar: `index.plist` as a stream,
+  `index-meta.plist` as bytes, `stage.plist` skipped; 1 GiB decompression
+  / 64 KiB meta caps); the XML-plist `index.plist` parser (the
+  `pkgname` → fields dictionary via a callback, caps of 64 KiB per field /
+  4096 array elements / 1M records, unknown keys skipped — proplib forward
+  compatibility); the pkgver parser (`SplitPkgver`/`SplitRevision`/
+  `Filename` — dashes/`++`/`~`, an `_N` revision made of digits only); the
+  `.xbps` ar parser (zstd/gzip/raw by magic, only `props.plist`, a 1 MiB
+  cap; xz becomes `ErrUnsupportedCompression`). Typed format errors
+  (`ErrBadPlist`/`ErrBadZstd`/`ErrBadTar`/`ErrBadAr`/`ErrPropsMissing`/…).
+  Fuzzing `FuzzParseRepoData`/`FuzzOpenPackage`/`FuzzSplitPkgver` plus the
+  golden fixture `repodata-golden.zst` with real Void names (`0ad`,
+  `libstdc++`, `libxml2`, `python3-pip`, `Mustache`).
+- **xbps — instance RSA signer and key endpoint:** `port.RsaSigner` +
+  `port.RsaSignerInjector` and the `mod/sign/rsasha256` module (RSA-4096,
+  PKCS#1 v1.5 over SHA-256 — the `.sig2` format): the private key
+  `xbps-rsa.key` (PKCS#1 PEM, 0600, atomic, no overwrite), the public one
+  as SPKI-PEM (`PUBLIC KEY`) for index-meta and serving; no passphrase,
+  corrupt key material is fatal at start. `GET /repo/<name>/xbps-key`
+  serves the PEM for fingerprint verification during TOFU import
+  (registered only when a signer is live, an unknown repo is a 404), plus
   an “xbps” block on the “Keys” screen.
-- **XBPS (session 143):** end-to-end personal xbps repo integration
-  (integration): bootstrap → repo eco=xbps → upload `.xbps` (x86_64 +
-  noarch) → reindex task → the public port serves `<arch>-repodata`
-  (parsed by the 131/132 parser, noarch lands in the x86_64 group,
-  `filename-sha256` matching the body) and `.sig2` (verified with
-  `crypto/rsa` against `/xbps-key`); a package whose props do not match
-  its filename fails reindex, and after its removal the index is
-  byte-identical (determinism).
-- **XBPS (session 145):** xbps in the UI (remotes/repos) and the
-  SPECIFICATION (config, endpoint, generator).
+- **xbps — personal repositories (generator, writer, integration):** the
+  streaming `index.plist` writer (XML-plist via `encoding/xml` tokens,
+  deterministic reindex: records by `pkgname`, fields alphabetically,
+  empty ones omitted; lossless roundtrip with the parser) and the
+  generator — an `xbps-rindex --add --sign --sign-pkg` analogue: flat
+  `.xbps` → `<arch>-repodata` (zstd level 9 + pax-tar) + a `.sig2` for
+  each package (RSA/SHA-256 with the instance key), noarch enters every
+  arch group, the public key embedded in index-meta (base64 PEM); without
+  a key — repodata without `.sig2`, a mismatched filename or a broken
+  package is an honest task error. End-to-end (integration): upload
+  `.xbps` → reindex → `<arch>-repodata` (parsed by the same parsers) and
+  `.sig2` (verified with `crypto/rsa` against `/xbps-key`); a repeated
+  reindex yields a byte-identical index.
+- **xbps in the UI and SPECIFICATION:** ecosystem selection on the
+  remotes/repos screens, config, key endpoint and generator in the
+  specification.
 
 ### Changed
 
@@ -130,6 +92,11 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   (`xbps-install` through the proxy, `xbps/<remote>`, hermeticity via
   `/etc/xbps.d`); the RELEASE checklist is synced (6/6 legs, xbps items
   in §1/§2).
+- **Docs (session 146):** xbps functional documentation
+  (`docs/func/ru|EN/ecosystems/xbps.md`), TESTING sync (cases/coverage),
+  ARCHITECTURE (ecosystems, `mod/sign/rsasha256`, publish and checksum
+  invariants), HISTORY (wave section), ROADMAP (v1.2.0 status, XBPS
+  removed from post-v1), README.
 
 ## [1.1.0] — 2026-09-17
 

@@ -37,91 +37,55 @@ major.
 
 ### Добавлено
 
-- **XBPS (сессия 129):** экосистема xbps (Void Linux): кеш-прокси —
-  классификация repodata/packages, префикс `/xbps/` (адаптер
-  зарегистрирован, разбор индекса и зеркало — следующими сессиями волны).
-- **XBPS (сессия 130):** интеграция xbps-прокси — repodata и пакеты
-  побайтово, повторный запрос `X-Cache: HIT`, ревалидация mutable
-  repodata (304 без тела), negative-кеш 404 (integration-тест).
-- **XBPS (сессия 131):** streaming-парсер контейнера xbps repodata
-  (zstd+tar: `index.plist` — потоком, `index-meta.plist` — байтами,
-  `stage.plist` — skip); капы декомпрессии 1 GiB и meta-записи 64 KiB,
-  типизированные ошибки формата (`ErrBadZstd`/`ErrBadTar`/
-  `ErrIndexMissing`/`ErrIndexNotFirst`/`ErrDecompressTooLarge`).
-- **XBPS (сессия 132):** streaming XML-plist парсер `index.plist` — словарь
-  `pkgname` → поля отдаётся колбэком по записи (без сборки ~20 MiB XML в карту),
-  только `encoding/xml` (энтити `&lt;`/`&amp;` раскодирует stdlib); лимиты поля
-  64 KiB / массива 4096 / записей 1 млн, типизированная ошибка `ErrBadPlist`,
-  скип неизвестных ключей (forward-совместимость proplib).
-- **XBPS (сессия 133):** парсер pkgver xbps (`SplitPkgver`/
-  `SplitRevision`/`Filename`) — имена с дефисами/`++`/цифрами, ревизия
-  `_N` только из цифр, мусор — `ValidationError`; таблица живых имён
-  Void и фаззинг.
-- **XBPS (сессия 134):** фаззинг композиции repodata (`FuzzParseRepoData`:
-  zstd→tar→index.plist одним таргетом, колбэк-счётчик без накопления) и
-  golden-фикстура `testdata/repodata-golden.zst` — 5+ реальных пакетов
-  (`0ad`, `libstdc++`, `libxml2`, `python3-pip`, `Mustache`), энтити
-  `&lt;`/`&amp;`, `~` в версии, регистр `filename-sha256`, public-key в
-  `index-meta.plist` (вход подписи 139/141).
-- **XBPS (сессия 135):** зеркало xbps — `Enumerate` по
-  include-архитектурам (`<arch>-repodata`): пути пакетов
-  `<pkgver>.<arch>.xbps` строятся `Filename()` (сессия 133), к каждому
-  добавлена подпись `.sig2`; noarch-пакет входит в результат один раз
-  (дедуп seen-картой). SHA256 из поля `filename-sha256` (валидация 64
-  hex) наполняет таблицу чексумм remote — `Resolve` отдаёт её в
-  `Target.Checksum`; невалидный sha256 и `.sig2` честно деградируют к
-  сверке Content-Length. Частичный sync таблицу не затирает.
-- **XBPS (сессия 136):** зеркало xbps end-to-end (integration) — sync
-  качает repodata + пакеты + `.sig2`, повторный sync не делает ни одного
-  upstream-запроса (resume-diff по `Storage.Stat`), общий noarch-пакет из
-  двух arch-индексов скачивается ровно один раз; тело, не совпавшее с
-  `filename-sha256`, роняет sync и НЕ коммитит объект (Abort, инвариант
-  ARCHITECTURE §4), а после починки upstream и истечения negative-окна
-  повторный sync succeeds.
-- **XBPS (сессия 137):** ar-парсер пакетов `.xbps` (`OpenPackage`) —
-  авто-детект компрессии по магику (zstd `28 B5 2F FD`, gzip `1F 8B`,
-  raw ar `!<arch>\n`; xz — `ErrUnsupportedCompression`), обход
-  классических ar-членов (`props.plist`/`./props.plist`) и чтение только
-  `props.plist` в тип `Props`; `files.plist` и payload скипаются
-  стримингом; общий кап декомпрессии 1 GiB и `props.plist` ≤ 1 MiB,
-  типизированные ошибки `ErrBadAr`/`ErrPropsMissing`.
-- **XBPS (сессия 138):** фаззинг ar-парсера пакетов `.xbps`
-  (`FuzzOpenPackage`) — сиды по всем трём веткам компрессии
-  (raw/zstd/gzip), обрезки на границах ar-заголовка (8/60/68 байт),
-  мусор с валидной zstd-магией, гигантское поле размера члена;
-  инварианты — без паник, детерминизм ошибки и структуры `Props`.
-- **XBPS (сессия 139):** RSA-4096-подписчик инстанса (формат `.sig2`
-  xbps) — `port.RsaSigner`/`RsaSignerInjector` и модуль
-  `mod/sign/rsasha256`: PKCS#1 v1.5 поверх SHA-256-дайджеста, приватный
-  ключ `xbps-rsa.key` (PKCS#1 PEM, 0600, атомарно, без перезаписи),
-  публичный — SPKI-PEM (`PUBLIC KEY`) для index-meta и ручки раздачи;
-  passphrase не поддерживается, битый ключевой материал фатален на старте.
-- **XBPS (сессия 140):** streaming-writer `index.plist` xbps
-  (`WriteIndexPlist`) — XML-plist proplib токенами `encoding/xml`
-  (энтити `&`/`<`/`>` кодирует stdlib), детерминизм reindex (записи по
-  `pkgname`, поля по алфавиту, пустые опущены), roundtrip с парсером
-  сессии 132 без потерь; 10k-записей стримингом без накопления.
-- **XBPS (сессия 141):** генератор личного xbps-репо (аналог
-  `xbps-rindex --add --sign --sign-pkg`): плоские `.xbps` →
-  `<arch>-repodata` (zstd level 9 + pax-tar: index.plist/
-  index-meta.plist/stage.plist), noarch-пакеты входят в каждую
-  arch-группу, `.sig2` на каждый пакет (RSA/SHA-256 ключом инстанса),
-  публичный ключ в index-meta.plist (base64-PEM); без ключа — repodata
-  без `.sig2`; кривое имя файла/битый пакет — честная ошибка задачи.
-- **XBPS (сессия 142):** ручка `GET /repo/<name>/xbps-key` (PEM
-  RSA-ключа инстанса) для сверки fingerprint при TOFU-импорте;
-  регистрируется только при живом подписчике, неизвестное репо — 404;
-  блок «xbps» на экране «Ключи».
-- **XBPS (сессия 143):** интеграция личного xbps-репо end-to-end
-  (integration): bootstrap → repo eco=xbps → upload `.xbps` (x86_64 +
-  noarch) → reindex-задача → публичный порт отдаёт `<arch>-repodata`
-  (читается парсерами 131/132, noarch входит в x86_64-группу,
-  `filename-sha256` сверяется с телом) и `.sig2` (верификация
-  `crypto/rsa` против `/xbps-key`); пакет с props, не совпадающими с
-  именем файла, роняет reindex, после удаления — байт-в-байт тот же
-  индекс (детерминизм).
-- **XBPS (сессия 145):** xbps в UI (remotes/repos) и SPECIFICATION
-  (конфиг, ручка, генератор).
+- **xbps (Void Linux) — кеш-прокси и зеркало:** шестая экосистема —
+  префикс `/xbps/`, регистрочувствительная классификация (пакеты
+  `*.xbps` и подписи `*.sig2`/`*.sig` — immutable навсегда,
+  `<arch>-repodata` в корне — mutable 5m, прочее — mutable 1m).
+  Прокси: метаданные и пакеты byte-exact, повторный запрос
+  `X-Cache: HIT`, ревалидация mutable-индекса (304 без тела),
+  negative-кеш 404. Зеркало: `Enumerate` по include-архитектурам
+  (`<arch>-repodata`), пути `<pkgver>.<arch>.xbps` строит `Filename()`,
+  noarch входит один раз (дедуп), SHA256 из `filename-sha256` (64 hex)
+  наполняет таблицу чексумм remote (`Target.Checksum`); sync с
+  resume-diff, тело с чужим sha256 роняет sync и НЕ коммитит объект
+  (Abort, инвариант §4), частичный sync таблицу не затирает.
+- **xbps — парсеры метаданных и пакетов (streaming + фаззинг):**
+  контейнер `<arch>-repodata` (zstd+tar: `index.plist` — потоком,
+  `index-meta.plist` — байтами, `stage.plist` — skip; капы
+  декомпрессии 1 GiB / meta 64 KiB); XML-plist парсер `index.plist`
+  (словарь `pkgname` → поля колбэком, лимиты поля 64 KiB / массива
+  4096 / записей 1 млн, скип неизвестных ключей — forward-совместимость
+  proplib); парсер pkgver (`SplitPkgver`/`SplitRevision`/`Filename` —
+  дефисы/`++`/`~`, ревизия `_N` только из цифр); ar-парсер `.xbps`
+  (zstd/gzip/raw по магику, только `props.plist`, кап 1 MiB; xz —
+  `ErrUnsupportedCompression`). Типизированные ошибки формата
+  (`ErrBadPlist`/`ErrBadZstd`/`ErrBadTar`/`ErrBadAr`/`ErrPropsMissing`/
+  …). Фаззинг `FuzzParseRepoData`/`FuzzOpenPackage`/`FuzzSplitPkgver`
+  + golden-фикстура `repodata-golden.zst` на реальных именах Void
+  (`0ad`, `libstdc++`, `libxml2`, `python3-pip`, `Mustache`).
+- **xbps — RSA-подписчик инстанса и ручка ключа:** `port.RsaSigner` +
+  `port.RsaSignerInjector` и модуль `mod/sign/rsasha256` (RSA-4096,
+  PKCS#1 v1.5 поверх SHA-256 — формат `.sig2`): приватный ключ
+  `xbps-rsa.key` (PKCS#1 PEM, 0600, атомарно, без перезаписи),
+  публичный — SPKI-PEM (`PUBLIC KEY`) для index-meta и раздачи;
+  passphrase нет, битый ключевой материал фатален на старте.
+  `GET /repo/<name>/xbps-key` отдаёт PEM для сверки fingerprint при
+  TOFU-импорте (регистрируется только при живом подписчике, неизвестное
+  репо — 404), блок «xbps» на экране «Ключи».
+- **xbps — личные репо (генератор, writer, интеграция):** streaming-
+  writer `index.plist` (XML-plist токенами `encoding/xml`, детерминизм
+  reindex: записи по `pkgname`, поля по алфавиту, пустые опущены;
+  roundtrip с парсером без потерь) и генератор — аналог
+  `xbps-rindex --add --sign --sign-pkg`: плоские `.xbps` →
+  `<arch>-repodata` (zstd level 9 + pax-tar) + `.sig2` на каждый пакет
+  (RSA/SHA-256 ключом инстанса), noarch в каждую arch-группу, публичный
+  ключ в index-meta (base64-PEM); без ключа — repodata без `.sig2`,
+  кривое имя файла/битый пакет — честная ошибка задачи. End-to-end
+  (integration): upload `.xbps` → reindex → `<arch>-repodata`
+  (читается своими парсерами) и `.sig2` (верификация `crypto/rsa`
+  против `/xbps-key`); повторный reindex — байт-в-байт тот же индекс.
+- **xbps в UI и SPECIFICATION:** выбор экосистемы на экранах
+  remotes/repos, конфиг, ручка ключа и генератор в спецификации.
 
 ### Изменено
 
@@ -134,6 +98,11 @@ major.
   (`xbps-install` через прокси, `xbps/<remote>`, герметичность через
   `/etc/xbps.d`); RELEASE-чеклист синхронизирован (6/6 ног, пункты
   xbps в §1/§2).
+- **Доки (сессия 146):** функциональная документация xbps
+  (`docs/func/ru|EN/ecosystems/xbps.md`), синхронизация TESTING
+  (кейсы/покрытие), ARCHITECTURE (экосистемы, `mod/sign/rsasha256`,
+  инварианты publish и checksum), HISTORY (секция волны), ROADMAP
+  (статус v1.2.0, XBPS убран из пост-v1), README.
 
 ## [1.1.0] — 2026-09-17
 

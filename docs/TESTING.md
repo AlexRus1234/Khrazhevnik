@@ -26,6 +26,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 | core/engine             | ≥90%          | unit + fakes (testutil)          |
 | core/engine/storagegc   | ≥90%          | unit + fakes (ModTime-инжект)    |
 | mod/ecosystem/* (парсеры)| ≥90%         | unit + golden + fuzz             |
+| mod/ecosystem/xbps      | ≥90%          | unit + golden + fuzz + integration |
 | mod/storage, mod/db     | ≥85%          | контрактные suite на всех драйверах |
 | core/web                | 60–80%        | httptest API-тесты               |
 
@@ -176,6 +177,78 @@ Unit-only цифра (~67% на момент внедрения) была зан
   `/metrics` — `khrazhevnik_storage_gc_deleted_keys_total > 0`;
 - e2e (Playwright): смена своего пароля в форме → logout → вход новым
   паролем.
+
+## XBPS — экосистема Void Linux (волна «XBPS», сессии 128–145)
+
+Шестая экосистема: прокси+зеркало, парсеры с фаззингом, RSA-подписчик,
+генератор личных репо, ручка ключа и distro-нога void; закреплены
+кейсы:
+
+- unit адаптера (`xbps_test.go`): матрица классификации на реальных
+  именах — `x86_64-repodata`/`aarch64-repodata` → Mutable{5m},
+  `Mustache-4.1_1.x86_64.xbps`/`libstdc++-13.2.0_1.x86_64.xbps` →
+  Immutable, `…xbps.sig2`/`…xbps.sig` → Immutable, пустой путь →
+  `ValidationError`; `Resolve` — `UpstreamURL`/`StorageKey` без
+  лоуэркейса (ассерт на регистр `Mustache`), чужой префикс/неизвестный/
+  выключенный remote/`..`-traversal → false;
+- unit контейнера `repodata` (131): zstd+pax-tar, `index.plist` строго
+  первой записью, `index-meta.plist` после вычитывания индекса,
+  `stage.plist` skip; капы 1 GiB декомпрессии / 64 KiB meta;
+  типизированные ошибки формата; частичное вычитывание индекса
+  (`TestOpenRepoDataPartialIndexDrain`), zstd-бомба — стриминг;
+- unit `index.plist` (132): потоковый plist-парсер, энтити
+  `&lt;`/`&amp;` и `~`/`>=`/`+` в значениях, roundtrip полей,
+  неизвестные ключи и типы (`data`/`dict`/`date`/`real`) скипаются —
+  forward-совместимость, известный ключ с чужим типом → `ErrBadPlist`;
+  лимиты поля 64 KiB / массива 4096 / записей 1 млн (тест лимита
+  записей — потоковый `repeatReader`, без материализации XML);
+- unit pkgver (133): таблица живых имён (`0ad-0.27.1_6`,
+  `python3-pip-24.0_1`, `libstdc++-13.2.0_1`, `Mustache-4.1_1`,
+  `66-init-0.8.2.2_1`, `foo-2~beta1_2`), ревизия `_N` только из цифр,
+  мусор (`foo-bar`, `-1.0_1`) → `ValidationError`,
+  `name+"-"+version == вход`;
+- unit ar-парсера пакета (137): авто-детект zstd/gzip/raw по magic
+  (xz → `ErrUnsupportedCompression`), `props.plist`/`./props.plist`,
+  skip `files.plist`/payload стримингом, `≥1 MiB` props → ошибка капа,
+  zstd-бомба > 1 GiB → `ErrDecompressTooLarge` (чтение в `io.Discard`);
+- фаззинг: `FuzzParseRepoData` (композиция zstd→tar→index.plist,
+  колбэк-счётчик без накопления), `FuzzOpenPackage` (три ветки
+  компрессии, обрезки ar-заголовка 8/60/68, zstd-мусор, гигантское
+  поле размера), `FuzzSplitPkgver` (нет паник; roundtrip при err==nil);
+  golden-фикстура `testdata/repodata-golden.zst` (5+ реальных имён,
+  `public-key` в meta) + `TestRepoDataGolden`/`…Meta`; crash-корпус
+  коммитится только из находок;
+- unit генератора/writer (140–141): roundtrip `WriteIndexPlist` ↔
+  `ParseIndexPlist`, детерминизм (байт-в-байт при повторном вызове,
+  сортировка записей по `pkgname`), 10k записей стримингом без OOM;
+  генератор — кривое имя файла/битый `.xbps`/несовпадение props →
+  честная ошибка, nil-Signer → индекс без `.sig2`, повторный reindex
+  идемпотентен (байты repodata и `.sig2` равны);
+- unit RSA-подписчика (139): roundtrip `SignSHA256` →
+  `rsa.VerifyPKCS1v15`, digest ≠ 32 байт → ошибка, `LoadOrGenerate`
+  перезагрузкой отдаёт тот же публичный PEM, заголовки `RSA PRIVATE
+  KEY`/`PUBLIC KEY`, `Generate(0)`/битый материал → `KeyMaterialError`;
+- web (142): `GET /repo/<name>/xbps-key` — 200 + тело от
+  `-----BEGIN PUBLIC KEY-----`, неизвестное репо → 404, без
+  `RsaSigner` маршрут не регистрируется → 404;
+- integration `xbps_mirror_test.go` (build-tag): sync качает
+  repodata+пакеты+`.sig2`, повторный sync — 0 новых загрузок
+  (resume-diff по `Storage.Stat`), общий noarch из двух arch-индексов
+  скачивается один раз, тело с чужим `filename-sha256` роняет sync и
+  НЕ коммитит объект (Abort), после починки upstream повторный sync
+  succeeds;
+- integration `xbps_repo_test.go` (build-tag): upload `.xbps` (x86_64 +
+  noarch) → reindex succeeded → `<arch>-repodata` читается парсерами
+  131/132 (noarch в x86_64-группе, `filename-sha256` == телу) →
+  `.sig2` верифицируется `crypto/rsa` против `/xbps-key`; не-`.xbps`
+  upload → 400; несовпадение props с именем → reindex failed;
+  повторный reindex — байты индекса неизменны;
+- proxy integration (130): repodata и пакеты byte-exact, повторный
+  запрос `X-Cache: HIT`, ревалидация mutable `*-repodata` (upstream
+  304 без тела → клиенту копия из кеша), 404 negative-кеш;
+- distro-test, нога **void** (144): `xbps-install -S` через прокси
+  (`/etc/xbps.d`), TOFU-импорт ключа, второй HEAD → `X-Cache: HIT`,
+  `/api/v1/cache/stats` `hits>0`.
 
 ## Надёжность
 

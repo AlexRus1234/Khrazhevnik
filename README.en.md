@@ -126,7 +126,7 @@ assistant was used while preparing the source code.[^1]
   via the API or the web admin UI (409 on duplicate, 429 on the worker
   limit)
 - Include filters: apt — dists and components (`stable`, `stable/main`);
-  pacman — `repo/arch`; apk — architectures
+  pacman — `repo/arch`; apk — architectures; xbps — architectures
 
 ### Personal repositories
 
@@ -142,10 +142,11 @@ assistant was used while preparing the source code.[^1]
   `.gz`, `by-hash/SHA256/*`, `Release`)
 - Signing with the instance key (OpenPGP ed25519): `InRelease`
   (cleartext) and `Release.gpg` (detached); for nix — narinfo re-signing
-  (only the `Sig` field is replaced, the rest is byte-exact); when the
-  signer is unavailable, repositories keep working without signatures
-- The public key is served at `GET /repo/<name>/key.asc` on the public
-  port
+  (only the `Sig` field is replaced, the rest is byte-exact); for xbps —
+  an RSA `.sig2` per package (PKCS#1 v1.5/SHA-256); when the signer is
+  unavailable, repositories keep working without signatures
+- Public keys are served at `GET /repo/<name>/key.asc` (OpenPGP),
+  `nix-key.asc` (nix), `xbps-key` (RSA PEM) on the public port
 
 ### Ecosystems
 
@@ -156,10 +157,12 @@ assistant was used while preparing the source code.[^1]
 | **pacman** | Arch Linux | `/pacman/` | yes (+ include filter) |
 | **apk** | Alpine Linux | `/apk/` | yes (+ include filter) |
 | **nix** | binary cache | `/nix/` | no — pull-through on use only |
+| **xbps** | Void Linux | `/xbps/` | yes (+ include filter) |
 
 Metadata parsers of all ecosystems (deb822, repomd/primary XML, tar.zst
-`{repo}.db`, `APKINDEX.tar.gz`, narinfo) are streaming, with a
-decompression limit and fuzzing since the first adapter.
+`{repo}.db`, `APKINDEX.tar.gz`, narinfo, xbps repodata = zstd+tar
+`<arch>-repodata`) are streaming, with a decompression limit and fuzzing
+since the first adapter.
 
 ### Interfaces and security
 
@@ -294,7 +297,7 @@ apt-get update && apt-get install hello
 
 Signatures and checksums remain valid: upstream metadata is served
 byte-for-byte. Cache check: a repeated request for `dists/…/Packages.gz`
-returns `X-Cache: HIT`. dnf/zypper, pacman, apk, and nix clients — in
+returns `X-Cache: HIT`. dnf/zypper, pacman, apk, nix, and xbps clients — in
 [`docs/func/EN/ecosystems/`](docs/func/EN/ecosystems/).
 
 ### Building from source
@@ -376,7 +379,7 @@ keys_dir = "/var/lib/khrazhevnik/keys"   # instance ed25519 key
 [metrics]
 enabled = true
 
-[ecosystem.apt]                 # apt | rpm-md | pacman | apk | nix;
+[ecosystem.apt]                 # apt | rpm-md | pacman | apk | nix | xbps;
 enabled = true                  # the section is only needed for overrides
 ```
 
@@ -454,8 +457,8 @@ scoped API token `Bearer khz_...` (CI scripts: `admin`,
 │   │   ├── registry/         # Compile-time module registry
 │   │   └── web/              # chi routers, middleware, TaskRegistry, embedded SPA
 │   ├── mod/                  # Modules (registered in init()): ecosystem/
-│   │                         # {apt, rpmmmd, pacman, apk, nix}, storage/{fs, s3},
-│   │                         # db/{sqlite, postgres, mariadb}, sign/{openpgp, ed25519}
+│   │                         # {apt, rpmmmd, pacman, apk, nix, xbps}, storage/{fs, s3},
+│   │                         # db/{sqlite, postgres, mariadb}, sign/{openpgp, ed25519, rsasha256}
 │   ├── testutil/             # Shared test doubles (FixedClock, FakeStorage, …)
 │   └── contract/             # Catalog/storage contract suites (integration)
 ├── migrations/<driver>/      # Embedded goose migrations (per-DBMS directory)
@@ -534,9 +537,9 @@ Developer documentation (reading order before making changes):
 
 ## Plans
 
-The nearest work after the v1.0.0 release is ecosystem expansion:
-XBPS and pkg (their "directory + index" model repeats already solved
-tasks), then Guix (the nix protocol), Flatpak last. Beyond that,
+The XBPS ecosystem (Void Linux) has already been added (v1.2). Next is
+ecosystem expansion: pkg (its "directory + index" model repeats already
+solved tasks), then Guix (the nix protocol), Flatpak last. Beyond that,
 without a fixed order: autonomous offline mirror export, instance
 federation, cache eviction and cleanup, OIDC/OAuth2, notifications,
 the CLI (khzr-cli), and global package search.

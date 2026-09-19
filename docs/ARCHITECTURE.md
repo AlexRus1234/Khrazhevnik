@@ -47,7 +47,7 @@ runtime-плагины (задел сохранён контрактами), п�
 | Модульность      | Compile-time реестр (Caddy-style): `init()` + blank-import в wire |
 | Скелет           | `core/{port,domain,engine,web}` + `mod/*`; depguard в CI         |
 | Инвариант кеша   | Метаданные upstream и их срезы отдаются **побайтово** — подписи/чексуммы валидны |
-| Экосистемы v1    | apt; rpm-md (dnf+zypper одним адаптером); pacman; apk; nix      |
+| Экосистемы v1    | apt; rpm-md (dnf+zypper одним адаптером); pacman; apk; nix; xbps |
 | Storage          | Интерфейс + реализации: fs (posix) и s3 (первичный для прод)    |
 | БД               | Плагин через TOML: sqlite (modernc) / postgres (pgx) / mariadb  |
 | Миграции         | pressly/goose v3, embedded SQL, по диалекту на драйвер          |
@@ -75,10 +75,10 @@ internal/core/
               multipart кап 256, If-Range) для прокси и личных репо (:29202)
   metrics/    leaf-пакет счётчиков (breaks import cycles)
 internal/mod/             МОДУЛИ (каждый регистрируется в init())
-  ecosystem/  apt/, rpmmmd/, pacman/, apk/, nix/
+  ecosystem/  apt/, rpmmmd/, pacman/, apk/, nix/, xbps/
   storage/    fs/, s3/
   db/         sqlite/, postgres/, mariadb/
-  sign/       openpgp/, ed25519/
+  sign/       openpgp/, ed25519/, rsasha256/
 internal/testutil/        FixedClock, SeqClock, FixedRand, FakeStorage, fakes Catalog*
 internal/contract/        общие контрактные suite каталога и storage (гоняются в CI против sqlite/fs и контейнерных postgres/mariadb/minio)
 migrations/<driver>/      embedded goose-миграции каталога (по каталогу на БД)
@@ -181,8 +181,10 @@ type MetaFetcher interface {
   отравляет immutable-кеш («навсегда»). Наполнение — на адаптерах при
   Enumerate (sync зеркала): apt — SHA256 из stanza Packages, rpm-md —
   checksum из repomd.xml (repodata-файлы), apk — SHA1 из поля C:
-  APKINDEX; pacman — не-цель v1 (парсер .db не читает %SHA256SUM%).
-  Нет чексуммы в индексе — честная деградация к сверке Content-Length.
+  APKINDEX, xbps — SHA256 из `filename-sha256` записи index.plist
+  (пакеты; `.sig2` без чексуммы); pacman — не-цель v1 (парсер .db не
+  читает %SHA256SUM%). Нет чексуммы в индексе — честная деградация к
+  сверке Content-Length.
 
 Инварианты движка зеркала (сессия 11):
 
@@ -255,7 +257,15 @@ type MetaFetcher interface {
   `port.NarSignerInjector` (сессия 16): narinfo переподписывается по
   строгим правилам (только поле Sig заменяется, остальное байт-точно;
   golden-тест на дифф). Публичный narinfo-ключ — `GET /repo/<name>/nix-key.asc`
-  (формат `name:pubkey-b64`) на :29202.
+  (формат `name:pubkey-b64`) на :29202. xbps — `port.RsaSigner` +
+  `port.RsaSignerInjector` (`mod/sign/rsasha256`, RSA-4096, PKCS#1
+  v1.5/SHA-256): на каждый `.xbps` эмитится detached `.sig2`, публичный
+  ключ встраивается в `index-meta.plist` (base64-PEM) — клиент
+  импортирует его по TOFU с проверкой fingerprint против
+  `GET /repo/<name>/xbps-key`; без подписчика — repodata без `.sig2`.
+  Ключ инстанса один (`xbps-rsa.key`) на все репо; генератор личных
+  xbps-репо подписывает пакеты им же — функциональный аналог
+  `xbps-rindex --add --sign --sign-pkg`.
 
 ## 5. Namespace хранения
 
