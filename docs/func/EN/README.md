@@ -33,7 +33,7 @@ instructions; details requiring separate treatment are documented here.
 | [storage-db.md](storage-db.md) | Object storage (fs/S3) and the catalog (sqlite/postgres/mariadb): selection and switching. |
 | [personal-repos.md](personal-repos.md) | Personal repositories: upload, signing, client setup per ecosystem. |
 | [benchmarks.md](benchmarks.md) | Performance: load-test methodology ([bench/](../../bench/README.md)) and reference results. |
-| [ecosystems/](ecosystems/) | Ecosystem clients: [apt](ecosystems/apt.md), [rpm-md](ecosystems/rpm-md.md), [pacman](ecosystems/pacman.md), [apk](ecosystems/apk.md), [nix](ecosystems/nix.md). |
+| [ecosystems/](ecosystems/) | Ecosystem clients: [apt](ecosystems/apt.md), [rpm-md](ecosystems/rpm-md.md), [pacman](ecosystems/pacman.md), [apk](ecosystems/apk.md), [nix](ecosystems/nix.md), [xbps](ecosystems/xbps.md). |
 
 The Russian documentation is in [`docs/func/ru/`](../ru/README.md).
 

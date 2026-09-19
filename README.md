@@ -123,7 +123,7 @@ read-only rootfs) под rootless podman quadlet.
   запуск — через API или веб-админку (409 на дубль, 429 на лимит
   воркеров)
 - Include-фильтры: apt — dists и компоненты (`stable`, `stable/main`);
-  pacman — `repo/arch`; apk — архитектуры
+  pacman — `repo/arch`; apk — архитектуры; xbps — архитектуры
 
 ### Личные репозитории
 
@@ -138,9 +138,11 @@ read-only rootfs) под rootless podman quadlet.
   `by-hash/SHA256/*`, `Release`)
 - Подпись ключом инстанса (OpenPGP ed25519): `InRelease` (cleartext) и
   `Release.gpg` (detached); для nix — переподпись narinfo (заменяется
-  только поле `Sig`, остальное байт-точно); при недоступном подписчике
-  репо работают без подписи
-- Публичный ключ — `GET /repo/<name>/key.asc` на публичном порту
+  только поле `Sig`, остальное байт-точно); для xbps — RSA-подпись
+  `.sig2` на каждый пакет (PKCS#1 v1.5/SHA-256); при недоступном
+  подписчике репо работают без подписи
+- Публичные ключи — `GET /repo/<name>/key.asc` (OpenPGP),
+  `nix-key.asc` (nix), `xbps-key` (PEM RSA) на публичном порту
 
 ### Экосистемы
 
@@ -151,10 +153,12 @@ read-only rootfs) под rootless podman quadlet.
 | **pacman** | Arch Linux | `/pacman/` | да (+ include-фильтр) |
 | **apk** | Alpine Linux | `/apk/` | да (+ include-фильтр) |
 | **nix** | binary cache | `/nix/` | нет — только pull-through «по использованию» |
+| **xbps** | Void Linux | `/xbps/` | да (+ include-фильтр) |
 
 Парсеры метаданных всех экосистем (deb822, repomd/primary XML, tar.zst
-`{repo}.db`, `APKINDEX.tar.gz`, narinfo) — streaming, с декомпресс-лимитом
-и фаззингом с первого адаптера.
+`{repo}.db`, `APKINDEX.tar.gz`, narinfo, xbps repodata = zstd+tar
+`<arch>-repodata`) — streaming, с декомпресс-лимитом и фаззингом с
+первого адаптера.
 
 ### Интерфейсы и безопасность
 
@@ -283,7 +287,7 @@ apt-get update && apt-get install hello
 
 Подписи и чексуммы валидны: метаданные upstream отдаются побайтово.
 Проверка кеша: повторный запрос к `dists/…/Packages.gz` возвращает
-`X-Cache: HIT`. Клиенты dnf/zypper, pacman, apk и nix — в
+`X-Cache: HIT`. Клиенты dnf/zypper, pacman, apk, nix и xbps — в
 [`docs/func/ru/ecosystems/`](docs/func/ru/ecosystems/).
 
 ### Сборка из исходников
@@ -362,7 +366,7 @@ keys_dir = "/var/lib/khrazhevnik/keys"   # ed25519-ключ инстанса
 [metrics]
 enabled = true
 
-[ecosystem.apt]                 # apt | rpm-md | pacman | apk | nix;
+[ecosystem.apt]                 # apt | rpm-md | pacman | apk | nix | xbps;
 enabled = true                  # секция нужна только для переопределения
 ```
 
@@ -437,8 +441,8 @@ scoped API-токен `Bearer khz_...` (CI-скрипты: `admin`,
 │   │   ├── registry/         # Compile-time реестр модулей
 │   │   └── web/              # chi-роутеры, middleware, TaskRegistry, embed SPA
 │   ├── mod/                  # Модули (регистрируются в init()): ecosystem/
-│   │                        # {apt, rpmmmd, pacman, apk, nix}, storage/{fs, s3},
-│   │                        # db/{sqlite, postgres, mariadb}, sign/{openpgp, ed25519}
+│   │                        # {apt, rpmmmd, pacman, apk, nix, xbps}, storage/{fs, s3},
+│   │                        # db/{sqlite, postgres, mariadb}, sign/{openpgp, ed25519, rsasha256}
 │   ├── testutil/             # Общие test doubles (FixedClock, FakeStorage, …)
 │   └── contract/             # Контрактные suite каталога/хранилища (integration)
 ├── migrations/<driver>/      # Embedded goose-миграции (по каталогу на СУБД)
@@ -515,12 +519,12 @@ web-assets (Go-команды собираются без фронтенда); �
 
 ## Планы
 
-Ближайшее после релиза v1.0.0 — расширение экосистем: XBPS и pkg
-(модель «каталог + индекс» повторяет уже решённые задачи), затем Guix
-(протокол nix), Flatpak — последним. Дальше — без фиксированного
-порядка: автономный офлайн-экспорт зеркала, федерация инстансов,
-eviction и чистка кеша, OIDC/OAuth2, уведомления, CLI (khzr-cli),
-глобальный поиск пакетов.
+Экосистема XBPS (Void Linux) уже добавлена (v1.2). Дальше —
+расширение экосистем: pkg (модель «каталог + индекс» повторяет уже
+решённые задачи), затем Guix (протокол nix), Flatpak — последним.
+И прочее без фиксированного порядка: автономный офлайн-экспорт
+зеркала, федерация инстансов, eviction и чистка кеша, OIDC/OAuth2,
+уведомления, CLI (khzr-cli), глобальный поиск пакетов.
 
 Полный путеводитель с деталями и границами дизайна —
 [docs/ROADMAP.md](docs/ROADMAP.md); история завершённых этапов —

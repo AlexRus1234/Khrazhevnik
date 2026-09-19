@@ -25,9 +25,9 @@ import { formatBytes, formatTime } from '../format'
 import { t } from '../i18n'
 import type { Repo, User } from '../types'
 
-// Генераторы метаданных есть у apt и nix (сессии 14/15/16); остальные
-// экосистемы можно создать, но reindex ответит unsupported.
-const ECOSYSTEMS = ['apt', 'nix']
+// Генераторы метаданных есть у apt, nix и xbps (сессии 14/15/16/141);
+// остальные экосистемы можно создать, но reindex ответит unsupported.
+const ECOSYSTEMS = ['apt', 'nix', 'xbps']
 
 const repos = ref<Repo[]>([])
 const users = ref<User[]>([])

@@ -95,6 +95,13 @@ type SignerFactory = func(cfg config.Signing, clock port.Clock) (port.Signer, er
 // или отсутствие регистрации — nix narinfo не переподписывается.
 type NarSignerFactory = func(cfg config.Signing) (port.NarSigner, error)
 
+// RsaSignerFactory создаёт xbps-подписчик (mod/sign/rsasha256 — сессия
+// 139, живёт вне port.Signer: RSA PKCS#1 v1.5/SHA-256, detached .sig2).
+// cfg — секция [signing]: keys_dir (ключ RSA-4096 персистится рядом с
+// openpgp/ed25519, отдельным файлом). nil от фабрики или отсутствие
+// регистрации — xbps-репо не подписываются.
+type RsaSignerFactory = func(cfg config.Signing) (port.RsaSigner, error)
+
 // state — закрытое глобальное состояние реестра. Единственное
 // разрешённое package-level состояние вне cmd: compile-time реестр
 // (init()-регистрация из mod/*) без него не собрать — см. AGENTS.md.
@@ -106,6 +113,7 @@ type state struct {
 	repoadapter map[string]RepoAdapterFactory
 	signer      map[string]SignerFactory
 	narsigner   map[string]NarSignerFactory
+	rsasigner   map[string]RsaSignerFactory
 }
 
 var s = &state{
@@ -115,6 +123,7 @@ var s = &state{
 	repoadapter: map[string]RepoAdapterFactory{},
 	signer:      map[string]SignerFactory{},
 	narsigner:   map[string]NarSignerFactory{},
+	rsasigner:   map[string]RsaSignerFactory{},
 }
 
 // RegisterStorage регистрирует фабрику хранилища. Вызывается из
@@ -180,6 +189,17 @@ func RegisterNarSigner(name string, factory NarSignerFactory) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	registerLocked("nar-подписчик", name, s.narsigner, factory)
+}
+
+// RegisterRsaSigner регистрирует фабрику xbps-подписчика
+// (mod/sign/rsasha256 — сессия 139). Регистрация v1 — «rsasha256».
+func RegisterRsaSigner(name string, factory RsaSignerFactory) {
+	if factory == nil {
+		panic("registry: регистрация rsa-подписчика с nil-фабрикой: " + name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	registerLocked("rsa-подписчик", name, s.rsasigner, factory)
 }
 
 // registerLocked — общее ядро регистрации; mu уже захвачена.
@@ -260,6 +280,18 @@ func NarSigner(name string) (NarSignerFactory, error) {
 	return nil, unknownDriver("nar-подписчик", name, sortedNames(s.narsigner))
 }
 
+// RsaSigner возвращает фабрику xbps-подписчика по имени. Отсутствие
+// регистрации — не ошибка старта: xbps-репо не подписываются
+// (вызывающий логирует и оставляет nil).
+func RsaSigner(name string) (RsaSignerFactory, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if fn, ok := s.rsasigner[name]; ok {
+		return fn, nil
+	}
+	return nil, unknownDriver("rsa-подписчик", name, sortedNames(s.rsasigner))
+}
+
 // Ecosystems — отсортированные имена зарегистрированных экосистем
 // (для сборки адаптеров в wire и логов старта).
 func Ecosystems() []string {
@@ -274,7 +306,7 @@ func Ecosystems() []string {
 func Empty() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.storage) == 0 && len(s.db) == 0 && len(s.ecosystem) == 0 && len(s.repoadapter) == 0 && len(s.signer) == 0 && len(s.narsigner) == 0
+	return len(s.storage) == 0 && len(s.db) == 0 && len(s.ecosystem) == 0 && len(s.repoadapter) == 0 && len(s.signer) == 0 && len(s.narsigner) == 0 && len(s.rsasigner) == 0
 }
 
 // unknownDriver — дружелюбная ошибка lookup'а.

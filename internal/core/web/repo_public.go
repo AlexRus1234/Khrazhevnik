@@ -283,6 +283,40 @@ func handleRepoNixKey(d Deps) http.HandlerFunc {
 	}
 }
 
+// handleRepoXbpsKey отдаёт публичный RSA-ключ инстанса (SPKI-PEM,
+// сессия 139) для xbps-клиентов: GET /repo/<name>/xbps-key —
+// точка сверки fingerprint при TOFU-импорте ключа из index-meta.
+// Ключ один на все репо (v1 KISS), но URL привязан к имени репо:
+// lookup RepoByName → 404 для несуществующих имён. Content-Type
+// text/plain: браузеру человек прочтёт PEM-блок.
+func handleRepoXbpsKey(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "name")
+		if name == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := d.Repos.RepoByName(r.Context(), name); err != nil {
+			if isNotFound(err) {
+				http.NotFound(w, r)
+				return
+			}
+			writeProxyError(w, publicCatalogError(err))
+			return
+		}
+		pub, err := d.RsaSigner.PublicKeyPEM()
+		if err != nil {
+			writeProxyError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		// CORS — как в handleRepoKey: публичный ключ с другого порта.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		_, _ = w.Write(pub)
+	}
+}
+
 // isNotFound — проверка NotFound для публичных lookup'ов.
 func isNotFound(err error) bool {
 	var nf *domain.NotFoundError

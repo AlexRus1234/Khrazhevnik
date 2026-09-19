@@ -33,6 +33,7 @@ const selected = ref<number | null>(null)
 const origin = ref(localStorage.getItem(ORIGIN_KEY) ?? defaultOrigin())
 const keyText = ref('')
 const nixKeyText = ref('')
+const xbpsKeyText = ref('')
 const error = ref('')
 const keyError = ref('')
 const loading = ref(false)
@@ -51,6 +52,10 @@ const keyURL = computed(() =>
 
 const nixKeyURL = computed(() =>
   repo.value ? `${origin.value}/repo/${repo.value.name}/nix-key.asc` : '',
+)
+
+const xbpsKeyURL = computed(() =>
+  repo.value ? `${origin.value}/repo/${repo.value.name}/xbps-key` : '',
 )
 
 const repoBaseURL = computed(() =>
@@ -81,6 +86,7 @@ async function loadKey(): Promise<void> {
   keyError.value = ''
   keyText.value = ''
   nixKeyText.value = ''
+  xbpsKeyText.value = ''
   // CORS на key-эндпоинтах разрешён (repo_public.go); недоступный
   // ключ (подпись не инициализирована) — 503 текстом.
   try {
@@ -99,6 +105,14 @@ async function loadKey(): Promise<void> {
       if (resp.ok) nixKeyText.value = await resp.text()
     } catch {
       // narinfo-ключ опционален — ошибка не перекрывает основной
+    }
+  }
+  if (repo.value.ecosystem === 'xbps') {
+    try {
+      const resp = await fetch(xbpsKeyURL.value)
+      if (resp.ok) xbpsKeyText.value = await resp.text()
+    } catch {
+      // RSA-ключ xbps опционален — ошибка не перекрывает основной
     }
   }
   loading.value = false
@@ -168,6 +182,18 @@ watch([selected, origin], () => {
         <p class="dim mono">{{ nixKeyURL }}</p>
         <pre v-if="nixKeyText" class="snippet mono">{{ nixKeyText }}</pre>
         <p v-else class="dim">{{ t('keys.nixUnavailable') }}</p>
+      </div>
+
+      <div v-if="repo.ecosystem === 'xbps'" class="panel">
+        <div class="row spread">
+          <h2>{{ t('keys.xbpsKey') }}</h2>
+          <a class="btn" :href="xbpsKeyURL" :download="`${repo.name}-xbps.pem`" target="_blank" rel="noopener">
+            {{ t('keys.download') }}
+          </a>
+        </div>
+        <p class="dim mono">{{ xbpsKeyURL }}</p>
+        <pre v-if="xbpsKeyText" class="snippet mono">{{ xbpsKeyText }}</pre>
+        <p v-else class="dim">{{ t('keys.xbpsUnavailable') }}</p>
       </div>
     </template>
   </section>

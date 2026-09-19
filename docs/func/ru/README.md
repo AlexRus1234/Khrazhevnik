@@ -34,7 +34,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 | [storage-db.md](storage-db.md) | Хранилище объектов (fs/S3) и каталог (sqlite/postgres/mariadb): выбор и переключение. |
 | [personal-repos.md](personal-repos.md) | Личные репозитории: upload, подпись, настройка клиентов по экосистемам. |
 | [benchmarks.md](benchmarks.md) | Производительность: методика нагрузочных тестов ([bench/](../../bench/README.md)) и эталонные результаты. |
-| [ecosystems/](ecosystems/) | Клиенты экосистем: [apt](ecosystems/apt.md), [rpm-md](ecosystems/rpm-md.md), [pacman](ecosystems/pacman.md), [apk](ecosystems/apk.md), [nix](ecosystems/nix.md). |
+| [ecosystems/](ecosystems/) | Клиенты экосистем: [apt](ecosystems/apt.md), [rpm-md](ecosystems/rpm-md.md), [pacman](ecosystems/pacman.md), [apk](ecosystems/apk.md), [nix](ecosystems/nix.md), [xbps](ecosystems/xbps.md). |
 
 Английская документация — в [`docs/func/EN/`](../EN/README.md).
 

@@ -35,6 +35,77 @@ major.
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-19
+
+### Добавлено
+
+- **xbps (Void Linux) — кеш-прокси и зеркало:** шестая экосистема —
+  префикс `/xbps/`, регистрочувствительная классификация (пакеты
+  `*.xbps` и подписи `*.sig2`/`*.sig` — immutable навсегда,
+  `<arch>-repodata` в корне — mutable 5m, прочее — mutable 1m).
+  Прокси: метаданные и пакеты byte-exact, повторный запрос
+  `X-Cache: HIT`, ревалидация mutable-индекса (304 без тела),
+  negative-кеш 404. Зеркало: `Enumerate` по include-архитектурам
+  (`<arch>-repodata`), пути `<pkgver>.<arch>.xbps` строит `Filename()`,
+  noarch входит один раз (дедуп), SHA256 из `filename-sha256` (64 hex)
+  наполняет таблицу чексумм remote (`Target.Checksum`); sync с
+  resume-diff, тело с чужим sha256 роняет sync и НЕ коммитит объект
+  (Abort, инвариант §4), частичный sync таблицу не затирает.
+- **xbps — парсеры метаданных и пакетов (streaming + фаззинг):**
+  контейнер `<arch>-repodata` (zstd+tar: `index.plist` — потоком,
+  `index-meta.plist` — байтами, `stage.plist` — skip; капы
+  декомпрессии 1 GiB / meta 64 KiB); XML-plist парсер `index.plist`
+  (словарь `pkgname` → поля колбэком, лимиты поля 64 KiB / массива
+  4096 / записей 1 млн, скип неизвестных ключей — forward-совместимость
+  proplib); парсер pkgver (`SplitPkgver`/`SplitRevision`/`Filename` —
+  дефисы/`++`/`~`, ревизия `_N` только из цифр); ar-парсер `.xbps`
+  (zstd/gzip/raw по магику, только `props.plist`, кап 1 MiB; xz —
+  `ErrUnsupportedCompression`). Типизированные ошибки формата
+  (`ErrBadPlist`/`ErrBadZstd`/`ErrBadTar`/`ErrBadAr`/`ErrPropsMissing`/
+  …). Фаззинг `FuzzParseRepoData`/`FuzzOpenPackage`/`FuzzSplitPkgver`
+  + golden-фикстура `repodata-golden.zst` на реальных именах Void
+  (`0ad`, `libstdc++`, `libxml2`, `python3-pip`, `Mustache`).
+- **xbps — RSA-подписчик инстанса и ручка ключа:** `port.RsaSigner` +
+  `port.RsaSignerInjector` и модуль `mod/sign/rsasha256` (RSA-4096,
+  PKCS#1 v1.5 поверх SHA-256 — формат `.sig2`): приватный ключ
+  `xbps-rsa.key` (PKCS#1 PEM, 0600, атомарно, без перезаписи),
+  публичный — SPKI-PEM (`PUBLIC KEY`) для index-meta и раздачи;
+  passphrase нет, битый ключевой материал фатален на старте.
+  `GET /repo/<name>/xbps-key` отдаёт PEM для сверки fingerprint при
+  TOFU-импорте (регистрируется только при живом подписчике, неизвестное
+  репо — 404), блок «xbps» на экране «Ключи».
+- **xbps — личные репо (генератор, writer, интеграция):** streaming-
+  writer `index.plist` (XML-plist токенами `encoding/xml`, детерминизм
+  reindex: записи по `pkgname`, поля по алфавиту, пустые опущены;
+  roundtrip с парсером без потерь) и генератор — аналог
+  `xbps-rindex --add --sign --sign-pkg`: плоские `.xbps` →
+  `<arch>-repodata` (zstd level 9 + pax-tar) + `.sig2` на каждый пакет
+  (RSA/SHA-256 ключом инстанса), noarch в каждую arch-группу, публичный
+  ключ в index-meta (base64-PEM); без ключа — repodata без `.sig2`,
+  кривое имя файла/битый пакет — честная ошибка задачи. End-to-end
+  (integration): upload `.xbps` → reindex → `<arch>-repodata`
+  (читается своими парсерами) и `.sig2` (верификация `crypto/rsa`
+  против `/xbps-key`); повторный reindex — байт-в-байт тот же индекс.
+- **xbps в UI и SPECIFICATION:** выбор экосистемы на экранах
+  remotes/repos, конфиг, ручка ключа и генератор в спецификации.
+
+### Изменено
+
+- **Доки (сессия 128):** ROADMAP XBPS приведён к фактам формата —
+  плоский лэйаут (`<arch>-repodata` в корне, не `current/<arch>/`),
+  подпись `.sig2` — RSA-4096 PKCS#1 v1.5/SHA-256 (не ed25519), ключ
+  встроен в `index-meta.plist` (TOFU-импорт клиентом); волна v1.2 —
+  ветка `v1.2.0dev`.
+- **CI (сессия 144):** distro-test — шестая нога: void
+  (`xbps-install` через прокси, `xbps/<remote>`, герметичность через
+  `/etc/xbps.d`); RELEASE-чеклист синхронизирован (6/6 ног, пункты
+  xbps в §1/§2).
+- **Доки (сессия 146):** функциональная документация xbps
+  (`docs/func/ru|EN/ecosystems/xbps.md`), синхронизация TESTING
+  (кейсы/покрытие), ARCHITECTURE (экосистемы, `mod/sign/rsasha256`,
+  инварианты publish и checksum), HISTORY (секция волны), ROADMAP
+  (статус v1.2.0, XBPS убран из пост-v1), README.
+
 ## [1.1.0] — 2026-09-17
 
 ### Добавлено

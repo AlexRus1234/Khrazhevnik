@@ -26,6 +26,80 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-19
+
+### Added
+
+- **xbps (Void Linux) — caching proxy and mirror:** the sixth ecosystem —
+  the `/xbps/` prefix, case-sensitive classification (packages `*.xbps`
+  and signatures `*.sig2`/`*.sig` are immutable forever, the root
+  `<arch>-repodata` is mutable 5m, everything else mutable 1m). Proxy:
+  metadata and packages byte-exact, a repeated request returns
+  `X-Cache: HIT`, mutable index revalidation (304 without a body),
+  negative-cache 404. Mirror: `Enumerate` over the include architectures
+  (`<arch>-repodata`), package paths `<pkgver>.<arch>.xbps` built by
+  `Filename()`, noarch included once (deduplicated), the SHA256 from
+  `filename-sha256` (64 hex) populates the remote checksum table
+  (`Target.Checksum`); sync with a resume diff, a body with a wrong sha256
+  fails the sync and does NOT commit the object (Abort, §4 invariant), a
+  partial sync does not overwrite the table.
+- **xbps — metadata and package parsers (streaming + fuzzing):** the
+  `<arch>-repodata` container (zstd+tar: `index.plist` as a stream,
+  `index-meta.plist` as bytes, `stage.plist` skipped; 1 GiB decompression
+  / 64 KiB meta caps); the XML-plist `index.plist` parser (the
+  `pkgname` → fields dictionary via a callback, caps of 64 KiB per field /
+  4096 array elements / 1M records, unknown keys skipped — proplib forward
+  compatibility); the pkgver parser (`SplitPkgver`/`SplitRevision`/
+  `Filename` — dashes/`++`/`~`, an `_N` revision made of digits only); the
+  `.xbps` ar parser (zstd/gzip/raw by magic, only `props.plist`, a 1 MiB
+  cap; xz becomes `ErrUnsupportedCompression`). Typed format errors
+  (`ErrBadPlist`/`ErrBadZstd`/`ErrBadTar`/`ErrBadAr`/`ErrPropsMissing`/…).
+  Fuzzing `FuzzParseRepoData`/`FuzzOpenPackage`/`FuzzSplitPkgver` plus the
+  golden fixture `repodata-golden.zst` with real Void names (`0ad`,
+  `libstdc++`, `libxml2`, `python3-pip`, `Mustache`).
+- **xbps — instance RSA signer and key endpoint:** `port.RsaSigner` +
+  `port.RsaSignerInjector` and the `mod/sign/rsasha256` module (RSA-4096,
+  PKCS#1 v1.5 over SHA-256 — the `.sig2` format): the private key
+  `xbps-rsa.key` (PKCS#1 PEM, 0600, atomic, no overwrite), the public one
+  as SPKI-PEM (`PUBLIC KEY`) for index-meta and serving; no passphrase,
+  corrupt key material is fatal at start. `GET /repo/<name>/xbps-key`
+  serves the PEM for fingerprint verification during TOFU import
+  (registered only when a signer is live, an unknown repo is a 404), plus
+  an “xbps” block on the “Keys” screen.
+- **xbps — personal repositories (generator, writer, integration):** the
+  streaming `index.plist` writer (XML-plist via `encoding/xml` tokens,
+  deterministic reindex: records by `pkgname`, fields alphabetically,
+  empty ones omitted; lossless roundtrip with the parser) and the
+  generator — an `xbps-rindex --add --sign --sign-pkg` analogue: flat
+  `.xbps` → `<arch>-repodata` (zstd level 9 + pax-tar) + a `.sig2` for
+  each package (RSA/SHA-256 with the instance key), noarch enters every
+  arch group, the public key embedded in index-meta (base64 PEM); without
+  a key — repodata without `.sig2`, a mismatched filename or a broken
+  package is an honest task error. End-to-end (integration): upload
+  `.xbps` → reindex → `<arch>-repodata` (parsed by the same parsers) and
+  `.sig2` (verified with `crypto/rsa` against `/xbps-key`); a repeated
+  reindex yields a byte-identical index.
+- **xbps in the UI and SPECIFICATION:** ecosystem selection on the
+  remotes/repos screens, config, key endpoint and generator in the
+  specification.
+
+### Changed
+
+- **Docs (session 128):** the XBPS ROADMAP is brought in line with the
+  format facts — a flat layout (`<arch>-repodata` in the root, not
+  `current/<arch>/`), `.sig2` signatures are RSA-4096 PKCS#1 v1.5/SHA-256
+  (not ed25519), the key is embedded in `index-meta.plist` (client-side
+  TOFU import); the v1.2 wave lives in the `v1.2.0dev` branch.
+- **CI (session 144):** distro-test — the sixth leg: void
+  (`xbps-install` through the proxy, `xbps/<remote>`, hermeticity via
+  `/etc/xbps.d`); the RELEASE checklist is synced (6/6 legs, xbps items
+  in §1/§2).
+- **Docs (session 146):** xbps functional documentation
+  (`docs/func/ru|EN/ecosystems/xbps.md`), TESTING sync (cases/coverage),
+  ARCHITECTURE (ecosystems, `mod/sign/rsasha256`, publish and checksum
+  invariants), HISTORY (wave section), ROADMAP (v1.2.0 status, XBPS
+  removed from post-v1), README.
+
 ## [1.1.0] — 2026-09-17
 
 ### Added

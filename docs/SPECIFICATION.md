@@ -46,7 +46,7 @@ ecosystems, personal-repos).
    генерация и OpenPGP-подпись метаданных.
 
 Поддерживаемые экосистемы v1: apt; rpm-md (dnf + zypper одним
-адаптером); pacman; apk; nix.
+адаптером); pacman; apk; nix; xbps (Void Linux).
 
 ## Range-раздача (206/416)
 
@@ -175,7 +175,7 @@ keys_dir = "/var/lib/khrazhevnik/keys"
 enabled = true
 
 [ecosystem.apt]                  # enabled = true + специфичные поля; аналогично
-[ecosystem.rpm-md]               # rpm-md (или rpm_md), pacman, apk, nix
+[ecosystem.rpm-md]               # rpm-md (или rpm_md), pacman, apk, nix, xbps
 ```
 
 - Env: префикс `KHRZ_`, сегменты пути через `__` (двойное
@@ -183,9 +183,10 @@ enabled = true
   `KHRZ_SERVER__PUBLIC_LISTEN`, `KHRZ_STORAGE__S3__SECRET_ACCESS_KEY`,
   `KHRZ_AUTH__JWT_SECRET`, `KHRZ_CACHE__NEGATIVE_TTL_404`. Пустое
   значение env трактуется как «не задано».
-- Записи `[ecosystem.<имя>]`: все 5 экосистем v1 (`apt`, `rpm-md`,
-  `pacman`, `apk`, `nix`) включены в дефолтном конфиге (M2 — все
-  экосистемы); секция в TOML нужна только чтобы переопределить
+- Записи `[ecosystem.<имя>]`: все 6 экосистем (`apt`, `rpm-md`,
+  `pacman`, `apk`, `nix`, `xbps`) включены в дефолтном конфиге (M2 —
+  все экосистемы, xbps — волна XBPS); секция в TOML нужна только чтобы
+  переопределить
   (`enabled = false`) или задать специфичные поля. Env может включить
   известную экосистему и без упоминания в TOML:
   `KHRZ_ECOSYSTEM__RPM_MD__ENABLED=true`. В TOML ключи `rpm_md` и
@@ -251,10 +252,15 @@ IP — 429; пароль длиннее 72 байт (граница bcrypt) — 
 | POST  | `/api/v1/remotes/{id}/sync`| admin       | 202/409/429 | Запуск sync-задачи; 409 — дубль (kind,label), 429 — лимит воркеров |
 
 Поля remote: `name` (slug, [a-z0-9._-]), `ecosystem` (`apt`, `rpm-md`,
-…), `base_url` (http(s)://), `mode` (`proxy`|`mirror`), `enabled`
-(bool), `sync_interval` (duration, 0 — только вручную), `include`
-(массив строк: для apt — dists с опциональной компонентой, «stable»
-или «stable/main»; для rpm-md/nix — не используется).
+`pacman`, `apk`, `nix`, `xbps`), `base_url` (http(s)://), `mode`
+(`proxy`|`mirror`), `enabled` (bool), `sync_interval` (duration, 0 —
+только вручную), `include` (массив строк: для apt — dists с опциональной
+компонентой, «stable» или «stable/main»; для apk/pacman — архитектуры/
+`repo/arch`; для xbps — список архитектур (`x86_64`, `aarch64`, `noarch`),
+пустой — ошибка; для rpm-md/nix — не используется). Плоский лэйаут
+xbps: архитектура — это имя индексного файла `<arch>-repodata` в корне
+репозитория, а не отдельный путь; `noarch`-пакеты входят в каждую
+arch-группу индекса.
 
 ### Личные репозитории (publish, сессия 14)
 
@@ -277,6 +283,7 @@ per-repo `signed=false` — не-цели (KISS). Деградация подп�
 |-------|-------------------------------|------|-----|-------------------------------------|
 | GET   | `/repo/{name}/key.asc`        | —    | 200/404 | Armored публичный ключ инстанса (для `signed-by` в `sources.list`) |
 | GET   | `/repo/{name}/nix-key.asc`    | —    | 200/404 | Публичный nix-ключ, одна строка `name:pubkey-b64` (для `trusted-public-keys`; см. [ecosystems/nix.md](func/ru/ecosystems/nix.md)) |
+| GET   | `/repo/{name}/xbps-key`       | —    | 200/404 | Публичный RSA-ключ инстанса для xbps (SPKI-PEM `PUBLIC KEY`) — сверка fingerprint при TOFU-импорте клиентом; регистрируется только при живом `port.RsaSigner` (сессии 142/139) |
 
 404 — репо с таким именем не существует **или** подписчик не
 инициализирован: роут `/key.asc` регистрируется только при успешной
@@ -302,9 +309,9 @@ http://<хражевник>:29202/repo/<name>/key.asc`).
 | DELETE| `/api/v1/repos/{id}/objects/*`            | admin или владелец или `repo:<id>:write` | 204/404 | Удаление объекта |
 | POST  | `/api/v1/repos/{id}/reindex`              | admin или владелец или `repo:<id>:write` | 202/409/429 | Запуск reindex-задачи; 409 — дубль, 429 — лимит воркеров |
 
-Поля repo: `name` (slug), `ecosystem` (`apt` — единственный с
-генератором в M3), `owner_id` (существующий пользователь), `quota`
-(`{max_bytes, max_objects}`, нулевое поле = без лимита). Загрузка: путь после
+Поля repo: `name` (slug), `ecosystem` (`apt`|`nix`|`xbps` — экосистемы
+с генератором метаданных), `owner_id` (существующий пользователь),
+`quota` (`{max_bytes, max_objects}`, нулевое поле = без лимита). Загрузка: путь после
 `/objects/` — ключ внутри `repo/<id>/<eco>/...` (apt принимает только
 `pool/*` с известными расширениями; `dists/*` генерируются reindex).
 
@@ -366,6 +373,22 @@ RBAC-матрица по `force` (аудит 2026-08-27):
 всех файлов). Атомарность v1: перезапись ключей по одному после
 полной генерации staging (окно рассинхрона ~секунды; полный atomic-
 swap — сессия 17 с s3). Полный swap с подписью — сессия 15.
+
+Генерация xbps-индексов (`mod/ecosystem/xbps/gen.go`, реализует
+`port.RepoAdapter`, сессия 141 — аналог `xbps-rindex --add --sign
+--sign-pkg`): плоские `.xbps` в `repo/<id>/xbps/` → для каждого читается
+`props.plist` (ar-парсер сессии 137); выход — `<arch>-repodata`
+(zstd level 9 + pax-tar: `index.plist` / `index-meta.plist` /
+`stage.plist`), noarch-пакеты входят в каждую arch-группу. Детерминизм
+reindex (writer сессии 140: записи по `pkgname`, поля по алфавиту) —
+байт-в-байт повтор при неизменном входе. Подпись: `.sig2` на каждый
+пакет (RSA PKCS#1 v1.5/SHA-256, `port.RsaSigner` сессии 139), публичный
+ключ base64-PEM в `index-meta.plist` (TOFU-импорт клиентом) и ручка
+`GET /repo/<name>/xbps-key` (PEM, сессия 142). Без живого `RsaSigner`
+репо деградирует: `<arch>-repodata` генерируется, `index-meta.plist`
+пуст, `.sig2` не эмитятся. Кривое имя файла пакета (props не совпадают)
+или битый пакет — честная ошибка reindex-задачи; репо из одних noarch
+(нет нативной arch-группы) repodata не даёт.
 
 ### Фоновые задачи
 
@@ -538,6 +561,32 @@ stale_served,negative_hits,upstream_errors}_total`,
    `mod/ecosystem/nix/parse.go`, фаззинг `FuzzParseNarinfo` (без паники,
   размер записи < 16KiB, пути в `URL:`-поле валидны относительно `/nar/`
   или запись отброшена). `Remote.Include` для nix не используется.
+- **xbps** (сессии 129–143) — кеш-прокси и личные репо Void Linux
+  (XBPS). Путь `/xbps/<remote-name>/<остальной-путь>` (префикс совпадает
+  с именем); `StorageKey` = `cache/xbps/<remote-id>/<upstream-path>` **без
+  лоуэркейса** — имена пакетов Void регистрочувствительны (`Mustache`,
+  `Gifsicle`), лоуэркейс дал бы коллизии. Лэйаут плоский: в корне
+  репозитория лежат `<arch>-repodata` (zstd ≤ level 9 → pax-tar из
+  `index.plist`/`index-meta.plist`/`stage.plist`) и `<pkgver>.<arch>.xbps`
+  с подписью `.sig2` (RSA-4096 PKCS#1 v1.5/SHA-256, формат xbps).
+  Классификация: `*.xbps` — immutable (content-addressed по имени с
+  версией); `*.xbps.sig2` и legacy `*.sig` — immutable; `<arch>-repodata`
+  (плоский файл в корне, `^[^/]+-repodata$`) — mutable{TTL 5m}; прочее —
+  conservative mutable{TTL 1m}. Streaming-парсер контейнера repodata
+  (zstd+tar, `index.plist` потоком XML-plist, капы 1GiB/64KiB/1MiB) —
+  `mod/ecosystem/xbps/parse.go`/`index.go`; парсер ar-пакетов `.xbps`
+  (только `props.plist`) — `mod/ecosystem/xbps/pkgparse.go`; фаззинг
+  `FuzzParseRepoData`/`FuzzOpenPackage`. `Remote.Include` — список
+  архитектур (`x86_64`, `aarch64`, …), покрывающий индексные группы
+  `<arch>-repodata`; пустой — ошибка (xbps не имеет корневого индекса
+  архитектур). `Enumerate` (сессия 135) строит пути пакетов
+  `Filename()` и добавляет `.sig2`; SHA256 из поля `filename-sha256`
+  наполняет таблицу чексумм (`Target.Checksum`). Инвариант прокси:
+  repodata и пакеты отдаются побайтово, подписи upstream остаются
+  валидными; в личных репо reindex переподписывает `.sig2` ключом
+  инстанса, публичный ключ — ручка `GET /repo/<name>/xbps-key`.
+  Деградация без `RsaSigner` — repodata без `.sig2` (репо работает,
+  клиент импортирует ключ при появлении).
 
 URL-префикс (`port.Ecosystem.URLPrefix()`) чаще совпадает с именем, но
 не всегда (rpm-md → «rpm»); роутер :29202 MATCHит `/{URLPrefix}/*` и

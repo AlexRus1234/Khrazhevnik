@@ -327,3 +327,58 @@ sync-ограничение `.zck` (Enumerate `UnsupportedError`) сохране
 `POST /auth/password` (self, свежий JWT) и
 `POST /users/{id}/password` (admin, 204) (125), UI-формы в разделе
 «Пользователи» + e2e (126); синхронизация документации (127).
+
+## XBPS — экосистема Void Linux (сессии 128–147) ✅
+
+**Статус: код и доки завершены (2026-09-19); релиз v1.2.0 — отдельная
+приёмка по [RELEASE.md](RELEASE.md), сессия 147.** Шестая экосистема:
+прокси и зеркало
+xbps, парсеры с фаззингом, RSA-подписчик инстанса, генератор личных
+репо, ручка ключа и distro-нога void. Волна жила в ветке `v1.2.0dev`.
+
+Факты формата (исследование до кода, doc-first — сессия 128,
+коммит `f3b78c1`): репозиторий Void плоский — в корне `<arch>-repodata`
+и пакеты `<pkgver>.<arch>.xbps` с подписью `.xbps.sig2`; имя файла
+клиент строит сам из полей индекса (в `index.plist` его нет).
+`repodata` = zstd(level 9) → pax-tar из трёх записей: `index.plist`
+(XML-plist, словарь `pkgname` → поля, ~20.5 MiB распакованным на
+x86_64), `index-meta.plist` (~1.4 KiB) и пустой `stage.plist`. Подпись
+пакетов — RSA-4096, PKCS#1 v1.5 поверх SHA-256 сырых байт; сам
+`repodata` не подписан (`<arch>-repodata.sig2` нет) — публичный ключ
+(PEM-SPKI) встроен в `index-meta.plist`, клиент импортирует его по TOFU
+с промптом fingerprint; legacy `.sig` индексом не покрыт и зеркалом не
+раздаётся.
+
+Работы адаптера: скелет с классификацией и `Resolve` (StorageKey без
+лоуэркейса — имена Void регистрочувствительны) (129, `101c35a`);
+интеграция прокси — byte-exact, MISS→HIT, ревалидация mutable
+`*-repodata`, negative-кеш 404 (130, `ef81d80`); streaming-парсер
+контейнера repodata (zstd+tar, index строго первой записью,
+meta через `closeFn` после вычитывания индекса, капы 1 GiB/64 KiB)
+(131, `8d9bf59`); потоковый XML-plist-парсер `index.plist` (лимиты
+поля 64 KiB / массива 4096 / записей 1 млн, forward-совместимость
+proplib) (132, `307e55d`); парсер pkgver (дефисы/`++`/`~`, ревизия
+`_N` только цифрами) (133, `aff003e`); фаззинг композиции repodata
+`FuzzParseRepoData` + golden-фикстура на реальных именах Void (134,
+`41ec7c6`); `Enumerate` по include-архитектурам с noarch-дедупом и
+sha256-таблицей из `filename-sha256` (135, `111ee3b`); интеграция
+зеркала — resume, noarch скачивается один раз, битый sha256 роняет sync
+без коммита объекта (136, `f69ae04`); ar-парсер `.xbps`
+(zstd/gzip/raw, только `props.plist`, кап 1 MiB) (137, `c562c02`);
+фаззинг `FuzzOpenPackage` (138, `bc2ff4a`); RSA-подписчик инстанса
+`port.RsaSigner`/`mod/sign/rsasha256` — формат `.sig2`, ключ
+`xbps-rsa.key` (PKCS#1 PEM, 0600, без перезаписи) (139, `a73576b`);
+streaming-writer `index.plist` (roundtrip с парсером, детерминизм)
+(140, `a38a069`); генератор личного репо `<arch>-repodata` + `.sig2`
+на пакет, noarch в каждую arch-группу, публичный ключ в index-meta
+(141, `b2003ee`); ручка `GET /repo/<name>/xbps-key` и блок в UI (142,
+`ba61611`); интеграция личных репо upload→reindex→подпись→раздача с
+верификацией `crypto/rsa` (143, `3363273`); distro-нога void —
+`xbps-install` через прокси, TOFU-импорт (144, `454d570`); xbps в UI
+(remotes/repos) и SPECIFICATION (145, `36d39bf`); синхронизация
+документации (146).
+
+Состояние после волны: `/metrics` и статистика per-eco знают `xbps`;
+классификация — пакеты и подписи immutable навсегда, `<arch>-repodata`
+mutable 5m; личные репо подписываются ключом инстанса, генератор —
+функциональный аналог `xbps-rindex --add --sign --sign-pkg`.

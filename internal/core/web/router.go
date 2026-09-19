@@ -95,6 +95,12 @@ type Deps struct {
 	// не регистрируется, wildcard отдаёт 404. Живёт вне port.Signer
 	// (своя модель подписи).
 	NarSigner port.NarSigner
+	// RsaSigner — xbps-подписчик (RSA/SHA-256, сессия 139): отдаёт
+	// публичный ключ (SPKI-PEM) через GET /repo/<name>/xbps-key на
+	// публичном порту :29202. nil в деградированном режиме — роут не
+	// регистрируется, wildcard отдаёт 404. Живёт вне port.Signer и
+	// port.NarSigner (своя модель подписи).
+	RsaSigner port.RsaSigner
 	// MetricsHandler — /metrics (Prometheus); nil, если метрики
 	// отключены конфигом.
 	MetricsHandler http.Handler
@@ -178,6 +184,16 @@ func BuildPublicRouter(d Deps) http.Handler {
 			key := handleRepoKey(d)
 			r.Get("/repo/{name}/key.asc", key)
 			r.Head("/repo/{name}/key.asc", key)
+		}
+		// /repo/<name>/xbps-key — публичный RSA-ключ инстанса для
+		// xbps-клиентов (сверка fingerprint при TOFU-импорте, сессия
+		// 142). Отдан вне wildcard-роута: ключ берётся из RsaSigner
+		// напрямую. nil-RsaSigner — роут не регистрируется (404 от
+		// wildcard).
+		if d.RsaSigner != nil {
+			xbpsKey := handleRepoXbpsKey(d)
+			r.Get("/repo/{name}/xbps-key", xbpsKey)
+			r.Head("/repo/{name}/xbps-key", xbpsKey)
 		}
 	}
 	if d.Cache != nil {
