@@ -26,6 +26,19 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Changed
+
+- Docs: the ROADMAP "Current status" section synced with the released
+  v1.2.0 (2026-09-19) — the status section was not updated in release
+  session 147.
+- Docs: ROADMAP — ecosystem expansion (pkg/Guix/Flatpak) deprioritized;
+  the post-v1 focus is functional directions (owner decision,
+  2026-09-19).
+- Docs: ROADMAP — post-v1 priorities set (owner decision, 2026-09-19):
+  high — personal-repo retention → cache-proxy eviction (the "object
+  lifecycle" wave), medium — notifications, low — the remaining
+  directions, lowest — ecosystem expansion.
+
 ## [1.2.0] — 2026-09-19
 
 ### Added
