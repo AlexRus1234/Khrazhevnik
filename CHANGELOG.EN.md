@@ -96,6 +96,14 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   (stdlib encodes `&`/`<`/`>` entities), deterministic reindex (records by
   `pkgname`, fields alphabetically, empty ones omitted), lossless roundtrip
   with the session 132 parser; 10k records streamed without accumulation.
+- **XBPS (session 141):** personal xbps repo generator (an `xbps-rindex
+  --add --sign --sign-pkg` analogue): flat `.xbps` →
+  `<arch>-repodata` (zstd level 9 + pax-tar: index.plist/
+  index-meta.plist/stage.plist), noarch packages enter every arch group, a
+  `.sig2` for each package (RSA/SHA-256 with the instance key), the public
+  key embedded in index-meta.plist (base64 PEM); without a key — repodata
+  without `.sig2`; a mismatched filename or a broken package is an honest
+  task error.
 
 ### Changed
 

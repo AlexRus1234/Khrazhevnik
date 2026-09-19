@@ -101,6 +101,13 @@ major.
   (энтити `&`/`<`/`>` кодирует stdlib), детерминизм reindex (записи по
   `pkgname`, поля по алфавиту, пустые опущены), roundtrip с парсером
   сессии 132 без потерь; 10k-записей стримингом без накопления.
+- **XBPS (сессия 141):** генератор личного xbps-репо (аналог
+  `xbps-rindex --add --sign --sign-pkg`): плоские `.xbps` →
+  `<arch>-repodata` (zstd level 9 + pax-tar: index.plist/
+  index-meta.plist/stage.plist), noarch-пакеты входят в каждую
+  arch-группу, `.sig2` на каждый пакет (RSA/SHA-256 ключом инстанса),
+  публичный ключ в index-meta.plist (base64-PEM); без ключа — repodata
+  без `.sig2`; кривое имя файла/битый пакет — честная ошибка задачи.
 
 ### Изменено
 
