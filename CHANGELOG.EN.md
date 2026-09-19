@@ -26,6 +26,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-09-19
+
 ### Fixed
 
 - CI: the void distro-test leg — the `voidlinux/voidlinux:latest` image
@@ -33,6 +35,11 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   package ("The 'xbps' package must be updated", exit 16); index sync and
   a manager self-update now precede the target package
   (`xbps-install -S -y`; `xbps-install -u -y xbps`).
+- Config: `xbps` added to `knownEcosystemNames` — without it the
+  ecosystem was absent from the default config, the adapter was never
+  wired, and any `/xbps/...` returned an instant 404 bypassing upstream
+  (an oversight of session 129; surfaced by the first real run of the
+  void distro-test leg).
 
 ### Changed
 

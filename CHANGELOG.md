@@ -35,6 +35,8 @@ major.
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-09-19
+
 ### Исправлено
 
 - CI: void-нога distro-test — образ `voidlinux/voidlinux:latest` отстаёт
@@ -42,6 +44,10 @@ major.
   («The 'xbps' package must be updated», exit 16) — перед целевым
   пакетом синк индексов и обновление самого менеджера
   (`xbps-install -S -y`; `xbps-install -u -y xbps`).
+- Конфиг: `xbps` добавлен в `knownEcosystemNames` — без этого экосистема
+  не входила в дефолтный конфиг, адаптер не собирался в wire и любой
+  `/xbps/...` отдавал мгновенный 404, минуя upstream (недосмотр сессии
+  129; выявлено первым реальным прогоном void-ноги distro-test).
 
 ### Изменено
 

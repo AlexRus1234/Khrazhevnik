@@ -382,3 +382,30 @@ streaming-writer `index.plist` (roundtrip с парсером, детермин�
 классификация — пакеты и подписи immutable навсегда, `<arch>-repodata`
 mutable 5m; личные репо подписываются ключом инстанса, генератор —
 функциональный аналог `xbps-rindex --add --sign --sign-pkg`.
+
+Постфактум после релиза v1.2.0 (2026-09-19; коммиты `18cfafd`,
+`5c71d70`): при первом реальном прогоне void-ноги distro-test
+(opt-in job, до этого не запускалась) вскрылись два дефекта, оба
+исправлены.
+
+1. **Конфиг (`18cfafd`).** `xbps` отсутствовал в
+   `knownEcosystemNames()` (`internal/core/config/env.go`) —
+   единственном источнике и дефолтного списка экосистем
+   (`defaultEcosystems`), и env-пробинга. Следствие: `cfg.Ecosystem`
+   не содержал xbps, `wireEcosystems` не собирал адаптер,
+   `Deps.Ecosystems` не имел префикса `xbps`, и `handleProxy` отдавал
+   мгновенный 404 на любой `/xbps/...`, не доходя до upstream. Недосмотр
+   сессии 129 (адаптер зарегистрирован и blank-import'нут, но имя не
+   включено в дефолт). Причина установлена репродукцией: до фикса
+   `/xbps/void/x86_64-repodata` → 404 за 0 ms, после — запрос уходит в
+   upstream; тесты `config_test.go` (дефолт 6 экосистем), `go build`/
+   `vet`/`golangci-lint` зелёные.
+2. **CI-нога (`5c71d70`).** Образ `voidlinux/voidlinux:latest` отстаёт
+   от текущего снапшота upstream: `xbps-install -S htop` падал с
+   «The 'xbps' package must be updated» (exit 16). В setup void-ноги
+   добавлены синк индексов и самообновление менеджера
+   (`xbps-install -S -y`; `xbps-install -u -y xbps`) перед целевым
+   пакетом.
+
+После правок void-нога прогнана зелёной (реальный `xbps-install`
+через прокси, все 6 ног distro-test) — волна закрыта полностью.
