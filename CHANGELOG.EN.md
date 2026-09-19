@@ -26,6 +26,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-19
+
 ### Added
 
 - **xbps (Void Linux) — caching proxy and mirror:** the sixth ecosystem —
