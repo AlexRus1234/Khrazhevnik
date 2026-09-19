@@ -108,6 +108,14 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   instance's RSA key PEM) for fingerprint verification during TOFU import;
   it is registered only when a signer is live, an unknown repo is a 404;
   an “xbps” block on the “Keys” screen.
+- **XBPS (session 143):** end-to-end personal xbps repo integration
+  (integration): bootstrap → repo eco=xbps → upload `.xbps` (x86_64 +
+  noarch) → reindex task → the public port serves `<arch>-repodata`
+  (parsed by the 131/132 parser, noarch lands in the x86_64 group,
+  `filename-sha256` matching the body) and `.sig2` (verified with
+  `crypto/rsa` against `/xbps-key`); a package whose props do not match
+  its filename fails reindex, and after its removal the index is
+  byte-identical (determinism).
 
 ### Changed
 
