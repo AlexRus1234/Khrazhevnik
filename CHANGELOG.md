@@ -96,6 +96,11 @@ major.
   ключ `xbps-rsa.key` (PKCS#1 PEM, 0600, атомарно, без перезаписи),
   публичный — SPKI-PEM (`PUBLIC KEY`) для index-meta и ручки раздачи;
   passphrase не поддерживается, битый ключевой материал фатален на старте.
+- **XBPS (сессия 140):** streaming-writer `index.plist` xbps
+  (`WriteIndexPlist`) — XML-plist proplib токенами `encoding/xml`
+  (энтити `&`/`<`/`>` кодирует stdlib), детерминизм reindex (записи по
+  `pkgname`, поля по алфавиту, пустые опущены), roundtrip с парсером
+  сессии 132 без потерь; 10k-записей стримингом без накопления.
 
 ### Изменено
 

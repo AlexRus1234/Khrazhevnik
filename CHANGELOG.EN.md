@@ -91,6 +91,11 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   private key `xbps-rsa.key` (PKCS#1 PEM, 0600, atomic, no overwrite),
   the public one as SPKI-PEM (`PUBLIC KEY`) for index-meta and the key
   endpoint; passphrase unsupported, corrupt key material is fatal at start.
+- **XBPS (session 140):** streaming `index.plist` writer for xbps
+  (`WriteIndexPlist`) — proplib XML-plist via `encoding/xml` tokens
+  (stdlib encodes `&`/`<`/`>` entities), deterministic reindex (records by
+  `pkgname`, fields alphabetically, empty ones omitted), lossless roundtrip
+  with the session 132 parser; 10k records streamed without accumulation.
 
 ### Changed
 
