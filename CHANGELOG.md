@@ -78,6 +78,13 @@ major.
   `filename-sha256`, роняет sync и НЕ коммитит объект (Abort, инвариант
   ARCHITECTURE §4), а после починки upstream и истечения negative-окна
   повторный sync succeeds.
+- **XBPS (сессия 137):** ar-парсер пакетов `.xbps` (`OpenPackage`) —
+  авто-детект компрессии по магику (zstd `28 B5 2F FD`, gzip `1F 8B`,
+  raw ar `!<arch>\n`; xz — `ErrUnsupportedCompression`), обход
+  классических ar-членов (`props.plist`/`./props.plist`) и чтение только
+  `props.plist` в тип `Props`; `files.plist` и payload скипаются
+  стримингом; общий кап декомпрессии 1 GiB и `props.plist` ≤ 1 MiB,
+  типизированные ошибки `ErrBadAr`/`ErrPropsMissing`.
 
 ### Изменено
 

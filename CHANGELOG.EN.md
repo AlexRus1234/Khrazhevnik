@@ -73,6 +73,13 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   that does not match `filename-sha256` fails the sync and does NOT commit
   the object (Abort, ARCHITECTURE §4 invariant), and after the upstream is
   fixed and the negative window expires the repeated sync succeeds.
+- **XBPS (session 137):** `.xbps` package ar parser (`OpenPackage`) —
+  compression auto-detected by magic (zstd `28 B5 2F FD`, gzip `1F 8B`,
+  raw ar `!<arch>\n`; xz becomes `ErrUnsupportedCompression`), classic
+  ar members (`props.plist`/`./props.plist`) walked and only
+  `props.plist` read into the `Props` type; `files.plist` and the payload
+  are skipped as a stream; a shared 1 GiB decompression cap and a
+  `props.plist` ≤ 1 MiB cap, typed errors `ErrBadAr`/`ErrPropsMissing`.
 
 ### Changed
 
