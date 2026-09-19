@@ -185,6 +185,8 @@
   "keys.sourcesHint": "Download the key to /usr/share/keyrings/ and add the line to sources.list.",
   "keys.nixKey": "Nix key (trusted-public-keys)",
   "keys.nixUnavailable": "ed25519 narinfo signing is not initialized.",
+  "keys.xbpsKey": "Xbps key (RSA, fingerprint verification)",
+  "keys.xbpsUnavailable": "xbps RSA signing is not initialized.",
 
   "fmt.bytes": "B",
   "fmt.kib": "KiB",

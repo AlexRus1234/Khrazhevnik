@@ -185,6 +185,8 @@
   "keys.sourcesHint": "Скачайте ключ в /usr/share/keyrings/ и добавьте строку в sources.list.",
   "keys.nixKey": "Nix-ключ (trusted-public-keys)",
   "keys.nixUnavailable": "ed25519-подпись narinfo не инициализирована.",
+  "keys.xbpsKey": "Xbps-ключ (RSA, сверка fingerprint)",
+  "keys.xbpsUnavailable": "RSA-подпись xbps не инициализирована.",
 
   "fmt.bytes": "Б",
   "fmt.kib": "КиБ",

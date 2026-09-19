@@ -104,6 +104,10 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   key embedded in index-meta.plist (base64 PEM); without a key — repodata
   without `.sig2`; a mismatched filename or a broken package is an honest
   task error.
+- **XBPS (session 142):** the `GET /repo/<name>/xbps-key` endpoint (the
+  instance's RSA key PEM) for fingerprint verification during TOFU import;
+  it is registered only when a signer is live, an unknown repo is a 404;
+  an “xbps” block on the “Keys” screen.
 
 ### Changed
 

@@ -1034,6 +1034,18 @@ func (fakeNarKeySigner) Sign(_ []byte) string { return "test:test-pub:test-sig==
 func (fakeNarKeySigner) PubKeyB64() string    { return "test-pub" }
 func (fakeNarKeySigner) Name() string         { return "test" }
 
+// fakeRsaKeySigner — port.RsaSigner для тестов публичного роутера:
+// отдаёт фиктивный SPKI-PEM. Реальная подпись .sig2 тестируется в
+// mod/sign/rsasha256 и mod/ecosystem/xbps.
+type fakeRsaKeySigner struct{}
+
+func (fakeRsaKeySigner) SignSHA256(context.Context, []byte) ([]byte, error) {
+	return nil, errors.New("not used in /xbps-key")
+}
+func (fakeRsaKeySigner) PublicKeyPEM() ([]byte, error) {
+	return []byte("-----BEGIN PUBLIC KEY-----\nfake\n-----END PUBLIC KEY-----\n"), nil
+}
+
 // newRepoEnvWithNarSigner — repoEnv с публичным роутером, включающим
 // NarSigner (для /nix-key.asc). Пересобирает только public router env,
 // сохраняя storage/repos/auth/admin из newRepoEnv (чтобы createRepoViaAPI
@@ -1092,5 +1104,64 @@ func TestPublicRepoNixKey_NilNarSigner404(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("GET nix-key.asc без NarSigner = %d, want 404 (роут не зарегистрирован)", rec.Code)
+	}
+}
+
+// newRepoEnvWithRsaSigner — repoEnv с публичным роутером, включающим
+// RsaSigner (для /xbps-key). Пересобирает только public router env,
+// сохраняя storage/repos/auth/admin из newRepoEnv (чтобы createRepoViaAPI
+// через env.admin создавал репо в том же repos, что видит public router).
+func newRepoEnvWithRsaSigner(t *testing.T) *repoEnv {
+	t.Helper()
+	env := newRepoEnv(t)
+	env.public = BuildPublicRouter(Deps{
+		Log: nil, Version: "test", Cache: nil, Ecosystems: nil,
+		Storage: env.storage, Repos: env.repos,
+		Signer:    &fakeKeySigner{},
+		NarSigner: &fakeNarKeySigner{},
+		RsaSigner: &fakeRsaKeySigner{},
+	})
+	return env
+}
+
+func TestPublicRepoXbpsKey(t *testing.T) {
+	env := newRepoEnvWithRsaSigner(t)
+	createRepoViaAPI(t, env, "alice", 2)
+	// /repo/<existing>/xbps-key — публичный RSA-ключ инстанса (SPKI-PEM).
+	req := httptest.NewRequest(http.MethodGet, "/repo/alice/xbps-key", nil)
+	rec := httptest.NewRecorder()
+	env.public.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET xbps-key = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain", ct)
+	}
+	if !bytes.HasPrefix(rec.Body.Bytes(), []byte("-----BEGIN PUBLIC KEY-----")) {
+		t.Errorf("тело xbps-key не SPKI-PEM: %q", rec.Body.String())
+	}
+}
+
+func TestPublicRepoXbpsKey_UnknownRepo404(t *testing.T) {
+	env := newRepoEnvWithRsaSigner(t)
+	req := httptest.NewRequest(http.MethodGet, "/repo/ghost/xbps-key", nil)
+	rec := httptest.NewRecorder()
+	env.public.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET xbps-key для несуществующего репо = %d, want 404", rec.Code)
+	}
+}
+
+func TestPublicRepoXbpsKey_NilRsaSigner404(t *testing.T) {
+	// Без RsaSigner (деградированный режим) /xbps-key не регистрируется
+	// вообще — BuildPublicRouter пропускает роут.
+	storage := testutil.NewFakeStorage(testutil.FixedClock(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)))
+	repos := testutil.NewFakeRepoStore()
+	h := BuildPublicRouter(Deps{Storage: storage, Repos: repos}) // RsaSigner nil
+	req := httptest.NewRequest(http.MethodGet, "/repo/x/xbps-key", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET xbps-key без RsaSigner = %d, want 404 (роут не зарегистрирован)", rec.Code)
 	}
 }
