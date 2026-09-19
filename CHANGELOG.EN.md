@@ -116,6 +116,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `crypto/rsa` against `/xbps-key`); a package whose props do not match
   its filename fails reindex, and after its removal the index is
   byte-identical (determinism).
+- **XBPS (session 145):** xbps in the UI (remotes/repos) and the
+  SPECIFICATION (config, endpoint, generator).
 
 ### Changed
 

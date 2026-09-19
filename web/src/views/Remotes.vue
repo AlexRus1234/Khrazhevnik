@@ -24,7 +24,7 @@ import { formatDuration, formatSpeed, formatTime, parseDuration } from '../forma
 import { t } from '../i18n'
 import type { Remote, TaskSnapshot } from '../types'
 
-const ECOSYSTEMS = ['apt', 'rpm-md', 'pacman', 'apk', 'nix']
+const ECOSYSTEMS = ['apt', 'rpm-md', 'pacman', 'apk', 'nix', 'xbps']
 
 const remotes = ref<Remote[]>([])
 const error = ref('')
