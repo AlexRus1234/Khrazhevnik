@@ -124,6 +124,10 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `current/<arch>/`), `.sig2` signatures are RSA-4096 PKCS#1 v1.5/SHA-256
   (not ed25519), the key is embedded in `index-meta.plist` (client-side
   TOFU import); the v1.2 wave lives in the `v1.2.0dev` branch.
+- **CI (session 144):** distro-test — the sixth leg: void
+  (`xbps-install` through the proxy, `xbps/<remote>`, hermeticity via
+  `/etc/xbps.d`); the RELEASE checklist is synced (6/6 legs, xbps items
+  in §1/§2).
 
 ## [1.1.0] — 2026-09-17
 

@@ -727,11 +727,11 @@ jobs:
         if: always()
         run: podman --storage-driver=vfs system prune -a -f
 
-  # Distro-test (opt-in): реальные пакетные менеджеры ПЯТИ экосистем
+  # Distro-test (opt-in): реальные пакетные менеджеры ШЕСТИ экосистем
   # ставят пакеты через Хражевник (pull-through живых upstream), кеш
   # доказан фактами (X-Cache: HIT + /api/v1/cache/stats). Матрица
   # (сессия 73): одна нога = одна экосистема v1 (debian/fedora/arch/
-  # alpine/nix); fail-fast: false — красная нога не топит остальные.
+  # alpine/nix/void); fail-fast: false — красная нога не топит остальные.
   # Сессия 115: волатильной остаётся только nix (eval-тарбол nixpkgs
   # качается с github мимо binary-cache — вне протокола Range); fedora
   # после Range-фикса dnf5+zchunk детерминирована: её краснота = стоп
@@ -878,6 +878,28 @@ jobs:
               nix profile install nixpkgs#htop \
                 --option substituters http://khrz-app-nix:29202/nix/cache \
                 --option flake-registry /tmp/khrz-flake-registry.json
+          # Герметичность — переопределением ТОГО ЖЕ имени файла конфига:
+          # /etc/xbps.d перекрывает /usr/share/xbps.d ТОЛЬКО при
+          # совпадении имени (xbps.d(5)); 00-repository-main.conf
+          # полностью гасит дефолтный repository=repo-default.voidlinux.org
+          # — зелёный пройти мимо прокси не может. TOFU: `-S` импортирует
+          # ключ Void из index-meta, промпт гасится `-y`.
+          - name: void
+            image: docker.io/voidlinux/voidlinux:latest
+            eco: xbps
+            remote: void
+            base_url: https://repo-default.voidlinux.org/current
+            check_path: /xbps/void/x86_64-repodata
+            setup: |
+              set -eu
+              mkdir -p /etc/xbps.d
+              # тот же filename, что в /usr/share/xbps.d — /etc/xbps.d
+              # перекрывает системный (xbps.d(5)); единственный репо —
+              # инстанс, мимо прокси зелёный пройти не может.
+              echo 'repository=http://khrz-app-void:29202/xbps/void' \
+                > /etc/xbps.d/00-repository-main.conf
+              # TOFU-импорт ключа Void из index-meta: -y отвечает yes.
+              xbps-install -S -y htop
 
     steps:
       - name: Install dependencies

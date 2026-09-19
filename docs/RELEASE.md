@@ -48,7 +48,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 - [ ] CI на коммите-кандидате зелёный (build-test: vet → gofmt →
       golangci-lint → test [+race] → integration → binary-smoke).
 - [ ] CI distro-test (workflow_dispatch, `run_distro_tests=true`):
-      5/5 ног зелёные — покрывает §1 (кеш-прокси, каждая экосистема)
+      6/6 ног зелёные — покрывает §1 (кеш-прокси, каждая экосистема)
       в автоматике; ручная проверка §1 остаётся для версий клиентов,
       отличных от контейнерных.
 - [ ] Локально: `make image && make smoke` — контейнер поднимается,
@@ -68,6 +68,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 - [ ] pacman: `pacman -Sy` + `pacman -S` через `pacman/<remote>`
       (`Server = …/<remote>/$repo/os/$arch`).
 - [ ] apk: `apk update` + `apk add` через `apk/<remote>`.
+- [ ] xbps: `xbps-install -S <пакет>` через `xbps/<remote>`
+      (`repository=http://<хражевник>:29202/xbps/<remote>` в
+      `/etc/xbps.d`); второй установочный прогон — `X-Cache: HIT` на
+      пакете.
 - [ ] nix: `nix-shell -p hello --substituters http://<хражевник>:29202/nix/<remote>`;
       nar — `X-Cache: HIT` со второго раза; `trusted-public-keys`
       остался от upstream.
@@ -93,6 +97,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       и `trusted-public-keys = khrazhevnik:<pubkey>` (переподписанные
       narinfo валидируются ключом инстанса; `<pubkey>` —
       `GET /repo/<name>/nix-key.asc`).
+- [ ] xbps: `repository=http://<хражевник>:29202/repo/<name>` в
+      `/etc/xbps.d`; TOFU-промпт сверить с
+      `GET /repo/<name>/xbps-key` (fingerprint/PEM).
 
 ## 3. Негативные проверки
 
@@ -122,5 +129,5 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       vX.Y.Z` + `:latest` и публичные зеркала ghcr.io / codeberg.org /
       docker.io / quay.io (`alexrus1234/khrazhevnik`) опубликованы.
 - [ ] Release notes: сводка функций (кеш-прокси / зеркало / личные
-      репо), 5 экосистем, матрица storage (fs/s3) × БД
+      репо), 6 экосистем, матрица storage (fs/s3) × БД
       (sqlite/postgres/mariadb), ссылка на [func/ru/](func/ru/).
