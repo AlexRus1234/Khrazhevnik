@@ -71,6 +71,13 @@ major.
   hex) наполняет таблицу чексумм remote — `Resolve` отдаёт её в
   `Target.Checksum`; невалидный sha256 и `.sig2` честно деградируют к
   сверке Content-Length. Частичный sync таблицу не затирает.
+- **XBPS (сессия 136):** зеркало xbps end-to-end (integration) — sync
+  качает repodata + пакеты + `.sig2`, повторный sync не делает ни одного
+  upstream-запроса (resume-diff по `Storage.Stat`), общий noarch-пакет из
+  двух arch-индексов скачивается ровно один раз; тело, не совпавшее с
+  `filename-sha256`, роняет sync и НЕ коммитит объект (Abort, инвариант
+  ARCHITECTURE §4), а после починки upstream и истечения negative-окна
+  повторный sync succeeds.
 
 ### Изменено
 

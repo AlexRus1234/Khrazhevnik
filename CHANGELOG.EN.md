@@ -66,6 +66,13 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `Resolve` exposes it in `Target.Checksum`; an invalid sha256 and
   `.sig2` honestly degrade to Content-Length verification. A partial
   sync does not overwrite the table.
+- **XBPS (session 136):** xbps mirroring end to end (integration) — sync
+  downloads repodata + packages + `.sig2`, a repeated sync makes not a
+  single upstream request (resume diff via `Storage.Stat`), a shared
+  noarch package from two arch indexes is downloaded exactly once; a body
+  that does not match `filename-sha256` fails the sync and does NOT commit
+  the object (Abort, ARCHITECTURE §4 invariant), and after the upstream is
+  fixed and the negative window expires the repeated sync succeeds.
 
 ### Changed
 
