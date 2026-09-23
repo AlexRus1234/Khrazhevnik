@@ -30,7 +30,7 @@ blank-import'ом в `cmd/khrazhevnik/wire.go` и выбираются TOML-ко
 | Драйвер | Назначение | Объём |Writable-volume в контейнере |
 |---------|------------|-------|-----------------------------|
 | `fs` (posix) | KISS для homelab, один узел | десятки GiB | `/var/lib/khrazhevnik/store` |
-| `s3` | прод, любое S3-совместимое (rustfs, minio, AWS, garage, …) | TiB+ | только спул `storage.s3.spool_dir` |
+| `s3` | прод, любое S3-совместимое (seaweedfs, rustfs, minio, AWS, garage, …) | TiB+ | только спул `storage.s3.spool_dir` |
 
 - **fs** (`[storage] driver = "fs"`, `[storage.fs] path = "…"`):
   объекты — файлы в корне `path`, запись в `tmp/<uuid>` → атомарный

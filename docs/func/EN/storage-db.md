@@ -30,7 +30,7 @@ and operational properties differ.
 | Driver     | Purpose                                        | Capacity  | Writable volume in the container |
 |------------|------------------------------------------------|-----------|----------------------------------|
 | `fs` (posix) | KISS for a homelab, a single node            | tens of GiB | `/var/lib/khrazhevnik/store`   |
-| `s3`       | production, any S3-compatible (rustfs, minio, AWS, garage, …) | TiB+ | only the spool `storage.s3.spool_dir` |
+| `s3`       | production, any S3-compatible (seaweedfs, rustfs, minio, AWS, garage, …) | TiB+ | only the spool `storage.s3.spool_dir` |
 
 - **fs** (`[storage] driver = "fs"`, `[storage.fs] path = "…"`):
   objects are files at the root of `path`; a write goes to `tmp/<uuid>`
