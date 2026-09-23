@@ -37,6 +37,15 @@ major.
 
 ### Исправлено
 
+- Бинарь: флейк graceful shutdown — exit 1 вместо 0 на SIGTERM
+  (`khrazhevnik: context deadline exceeded`): Shutdown ждёт
+  StateNew-коннекты (keep-alive пул клиентов) ~5s по golang/go#22682,
+  дефолтный HTTP-бюджет был ровно 5s — монетка. Бюджет бинаря поднят
+  до 10s (`web.Server.ShutdownTimeout`; интеграционные in-process
+  тесты уже несли 10s с фикса флейка TestWireBootShutdown, бинарь был
+  единственным носителем дефолта). Репродукция: TestBinarySmoke 5/50
+  красных при `-race` (golang:1.27, локальный контейнер) → 0/50 после
+  фикса. Контракт контейнера «SIGTERM → exit 0» восстановлен.
 - CI: флейк «сервер: context deadline exceeded» в интеграционных
   тестах (TestAdminMetricsLive/TestWireBootShutdown и соседи по
   паттерну) — Shutdown ждёт StateNew-коннекты (принят клиентом,

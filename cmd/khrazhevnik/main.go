@@ -29,6 +29,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"khrazhevnik/internal/core/config"
 	"khrazhevnik/internal/core/web"
@@ -122,6 +123,14 @@ func run(ctx context.Context, configPath string) error {
 		}),
 		Log:       log,
 		WaitTasks: app.WaitTasks,
+		// 10s, а не дефолтные 5s: Shutdown ждёт StateNew-коннекты
+		// (принят клиентом, запроса нет — keep-alive пул живых клиентов)
+		// ~5s по golang/go#22682; на бюджете ровно 5s это монетка
+		// DeadlineExceeded → exit 1 на SIGTERM (контракт контейнера —
+		// exit 0; CI-факт 2026-09-23: TestBinarySmoke 5/50 при -race).
+		// Путь интеграционных in-process тестов прикрыт их ShutdownTimeout
+		// (web.Server), бинарь — единственный носитель дефолта.
+		ShutdownTimeout: 10 * time.Second,
 	}
 	warnAdminListen(log, cfg.Server.AdminListen)
 	log.Info("khrazhevnik запущен",

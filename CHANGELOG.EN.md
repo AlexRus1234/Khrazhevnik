@@ -28,6 +28,17 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ### Fixed
 
+- Binary: graceful shutdown flake — exit 1 instead of 0 on SIGTERM
+  (`khrazhevnik: context deadline exceeded`): Shutdown waits for
+  StateNew connections (client keep-alive pools) ~5s per
+  golang/go#22682, the default HTTP budget was exactly 5s — a coin
+  flip. The binary's budget is raised to 10s
+  (`web.Server.ShutdownTimeout`; the in-process integration tests
+  already carried 10s since the TestWireBootShutdown flake fix, the
+  binary was the only carrier of the default). Reproduction:
+  TestBinarySmoke 5/50 red under `-race` (golang:1.27, local
+  container) → 0/50 after the fix. The container contract
+  «SIGTERM → exit 0» is restored.
 - CI: flaky «сервер: context deadline exceeded» in integration tests
   (TestAdminMetricsLive/TestWireBootShutdown and everything sharing
   the pattern) — Shutdown waits ~5s for StateNew connections

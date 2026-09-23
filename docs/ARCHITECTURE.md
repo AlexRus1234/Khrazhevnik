@@ -55,7 +55,7 @@ runtime-плагины (задел сохранён контрактами), п�
 | Auth             | JWT-сессии админки + scoped API-токены                           |
 | Сеть             | Два слушателя: публика :29202, админка :30202                   |
 | Контейнер        | Multi-stage → scratch, non-root UID 65534, ReadOnlyRootfs       |
-| Shutdown         | PID 1: SIGTERM → HTTP 5с → cancel → задачи 30с (WaitAll)        |
+| Shutdown         | PID 1: SIGTERM → HTTP 10с → cancel → задачи 30с (WaitAll)        |
 | Тесты            | stdlib testing, fakes руками, пирамида unit/integration/smoke   |
 | DI               | `Deps`-структура с фабриками + единственный `wire.go`, без фреймворков |
 
