@@ -523,7 +523,7 @@ reference results — in [`docs/func/EN/benchmarks.md`](docs/func/EN/benchmarks.
 On a fresh clone, the web-assets stub takes effect first (Go commands
 build without the frontend); the real bundle — `make web-build`. All
 tests run in CI (Forgejo Actions): contract suites on
-postgres/mariadb/minio, binary-smoke of the built artifact, optional
+postgres/mariadb/rustfs, binary-smoke of the built artifact, optional
 `-race` and Playwright E2E.
 
 Developer documentation (reading order before making changes):

@@ -65,6 +65,14 @@ major.
   fedora-нога остаются на fedora:44 (актуальный релиз; branched-образ
   46 в quay — не релиз). Pin minio не тронут — запиненная версия
   остаётся последним community-релизом на quay.
+- CI: S3-сервис контрактных suite заменён MinIO → RustFS
+  (docker.io/rustfs/rustfs:1.0.0, Apache 2.0, пин): minio/minio с
+  Docker Hub удалён (прекращение community-публикаций, 2025-10),
+  quay-образ тянулся байпасом мимо Nora — rustfs идёт через неё, как
+  postgres/mariadb. Прод-код не тронут (minio-go совместим с любым
+  S3-совместимым сервером); TestStorageContractS3 против rustfs:1.0.0 —
+  зелёный (локальная репродукция 2026-09-23: MakeBucket/Put/Get/Stat/
+  List/GetRange).
 
 ## [1.2.1] — 2026-09-19
 

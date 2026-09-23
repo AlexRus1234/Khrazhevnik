@@ -57,7 +57,7 @@ Unit-only цифра (~67% на момент внедрения) была зан
 1. **Unit** — рядом с кодом (`*_test.go`), stdlib testing, фейки пишутся
    руками (без testify).
 2. **Integration** — `test/integration`: реальный sqlite `:memory:`,
-   fs-хранилище, minio/pg/mariadb через CI-сервисы; build-tag
+   fs-хранилище, rustfs/pg/mariadb через CI-сервисы; build-tag
    `integration`, запуск `make test-integration` (с `-race`). Включает
    `binary_smoke_test.go`: exec собранного артефакта как процесса
    (`/healthz`→`/setup`→`/auth/login`→прокси byte-exact→404→SIGTERM
@@ -122,7 +122,7 @@ Unit-only цифра (~67% на момент внедрения) была зан
 Прокси и :29202 отдают срезы (сессии 108–115); закреплены кейсы:
 
 - контракт `Storage.GetRange` — общий storage-suite на fs и s3
-  (minio-контейнер): срез `[start, start+length)` byte-exact
+   (rustfs-контейнер): срез `[start, start+length)` byte-exact
   относительно `Get`, `InvalidRangeError` на выход за границы и мусор,
   `NotFoundError` на отсутствующий ключ;
 - движок (`FetchMeta`/`OpenBody`/`OpenRange`): resolve без открытия

@@ -57,6 +57,14 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   and the fedora leg stay on fedora:44 (current release; the branched
   46 image on quay is not a release). The minio pin is untouched —
   the pinned tag remains the latest community release on quay.
+- CI: the S3 service of the contract suites replaced MinIO → RustFS
+  (docker.io/rustfs/rustfs:1.0.0, Apache 2.0, pinned): minio/minio on
+  Docker Hub is gone (community publications ended, 2025-10) and the
+  quay image was fetched bypassing Nora — rustfs goes through it, like
+  postgres/mariadb. Production code is untouched (minio-go works with
+  any S3-compatible server); TestStorageContractS3 against
+  rustfs:1.0.0 is green (local reproduction 2026-09-23:
+  MakeBucket/Put/Get/Stat/List/GetRange).
 
 ## [1.2.1] — 2026-09-19
 

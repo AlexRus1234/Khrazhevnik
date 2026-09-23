@@ -17,7 +17,7 @@
 # CI: build + test pipeline. Structure mirrors the lentovodec/Intermasq
 # build workflow (workflow_dispatch + inputs, fedora:44 runner, Nora
 # proxy, step-ca, Go tarball). Project-specific additions: services block
-# (postgres/mariadb/minio для контрактных suite сессии 17) и отдельная
+# (postgres/mariadb/rustfs для контрактных suite сессии 17) и отдельная
 # oci job (сборка образа + push по входам push_image_* в 5 реестров —
 # Forgejo git.yadr00.internal/alexrus1234/khrazhevnik, ghcr.io,
 # codeberg.org, docker.io, quay.io — Хражевник контейнерный
@@ -111,7 +111,7 @@ jobs:
       # after which all tools trust both public CAs AND step-ca transparently.
 
     # Сервисные контейнеры для контрактных suite (сессия 17): postgres,
-    # mariadb и minio (S3-совместимое хранилище). Доступны из job-
+    # mariadb и rustfs (S3-совместимое хранилище). Доступны из job-
     # контейнера по имени сервиса как хостнейма (postgres:5432 и т.д.).
     # Контрактные suite в test/integration/contract_drivers_test.go
     # гейт'ятся по env KHRZ_TEST_*_DSN/ENDPOINT; без env — t.Skip.
@@ -132,20 +132,23 @@ jobs:
           MARIADB_ROOT_PASSWORD: rootpass
           MARIADB_DATABASE: khrazhevnik
         options: --health-cmd="mariadb-admin ping -h localhost -u root -prootpass" --health-interval=5s --health-timeout=3s --health-retries=10
-      minio:
-        # minio/minio: запуск `server /data`; креды — env MINIO_ROOT_*.
-        # health/live — встроенный liveness-эндпойнт минио.
+      rustfs:
+        # RustFS (S3-совместимый, Apache 2.0) вместо MinIO (2026-09-23):
         # Docker Hub-репозиторий minio/minio удалён (MinIO прекратил
-        # публикацию community-образов, 2025-10); образ берём из quay,
-        # пин на последний community-релиз — воспроизводимость сборок.
-        image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+        # публикацию community-образов, 2025-10), quay-образ тянулся
+        # байпасом мимо Nora; rustfs/rustfs живёт в Docker Hub и идёт
+        # через Nora, как postgres/mariadb. Прод-код не тронут (клиент
+        # minio-go совместим с любым S3): контрактный suite
+        # TestStorageContractS3 против rustfs:1.0.0 зелёный (probe
+        # 2026-09-23: MakeBucket/Put/Get/Stat/List/GetRange). Креды —
+        # env RUSTFS_*; health — /health, curl в образе есть (probe);
+        # S3 на :9000 поднимает дефолтный entrypoint (RUSTFS_VOLUMES=
+        # /data) — cmd-переопределение не нужно. Пин — воспроизводимость.
+        image: docker.io/rustfs/rustfs:1.0.0
         env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-        options: --health-cmd="curl -fsS http://localhost:9000/minio/health/live || exit 1" --health-interval=5s --health-timeout=3s --health-retries=10
-        cmd:
-          - server
-          - /data
+          RUSTFS_ACCESS_KEY: minioadmin
+          RUSTFS_SECRET_KEY: minioadmin
+        options: --health-cmd="curl -fsS http://localhost:9000/health || exit 1" --health-interval=5s --health-timeout=3s --health-retries=10
 
     steps:
       - name: Install git first (minimal fedora image lacks it)
@@ -299,13 +302,13 @@ jobs:
         # CGO_ENABLED=0 for static linking (modernc.org/sqlite is pure Go);
         # tests opt back in here. Integration suite (test/integration/...)
         # — build-tag-gated (-tags integration), гоняется с сервисными
-        # контейнерами (postgres/mariadb/minio выше).
+        # контейнерами (postgres/mariadb/rustfs выше).
         env:
           RACE_FLAG: ${{ github.event.inputs.run_race_tests == 'true' && '-race' || '' }}
           CGO_ENABLED: "1"
           KHRZ_TEST_POSTGRES_DSN: "postgres://khrazhevnik:khrazhevnik@postgres:5432/khrazhevnik"
           KHRZ_TEST_MARIADB_DSN: "khrazhevnik:khrazhevnik@tcp(mariadb:3306)/khrazhevnik"
-          KHRZ_TEST_S3_ENDPOINT: "http://minio:9000"
+          KHRZ_TEST_S3_ENDPOINT: "http://rustfs:9000"
           KHRZ_TEST_S3_REGION: "us-east-1"
           KHRZ_TEST_S3_ACCESS_KEY: "minioadmin"
           KHRZ_TEST_S3_SECRET_KEY: "minioadmin"
@@ -329,7 +332,7 @@ jobs:
           CGO_ENABLED: "1"
           KHRZ_TEST_POSTGRES_DSN: "postgres://khrazhevnik:khrazhevnik@postgres:5432/khrazhevnik"
           KHRZ_TEST_MARIADB_DSN: "khrazhevnik:khrazhevnik@tcp(mariadb:3306)/khrazhevnik"
-          KHRZ_TEST_S3_ENDPOINT: "http://minio:9000"
+          KHRZ_TEST_S3_ENDPOINT: "http://rustfs:9000"
           KHRZ_TEST_S3_REGION: "us-east-1"
           KHRZ_TEST_S3_ACCESS_KEY: "minioadmin"
           KHRZ_TEST_S3_SECRET_KEY: "minioadmin"
