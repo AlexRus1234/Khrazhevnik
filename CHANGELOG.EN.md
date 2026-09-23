@@ -76,6 +76,15 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   any S3-compatible server); TestStorageContractS3 against
   rustfs:1.0.0 is green (local reproduction 2026-09-23:
   MakeBucket/Put/Get/Stat/List/GetRange).
+- CI: a gate for service hostname resolution (rustfs/postgres/mariadb)
+  before the tests: container registration in the job network's
+  aardvark-dns is sometimes lost (run be8c1fa — rustfs NXDOMAIN for
+  the whole run while the service healthcheck was green: it talks to
+  localhost inside its netns and proves no DNS; run 0b89aac — the same
+  start order, resolved fine). A delayed registration self-heals by
+  waiting up to 60s, a lost one — early failure with runner
+  diagnostics instructions instead of 200s+ of minio-client noise.
+  Service order is not controllable (act iterates a Go map).
 
 ## [1.2.1] — 2026-09-19
 

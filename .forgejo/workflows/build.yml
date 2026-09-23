@@ -203,6 +203,36 @@ jobs:
             jq \
             gcc
 
+      - name: Probe service DNS (aardvark race guard)
+        # Сервисные алиасы (rustfs/postgres/mariadb) резолвит aardvark-dns
+        # сети job'а; регистрация контейнеров иногда теряется (CI-факт
+        # 2026-09-23, run be8c1fa: rustfs — NXDOMAIN весь прогон 217s+,
+        # при этом healthcheck сервиса зелёный — он ходит с localhost
+        # ВНУТРИ netns и DNS не доказывает; run 0b89aac — тот же порядок
+        # старта, резолвился). Локальный probe podman 6.0.2: файл-конфиг
+        # aardvark пуст при живом процессе — класс «запись не дошла до
+        # aardvark» существует. Гейт: ждём резолв всех трёх имён до 60с —
+        # задержавшаяся регистрация самозаживается; потерянная — падаем
+        # рано с инструкцией по диагностике раннера вместо 200s+ красного
+        # шума minio-клиента. Порядок сервисов фикса не предлагать: act
+        # итерирует их Go-мапой (randomized) — порядок не управляем.
+        run: |
+          missing=""
+          for i in $(seq 1 30); do
+            missing=""
+            for svc in rustfs postgres mariadb; do
+              getent hosts "$svc" >/dev/null || missing="$missing $svc"
+            done
+            [ -z "$missing" ] && { echo "все сервисные имена резолвятся (итерация $i)"; break; }
+            sleep 2
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::сервисные hostname не резолвятся ($missing) — aardvark-dns потерял регистрацию контейнеров сети job'а. Диагностика на раннере (user 968): podman --version; rpm -q podman netavark aardvark-dns; pgrep -a aardvark-dns; podman network ls; журнал user@968 вокруг старта job'а"
+            exit 1
+          fi
+          # DNS есть — проверяем и TCP-путь до S3 (отдельный класс сбоев).
+          curl -fsS http://rustfs:9000/health > /dev/null
+
       - name: Install Go toolchain
         run: |
           # Fedora 44 ships an older Go; khrazhevnik needs 1.27 (go.mod).
