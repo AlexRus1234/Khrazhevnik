@@ -15,7 +15,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 # CI: build + test pipeline. Structure mirrors the lentovodec/Intermasq
-# build workflow (workflow_dispatch + inputs, fedora:46 runner, Nora
+# build workflow (workflow_dispatch + inputs, fedora:44 runner, Nora
 # proxy, step-ca, Go tarball). Project-specific additions: services block
 # (postgres/mariadb/minio для контрактных suite сессии 17) и отдельная
 # oci job (сборка образа + push по входам push_image_* в 5 реестров —
@@ -98,7 +98,7 @@ jobs:
   build-test:
     runs-on: docker
     container:
-      image: fedora:46
+      image: fedora:44
     env:
       # All external dependencies via Nora where possible
       GOPROXY: "https://nora.panelka.yadr01.internal/go,direct"
@@ -169,7 +169,7 @@ jobs:
           rm -f /etc/yum.repos.d/fedora*.repo
           cat > /etc/yum.repos.d/khrz.repo << 'EOF'
           [khrz-fedora]
-          name=Khrazhevnik Fedora 46 (release)
+          name=Khrazhevnik Fedora 44 (release)
           baseurl=https://khrazhevnik.panelka.yadr01.internal/rpm/fedora/
           gpgcheck=0
           enabled=1
@@ -177,7 +177,7 @@ jobs:
           EOF
           cat > /etc/yum.repos.d/khrz-updates.repo << 'EOF'
           [khrz-fedora-updates]
-          name=Khrazhevnik Fedora 46 (updates)
+          name=Khrazhevnik Fedora 44 (updates)
           baseurl=https://khrazhevnik.panelka.yadr01.internal/rpm/fedora-updates/
           gpgcheck=0
           enabled=1
@@ -189,7 +189,7 @@ jobs:
         # собирается с CGO_ENABLED=0 (static, modernc-sqlite pure Go).
         # nodejs нужен НЕ проекту, а раннеру: act/act_runner исполняет
         # JS-экшены (actions/checkout@v7) через node ВНУТРИ job-контейнера;
-        # fedora:46 его не содержит → crun "node not found", exit 127.
+        # fedora:44 его не содержит → crun "node not found", exit 127.
         # npm — для сборки Vue-SPA (cd web && npm ci && npm run build,
         # шаг ниже): до сессии 18.1 фронтенда не было, npm был не нужен.
         # jq — для парсинга JSON в publish-шагах ниже.
@@ -202,7 +202,7 @@ jobs:
 
       - name: Install Go toolchain
         run: |
-          # Fedora 46 ships an older Go; khrazhevnik needs 1.27 (go.mod).
+          # Fedora 44 ships an older Go; khrazhevnik needs 1.27 (go.mod).
           # Tarball from go.dev. -f: fail on HTTP errors (don't pipe HTML
           # error page into tar). Download first, then extract, so we get a
           # clear error if URL is wrong.
@@ -569,7 +569,7 @@ jobs:
         run: |
           cat > /etc/yum.repos.d/khrz.repo << 'EOF'
           [khrz-fedora]
-          name=Khrazhevnik Fedora 46 (release)
+          name=Khrazhevnik Fedora 44 (release)
           baseurl=https://khrazhevnik.panelka.yadr01.internal/rpm/fedora/
           gpgcheck=0
           enabled=1
@@ -578,7 +578,7 @@ jobs:
           EOF
           cat > /etc/yum.repos.d/khrz-updates.repo << 'EOF'
           [khrz-fedora-updates]
-          name=Khrazhevnik Fedora 46 (updates)
+          name=Khrazhevnik Fedora 44 (updates)
           baseurl=https://khrazhevnik.panelka.yadr01.internal/rpm/fedora-updates/
           gpgcheck=0
           enabled=1
@@ -748,7 +748,7 @@ jobs:
     if: github.event.inputs.run_distro_tests == 'true'
     runs-on: docker
     container:
-      image: fedora:46
+      image: fedora:44
       options: --security-opt label=disable -v /run/user/968/podman/podman.sock:/run/podman/podman.sock
     env:
       # podman-клиент в job-контейнере говорит с хостовым демоном через
@@ -789,10 +789,10 @@ jobs:
           # прокси без ключа (подписи upstream байтовы, но ключ
           # ноге не ставим — прокси-passthrough, не личное репо).
           - name: fedora
-            image: docker.io/library/fedora:46
+            image: docker.io/library/fedora:44
             eco: rpm-md
             remote: fedora
-            base_url: https://dl.fedoraproject.org/pub/fedora/linux/releases/46/Everything/x86_64/os/
+            base_url: https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/
             check_path: /rpm/fedora/repodata/repomd.xml
             setup: |
               set -eu
@@ -911,7 +911,7 @@ jobs:
     steps:
       - name: Install dependencies
         # nodejs — НЕ проекту, а раннеру: act/act_runner исполняет JS-экшены
-        # (actions/checkout@v7) через node ВНУТРИ job-контейнера; fedora:46
+        # (actions/checkout@v7) через node ВНУТРИ job-контейнера; fedora:44
         # его не содержит → crun "node not found", exit 127 (см. build-test).
         # openssl-CLI НЕ входит в минимальный fedora-образ (curl тянет
         # только openssl-libs), а Start app генерирует JWT-секрет

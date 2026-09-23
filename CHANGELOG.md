@@ -49,12 +49,12 @@ major.
 - Тулчейн и CI обновлены до актуальных версий: Go 1.26.3 → 1.27.1
   (go.mod `go 1.27` + `toolchain go1.27.1`), golangci-lint 1.64.8 →
   2.13.2 (конфиг мигрирован в формат v2), actions/checkout v4 → v7.
-- Образы CI обновлены: job-контейнеры fedora:44 → 46 (khrz-зеркало —
-  ресинк на Fedora 46), сервисные postgres 16 → 18 и mariadb 11 → 13;
+- Образы CI обновлены: сервисные postgres 16 → 18 и mariadb 11 → 13;
   сборочные node:22-alpine → 24-alpine и golang:1.26-alpine →
-  1.27-alpine; distro-ноги debian bookworm → trixie и fedora 44 → 46.
-  Pin minio не тронут — запиненная версия остаётся последним
-  community-релизом на quay.
+  1.27-alpine; distro-нога debian bookworm → trixie. Job-контейнеры и
+  fedora-нога остаются на fedora:44 (актуальный релиз; branched-образ
+  46 в quay — не релиз). Pin minio не тронут — запиненная версия
+  остаётся последним community-релизом на quay.
 
 ## [1.2.1] — 2026-09-19
 
