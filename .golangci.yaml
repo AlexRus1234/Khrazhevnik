@@ -1,122 +1,151 @@
+version: "2"
 run:
-  timeout: 5m
-  tests: true
   modules-download-mode: readonly
-
+  tests: true
 linters:
-  disable-all: true
+  default: none
   enable:
-    - errcheck
-    - govet
-    - staticcheck
-    - unused
-    - ineffassign
-    - gocritic
-    - revive
-    - gocyclo
+    - bodyclose
     - depguard
-    - gofmt
-    - goimports
+    - errcheck
+    - errorlint
+    - gocritic
+    - gocyclo
+    - govet
+    - ineffassign
     - misspell
+    - revive
+    - staticcheck
     - unconvert
     - unparam
-    - bodyclose
-    - errorlint
-
-linters-settings:
-  gocyclo:
-    min-complexity: 15
-  goimports:
-    local-prefixes: khrazhevnik
-  revive:
-    severity: warning
+    - unused
+  settings:
+    depguard:
+      rules:
+        no-cross-mod:
+          list-mode: lax
+          files:
+            - '**/internal/mod/**'
+          deny:
+            - pkg: khrazhevnik/internal/mod
+              desc: 'запрет mod→mod: модули общаются только через core'
+        no-mod-in-core:
+          list-mode: lax
+          files:
+            - '**/internal/core/**'
+          deny:
+            - pkg: khrazhevnik/internal/mod
+              desc: ядро не знает модулей; склейка — только в wire (cmd/khrazhevnik)
+        no-os-in-core-domain:
+          list-mode: lax
+          files:
+            - '**/internal/core/domain/**'
+            - '**/internal/core/engine/**'
+          deny:
+            - pkg: os
+              desc: domain/engine не должен трогать ОС напрямую; используйте порт
+            - pkg: syscall
+              desc: domain/engine не должен трогать syscall; используйте порт
+            - pkg: golang.org/x/sys
+              desc: domain/engine не должен трогать x/sys; используйте порт
+            - pkg: net
+              desc: domain/engine не должен открывать соединения; используйте порт
+            - pkg: net/http
+              desc: доставка HTTP — только в core/web или mod
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+    gocyclo:
+      min-complexity: 15
+    staticcheck:
+      # Косметический QF-класс (De Morgan, встраивание селекторов,
+      # вывод типов) отключён: v1-линия golangci-lint его не проверяла,
+      # и всплывшие с апгрейдом 20 находок — churn без поведения.
+      # ST1000/ST1003/ST1016/ST1020-22 — дефолтные исключения v1.
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        - -QF1001
+        - -QF1007
+        - -QF1008
+        - -QF1011
+    revive:
+      severity: warning
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-naming
+        - name: error-strings
+        - name: error-return
+        - name: errorf
+        - name: exported
+          disabled: true
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: var-declaration
+        - name: var-naming
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: blank-imports
-      - name: context-as-argument
-      - name: context-keys-type
-      - name: dot-imports
-      - name: error-naming
-      - name: error-strings
-      - name: error-return
-      - name: errorf
-      - name: exported
-        disabled: true
-      - name: increment-decrement
-      - name: indent-error-flow
-      - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: var-declaration
-      - name: var-naming
-  errcheck:
-    check-type-assertions: true
-    check-blank: false
-  errorlint:
-    errorf: true
-    asserts: true
-    comparison: true
-  depguard:
-    rules:
-      no-os-in-core-domain:
-        list-mode: lax
-        files:
-          - "**/internal/core/domain/**"
-          - "**/internal/core/engine/**"
-        deny:
-          - pkg: os
-            desc: "domain/engine не должен трогать ОС напрямую; используйте порт"
-          - pkg: syscall
-            desc: "domain/engine не должен трогать syscall; используйте порт"
-          - pkg: golang.org/x/sys
-            desc: "domain/engine не должен трогать x/sys; используйте порт"
-          - pkg: net
-            desc: "domain/engine не должен открывать соединения; используйте порт"
-          - pkg: net/http
-            desc: "доставка HTTP — только в core/web или mod"
-      no-mod-in-core:
-        list-mode: lax
-        files:
-          - "**/internal/core/**"
-        deny:
-          - pkg: khrazhevnik/internal/mod
-            desc: "ядро не знает модулей; склейка — только в wire (cmd/khrazhevnik)"
-      no-cross-mod:
-        list-mode: lax
-        files:
-          - "**/internal/mod/**"
-        deny:
-          - pkg: khrazhevnik/internal/mod
-            desc: "запрет mod→mod: модули общаются только через core"
-
+      - linters:
+          - depguard
+        path: internal/core/engine/.*_test\.go
+        text: net/http
+      - linters:
+          - errcheck
+          - gocyclo
+          - gosec
+          - unparam
+        path: _test\.go
+      - linters:
+          - errcheck
+          - gocyclo
+          - unparam
+        path: internal/contract/.*\.go
+      - linters:
+          - revive
+        path: cmd/khrazhevnik/main\.go
+    paths:
+      - web
+      - test/smoke
+      - third_party$
+      - builtin$
+      - examples$
 issues:
-  exclude-dirs:
-    - web
-    - test/smoke
-  exclude-rules:
-    # Тесты движка кеша обязаны гонять настоящий httptest-upstream
-    # (сессия 06): http в _test.go engine-пакетов — часть контракта
-    # тестирования, а не доставки. Запреты os/syscall и mod→core
-    # действуют и в тестах.
-    - path: internal/core/engine/.*_test\.go
-      linters:
-        - depguard
-      text: "net/http"
-    - path: _test\.go
-      linters:
-        - gocyclo
-        - errcheck
-        - gosec
-        - unparam
-    # internal/contract — общие контрактные suite (CatalogSuite/Storage
-    # Suite), импортируются только _test.go; логика тестовая, высокая
-    # цикломатическая сложность здесь уместна (как в _test.go).
-    - path: internal/contract/.*\.go
-      linters:
-        - gocyclo
-        - errcheck
-        - unparam
-    - path: cmd/khrazhevnik/main\.go
-      linters:
-        - revive
   max-issues-per-linter: 0
   max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - khrazhevnik
+  exclusions:
+    generated: lax
+    paths:
+      - web
+      - test/smoke
+      - third_party$
+      - builtin$
+      - examples$

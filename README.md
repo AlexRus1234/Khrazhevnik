@@ -463,7 +463,7 @@ scoped API-токен `Bearer khz_...` (CI-скрипты: `admin`,
 
 ## Технологический стек
 
-**Бэкенд:** Go 1.26 · chi v5 · pelletier/go-toml/v2 · modernc.org/sqlite
+**Бэкенд:** Go 1.27 · chi v5 · pelletier/go-toml/v2 · modernc.org/sqlite
 (без CGO) · jackc/pgx/v5 · go-sql-driver/mysql · pressly/goose/v3 ·
 golang-jwt/jwt/v5 · golang.org/x/crypto (bcrypt) · golang.org/x/sync
 (singleflight) · golang.org/x/time (rate) · ProtonMail/go-crypto

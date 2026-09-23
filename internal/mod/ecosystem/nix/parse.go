@@ -175,11 +175,7 @@ func parseInt64(s string) int64 {
 
 // splitFields дробит значение References по пробелам (непустые токены).
 func splitFields(s string) []string {
-	var out []string
-	for _, f := range strings.Fields(s) {
-		out = append(out, f)
-	}
-	return out
+	return strings.Fields(s)
 }
 
 // Алфавит nix-base32 (libutil/hash.cc): цифры и латиница БЕЗ

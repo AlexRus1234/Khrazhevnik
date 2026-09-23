@@ -26,6 +26,18 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Changed
+
+- Toolchain and CI updated to current versions: Go 1.26.3 → 1.27.1
+  (go.mod `go 1.27` + `toolchain go1.27.1`), golangci-lint 1.64.8 →
+  2.13.2 (config migrated to the v2 format), actions/checkout v4 → v7.
+- CI images updated: job containers fedora:44 → 46 (khrz mirror —
+  resync to Fedora 46), service postgres 16 → 18 and mariadb 11 → 13;
+  build images node:22-alpine → 24-alpine and golang:1.26-alpine →
+  1.27-alpine; distro legs debian bookworm → trixie and fedora
+  44 → 46. The minio pin is untouched — the pinned tag remains the
+  latest community release on quay.
+
 ## [1.2.1] — 2026-09-19
 
 ### Changed

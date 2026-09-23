@@ -290,10 +290,10 @@ func (a *Adapter) releaseComponents(ctx context.Context, meta port.MetaFetcher, 
 		break
 	}
 	if len(comps) == 0 {
-		return nil, nil, fmt.Errorf("Release без Components")
+		return nil, nil, fmt.Errorf("release без Components")
 	}
 	if len(archs) == 0 {
-		return nil, nil, fmt.Errorf("Release без Architectures")
+		return nil, nil, fmt.Errorf("release без Architectures")
 	}
 	return comps, archs, nil
 }

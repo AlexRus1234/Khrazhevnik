@@ -307,8 +307,8 @@ type MetaFetcher interface {
 
 ## 8. Контейнер
 
-- Трёхстадийный multi-stage: node:22-alpine (Vue-SPA, vite build) →
-  golang:1.26-alpine (CGO_ENABLED=0, -trimpath, //go:embed бандла) →
+- Трёхстадийный multi-stage: node:24-alpine (Vue-SPA, vite build) →
+  golang:1.27-alpine (CGO_ENABLED=0, -trimpath, //go:embed бандла) →
   scratch (бинарник + CA-bundle).
 - `USER 65534:65534`, `EXPOSE 29202 30202`, `VOLUME /var/lib/khrazhevnik`.
 - Writable только `/var/lib/khrazhevnik` (sqlite, fs-store, ключи);
