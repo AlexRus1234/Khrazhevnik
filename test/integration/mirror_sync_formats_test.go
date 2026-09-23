@@ -296,9 +296,9 @@ func newMirrorFormatsEnv(t *testing.T, up *httptest.Server,
 			Remotes: catalog.Remotes, Audit: catalog.Audit,
 			Tasks: tasks, Mirror: mirrorAPI, Clock: clock,
 		}),
-		Log:       log,
+		Log:             log,
 		ShutdownTimeout: 10 * time.Second,
-		WaitTasks: tasks.WaitAll,
+		WaitTasks:       tasks.WaitAll,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

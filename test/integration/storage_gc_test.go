@@ -174,9 +174,9 @@ func newStorageGCEnv(t *testing.T) *storageGCEnv {
 			Tasks: tasks, Publish: publishAPI, StorageGC: sweeper, Clock: clock,
 			MetricsHandler: metricsHandler,
 		}),
-		Log:       log,
+		Log:             log,
 		ShutdownTimeout: 10 * time.Second,
-		WaitTasks: tasks.WaitAll,
+		WaitTasks:       tasks.WaitAll,
 	}
 	return &storageGCEnv{srv: srv, admin: adminAddr, storeDir: storeDir, catalog: &catalog}
 }

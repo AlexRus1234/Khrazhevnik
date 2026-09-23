@@ -169,9 +169,9 @@ func xbpsRepoIntegrationEnv(t *testing.T) (*web.Server, string, string) {
 			Repos:      catalog.Repos, Storage: storage, Audit: catalog.Audit,
 			Tasks: tasks, Publish: publishAPI, Clock: clock,
 		}),
-		Log:       log,
+		Log:             log,
 		ShutdownTimeout: 10 * time.Second,
-		WaitTasks: tasks.WaitAll,
+		WaitTasks:       tasks.WaitAll,
 	}
 	return srv, publicAddr, adminAddr
 }

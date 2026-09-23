@@ -135,11 +135,11 @@ func TestWireFsSqliteCatalog(t *testing.T) {
 	// оба слушателя живы
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := &web.Server{
-		PublicAddr:    cfg.Server.PublicListen,
-		PublicHandler: web.BuildPublicRouter(web.Deps{Log: log, Version: "test"}),
-		AdminAddr:     cfg.Server.AdminListen,
-		AdminHandler:  web.BuildAdminRouter(web.Deps{Log: log, Version: "test"}),
-		Log:           log,
+		PublicAddr:      cfg.Server.PublicListen,
+		PublicHandler:   web.BuildPublicRouter(web.Deps{Log: log, Version: "test"}),
+		AdminAddr:       cfg.Server.AdminListen,
+		AdminHandler:    web.BuildAdminRouter(web.Deps{Log: log, Version: "test"}),
+		Log:             log,
 		ShutdownTimeout: 10 * time.Second,
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
