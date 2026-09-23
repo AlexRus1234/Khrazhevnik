@@ -505,7 +505,7 @@ CPU/RAM, методика) — в [`bench/`](bench/README.md), эталонны�
 При новом клонировании репозитория сначала срабатывает заглушка
 web-assets (Go-команды собираются без фронтенда); реальный бандл —
 `make web-build`. Все тесты прогоняются в CI (Forgejo Actions):
-контрактные suite на postgres/mariadb/rustfs, binary-smoke собранного
+контрактные suite на postgres/mariadb/seaweedfs, binary-smoke собранного
 артефакта, опциональные `-race` и Playwright E2E.
 
 Документация для разработчиков (порядок чтения перед правками):

@@ -80,7 +80,7 @@ internal/mod/             МОДУЛИ (каждый регистрируетс�
   db/         sqlite/, postgres/, mariadb/
   sign/       openpgp/, ed25519/, rsasha256/
 internal/testutil/        FixedClock, SeqClock, FixedRand, FakeStorage, fakes Catalog*
-internal/contract/        общие контрактные suite каталога и storage (гоняются в CI против sqlite/fs и контейнерных postgres/mariadb/rustfs)
+internal/contract/        общие контрактные suite каталога и storage (гоняются в CI против sqlite/fs и контейнерных postgres/mariadb/seaweedfs)
 migrations/<driver>/      embedded goose-миграции каталога (по каталогу на БД)
 web/                      Vue 3 + Vite + TS SPA
 deploy/                   Containerfile, quadlet/

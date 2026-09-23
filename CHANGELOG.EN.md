@@ -68,23 +68,29 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   and the fedora leg stay on fedora:44 (current release; the branched
   46 image on quay is not a release). The minio pin is untouched —
   the pinned tag remains the latest community release on quay.
-- CI: the S3 service of the contract suites replaced MinIO → RustFS
-  (docker.io/rustfs/rustfs:1.0.0, Apache 2.0, pinned): minio/minio on
-  Docker Hub is gone (community publications ended, 2025-10) and the
-  quay image was fetched bypassing Nora — rustfs goes through it, like
-  postgres/mariadb. Production code is untouched (minio-go works with
-  any S3-compatible server); TestStorageContractS3 against
-  rustfs:1.0.0 is green (local reproduction 2026-09-23:
-  MakeBucket/Put/Get/Stat/List/GetRange).
-- CI: a gate for service hostname resolution (rustfs/postgres/mariadb)
-  before the tests: container registration in the job network's
-  aardvark-dns is sometimes lost (run be8c1fa — rustfs NXDOMAIN for
-  the whole run while the service healthcheck was green: it talks to
-  localhost inside its netns and proves no DNS; run 0b89aac — the same
-  start order, resolved fine). A delayed registration self-heals by
-  waiting up to 60s, a lost one — early failure with runner
-  diagnostics instructions instead of 200s+ of minio-client noise.
-  Service order is not controllable (act iterates a Go map).
+- CI: the S3 service of the contract suites replaced MinIO → SeaweedFS
+  (docker.io/chrislusf/seaweedfs:4.47, pinned): minio/minio on Docker
+  Hub is gone (community publications ended, 2025-10) and the quay
+  image was fetched bypassing Nora — seaweedfs goes through it, like
+  postgres/mariadb. The intermediate candidate rustfs:1.0.0 was
+  rejected: its container died with SIGSEGV (exit 139) mid-run (runs
+  be8c1fa/58aac96 — «lookup rustfs: no such host» for 200s+: the dead
+  container's teardown removes the DNS entry; local reproduction —
+  death after the first suite run; 1.0.0-alpha.67 is stable, we will
+  revisit rustfs once its releases settle). SeaweedFS setup:
+  --entrypoint=sh + cmd prints s3.json to /tmp (bind-mounts are
+  unavailable for services, the anonymous mode rejects signed
+  requests); -volume.max=1000 (the default is 8, and SeaweedFS grows a
+  volume per almost every object assign — one suite run ≈ 100
+  volumes). Production code is untouched (minio-go); the suite is 12/12
+  green locally, soak 12× with pauses.
+- CI: a service availability gate (s3/postgres/mariadb) before the
+  build: name resolution up to 60s + the TCP path to S3; a dead
+  service (like the rustfs SIGSEGV incident) or a lost aardvark-dns
+  registration of the job network yields an early ::error with runner
+  diagnostics instructions instead of 200s+ of minio-client noise in
+  the test phase. Service order is not controllable (act iterates a Go
+  map).
 
 ## [1.2.1] — 2026-09-19
 

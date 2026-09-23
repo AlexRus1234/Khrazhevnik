@@ -45,7 +45,7 @@ func newTest(t *testing.T) *Storage {
 }
 
 // TestStorageContract — общий контрактный suite port.Storage (сессии 04
-// + 17); тот же код в test/integration гоняет s3 через rustfs. Фабрика
+// + 17); тот же код в test/integration гоняет s3 через seaweedfs. Фабрика
 // использует настоящий cryptoRand — тесту параллельной записи нужны
 // уникальные tmp-имена (FixedRand дал бы коллизию на O_EXCL).
 func TestStorageContract(t *testing.T) {

@@ -17,7 +17,7 @@
 # CI: build + test pipeline. Structure mirrors the lentovodec/Intermasq
 # build workflow (workflow_dispatch + inputs, fedora:44 runner, Nora
 # proxy, step-ca, Go tarball). Project-specific additions: services block
-# (postgres/mariadb/rustfs для контрактных suite сессии 17) и отдельная
+# (postgres/mariadb/seaweedfs для контрактных suite сессии 17) и отдельная
 # oci job (сборка образа + push по входам push_image_* в 5 реестров —
 # Forgejo git.yadr00.internal/alexrus1234/khrazhevnik, ghcr.io,
 # codeberg.org, docker.io, quay.io — Хражевник контейнерный
@@ -111,7 +111,7 @@ jobs:
       # after which all tools trust both public CAs AND step-ca transparently.
 
     # Сервисные контейнеры для контрактных suite (сессия 17): postgres,
-    # mariadb и rustfs (S3-совместимое хранилище). Доступны из job-
+    # mariadb и s3 (S3-совместимое хранилище, SeaweedFS). Доступны из job-
     # контейнера по имени сервиса как хостнейма (postgres:5432 и т.д.).
     # Контрактные suite в test/integration/contract_drivers_test.go
     # гейт'ятся по env KHRZ_TEST_*_DSN/ENDPOINT; без env — t.Skip.
@@ -132,23 +132,35 @@ jobs:
           MARIADB_ROOT_PASSWORD: rootpass
           MARIADB_DATABASE: khrazhevnik
         options: --health-cmd="mariadb-admin ping -h localhost -u root -prootpass" --health-interval=5s --health-timeout=3s --health-retries=10
-      rustfs:
-        # RustFS (S3-совместимый, Apache 2.0) вместо MinIO (2026-09-23):
-        # Docker Hub-репозиторий minio/minio удалён (MinIO прекратил
-        # публикацию community-образов, 2025-10), quay-образ тянулся
-        # байпасом мимо Nora; rustfs/rustfs живёт в Docker Hub и идёт
-        # через Nora, как postgres/mariadb. Прод-код не тронут (клиент
-        # minio-go совместим с любым S3): контрактный suite
-        # TestStorageContractS3 против rustfs:1.0.0 зелёный (probe
-        # 2026-09-23: MakeBucket/Put/Get/Stat/List/GetRange). Креды —
-        # env RUSTFS_*; health — /health, curl в образе есть (probe);
-        # S3 на :9000 поднимает дефолтный entrypoint (RUSTFS_VOLUMES=
-        # /data) — cmd-переопределение не нужно. Пин — воспроизводимость.
-        image: docker.io/rustfs/rustfs:1.0.0
-        env:
-          RUSTFS_ACCESS_KEY: minioadmin
-          RUSTFS_SECRET_KEY: minioadmin
-        options: --health-cmd="curl -fsS http://localhost:9000/health || exit 1" --health-interval=5s --health-timeout=3s --health-retries=10
+      s3:
+        # SeaweedFS 4.47 — третий S3-носитель CI (2026-09-23). История:
+        # minio/minio с Docker Hub удалён (прекращение community-публикаций,
+        # 2025-10), quay-образ тянулся байпасом мимо Nora; rustfs:1.0.0
+        # забракован — SIGSEGV посреди прогона (CI-факты be8c1fa/58aac96:
+        # контейнер умирал exit 139, DNS-запись исчезала, minio-клиент
+        # 200s+ «no such host»; локальная репродукция — смерть после
+        # первого suite-прогона) — вернёмся к нему, когда релизы
+        # устаканятся. chrislusf/seaweedfs живёт в Docker Hub → идёт через
+        # Nora, как postgres/mariadb; прод-код не тронут (minio-go).
+        # Схема запуска (probe-факты 2026-09-23): bind-mount в services
+        # недоступен, а анонимный S3-режим отвергает ПОДПИСАННЫЕ запросы
+        # («Signed request requires setting up SeaweedFS S3
+        # authentication») — потому --entrypoint=/bin/sh (act парсит
+        # docker-run флаги из options, docker_run.go mergeContainerConfigs)
+        # и cmd печатает s3.json в /tmp перед exec weed server.
+        # -volume.max=1000 явно: дефолт 8, а SeaweedFS плодит тома почти
+        # по одному на object-assign (один suite-прогон ≈ 100 томов;
+        # probe: 100/100 free:0 и «No writable volumes» на втором прогоне).
+        # Health — nc -z на S3-порт (GET / в auth-режиме отдаёт 403,
+        # wget/curl -f его роняют; master 9333 слушает только IP
+        # контейнера, не localhost). Suite 12/12 зелёный локально.
+        image: docker.io/chrislusf/seaweedfs:4.47
+        options: --entrypoint=/bin/sh --health-cmd="nc -z 127.0.0.1 9000 || exit 1" --health-interval=5s --health-timeout=3s --health-retries=10
+        cmd:
+          - -c
+          - >-
+            printf %s '{"identities":[{"name":"khrz","credentials":[{"accessKey":"minioadmin","secretKey":"minioadmin"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' > /tmp/s3.json &&
+            exec /usr/bin/weed -logtostderr=true server -dir=/data -volume.max=1000 -master.volumeSizeLimitMB=1024 -s3 -s3.port=9000 -s3.config=/tmp/s3.json
 
     steps:
       - name: Install git first (minimal fedora image lacks it)
@@ -203,35 +215,34 @@ jobs:
             jq \
             gcc
 
-      - name: Probe service DNS (aardvark race guard)
-        # Сервисные алиасы (rustfs/postgres/mariadb) резолвит aardvark-dns
-        # сети job'а; регистрация контейнеров иногда теряется (CI-факт
-        # 2026-09-23, run be8c1fa: rustfs — NXDOMAIN весь прогон 217s+,
-        # при этом healthcheck сервиса зелёный — он ходит с localhost
-        # ВНУТРИ netns и DNS не доказывает; run 0b89aac — тот же порядок
-        # старта, резолвился). Локальный probe podman 6.0.2: файл-конфиг
-        # aardvark пуст при живом процессе — класс «запись не дошла до
-        # aardvark» существует. Гейт: ждём резолв всех трёх имён до 60с —
-        # задержавшаяся регистрация самозаживается; потерянная — падаем
-        # рано с инструкцией по диагностике раннера вместо 200s+ красного
-        # шума minio-клиента. Порядок сервисов фикса не предлагать: act
-        # итерирует их Go-мапой (randomized) — порядок не управляем.
+      - name: Probe service DNS (availability gate)
+        # Ранний гейт доступности сервисов до дорогих фаз. Родился из
+        # инцидента rustfs:1.0.0 (2026-09-23, runs be8c1fa/58aac96):
+        # контейнер умирал посреди job'ы (SIGSEGV, exit 139), teardown
+        # удалял его DNS-запись из сети, и minio-клиент краснел 200s+
+        # «lookup rustfs: no such host» вместо внятного диагноза; health-
+        # check act'а зелёный — он проверяет только старт. Гейт ловит и
+        # мёртвый контейнер (NXDOMAIN), и потерянную регистрацию aardvark,
+        # и недоступный порт — до сборки и линта, с ::error вместо шума.
+        # Порядок сервисов фикса не даёт: act итерирует их Go-мапой
+        # (randomized) — порядок старта не управляем.
         run: |
           missing=""
           for i in $(seq 1 30); do
             missing=""
-            for svc in rustfs postgres mariadb; do
+            for svc in s3 postgres mariadb; do
               getent hosts "$svc" >/dev/null || missing="$missing $svc"
             done
             [ -z "$missing" ] && { echo "все сервисные имена резолвятся (итерация $i)"; break; }
             sleep 2
           done
           if [ -n "$missing" ]; then
-            echo "::error::сервисные hostname не резолвятся ($missing) — aardvark-dns потерял регистрацию контейнеров сети job'а. Диагностика на раннере (user 968): podman --version; rpm -q podman netavark aardvark-dns; pgrep -a aardvark-dns; podman network ls; журнал user@968 вокруг старта job'а"
+            echo "::error::сервисные hostname не резолвятся ($missing) — контейнер мёртв или aardvark-dns потерял регистрацию сети job'а. Диагностика на раннере (user 968): podman ps -a | grep -E 's3|postgres|mariadb'; podman events --since -1h | grep -Ei 'died|stop'; pgrep -a aardvark-dns"
             exit 1
           fi
           # DNS есть — проверяем и TCP-путь до S3 (отдельный класс сбоев).
-          curl -fsS http://rustfs:9000/health > /dev/null
+          # Любой HTTP-ответ годен: auth-режим SeaweedFS отдаёт 403 на /.
+          curl -s -o /dev/null --max-time 5 http://s3:9000/
 
       - name: Install Go toolchain
         run: |
@@ -332,13 +343,13 @@ jobs:
         # CGO_ENABLED=0 for static linking (modernc.org/sqlite is pure Go);
         # tests opt back in here. Integration suite (test/integration/...)
         # — build-tag-gated (-tags integration), гоняется с сервисными
-        # контейнерами (postgres/mariadb/rustfs выше).
+        # контейнерами (postgres/mariadb/seaweedfs выше).
         env:
           RACE_FLAG: ${{ github.event.inputs.run_race_tests == 'true' && '-race' || '' }}
           CGO_ENABLED: "1"
           KHRZ_TEST_POSTGRES_DSN: "postgres://khrazhevnik:khrazhevnik@postgres:5432/khrazhevnik"
           KHRZ_TEST_MARIADB_DSN: "khrazhevnik:khrazhevnik@tcp(mariadb:3306)/khrazhevnik"
-          KHRZ_TEST_S3_ENDPOINT: "http://rustfs:9000"
+          KHRZ_TEST_S3_ENDPOINT: "http://s3:9000"
           KHRZ_TEST_S3_REGION: "us-east-1"
           KHRZ_TEST_S3_ACCESS_KEY: "minioadmin"
           KHRZ_TEST_S3_SECRET_KEY: "minioadmin"
@@ -362,7 +373,7 @@ jobs:
           CGO_ENABLED: "1"
           KHRZ_TEST_POSTGRES_DSN: "postgres://khrazhevnik:khrazhevnik@postgres:5432/khrazhevnik"
           KHRZ_TEST_MARIADB_DSN: "khrazhevnik:khrazhevnik@tcp(mariadb:3306)/khrazhevnik"
-          KHRZ_TEST_S3_ENDPOINT: "http://rustfs:9000"
+          KHRZ_TEST_S3_ENDPOINT: "http://s3:9000"
           KHRZ_TEST_S3_REGION: "us-east-1"
           KHRZ_TEST_S3_ACCESS_KEY: "minioadmin"
           KHRZ_TEST_S3_SECRET_KEY: "minioadmin"

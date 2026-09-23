@@ -74,22 +74,27 @@ major.
   fedora-нога остаются на fedora:44 (актуальный релиз; branched-образ
   46 в quay — не релиз). Pin minio не тронут — запиненная версия
   остаётся последним community-релизом на quay.
-- CI: S3-сервис контрактных suite заменён MinIO → RustFS
-  (docker.io/rustfs/rustfs:1.0.0, Apache 2.0, пин): minio/minio с
-  Docker Hub удалён (прекращение community-публикаций, 2025-10),
-  quay-образ тянулся байпасом мимо Nora — rustfs идёт через неё, как
-  postgres/mariadb. Прод-код не тронут (minio-go совместим с любым
-  S3-совместимым сервером); TestStorageContractS3 против rustfs:1.0.0 —
-  зелёный (локальная репродукция 2026-09-23: MakeBucket/Put/Get/Stat/
-  List/GetRange).
-- CI: гейт резолва сервисных hostname (rustfs/postgres/mariadb) перед
-  тестами: регистрация контейнеров в aardvark-dns сети job'а иногда
-  теряется (run be8c1fa — rustfs NXDOMAIN весь прогон при зелёном
-  healthcheck сервиса: тот ходит с localhost внутри netns и DNS не
-  доказывает; run 0b89aac — тот же старт, резолвился). Задержавшаяся
-  регистрация самозаживается ожиданием до 60с, потерянная — ранний
-  падеж с инструкцией по диагностике раннера вместо 200s+ шума
-  minio-клиента. Порядок сервисов не управляем (act итерирует Go-мапу).
+- CI: S3-сервис контрактных suite заменён MinIO → SeaweedFS
+  (docker.io/chrislusf/seaweedfs:4.47, пин): minio/minio с Docker Hub
+  удалён (прекращение community-публикаций, 2025-10), quay-образ тянулся
+  байпасом мимо Nora — seaweedfs идёт через неё, как postgres/mariadb.
+  Промежуточный кандидат rustfs:1.0.0 забракован: контейнер умирал
+  SIGSEGV (exit 139) посреди прогона (runs be8c1fa/58aac96 — «lookup
+  rustfs: no such host» 200s+: teardown мёртвого контейнера удаляет
+  DNS-запись; локальная репродукция — смерть после первого suite-
+  прогона; 1.0.0-alpha.67 стабильна, вернёмся к rustfs после
+  устаканивания релизов). Схема SeaweedFS: --entrypoint=sh + cmd
+  печатает s3.json в /tmp (bind-mount в services недоступен, анонимный
+  режим отвергает подписанные запросы); -volume.max=1000 (дефолт 8,
+  SeaweedFS плодит том почти на каждый object-assign — suite-прогон
+  ≈ 100 томов). Прод-код не тронут (minio-go); suite 12/12 зелёный
+  локально, soak 12× + паузы.
+- CI: гейт доступности сервисов (s3/postgres/mariadb) перед сборкой:
+  резолв имён до 60с + TCP-путь до S3; падение сервиса (как SIGSEGV-
+  инцидент rustfs) или потеря регистрации в aardvark-dns сети job'а
+  даёт ранний ::error с инструкцией по диагностике раннера вместо
+  200s+ шума minio-клиента в фазе тестов. Порядок сервисов не
+  управляем (act итерирует Go-мапу).
 
 ## [1.2.1] — 2026-09-19
 
