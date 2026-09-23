@@ -164,6 +164,7 @@ func TestMirrorSchedulerPicksUpRemoteViaAPI(t *testing.T) {
 			OnRemotesChanged: scheduler.Notify,
 		}),
 		Log:       log,
+		ShutdownTimeout: 10 * time.Second,
 		WaitTasks: scheduler.Stop,
 	}
 	ctx, cancel := context.WithCancel(context.Background())

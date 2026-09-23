@@ -119,6 +119,7 @@ func adminIntegrationEnv(t *testing.T) (*web.Server, *registry.CatalogSet, *web.
 			MetricsHandler: metricsHandler, Clock: clock,
 		}),
 		Log:       log,
+		ShutdownTimeout: 10 * time.Second,
 		WaitTasks: tasks.WaitAll,
 	}
 	return srv, &catalog, tasks

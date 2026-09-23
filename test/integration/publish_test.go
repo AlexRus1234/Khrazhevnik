@@ -143,6 +143,7 @@ func publishIntegrationEnv(t *testing.T, signer port.Signer) (*web.Server, strin
 			Tasks: tasks, Publish: publishAPI, Clock: clock,
 		}),
 		Log:       log,
+		ShutdownTimeout: 10 * time.Second,
 		WaitTasks: tasks.WaitAll,
 	}
 	return srv, publicAddr, adminAddr

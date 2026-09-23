@@ -37,6 +37,16 @@ major.
 
 ### Исправлено
 
+- CI: флейк «сервер: context deadline exceeded» в интеграционных
+  тестах (TestAdminMetricsLive/TestWireBootShutdown и соседи по
+  паттерну) — Shutdown ждёт StateNew-коннекты (принят клиентом,
+  запроса нет) ~5s по golang/go#22682 и на бюджете ровно 5s
+  возвращал DeadlineExceeded на грани монетки. Поле
+  web.Server.shutdownTimeout экспортировано в ShutdownTimeout,
+  интеграционные env'ы получают 10s — grace теперь целиком внутри
+  бюджета; контракт «Run вернул nil после cancel» не ослаблен.
+  Репродукция: 12/100 красных на TestWireBootShutdown → 0/100 после
+  фикса (go test -race, локально).
 - CI: контрактные suite mariadb на образе mariadb:13 — миграция 0006
   падала («Can't DROP FOREIGN KEY `api_tokens_ibfk_1`»): сервер 13
   автогенерит имя безымянного FK как `1`, а не `<таблица>_ibfk_N`;

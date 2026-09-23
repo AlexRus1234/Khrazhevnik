@@ -64,13 +64,19 @@ type Server struct {
 	// (sync-воркеры зеркал, сессия 11); nil — ждать нечего.
 	WaitTasks func(ctx context.Context) error
 
+	// ShutdownTimeout — бюджет HTTP-фазы каскада; 0 → httpShutdownTimeout
+	// (5s). Поле, а не константа: тесты «висящего» соединения не должны
+	// ждать полные 5s (сессия 35), а интеграционные env'ы с живыми
+	// клиентами — наоборот, выше: Shutdown ждёт StateNew-коннекты
+	// (принят, запроса нет) ~5s по golang/go#22682 и на бюджете ровно
+	// 5s возвращает DeadlineExceeded на грани монетки — CI-факт
+	// 2026-09-23 (TestAdminMetricsLive/TestWireBootShutdown, дамп
+	// горутин).
+	ShutdownTimeout time.Duration
+
 	mu         sync.Mutex
 	publicAddr string
 	adminAddr  string
-	// shutdownTimeout — бюджет HTTP-фазы каскада; 0 → httpShutdownTimeout.
-	// Поле, а не константа: тесты «висящего» соединения не должны ждать
-	// полные 5s (сессия 35).
-	shutdownTimeout time.Duration
 }
 
 // Run слушает до отмены ctx; при отмене гаснет каскадом. Сбой одного
@@ -96,7 +102,7 @@ func (s *Server) serve(ctx context.Context, publicLn, adminLn net.Listener) erro
 	if log == nil {
 		log = slog.Default()
 	}
-	httpTimeout := s.shutdownTimeout
+	httpTimeout := s.ShutdownTimeout
 	if httpTimeout <= 0 {
 		httpTimeout = httpShutdownTimeout
 	}

@@ -255,6 +255,7 @@ func newXbpsMirrorEnv(t *testing.T, up *httptest.Server) *xbpsMirrorEnv {
 			Tasks: tasks, Mirror: mirrorAPI, Clock: clock,
 		}),
 		Log:       log,
+		ShutdownTimeout: 10 * time.Second,
 		WaitTasks: tasks.WaitAll,
 	}
 	ctx, cancel := context.WithCancel(context.Background())

@@ -28,6 +28,16 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ### Fixed
 
+- CI: flaky «сервер: context deadline exceeded» in integration tests
+  (TestAdminMetricsLive/TestWireBootShutdown and everything sharing
+  the pattern) — Shutdown waits ~5s for StateNew connections
+  (accepted by the client, no request yet) per golang/go#22682, and
+  with a budget of exactly 5s it returned DeadlineExceeded on a coin
+  flip. web.Server.shutdownTimeout is exported as ShutdownTimeout,
+  integration envs now use 10s — the grace period fits inside the
+  budget; the «Run returns nil after cancel» contract is not relaxed.
+  Reproduction: 12/100 red on TestWireBootShutdown → 0/100 after the
+  fix (go test -race, local).
 - CI: mariadb contract suites on the mariadb:13 image — migration 0006
   failed («Can't DROP FOREIGN KEY `api_tokens_ibfk_1`»): server 13
   auto-names an unnamed FK as `1`, not `<table>_ibfk_N`; both

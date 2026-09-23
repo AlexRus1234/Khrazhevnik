@@ -97,6 +97,7 @@ func TestWireBootShutdown(t *testing.T) {
 		AdminAddr:     cfg.Server.AdminListen,
 		AdminHandler:  web.BuildAdminRouter(web.Deps{Log: log, Version: "test"}),
 		Log:           log,
+		ShutdownTimeout: 10 * time.Second,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -126,12 +127,14 @@ func TestWireBootShutdown(t *testing.T) {
 	}
 
 	cancel()
+	// 15s: Shutdown ждёт StateNew-коннекты ~5s (golang/go#22682) при
+	// бюджете ShutdownTimeout 10s — см. комментарий поля в web.Server.
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("сервер завершился с ошибкой: %v", err)
 		}
-	case <-time.After(6 * time.Second):
-		t.Fatal("сервер не завершился за 6с после отмены контекста")
+	case <-time.After(15 * time.Second):
+		t.Fatal("сервер не завершился за 15с после отмены контекста")
 	}
 }

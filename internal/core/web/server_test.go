@@ -123,7 +123,7 @@ func TestServerWaitTasksAfterShutdownTimeout(t *testing.T) {
 		return nil
 	})
 	// Короткий HTTP-таймаут: тесту не нужно ждать полные 5s.
-	s.shutdownTimeout = 50 * time.Millisecond
+	s.ShutdownTimeout = 50 * time.Millisecond
 	// Публичный хендлер с «висящим» путём: активный запрос живёт
 	// дольше HTTP-таймаута — как стрим пакетов в проде.
 	hangStarted := make(chan struct{})
@@ -137,7 +137,7 @@ func TestServerWaitTasksAfterShutdownTimeout(t *testing.T) {
 		default:
 			close(hangStarted)
 		}
-		time.Sleep(2 * time.Second) // >> shutdownTimeout
+		time.Sleep(2 * time.Second) // >> ShutdownTimeout
 		w.WriteHeader(http.StatusOK)
 	})
 
