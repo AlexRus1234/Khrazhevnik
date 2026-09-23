@@ -77,13 +77,15 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   be8c1fa/58aac96 — «lookup rustfs: no such host» for 200s+: the dead
   container's teardown removes the DNS entry; local reproduction —
   death after the first suite run; 1.0.0-alpha.67 is stable, we will
-  revisit rustfs once its releases settle). SeaweedFS setup:
-  --entrypoint=sh + cmd prints s3.json to /tmp (bind-mounts are
-  unavailable for services, the anonymous mode rejects signed
-  requests); -volume.max=1000 (the default is 8, and SeaweedFS grows a
-  volume per almost every object assign — one suite run ≈ 100
-  volumes). Production code is untouched (minio-go); the suite is 12/12
-  green locally, soak 12× with pauses.
+  revisit rustfs once its releases settle). SeaweedFS setup: cmd goes
+  through the native /entrypoint.sh ('server' case; the runner's act
+  fork ignores --entrypoint from options — the container died
+  Exited(2) on «weed -c»), NO s3.json: the anonymous mode rejects only
+  signed requests, and minio-go with empty credentials (env
+  KHRZ_TEST_S3_*_KEY) sends unsigned ones; -volume.max=1000 (the
+  default is 8, and SeaweedFS grows a volume per almost every object
+  assign — one suite run ≈ 100 volumes). Production code is untouched
+  (minio-go); suite+soak 18/18 green locally.
 - CI: a service availability gate (s3/postgres/mariadb) before the
   build: name resolution up to 60s + the TCP path to S3; a dead
   service (like the rustfs SIGSEGV incident) or a lost aardvark-dns

@@ -136,31 +136,33 @@ jobs:
         # SeaweedFS 4.47 — третий S3-носитель CI (2026-09-23). История:
         # minio/minio с Docker Hub удалён (прекращение community-публикаций,
         # 2025-10), quay-образ тянулся байпасом мимо Nora; rustfs:1.0.0
-        # забракован — SIGSEGV посреди прогона (CI-факты be8c1fa/58aac96:
-        # контейнер умирал exit 139, DNS-запись исчезала, minio-клиент
-        # 200s+ «no such host»; локальная репродукция — смерть после
-        # первого suite-прогона) — вернёмся к нему, когда релизы
+        # забракован — SIGSEGV посреди прогона (CI-факты be8c1fa/58aac96,
+        # локальная репродукция exit 139) — вернёмся, когда релизы
         # устаканятся. chrislusf/seaweedfs живёт в Docker Hub → идёт через
         # Nora, как postgres/mariadb; прод-код не тронут (minio-go).
-        # Схема запуска (probe-факты 2026-09-23): bind-mount в services
-        # недоступен, а анонимный S3-режим отвергает ПОДПИСАННЫЕ запросы
-        # («Signed request requires setting up SeaweedFS S3
-        # authentication») — потому --entrypoint=/bin/sh (act парсит
-        # docker-run флаги из options, docker_run.go mergeContainerConfigs)
-        # и cmd печатает s3.json в /tmp перед exec weed server.
-        # -volume.max=1000 явно: дефолт 8, а SeaweedFS плодит тома почти
-        # по одному на object-assign (один suite-прогон ≈ 100 томов;
-        # probe: 100/100 free:0 и «No writable volumes» на втором прогоне).
-        # Health — nc -z на S3-порт (GET / в auth-режиме отдаёт 403,
-        # wget/curl -f его роняют; master 9333 слушает только IP
-        # контейнера, не localhost). Suite 12/12 зелёный локально.
+        # Схема (probe-факты 2026-09-23): БЕЗ s3.json и БЕЗ --entrypoint —
+        # forgejo-act на раннере игнорирует --entrypoint из options
+        # (upstream act парсит, форк нет: контейнер Exited(2) — cmd
+        # «-c printf…» попадал в fallback entrypoint «exec weed "$@» →
+        # Go-флагпарсер exit 2). Анонимный режим отвергает только
+        # ПОДПИСАННЫЕ запросы; minio-go с пустыми кредами (env ниже)
+        # шлёт неподписанные — suite зелёный без конфига аутентификации.
+        # cmd идёт через родной /entrypoint.sh: кейс 'server' сам ставит
+        # -dir=/data и -master.volumeSizeLimitMB=1024, наш -volume.max
+        # переопределяет его дефолт «0» (авто по свободному месту
+        # считается криво в overlayfs) — SeaweedFS плодит том почти на
+        # каждый object-assign: suite-прогон ≈ 100 томов, дефолт 8
+        # кончался «No writable volumes» на втором прогоне. Health —
+        # nc -z (GET / в анонимке 200, но семантика TCP чище; master
+        # 9333 слушает только IP контейнера, не localhost). Suite+soak
+        # 18/18 зелёные локально.
         image: docker.io/chrislusf/seaweedfs:4.47
-        options: --entrypoint=/bin/sh --health-cmd="nc -z 127.0.0.1 9000 || exit 1" --health-interval=5s --health-timeout=3s --health-retries=10
+        options: --health-cmd="nc -z 127.0.0.1 9000 || exit 1" --health-interval=5s --health-timeout=3s --health-retries=10
         cmd:
-          - -c
-          - >-
-            printf %s '{"identities":[{"name":"khrz","credentials":[{"accessKey":"minioadmin","secretKey":"minioadmin"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' > /tmp/s3.json &&
-            exec /usr/bin/weed -logtostderr=true server -dir=/data -volume.max=1000 -master.volumeSizeLimitMB=1024 -s3 -s3.port=9000 -s3.config=/tmp/s3.json
+          - server
+          - -s3
+          - -s3.port=9000
+          - -volume.max=1000
 
     steps:
       - name: Install git first (minimal fedora image lacks it)
@@ -351,8 +353,10 @@ jobs:
           KHRZ_TEST_MARIADB_DSN: "khrazhevnik:khrazhevnik@tcp(mariadb:3306)/khrazhevnik"
           KHRZ_TEST_S3_ENDPOINT: "http://s3:9000"
           KHRZ_TEST_S3_REGION: "us-east-1"
-          KHRZ_TEST_S3_ACCESS_KEY: "minioadmin"
-          KHRZ_TEST_S3_SECRET_KEY: "minioadmin"
+          # Пустые креды = неподписанные запросы (анонимный режим
+          # SeaweedFS; см. комментарий сервиса s3 выше).
+          KHRZ_TEST_S3_ACCESS_KEY: ""
+          KHRZ_TEST_S3_SECRET_KEY: ""
           # Путь к собранному артефакту для test/integration/binary_smoke_test.go
           # (exec'ит khrazhevnik-ci как процесс; build-test job собирает его ранее).
           KHRZ_TEST_BINARY: "${{ github.workspace }}/khrazhevnik-ci"
@@ -375,8 +379,8 @@ jobs:
           KHRZ_TEST_MARIADB_DSN: "khrazhevnik:khrazhevnik@tcp(mariadb:3306)/khrazhevnik"
           KHRZ_TEST_S3_ENDPOINT: "http://s3:9000"
           KHRZ_TEST_S3_REGION: "us-east-1"
-          KHRZ_TEST_S3_ACCESS_KEY: "minioadmin"
-          KHRZ_TEST_S3_SECRET_KEY: "minioadmin"
+          KHRZ_TEST_S3_ACCESS_KEY: ""
+          KHRZ_TEST_S3_SECRET_KEY: ""
         run: |
           go test ./... -count=1 -covermode=atomic -coverprofile cover-unit.out
           go test -tags=integration ./test/integration/... -count=1 \

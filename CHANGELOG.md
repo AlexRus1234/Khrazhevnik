@@ -83,12 +83,14 @@ major.
   rustfs: no such host» 200s+: teardown мёртвого контейнера удаляет
   DNS-запись; локальная репродукция — смерть после первого suite-
   прогона; 1.0.0-alpha.67 стабильна, вернёмся к rustfs после
-  устаканивания релизов). Схема SeaweedFS: --entrypoint=sh + cmd
-  печатает s3.json в /tmp (bind-mount в services недоступен, анонимный
-  режим отвергает подписанные запросы); -volume.max=1000 (дефолт 8,
-  SeaweedFS плодит том почти на каждый object-assign — suite-прогон
-  ≈ 100 томов). Прод-код не тронут (minio-go); suite 12/12 зелёный
-  локально, soak 12× + паузы.
+  устаканивания релизов). Схема SeaweedFS: cmd через родной
+  /entrypoint.sh (кейс 'server'; --entrypoint из options форк act'а
+  раннера игнорирует — контейнер падал Exited(2) на «weed -c»), БЕЗ
+  s3.json: анонимный режим отвергает только подписанные запросы, а
+  minio-go с пустыми кредами (env KHRZ_TEST_S3_*_KEY) шлёт
+  неподписанные; -volume.max=1000 (дефолт 8, SeaweedFS плодит том
+  почти на каждый object-assign — suite-прогон ≈ 100 томов).
+  Прод-код не тронут (minio-go); suite+soak 18/18 зелёный локально.
 - CI: гейт доступности сервисов (s3/postgres/mariadb) перед сборкой:
   резолв имён до 60с + TCP-путь до S3; падение сервиса (как SIGSEGV-
   инцидент rustfs) или потеря регистрации в aardvark-dns сети job'а
