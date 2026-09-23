@@ -17,11 +17,14 @@
 -- FK api_tokens.user_id → ON DELETE CASCADE (сессия 79), диалект
 -- mariadb: без каскада пользователь с API-токенами неудаляем
 -- (FK-нарушение → 409 вместо 204). Имя безымянного FK 0001 —
--- автогенерат InnoDB <таблица>_ibfk_N, у api_tokens FK один —
--- api_tokens_ibfk_1; новый констрейнт именуется явно.
+-- автогенерат InnoDB и зависит от версии сервера: ≤11 —
+-- <таблица>_ibfk_N (api_tokens_ibfk_1), 13 — просто `1`; дропаем
+-- оба кандидата под IF EXISTS (синтаксис MariaDB, не MySQL), новый
+-- констрейнт именуется явно.
 
 -- +goose Up
-ALTER TABLE api_tokens DROP FOREIGN KEY api_tokens_ibfk_1;
+ALTER TABLE api_tokens DROP FOREIGN KEY IF EXISTS api_tokens_ibfk_1;
+ALTER TABLE api_tokens DROP FOREIGN KEY IF EXISTS `1`;
 ALTER TABLE api_tokens ADD CONSTRAINT api_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE;
 
 -- +goose Down

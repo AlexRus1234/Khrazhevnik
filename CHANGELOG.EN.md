@@ -26,6 +26,16 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- CI: mariadb contract suites on the mariadb:13 image — migration 0006
+  failed («Can't DROP FOREIGN KEY `api_tokens_ibfk_1`»): server 13
+  auto-names an unnamed FK as `1`, not `<table>_ibfk_N`; both
+  candidates are now dropped under `IF EXISTS` (MariaDB syntax, not
+  MySQL), the new constraint keeps its explicit name. Reproduced
+  against a local mariadb:13 — red → green (the whole
+  TestCatalogContractMariaDB).
+
 ### Changed
 
 - Toolchain and CI updated to current versions: Go 1.26.3 → 1.27.1
