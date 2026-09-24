@@ -26,6 +26,16 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Added
+
+- Admin API: per-upstream proxy — the `proxy_url` field in
+  POST/PATCH/GET `/api/v1/remotes` (tri-state: empty — inherit the
+  global proxy, `direct` — no proxy, otherwise an
+  http/https/socks5/socks5h URL with optional userinfo); an invalid
+  value yields 400 validation_error; the proxy password never reaches
+  the audit log — the detail carries the masked URL
+  (`socks5://***@h:1080`).
+
 ### Fixed
 
 - Binary: graceful shutdown flake — exit 1 instead of 0 on SIGTERM

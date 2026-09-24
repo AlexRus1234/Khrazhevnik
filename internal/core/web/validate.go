@@ -183,6 +183,9 @@ type remoteInput struct {
 	Enabled      *bool         `json:"enabled"`
 	SyncInterval time.Duration `json:"sync_interval"`
 	Include      []string      `json:"include"`
+	// ProxyURL — tri-state прокси upstream (domain.Remote.ProxyURL):
+	// "" / "direct" валидны тривиально, прочее — через домен.
+	ProxyURL string `json:"proxy_url"`
 }
 
 // validate проверяет поля remoteInput и возвращает первую ошибку
@@ -208,6 +211,11 @@ func (in *remoteInput) validate() error {
 	}
 	if in.SyncInterval < 0 {
 		return &domain.ValidationError{What: "sync_interval", Value: in.SyncInterval.String(), Reason: "не может быть отрицательным"}
+	}
+	if in.ProxyURL != "" && in.ProxyURL != domain.ProxyDirect {
+		if err := domain.ValidateProxyURL(in.ProxyURL); err != nil {
+			return err
+		}
 	}
 	return nil
 }

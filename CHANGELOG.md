@@ -35,6 +35,16 @@ major.
 
 ## [Unreleased]
 
+### Добавлено
+
+- Админ-API: прокси upstream на источник — поле `proxy_url` в
+  POST/PATCH/GET `/api/v1/remotes` (tri-state: пусто — наследовать
+  глобальный прокси, `direct` — ходить напрямую, иначе URL
+  http/https/socks5/socks5h с опциональным userinfo); невалидное
+  значение — 400 validation_error; пароль прокси не попадает в
+  аудит-лог — в detail пишется замаскированный URL
+  (`socks5://***@h:1080`).
+
 ### Исправлено
 
 - Бинарь: флейк graceful shutdown — exit 1 вместо 0 на SIGTERM

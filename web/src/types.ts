@@ -28,6 +28,7 @@ export interface Remote {
   enabled: boolean
   sync_interval: number
   include: string[]
+  proxy_url: string
   created_at: string
 }
 

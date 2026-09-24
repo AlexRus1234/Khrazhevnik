@@ -219,6 +219,8 @@ func TestAdminRemotesValidation(t *testing.T) {
 		{"bad url", `{"name":"x","ecosystem":"apt","base_url":"not-a-url","mode":"proxy"}`, "validation_error"},
 		{"bad mode", `{"name":"x","ecosystem":"apt","base_url":"https://x","mode":"weird"}`, "validation_error"},
 		{"empty eco", `{"name":"x","ecosystem":"","base_url":"https://x","mode":"proxy"}`, "validation_error"},
+		{"bad proxy scheme", `{"name":"x","ecosystem":"apt","base_url":"https://x","mode":"proxy","proxy_url":"ftp://h"}`, "validation_error"},
+		{"proxy direct is case-sensitive", `{"name":"x","ecosystem":"apt","base_url":"https://x","mode":"proxy","proxy_url":"Direct"}`, "validation_error"},
 		{"bad json", `{"name":"x"`, "invalid_json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -252,6 +254,116 @@ func TestAdminRemotesAuthMatrix(t *testing.T) {
 				t.Fatalf("status = %d, хочу %d (тело %s)", rec.Code, tc.want, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestAdminRemotesProxyURL — сессия 155: POST/PATCH/GET /remotes
+// принимают и возвращают proxy_url; "" и "direct" валидны; сброс PATCH'ом
+// в "" отдаёт "" последующим GET; пароль прокси в audit-detail
+// замаскирован (domain.MaskProxyURL).
+func TestAdminRemotesProxyURL(t *testing.T) {
+	env := newAdminEnv(t)
+
+	// Create с socks5-прокси и паролем → 201, proxy_url вернулся.
+	body := `{"name":"debian","ecosystem":"apt","base_url":"https://deb.debian.org/debian","mode":"proxy","proxy_url":"socks5://user:pass@h:1080"}`
+	rec := callAdmin(env, http.MethodPost, "/api/v1/remotes", body, env.jwtAdmin)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create с proxy = %d, тело %s", rec.Code, rec.Body.String())
+	}
+	var created remoteOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ProxyURL != "socks5://user:pass@h:1080" {
+		t.Errorf("created.proxy_url = %q, хочу исходный URL", created.ProxyURL)
+	}
+
+	// Аудит: деталь содержит маску и НЕ содержит пароль.
+	e := lastAudit(t, env.audit)
+	raw, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := string(raw)
+	if !strings.Contains(detail, `socks5://***@h:1080`) {
+		t.Errorf("audit-detail без маски прокси: %s", detail)
+	}
+	if strings.Contains(detail, "pass") {
+		t.Errorf("audit-detail содержит пароль прокси: %s", detail)
+	}
+
+	// Create с "direct" и с "" (поле опущено) → 201.
+	for _, tc := range []struct {
+		name, proxy string
+	}{
+		{"direct", `"direct"`},
+		{"empty", ""}, // поле не передаётся вовсе → нулевое значение
+	} {
+		body := `{"name":"r-` + tc.name + `","ecosystem":"apt","base_url":"https://x","mode":"proxy"`
+		if tc.proxy != "" {
+			body += `,"proxy_url":` + tc.proxy
+		}
+		body += `}`
+		if rec := callAdmin(env, http.MethodPost, "/api/v1/remotes", body, env.jwtAdmin); rec.Code != http.StatusCreated {
+			t.Errorf("create %s = %d, тело %s", tc.name, rec.Code, rec.Body.String())
+		}
+	}
+
+	// GET /remotes отдаёт proxy_url всех строк (включая пустые).
+	rec = callAdmin(env, http.MethodGet, "/api/v1/remotes", "", env.jwtAdmin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d", rec.Code)
+	}
+	var list []remoteOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("list = %d строк, хочу 3", len(list))
+	}
+	byName := map[string]string{}
+	for _, r := range list {
+		byName[r.Name] = r.ProxyURL
+	}
+	if byName["debian"] != "socks5://user:pass@h:1080" {
+		t.Errorf("list: proxy_url debian = %q", byName["debian"])
+	}
+	if byName["r-direct"] != "direct" || byName["r-empty"] != "" {
+		t.Errorf("list: direct/empty = %q/%q", byName["r-direct"], byName["r-empty"])
+	}
+
+	// PATCH: смена proxy_url → 200.
+	body = `{"name":"debian","ecosystem":"apt","base_url":"https://deb.debian.org/debian","mode":"proxy","enabled":true,"proxy_url":"http://u:secret@p:3128"}`
+	rec = callAdmin(env, http.MethodPatch, "/api/v1/remotes/1", body, env.jwtAdmin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch proxy = %d, тело %s", rec.Code, rec.Body.String())
+	}
+	var updated remoteOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.ProxyURL != "http://u:secret@p:3128" {
+		t.Errorf("patched.proxy_url = %q", updated.ProxyURL)
+	}
+
+	// PATCH: сброс в "" → 200, последующий GET /remotes отдаёт ""
+	// (сингл-GET /remotes/{id} в API нет — контракт читается списком).
+	body = `{"name":"debian","ecosystem":"apt","base_url":"https://deb.debian.org/debian","mode":"proxy","enabled":true,"proxy_url":""}`
+	if rec := callAdmin(env, http.MethodPatch, "/api/v1/remotes/1", body, env.jwtAdmin); rec.Code != http.StatusOK {
+		t.Fatalf("patch сброс = %d, тело %s", rec.Code, rec.Body.String())
+	}
+	rec = callAdmin(env, http.MethodGet, "/api/v1/remotes", "", env.jwtAdmin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get после сброса = %d", rec.Code)
+	}
+	var listAfter []remoteOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &listAfter); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range listAfter {
+		if r.ID == 1 && r.ProxyURL != "" {
+			t.Errorf("после сброса proxy_url = %q, хочу пусто", r.ProxyURL)
+		}
 	}
 }
 
