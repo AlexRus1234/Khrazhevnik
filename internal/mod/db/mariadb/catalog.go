@@ -103,12 +103,12 @@ const (
 // Upstream'ы и sync-задачи. `cursor` — зарезервированное слово MariaDB,
 // экранируется бэктиками везде, где встречается как идентификатор.
 const (
-	sqlRemoteInsert = `INSERT INTO remotes (name, ecosystem, upstream_url, mode, enabled, sync_interval_sec, include, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	sqlRemoteSelect = `SELECT id, name, ecosystem, upstream_url, mode, enabled, sync_interval_sec, include, created_at FROM remotes`
+	sqlRemoteInsert = `INSERT INTO remotes (name, ecosystem, upstream_url, proxy_url, mode, enabled, sync_interval_sec, include, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	sqlRemoteSelect = `SELECT id, name, ecosystem, upstream_url, proxy_url, mode, enabled, sync_interval_sec, include, created_at FROM remotes`
 	sqlRemoteByID   = sqlRemoteSelect + ` WHERE id = ?`
 	sqlRemoteAll    = sqlRemoteSelect + ` ORDER BY id`
-	sqlRemoteUpdate = `UPDATE remotes SET name = ?, ecosystem = ?, upstream_url = ?, mode = ?, enabled = ?, sync_interval_sec = ?, include = ? WHERE id = ?`
+	sqlRemoteUpdate = `UPDATE remotes SET name = ?, ecosystem = ?, upstream_url = ?, proxy_url = ?, mode = ?, enabled = ?, sync_interval_sec = ?, include = ? WHERE id = ?`
 	sqlRemoteDelete = `DELETE FROM remotes WHERE id = ?`
 
 	sqlJobInsert = `INSERT INTO sync_jobs (remote_id, state, interval_sec, last_run_at, ` + "`cursor`" + `, updated_at)
@@ -515,7 +515,7 @@ func scanRepo(row interface{ Scan(dest ...any) error }) (domain.Repo, error) {
 func (s *Store) CreateRemote(ctx context.Context, r domain.Remote) (domain.Remote, error) {
 	res, err := call(ctx, s, func() (sql.Result, error) {
 		return s.db.ExecContext(ctx, sqlRemoteInsert,
-			r.Name, r.Ecosystem, r.BaseURL, string(r.Mode), r.Enabled,
+			r.Name, r.Ecosystem, r.BaseURL, r.ProxyURL, string(r.Mode), r.Enabled,
 			int64(r.SyncInterval/time.Second), joinInclude(r.Include),
 			dbtalk.Now(r.CreatedAt))
 	})
@@ -569,7 +569,7 @@ func (s *Store) Remotes(ctx context.Context) ([]domain.Remote, error) {
 func (s *Store) UpdateRemote(ctx context.Context, r domain.Remote) error {
 	res, err := call(ctx, s, func() (sql.Result, error) {
 		return s.db.ExecContext(ctx, sqlRemoteUpdate,
-			r.Name, r.Ecosystem, r.BaseURL, string(r.Mode), r.Enabled,
+			r.Name, r.Ecosystem, r.BaseURL, r.ProxyURL, string(r.Mode), r.Enabled,
 			int64(r.SyncInterval/time.Second), joinInclude(r.Include), r.ID)
 	})
 	if err != nil {
@@ -590,7 +590,7 @@ func scanRemote(row interface{ Scan(dest ...any) error }) (domain.Remote, error)
 	var intervalSec int64
 	var include string
 	var createdAt int64
-	if err := row.Scan(&r.ID, &r.Name, &r.Ecosystem, &r.BaseURL, &mode, &r.Enabled,
+	if err := row.Scan(&r.ID, &r.Name, &r.Ecosystem, &r.BaseURL, &r.ProxyURL, &mode, &r.Enabled,
 		&intervalSec, &include, &createdAt); err != nil {
 		return domain.Remote{}, err
 	}

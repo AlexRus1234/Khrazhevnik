@@ -18,6 +18,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -26,12 +27,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
 	sqlite3 "modernc.org/sqlite/lib"
 
 	"khrazhevnik/internal/contract"
 	"khrazhevnik/internal/core/config"
 	"khrazhevnik/internal/core/domain"
 	"khrazhevnik/internal/core/port"
+	migrations "khrazhevnik/migrations/sqlite"
 )
 
 // Компиляция срезов порта: Store обязан реализовать весь каталог.
@@ -160,6 +163,45 @@ func TestMigrationsIdempotentAndPersistent(t *testing.T) {
 	}
 	if got.Role != domain.RoleAdmin || got.CreatedAt != fixed {
 		t.Fatalf("после переоткрытия: %+v", got)
+	}
+}
+
+// TestMigration0009ProxyURLOnExistingRows — сессия 153: подъём 0009 на
+// populated-БД (схема 0008): старые remote'ы получают proxy_url ""
+// (DEFAULT), строки не теряются, Store после апгрейда их читает.
+func TestMigration0009ProxyURLOnExistingRows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "upgrade.db")
+
+	// Схема до 0009: сырое соединение + goose UpTo(8).
+	db, err := sql.Open("sqlite", buildDSN(path, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pre.UpTo(ctx, 8); err != nil {
+		t.Fatalf("схема 0008: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO remotes
+		(name, ecosystem, upstream_url, mode, enabled, sync_interval_sec, include, created_at)
+		VALUES ('old', 'apt', 'https://old.example/debian', 'proxy', 1, 21600, 'stable', 1785000000)`); err != nil {
+		t.Fatalf("старый remote: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Апгрейд: обычный Open поднимает 0009 (goose.Up идемпотентен).
+	st := openDSN(t, path)
+	rs, err := st.Remotes(ctx)
+	if err != nil || len(rs) != 1 {
+		t.Fatalf("Remotes после апгрейда = %+v, %v", rs, err)
+	}
+	if rs[0].Name != "old" || rs[0].ProxyURL != "" {
+		t.Fatalf("старый remote = %+v, хочу ProxyURL \"\"", rs[0])
 	}
 }
 

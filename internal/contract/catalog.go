@@ -427,7 +427,8 @@ func remoteSuite(t *testing.T, c Catalog) {
 	ctx := context.Background()
 	rm, err := c.Remotes.CreateRemote(ctx, domain.Remote{
 		Name: "deb-main", Ecosystem: "apt", BaseURL: "https://deb.example.org/debian",
-		Mode: domain.ModeProxy, Enabled: true, SyncInterval: 6 * time.Hour,
+		ProxyURL: "http://proxy.example.org:3128",
+		Mode:     domain.ModeProxy, Enabled: true, SyncInterval: 6 * time.Hour,
 		Include: []string{"stable", "stable/main"}, CreatedAt: fixed,
 	})
 	if err != nil || rm.ID == 0 {
@@ -436,7 +437,7 @@ func remoteSuite(t *testing.T, c Catalog) {
 	_, err = c.Remotes.CreateRemote(ctx, domain.Remote{Name: "deb-main", CreatedAt: fixed})
 	wantConflict(t, err)
 	got, err := c.Remotes.Remote(ctx, rm.ID)
-	if err != nil || got.BaseURL != "https://deb.example.org/debian" || got.Mode != domain.ModeProxy || !got.Enabled {
+	if err != nil || got.BaseURL != "https://deb.example.org/debian" || got.ProxyURL != "http://proxy.example.org:3128" || got.Mode != domain.ModeProxy || !got.Enabled {
 		t.Fatalf("Remote = %+v, %v", got, err)
 	}
 	if got.SyncInterval != 6*time.Hour {
@@ -455,7 +456,7 @@ func remoteSuite(t *testing.T, c Catalog) {
 		t.Fatal(err)
 	}
 	got2, _ := c.Remotes.Remote(ctx, rm.ID)
-	if got2.Enabled || got2.Mode != domain.ModeMirror {
+	if got2.Enabled || got2.Mode != domain.ModeMirror || got2.ProxyURL != "http://proxy.example.org:3128" {
 		t.Fatalf("UpdateRemote не применился: %+v", got2)
 	}
 	if got2.SyncInterval != 0 {
@@ -463,6 +464,14 @@ func remoteSuite(t *testing.T, c Catalog) {
 	}
 	if got2.Include != nil {
 		t.Errorf("Include после сброса = %+v", got2.Include)
+	}
+	// Прокси сбрасывается в "" — прямое соединение (сессия 153).
+	got2.ProxyURL = ""
+	if err := c.Remotes.UpdateRemote(ctx, got2); err != nil {
+		t.Fatal(err)
+	}
+	if got3, _ := c.Remotes.Remote(ctx, rm.ID); got3.ProxyURL != "" {
+		t.Errorf("ProxyURL после сброса = %q", got3.ProxyURL)
 	}
 	err = c.Remotes.UpdateRemote(ctx, domain.Remote{ID: 999, Name: "ghost"})
 	wantNotFound(t, err)
