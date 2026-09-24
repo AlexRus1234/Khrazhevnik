@@ -59,6 +59,10 @@ type Deps struct {
 	// старые числа). nil в деградированном режиме — сброс касается
 	// только памяти.
 	Stats port.StatsStore
+	// Settings — глобальные настройки инстанса (сессия 156): пока
+	// только upstream-proxy. nil в деградированном режиме — GET отдаёт
+	// пустое значение (поведение env-фолбэка честно), PUT — 503.
+	Settings port.UpstreamProxyStore
 	// Repos — CRUD личных репозиториев + lookup по имени для
 	// публичного роутера :29202 (сессия 14).
 	Repos port.RepoStore
@@ -286,6 +290,14 @@ func BuildAdminRouter(d Deps) http.Handler {
 				remotes.Patch("/{id}", handleUpdateRemote(d))
 				remotes.Delete("/{id}", handleDeleteRemote(d))
 				remotes.Post("/{id}/sync", handleSyncRemote(d))
+			})
+
+			// /settings — admin-only глобальные настройки инстанса
+			// (сессия 156): пока только upstream-proxy. PUT — мутация,
+			// поэтому под auditWrap (action settings.update).
+			api.With(auditWrap, adminAuth).Route("/settings", func(settings chi.Router) {
+				settings.Get("/upstream-proxy", handleGetUpstreamProxy(d))
+				settings.Put("/upstream-proxy", handlePutUpstreamProxy(d))
 			})
 
 			// /repos — личные репозитории. admin-only CRUD/perms под

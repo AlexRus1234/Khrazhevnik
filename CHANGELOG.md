@@ -44,6 +44,12 @@ major.
   значение — 400 validation_error; пароль прокси не попадает в
   аудит-лог — в detail пишется замаскированный URL
   (`socks5://***@h:1080`).
+- Админ-API: глобальный прокси upstream — GET/PUT
+  `/api/v1/settings/upstream-proxy` (тело `{"value": …}`; пусто —
+  env-прокси HTTP_PROXY/HTTPS_PROXY/NO_PROXY как фолбэк, `direct`,
+  иначе валидный URL); невалидное значение — 400 validation_error,
+  аудит `settings.update` с замаскированным URL. Применяется без
+  рестарта в пределах 30с (ленивый TTL-кеш фабрики транспортов).
 
 ### Исправлено
 

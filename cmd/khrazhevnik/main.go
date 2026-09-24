@@ -109,6 +109,7 @@ func run(ctx context.Context, configPath string) error {
 			Remotes:          app.Catalog.Remotes,
 			Repos:            app.Catalog.Repos,
 			Stats:            app.Catalog.Stats,
+			Settings:         app.Catalog.Settings,
 			Storage:          app.Storage,
 			Audit:            app.Catalog.Audit,
 			Tasks:            app.Tasks,

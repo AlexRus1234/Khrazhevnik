@@ -35,6 +35,13 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   value yields 400 validation_error; the proxy password never reaches
   the audit log — the detail carries the masked URL
   (`socks5://***@h:1080`).
+- Admin API: global upstream proxy — GET/PUT
+  `/api/v1/settings/upstream-proxy` (`{"value": …}` body; empty —
+  env proxies HTTP_PROXY/HTTPS_PROXY/NO_PROXY as the fallback,
+  `direct`, otherwise a valid URL); an invalid value yields 400
+  validation_error; `settings.update` audit entry with the masked
+  URL. Applied without a restart within 30s (lazy TTL cache of the
+  transport factory).
 
 ### Fixed
 

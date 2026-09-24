@@ -17,6 +17,7 @@
 package main
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/url"
@@ -26,27 +27,81 @@ import (
 	"khrazhevnik/internal/core/port"
 )
 
+// upstreamProxyTTL — лаг видимости смены глобальной настройки прокси
+// (решение владельца 2026-09-23: применение без рестарта ≤30с).
+const upstreamProxyTTL = 30 * time.Second
+
+// upstreamProxyResolver — ленивый TTL-кеш значения upstream.proxy
+// (паттерн remoteCache адаптеров): чтение БД не чаще раза в TTL.
+// nil-стор — всегда "" (env-фолбэк). Сбой чтения не роняет трафик:
+// отдаётся последнее известное значение (первый сбой — ""), ошибка
+// уходит в onError (wire вешает лог).
+type upstreamProxyResolver struct {
+	store   port.UpstreamProxyStore
+	clock   port.Clock
+	onError func(error)
+
+	mu       sync.RWMutex
+	value    string
+	lastRead time.Time
+}
+
+// current — значение настройки для фабрики: "" / "direct" / URL.
+func (r *upstreamProxyResolver) current() string {
+	if r == nil || r.store == nil {
+		return ""
+	}
+	now := r.clock.Now()
+	r.mu.RLock()
+	fresh := now.Sub(r.lastRead) < upstreamProxyTTL
+	v := r.value
+	r.mu.RUnlock()
+	if fresh {
+		return v
+	}
+	got, err := r.store.UpstreamProxy(context.Background())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lastRead = now
+	if err != nil {
+		if r.onError != nil {
+			r.onError(err)
+		}
+		return v
+	}
+	r.value = got
+	return got
+}
+
 // doerFactory — port.DoerFactory с кешем клиентов по прокси-строке:
 // один прокси — один клиент (и один пул соединений). Число различных
-// прокси ≈ числу remote'ов, поэтому кеш без эвикции.
+// прокси ≈ числу remote'ов плюс значения глобальной настройки, поэтому
+// кеш без эвикции; смена настройки заводит новый клиент лишь после
+// исчерпания TTL, старый остаётся в кеше.
 type doerFactory struct {
 	mu      sync.RWMutex
 	clients map[string]port.Doer
 	def     port.Doer
+	// resolve — текущее значение глобальной настройки прокси; nil —
+	// настройка не подключена, дефолтная ветка всегда env-клиент.
+	resolve func() string
 }
 
 // newDoerFactory строит фабрику транспортов. Tri-state proxyURL:
-// "" — дефолтный Doer (env-прокси, текущее поведение), "direct" —
-// транспорт без прокси, иначе URL прокси (http/https/socks5(h);
-// userinfo URL — авторизация на прокси). Читаемая из БД глобальная
-// настройка включается позже (сессия 156).
-func newDoerFactory(defaultDoer port.Doer) port.DoerFactory {
-	return &doerFactory{clients: map[string]port.Doer{}, def: defaultDoer}
+// "" — дефолтный Doer (глобальная настройка из резолвера, при пустой —
+// env-прокси), "direct" — транспорт без прокси, иначе URL прокси
+// (http/https/socks5(h); userinfo URL — авторизация на прокси).
+// resolve nil — поведение без настройки: "" всегда env-клиент.
+func newDoerFactory(defaultDoer port.Doer, resolve func() string) port.DoerFactory {
+	return &doerFactory{clients: map[string]port.Doer{}, def: defaultDoer, resolve: resolve}
 }
 
 // DoerFor возвращает клиента для прокси-строки, создавая его при
 // первом обращении; повторные вызовы отдают тот же указатель.
 func (f *doerFactory) DoerFor(proxyURL string) port.Doer {
+	if proxyURL == "" && f.resolve != nil {
+		proxyURL = f.resolve()
+	}
 	f.mu.RLock()
 	c, ok := f.clients[proxyURL]
 	f.mu.RUnlock()
