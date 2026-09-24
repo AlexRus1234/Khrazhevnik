@@ -45,6 +45,14 @@ type Remote struct {
 	// с опциональной компонентой («stable», «stable/main»); для
 	// rpm-md — не используется (репо — единое целое по repomd). Пустой
 	// срез — sync всего, что Enumerate найдёт по умолчанию.
-	Include   []string
+	Include []string
+	// ProxyURL — исходящий прокси для этого upstream, tri-state:
+	// "" — наследовать глобальную настройку прокси (настройка в БД,
+	// фолбэк env HTTP(S)_PROXY); ProxyDirect ("direct") — ходить
+	// напрямую, глобальный прокси не применять; иначе — URL схемы
+	// http/https/socks5/socks5h, userinfo с паролем допускается
+	// (валидация — ValidateProxyURL; в логах/API — только через
+	// MaskProxyURL, пароль не покидает домен в открытом виде).
+	ProxyURL  string
 	CreatedAt time.Time
 }
