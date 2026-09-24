@@ -40,6 +40,9 @@ type CatalogSet struct {
 	// Stats — снапшот per-eco счётчиков статистики кеша (сессия 95):
 	// переживает рестарт процесса.
 	Stats port.StatsStore
+	// Settings — глобальные настройки инстанса (сессия 154): пока
+	// только upstream.proxy.
+	Settings port.UpstreamProxyStore
 	// Revocations — персистентный отзыв JWT-сессий (сессия 25):
 	// logout переживает рестарт процесса.
 	Revocations port.SessionRevocationStore

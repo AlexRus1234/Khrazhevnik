@@ -29,13 +29,14 @@ import (
 
 // Компиляция срезов порта: Store обязан реализовать весь каталог.
 var (
-	_ port.UserStore   = (*Store)(nil)
-	_ port.TokenStore  = (*Store)(nil)
-	_ port.RepoStore   = (*Store)(nil)
-	_ port.RemoteStore = (*Store)(nil)
-	_ port.JobStore    = (*Store)(nil)
-	_ port.AuditLog    = (*Store)(nil)
-	_ port.ObjectIndex = (*Store)(nil)
+	_ port.UserStore          = (*Store)(nil)
+	_ port.TokenStore         = (*Store)(nil)
+	_ port.RepoStore          = (*Store)(nil)
+	_ port.RemoteStore        = (*Store)(nil)
+	_ port.JobStore           = (*Store)(nil)
+	_ port.AuditLog           = (*Store)(nil)
+	_ port.ObjectIndex        = (*Store)(nil)
+	_ port.UpstreamProxyStore = (*Store)(nil)
 )
 
 func TestObjectMetaUpsertSQL(t *testing.T) {

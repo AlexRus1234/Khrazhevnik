@@ -47,6 +47,7 @@ var (
 	_ port.AuditLog               = (*Store)(nil)
 	_ port.ObjectIndex            = (*Store)(nil)
 	_ port.SessionRevocationStore = (*Store)(nil)
+	_ port.UpstreamProxyStore     = (*Store)(nil)
 )
 
 // fixed — детерминированное время записи (эпоха теряет доли секунды).
@@ -85,6 +86,7 @@ func TestCatalogContract(t *testing.T) {
 			Audit:       st,
 			ObjIndex:    st,
 			Stats:       st,
+			Settings:    st,
 			Revocations: st,
 			Close:       st.Close,
 		}

@@ -79,6 +79,7 @@ func init() {
 			Audit:       st,
 			ObjIndex:    st,
 			Stats:       st,
+			Settings:    st,
 			Revocations: st,
 		}, nil
 	})
@@ -92,6 +93,7 @@ type Store struct {
 	upsertObjectMeta    string
 	upsertRevocation    string
 	upsertStatsSnapshot string
+	upsertSettings      string
 }
 
 // Open парсит DSN (mysql.ParseDSN — fail-fast на плохом формате),
@@ -123,6 +125,7 @@ func Open(cfg config.Database) (*Store, error) {
 		upsertObjectMeta:    objectMetaUpsertSQL(),
 		upsertRevocation:    revocationUpsertSQL(),
 		upsertStatsSnapshot: statsUpsertSQL(),
+		upsertSettings:      settingsUpsertSQL(),
 	}, nil
 }
 

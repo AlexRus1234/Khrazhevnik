@@ -67,6 +67,7 @@ func init() {
 			Audit:       st,
 			ObjIndex:    st,
 			Stats:       st,
+			Settings:    st,
 			Revocations: st,
 		}, nil
 	})
@@ -80,6 +81,7 @@ type Store struct {
 	upsertObjectMeta    string
 	upsertRevocation    string
 	upsertStatsSnapshot string
+	upsertSettings      string
 }
 
 // Open парсит DSN (pgx), открывает пул и поднимает миграции. DSN —
@@ -108,6 +110,7 @@ func Open(cfg config.Database) (*Store, error) {
 		upsertObjectMeta:    objectMetaUpsertSQL(),
 		upsertRevocation:    revocationUpsertSQL(),
 		upsertStatsSnapshot: statsUpsertSQL(),
+		upsertSettings:      settingsUpsertSQL(),
 	}, nil
 }
 
