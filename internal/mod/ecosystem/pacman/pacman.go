@@ -145,6 +145,7 @@ func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 		UpstreamURL:  base + upstreamPath,
 		UpstreamPath: upstreamPath,
 		StorageKey:   "cache/" + Name + "/" + strconv.FormatInt(remote.ID, 10) + strings.ToLower(upstreamPath),
+		ProxyURL:     remote.ProxyURL,
 	}, true
 }
 

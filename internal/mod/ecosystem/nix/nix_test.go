@@ -213,6 +213,34 @@ func TestResolveKnownRemote(t *testing.T) {
 	}
 }
 
+func TestResolveProxyURL(t *testing.T) {
+	// Tri-state семантика: "" в remote — «по глобальной настройке»,
+	// и он же должен честно прийти в Target пустым.
+	for _, tc := range []struct {
+		name     string
+		proxyURL string
+	}{
+		{"прокси", "socks5://h:1080"},
+		{"без прокси", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newResolveAdapter(t, domain.Remote{
+				ID: 7, Name: "cache", Ecosystem: "nix",
+				BaseURL:  "https://cache.nixos.org",
+				Enabled:  true,
+				ProxyURL: tc.proxyURL,
+			})
+			target, ok := a.Resolve("/nix/cache/nar/" + fileHash52 + ".nar.xz")
+			if !ok {
+				t.Fatal("Resolve существующего remote = false")
+			}
+			if target.ProxyURL != tc.proxyURL {
+				t.Errorf("ProxyURL = %q, хочу %q", target.ProxyURL, tc.proxyURL)
+			}
+		})
+	}
+}
+
 func TestResolveRootPath(t *testing.T) {
 	a := newResolveAdapter(t, domain.Remote{
 		ID: 3, Name: "cache", BaseURL: "https://cache.nixos.org", Enabled: true,

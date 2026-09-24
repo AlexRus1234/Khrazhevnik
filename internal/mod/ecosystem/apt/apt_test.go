@@ -222,6 +222,33 @@ func TestResolveKnownRemote(t *testing.T) {
 	}
 }
 
+func TestResolveProxyURL(t *testing.T) {
+	// Tri-state семантика: "" в remote — «по глобальной настройке»,
+	// и он же должен честно прийти в Target пустым.
+	for _, tc := range []struct {
+		name     string
+		proxyURL string
+	}{
+		{"прокси", "socks5://h:1080"},
+		{"без прокси", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newResolveAdapter(t, domain.Remote{
+				ID: 7, Name: "debian", Ecosystem: "apt",
+				BaseURL: "https://deb.debian.org/debian", Enabled: true,
+				ProxyURL: tc.proxyURL,
+			})
+			target, ok := a.Resolve("/apt/debian/pool/main/a/app/app_1.0_amd64.deb")
+			if !ok {
+				t.Fatal("Resolve существующего remote = false")
+			}
+			if target.ProxyURL != tc.proxyURL {
+				t.Errorf("ProxyURL = %q, хочу %q", target.ProxyURL, tc.proxyURL)
+			}
+		})
+	}
+}
+
 func TestResolveUppercaseStorageKeyPreserved(t *testing.T) {
 	// Регистр сохраняется во всех полях Target (сессия 19):
 	// лоуэркейс StorageKey склеивал бы /pool/Foo.deb и /pool/foo.deb

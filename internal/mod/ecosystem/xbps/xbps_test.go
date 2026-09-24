@@ -180,6 +180,34 @@ func TestResolveKnownRemote(t *testing.T) {
 	}
 }
 
+func TestResolveProxyURL(t *testing.T) {
+	// Tri-state семантика: "" в remote — «по глобальной настройке»,
+	// и он же должен честно прийти в Target пустым.
+	for _, tc := range []struct {
+		name     string
+		proxyURL string
+	}{
+		{"прокси", "socks5://h:1080"},
+		{"без прокси", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newResolveAdapter(t, domain.Remote{
+				ID: 9, Name: "void", Ecosystem: "xbps",
+				BaseURL:  "https://repo-default.voidlinux.org/current",
+				Enabled:  true,
+				ProxyURL: tc.proxyURL,
+			})
+			target, ok := a.Resolve("/xbps/void/Mustache-4.1_1.x86_64.xbps")
+			if !ok {
+				t.Fatal("Resolve существующего remote = false")
+			}
+			if target.ProxyURL != tc.proxyURL {
+				t.Errorf("ProxyURL = %q, хочу %q", target.ProxyURL, tc.proxyURL)
+			}
+		})
+	}
+}
+
 func TestResolveUnknownRemote(t *testing.T) {
 	a := newResolveAdapter(t, domain.Remote{ID: 1, Name: "void", BaseURL: "https://x", Enabled: true})
 	if _, ok := a.Resolve("/xbps/fedoris/x86_64-repodata"); ok {
