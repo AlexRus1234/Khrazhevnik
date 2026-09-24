@@ -322,9 +322,9 @@ test('remotes: прокси — свой URL на источнике', async ({ 
   const form = page.locator('.panel', { hasText: 'Новый источник' })
   await form.getByPlaceholder('debian', { exact: true }).fill('e2e-proxy')
   await form.getByPlaceholder('https://deb.debian.org/debian').fill('https://example.invalid/debian')
-  await form.getByLabel('Прокси', { exact: true }).selectOption('custom')
+  await form.locator('select', { has: page.locator('option[value="custom"]') }).selectOption('custom')
   const proxyURL = 'socks5://user:secret@127.0.0.1:1080'
-  await form.getByLabel('Адрес прокси').fill(proxyURL)
+  await form.getByPlaceholder('socks5://127.0.0.1:1080').fill(proxyURL)
   await form.locator('form button[type="submit"]').click()
 
   const row = page.locator('tbody tr', { hasText: 'e2e-proxy' })
@@ -333,8 +333,10 @@ test('remotes: прокси — свой URL на источнике', async ({ 
   // edit → режим «свой» и URL на месте → сохранить.
   await row.getByRole('button', { name: 'Править' }).click()
   const edit = page.locator('.panel', { hasText: 'Источник: e2e-proxy' })
-  await expect(edit.getByLabel('Прокси', { exact: true })).toHaveValue('custom')
-  await expect(edit.getByLabel('Адрес прокси')).toHaveValue(proxyURL)
+  await expect(edit.locator('select', { has: page.locator('option[value="custom"]') })).toHaveValue(
+    'custom',
+  )
+  await expect(edit.getByPlaceholder('socks5://127.0.0.1:1080')).toHaveValue(proxyURL)
   await edit.locator('form button[type="submit"]').click()
   await expect(row).toContainText(proxyURL)
 })
@@ -354,7 +356,7 @@ test('remotes: прокси — напрямую', async ({ page }) => {
   const form = page.locator('.panel', { hasText: 'Новый источник' })
   await form.getByPlaceholder('debian', { exact: true }).fill('e2e-direct')
   await form.getByPlaceholder('https://deb.debian.org/debian').fill('https://example.invalid/direct')
-  await form.getByLabel('Прокси', { exact: true }).selectOption('direct')
+  await form.locator('select', { has: page.locator('option[value="custom"]') }).selectOption('direct')
   await form.locator('form button[type="submit"]').click()
 
   await expect(page.locator('tbody tr', { hasText: 'e2e-direct' })).toContainText('напрямую')
@@ -397,7 +399,7 @@ test('remotes: клиентская валидация пустого URL про
   const form = page.locator('.panel', { hasText: 'Новый источник' })
   await form.getByPlaceholder('debian', { exact: true }).fill('e2e-invalid')
   await form.getByPlaceholder('https://deb.debian.org/debian').fill('https://example.invalid/x')
-  await form.getByLabel('Прокси', { exact: true }).selectOption('custom')
+  await form.locator('select', { has: page.locator('option[value="custom"]') }).selectOption('custom')
   await form.locator('form button[type="submit"]').click()
 
   // Сабмит не ушёл: ошибка видна, форма открыта (не создан источник).
