@@ -134,7 +134,7 @@ func TestMirrorSchedulerPicksUpRemoteViaAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, up.Client(), clock,
+	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, testutil.StaticDoerFactory{Doer: up.Client()}, clock,
 		cacheengine.Config{}, metrics.NewCache())
 	tasks := web.NewTaskRegistry(2, clock, nil)
 	// экосистема «t»: enumerate отдаёт один пакет; upstream выше

@@ -133,7 +133,7 @@ func newStorageGCEnv(t *testing.T) *storageGCEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, http.DefaultClient, clock, cacheengine.Config{}, metrics.NewCache())
+	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, testutil.StaticDoerFactory{Doer: http.DefaultClient}, clock, cacheengine.Config{}, metrics.NewCache())
 	ecosystems := map[string]port.Ecosystem{}
 	for _, name := range registry.Ecosystems() {
 		factory, err := registry.Ecosystem(name)
