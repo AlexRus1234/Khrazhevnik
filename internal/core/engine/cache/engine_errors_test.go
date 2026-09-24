@@ -206,7 +206,7 @@ func newEnvWith(t *testing.T, cfg Config, h http.HandlerFunc, storage port.Stora
 	m := metrics.NewCache()
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL(), MutableTTL: 40 * time.Second}
 	return &testEnv{
-		engine:  New(storage, index, up.server.Client(), clock, cfg, m),
+		engine:  New(storage, index, testFactory{up.server.Client()}, clock, cfg, m),
 		eco:     eco,
 		storage: testutil.NewFakeStorage(clock),
 		index:   index,
@@ -467,7 +467,7 @@ func TestStorageFailures(t *testing.T) {
 		clock := testutil.NewManualClock(testStart)
 		base := testutil.NewFakeStorage(clock)
 		env := &testEnv{
-			engine:  New(failCommitStorage{base}, testutil.NewFakeObjectIndex(), newFakeDoer(1, "x"), clock, defaultConfig(), nil),
+			engine:  New(failCommitStorage{base}, testutil.NewFakeObjectIndex(), testFactory{newFakeDoer(1, "x")}, clock, defaultConfig(), nil),
 			eco:     testutil.FakeEcosystem{NameOf: "t", Base: "http://up.test", MutableTTL: time.Minute},
 			storage: base,
 			index:   testutil.NewFakeObjectIndex(),

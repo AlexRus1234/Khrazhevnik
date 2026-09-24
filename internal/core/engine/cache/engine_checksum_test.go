@@ -48,7 +48,7 @@ func newChecksumEnv(t *testing.T, h http.HandlerFunc, sum port.Checksum) (*Engin
 	index := testutil.NewFakeObjectIndex()
 	m := metrics.NewCache()
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL(), Checksum: sum}
-	engine := New(storage, index, up.server.Client(), clock, defaultConfig(), m)
+	engine := New(storage, index, testFactory{up.server.Client()}, clock, defaultConfig(), m)
 	return engine, eco, up, storage, m, clock
 }
 

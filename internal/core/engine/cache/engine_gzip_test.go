@@ -65,7 +65,7 @@ func TestGzipUpstreamByteExact(t *testing.T) {
 	// Тот же транспорт, что в wire.outboundHTTPClient: без прозрачной
 	// распаковки. up.server.Client() здесь не годится — он жмёт.
 	client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
-	engine := New(storage, index, client, clock, defaultConfig(), metrics.NewCache())
+	engine := New(storage, index, testFactory{client}, clock, defaultConfig(), metrics.NewCache())
 
 	body, status, err := fetch(t, engine, eco, "/t/pkg/a.deb")
 	if err != nil || status != "MISS" {

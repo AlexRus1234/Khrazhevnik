@@ -295,7 +295,7 @@ func TestSchedulerStopRemoteInterruptsSync(t *testing.T) {
 		NameOf: "t", Base: srv.URL, MutableTTL: time.Minute,
 		EnumeratePaths: []string{"/a.deb"},
 	}
-	cache := cacheengine.New(storage, index, srv.Client(), clock,
+	cache := cacheengine.New(storage, index, testutil.StaticDoerFactory{Doer: srv.Client()}, clock,
 		cacheengine.Config{StaleIfError: true}, metrics.NewCache())
 	mir := New(Config{Workers: 1, RetryMax: 0, ProgressInterval: 10 * time.Millisecond},
 		cache, storage, index, remotes, testutil.NewFakeJobStore(), clock,

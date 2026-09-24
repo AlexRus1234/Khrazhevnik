@@ -362,7 +362,7 @@ func TestAdminCacheStatsLive(t *testing.T) {
 	t.Cleanup(up.Close)
 	engine := cacheengine.New(
 		testutil.NewFakeStorage(env.clock), testutil.NewFakeObjectIndex(),
-		up.Client(), env.clock, cacheengine.Config{}, nil,
+		testutil.StaticDoerFactory{Doer: up.Client()}, env.clock, cacheengine.Config{}, nil,
 	)
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: time.Minute}
 	h := BuildAdminRouter(Deps{
@@ -415,7 +415,7 @@ func TestAdminCacheStatsPerEcosystem(t *testing.T) {
 	t.Cleanup(up.Close)
 	engine := cacheengine.New(
 		testutil.NewFakeStorage(env.clock), testutil.NewFakeObjectIndex(),
-		up.Client(), env.clock, cacheengine.Config{}, nil,
+		testutil.StaticDoerFactory{Doer: up.Client()}, env.clock, cacheengine.Config{}, nil,
 	)
 	eco1 := testutil.FakeEcosystem{NameOf: "t1", Base: up.URL, MutableTTL: time.Minute}
 	eco2 := testutil.FakeEcosystem{NameOf: "t2", Base: up.URL, MutableTTL: time.Minute}
@@ -507,7 +507,7 @@ func TestAdminCacheStatsReset(t *testing.T) {
 	t.Cleanup(up.Close)
 	engine := cacheengine.New(
 		testutil.NewFakeStorage(env.clock), testutil.NewFakeObjectIndex(),
-		up.Client(), env.clock, cacheengine.Config{}, nil,
+		testutil.StaticDoerFactory{Doer: up.Client()}, env.clock, cacheengine.Config{}, nil,
 	)
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: time.Minute}
 	stats := &resetCountingStats{FakeStatsStore: testutil.NewFakeStatsStore()}
@@ -595,7 +595,7 @@ func TestAdminCacheStatsResetDBFailure(t *testing.T) {
 	t.Cleanup(up.Close)
 	engine := cacheengine.New(
 		testutil.NewFakeStorage(env.clock), testutil.NewFakeObjectIndex(),
-		up.Client(), env.clock, cacheengine.Config{}, nil,
+		testutil.StaticDoerFactory{Doer: up.Client()}, env.clock, cacheengine.Config{}, nil,
 	)
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: time.Minute}
 	stats := &resetCountingStats{FakeStatsStore: testutil.NewFakeStatsStore(), err: errors.New("db down")}
@@ -671,7 +671,7 @@ func TestAdminCacheTransactions(t *testing.T) {
 	t.Cleanup(up.Close)
 	engine := cacheengine.New(
 		testutil.NewFakeStorage(env.clock), testutil.NewFakeObjectIndex(),
-		up.Client(), env.clock, cacheengine.Config{}, nil,
+		testutil.StaticDoerFactory{Doer: up.Client()}, env.clock, cacheengine.Config{}, nil,
 	)
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: time.Minute}
 	h := BuildAdminRouter(Deps{

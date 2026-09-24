@@ -49,6 +49,10 @@ type Target struct {
 	// Checksum — хеш объекта из индекса экосистемы, если он там есть;
 	// движок кеша не коммитит объект, чьё тело не сошлось с ним.
 	Checksum Checksum
+	// ProxyURL — tri-state, семантика domain.Remote.ProxyURL ("" —
+	// прокси по глобальной настройке/env, "direct" — без прокси, иначе
+	// URL прокси). Заполняют адаптеры экосистем из remote'а (сессия 152).
+	ProxyURL string
 }
 
 // MetaFetcher отдаёт байты метаданных upstream через движок кеша:

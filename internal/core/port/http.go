@@ -30,6 +30,13 @@ type Doer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
+// DoerFactory выбирает Doer под прокси-строку Target'а. Tri-state:
+// "" — дефолтный Doer (прокси по глобальной настройке/env), "direct" —
+// без прокси, иначе URL прокси. Реализация — wire (сессия 151).
+type DoerFactory interface {
+	DoerFor(proxyURL string) Doer
+}
+
 // NewGETRequest keeps HTTP construction at the delivery port boundary so
 // usecase packages do not depend on net/http directly.
 func NewGETRequest(ctx context.Context, url string, headers map[string]string) (*http.Request, error) {

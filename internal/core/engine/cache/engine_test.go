@@ -82,6 +82,13 @@ func (u *testUpstream) count(path string) int64 {
 
 func (u *testUpstream) URL() string { return u.server.URL }
 
+// testFactory — port.DoerFactory, игнорирующий прокси-строку: тест
+// подсовывает один Doer на все upstream'ы (поведение до фабрики).
+type testFactory struct{ d port.Doer }
+
+// DoerFor отдаёт единственный Doer, аргумент не смотрит.
+func (f testFactory) DoerFor(string) port.Doer { return f.d }
+
 // testEnv — движок с фейками и ручными часами.
 type testEnv struct {
 	engine  *Engine
@@ -103,7 +110,7 @@ func newTestEnv(t *testing.T, cfg Config, h http.HandlerFunc) *testEnv {
 	index := testutil.NewFakeObjectIndex()
 	m := metrics.NewCache()
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL(), MutableTTL: 40 * time.Second}
-	engine := New(storage, index, up.server.Client(), clock, cfg, m)
+	engine := New(storage, index, testFactory{up.server.Client()}, clock, cfg, m)
 	return &testEnv{engine: engine, eco: eco, storage: storage, index: index, clock: clock, m: m, up: up}
 }
 
@@ -304,7 +311,7 @@ func engineWithDoer(t *testing.T, cfg Config, doer port.Doer) *testEnv {
 	t.Helper()
 	clock := testutil.NewManualClock(testStart)
 	env := &testEnv{
-		engine:  New(testutil.NewFakeStorage(clock), testutil.NewFakeObjectIndex(), doer, clock, cfg, nil),
+		engine:  New(testutil.NewFakeStorage(clock), testutil.NewFakeObjectIndex(), testFactory{doer}, clock, cfg, nil),
 		eco:     testutil.FakeEcosystem{NameOf: "t", Base: "http://up.test", MutableTTL: 40 * time.Second},
 		storage: nil,
 		index:   nil,

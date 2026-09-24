@@ -181,7 +181,7 @@ func newMirrorEnv(t *testing.T) *mirrorEnv {
 		// сам добавит "pkg" в ecoPath, Resolve уберёт его в rest).
 		EnumeratePaths: []string{"/a.deb", "/b.deb"},
 	}
-	cache := cacheengine.New(storage, index, repo.server.Client(), clock,
+	cache := cacheengine.New(storage, index, testutil.StaticDoerFactory{Doer: repo.server.Client()}, clock,
 		cacheengine.Config{StaleIfError: true, NegativeTTL404: 5 * time.Minute, NegativeTTL5xx: 30 * time.Second}, m)
 	jobs := testutil.NewFakeJobStore()
 	mir := New(Config{Workers: 2, RetryMax: 2, ProgressInterval: 10 * time.Millisecond}, cache, storage, index, remotes, jobs, clock,
@@ -353,7 +353,7 @@ func TestSyncStreamingLimiterBigObject(t *testing.T) {
 		NameOf: "t", Base: repo.URL(), MutableTTL: time.Minute,
 		EnumeratePaths: []string{"/big.deb"},
 	}
-	cache := cacheengine.New(storage, index, repo.server.Client(), clock,
+	cache := cacheengine.New(storage, index, testutil.StaticDoerFactory{Doer: repo.server.Client()}, clock,
 		cacheengine.Config{StaleIfError: true}, metrics.NewCache())
 	jobs := testutil.NewFakeJobStore()
 	mir := New(Config{
@@ -466,7 +466,7 @@ func TestSyncCancelWritesFinalJobState(t *testing.T) {
 		NameOf: "t", Base: srv.URL, MutableTTL: time.Minute,
 		EnumeratePaths: []string{"/a.deb"},
 	}
-	cache := cacheengine.New(storage, index, srv.Client(), clock,
+	cache := cacheengine.New(storage, index, testutil.StaticDoerFactory{Doer: srv.Client()}, clock,
 		cacheengine.Config{StaleIfError: true}, metrics.NewCache())
 	jobs := testutil.NewFakeJobStore()
 	mir := New(Config{Workers: 1, RetryMax: 0, ProgressInterval: 10 * time.Millisecond},
@@ -554,7 +554,7 @@ func TestSyncCancelBigToSyncInterrupted(t *testing.T) {
 		NameOf: "t", Base: srv.URL, MutableTTL: time.Minute,
 		EnumeratePaths: paths,
 	}
-	cache := cacheengine.New(storage, index, srv.Client(), clock,
+	cache := cacheengine.New(storage, index, testutil.StaticDoerFactory{Doer: srv.Client()}, clock,
 		cacheengine.Config{StaleIfError: true}, metrics.NewCache())
 	jobs := testutil.NewFakeJobStore()
 	// ErrorThreshold поднят: 4 in-flight отмены (8% из 50) не должны
@@ -654,7 +654,7 @@ func TestSyncStaleStormIsNotFailure(t *testing.T) {
 		MutableTTL:     50 * time.Millisecond,
 		EnumeratePaths: []string{"/a.db"},
 	}
-	cache := cacheengine.New(storage, index, repo.server.Client(), clock,
+	cache := cacheengine.New(storage, index, testutil.StaticDoerFactory{Doer: repo.server.Client()}, clock,
 		cacheengine.Config{StaleIfError: true, NegativeTTL5xx: 30 * time.Second}, metrics.NewCache())
 	jobs := testutil.NewFakeJobStore()
 	mir := New(Config{Workers: 1, RetryMax: 2, ProgressInterval: 10 * time.Millisecond},
@@ -714,7 +714,7 @@ func TestSyncSkipsFreshMutable(t *testing.T) {
 		MutableTTL:     time.Minute,
 		EnumeratePaths: []string{"/a.db"},
 	}
-	cache := cacheengine.New(storage, index, repo.server.Client(), clock,
+	cache := cacheengine.New(storage, index, testutil.StaticDoerFactory{Doer: repo.server.Client()}, clock,
 		cacheengine.Config{StaleIfError: true}, metrics.NewCache())
 	mir := New(Config{Workers: 1},
 		cache, storage, index, remotes, testutil.NewFakeJobStore(), clock,
@@ -792,7 +792,7 @@ func TestSyncUnsupportedEcosystem(t *testing.T) {
 	m := metrics.NewCache()
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
 	defer up.Close()
-	cache := cacheengine.New(storage, index, up.Client(), clock,
+	cache := cacheengine.New(storage, index, testutil.StaticDoerFactory{Doer: up.Client()}, clock,
 		cacheengine.Config{StaleIfError: true}, m)
 	remotes := testutil.NewFakeRemoteStore()
 	remote, _ := remotes.CreateRemote(context.Background(), domain.Remote{

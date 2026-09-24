@@ -86,7 +86,7 @@ const (
 type Engine struct {
 	storage port.Storage
 	index   port.ObjectIndex
-	doer    port.Doer
+	http    port.DoerFactory
 	clock   port.Clock
 	cfg     Config
 	metrics *metrics.Cache
@@ -120,14 +120,14 @@ type Engine struct {
 }
 
 // New создаёт движок кеша.
-func New(storage port.Storage, index port.ObjectIndex, doer port.Doer, clock port.Clock, cfg Config, m *metrics.Cache) *Engine {
+func New(storage port.Storage, index port.ObjectIndex, http port.DoerFactory, clock port.Clock, cfg Config, m *metrics.Cache) *Engine {
 	if m == nil {
 		m = metrics.NewCache()
 	}
 	return &Engine{
 		storage:  storage,
 		index:    index,
-		doer:     doer,
+		http:     http,
 		clock:    clock,
 		cfg:      cfg,
 		metrics:  m,
@@ -611,7 +611,7 @@ func (e *Engine) fetchOnce(ctx context.Context, target port.Target, class domain
 	if err != nil {
 		return domain.ObjectMeta{}, false, &domain.UpstreamError{URL: target.UpstreamURL, Err: err}
 	}
-	resp, err := e.doer.Do(req)
+	resp, err := e.http.DoerFor(target.ProxyURL).Do(req)
 	if err != nil {
 		m.UpstreamErrors.Add(1)
 		return domain.ObjectMeta{}, false, &domain.UpstreamError{URL: target.UpstreamURL, Err: err}

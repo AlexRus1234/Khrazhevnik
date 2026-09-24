@@ -185,7 +185,7 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		return nil, err
 	}
 	httpClient := outboundHTTPClient()
-	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, httpClient, systemClock{}, cacheengine.Config{StaleIfError: cfg.Cache.StaleIfError, MaxObjectSize: cfg.Cache.MaxObjectSize.Bytes, NegativeTTL404: cfg.Cache.NegativeTTL404.Duration, NegativeTTL5xx: cfg.Cache.NegativeTTL5xx.Duration}, metrics.NewCache())
+	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, staticDoer{httpClient}, systemClock{}, cacheengine.Config{StaleIfError: cfg.Cache.StaleIfError, MaxObjectSize: cfg.Cache.MaxObjectSize.Bytes, NegativeTTL404: cfg.Cache.NegativeTTL404.Duration, NegativeTTL5xx: cfg.Cache.NegativeTTL5xx.Duration}, metrics.NewCache())
 	// statskeeper (сессия 96): персистентность счётчиков — отдельный
 	// фоновый цикл, движок кеша не получает ни горутин, ни порта БД.
 	// Выключен без модуля БД или при stats_flush_interval=0 (легальная
@@ -682,6 +682,14 @@ func (a *App) NotifyRemotesChanged() {
 		a.Scheduler.Notify()
 	}
 }
+
+// staticDoer — временный port.DoerFactory поверх одного клиента: все
+// upstream'ы пока ходят одним путём. Реальную фабрику транспортов
+// (по proxyURL Target'а) ставит сессия 151.
+type staticDoer struct{ d port.Doer }
+
+// DoerFor игнорирует прокси-строку и отдаёт единственный Doer.
+func (s staticDoer) DoerFor(string) port.Doer { return s.d }
 
 // outboundHTTPClient — Doer для запросов upstream: таймауты только на
 // соединение и заголовки; тело живёт столько, сколько живёт контекст.
