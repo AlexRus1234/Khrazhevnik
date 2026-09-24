@@ -292,7 +292,11 @@ test('users: выпуск API-токена и копирование', async ({ 
   const fresh = page.locator('.fresh')
   await expect(fresh.locator('pre.snippet')).toBeVisible()
 
-  const copy = fresh.getByRole('button', { name: 'Копировать', exact: true })
+  // Локатор по структуре, а не по имени: имя кнопки и есть то, что
+  // меняется («Копировать» ↔ «Скопировано»), getByRole(name) терял
+  // элемент ровно на окно смены подписи (2с) и ассерт фейлился,
+  // хотя кнопка работала.
+  const copy = fresh.locator('.row button')
   await copy.click()
   await expect(copy).toHaveText('Скопировано')
   // Подпись гаснет сама (setTimeout 2000 в copyFresh); запас х2 —
