@@ -42,6 +42,9 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   validation_error; `settings.update` audit entry with the masked
   URL. Applied without a restart within 30s (lazy TTL cache of the
   transport factory).
+- Web UI: per-remote proxy controls (tri-state: inherit the global
+  proxy / direct / custom URL) and the global upstream proxy on the
+  Remotes page; the table shows the effective mode.
 
 ### Fixed
 

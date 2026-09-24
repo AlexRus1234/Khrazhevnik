@@ -305,6 +305,106 @@ test('users: выпуск API-токена и копирование', async ({ 
   await expect(fresh.locator('p.error')).toHaveCount(0)
 })
 
+// remotes: прокси. Форма источника управляет proxy_url (tri-state),
+// сверху — панель глобального прокси. Строки ассертят ru-pin.
+test('remotes: прокси — свой URL на источнике', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Добавить' }).click()
+  const form = page.locator('.panel', { hasText: 'Новый источник' })
+  await form.getByPlaceholder('debian').fill('e2e-proxy')
+  await form.getByPlaceholder('https://deb.debian.org/debian').fill('https://example.invalid/debian')
+  await form.getByLabel('Прокси').selectOption('custom')
+  const proxyURL = 'socks5://user:secret@127.0.0.1:1080'
+  await form.getByLabel('Адрес прокси').fill(proxyURL)
+  await form.locator('form button[type="submit"]').click()
+
+  const row = page.locator('tbody tr', { hasText: 'e2e-proxy' })
+  await expect(row).toContainText(proxyURL)
+
+  // edit → режим «свой» и URL на месте → сохранить.
+  await row.getByRole('button', { name: 'Править' }).click()
+  const edit = page.locator('.panel', { hasText: 'Источник: e2e-proxy' })
+  await expect(edit.getByLabel('Прокси')).toHaveValue('custom')
+  await expect(edit.getByLabel('Адрес прокси')).toHaveValue(proxyURL)
+  await edit.locator('form button[type="submit"]').click()
+  await expect(row).toContainText(proxyURL)
+})
+
+test('remotes: прокси — напрямую', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Добавить' }).click()
+  const form = page.locator('.panel', { hasText: 'Новый источник' })
+  await form.getByPlaceholder('debian').fill('e2e-direct')
+  await form.getByPlaceholder('https://deb.debian.org/debian').fill('https://example.invalid/direct')
+  await form.getByLabel('Прокси').selectOption('direct')
+  await form.locator('form button[type="submit"]').click()
+
+  await expect(page.locator('tbody tr', { hasText: 'e2e-direct' })).toContainText('напрямую')
+})
+
+test('remotes: глобальный прокси сохраняется и переживает перезагрузку', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  const panel = page.locator('.panel', { hasText: 'Глобальный прокси upstream' })
+  await panel.locator('input').fill('direct')
+  await panel.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(panel.getByText('Сохранено')).toBeVisible()
+
+  await page.reload()
+  await expect(
+    page.locator('.panel', { hasText: 'Глобальный прокси upstream' }).locator('input'),
+  ).toHaveValue('direct')
+})
+
+test('remotes: клиентская валидация пустого URL прокси', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Добавить' }).click()
+  const form = page.locator('.panel', { hasText: 'Новый источник' })
+  await form.getByPlaceholder('debian').fill('e2e-invalid')
+  await form.getByPlaceholder('https://deb.debian.org/debian').fill('https://example.invalid/x')
+  await form.getByLabel('Прокси').selectOption('custom')
+  await form.locator('form button[type="submit"]').click()
+
+  // Сабмит не ушёл: ошибка видна, форма открыта (не создан источник).
+  await expect(form.locator('p.error')).toBeVisible()
+  await expect(form).toBeVisible()
+})
+
 // Идёт последним: меняет пароль admin, от которого зависят предыдущие
 // тесты (serial, retries=0; global-setup поднимает сервер с пустой БД
 // на каждый прогон, так что состояние между прогонами не течёт).
