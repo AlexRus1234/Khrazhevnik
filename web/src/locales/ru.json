@@ -142,6 +142,7 @@
   "users.freshTokenHint": "Токен «{name}» показывается один раз — скопируйте:",
   "users.copy": "Копировать",
   "users.copied": "Скопировано",
+  "users.copyFailed": "Не удалось скопировать — выделите текст вручную",
   "users.tokenName": "Имя",
   "users.repoID": "ID репо",
   "users.issue": "Выпустить",

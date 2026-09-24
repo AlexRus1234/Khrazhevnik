@@ -266,6 +266,41 @@ test('дашборд: панель «Последние транзакции»',
   }
 })
 
+// Кнопка «Скопировать» у свежего токена: headless Chromium на
+// http-origin идёт по execCommand-ветке fallback (clipboard API есть
+// только в secure context) — покрывает именно баг v1.2.1. Полноту
+// буфера обмена не ассертим (permissions на http-origin нет):
+// контракт кнопки — смена подписи и возврат через ~2с.
+test('users: выпуск API-токена и копирование', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+
+  // admin создан первым тестом (serial): обычный вход.
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/users"]')
+  await expect(page.getByRole('heading', { name: 'Пользователи' })).toBeVisible()
+
+  // Пользователь один (admin) — раскрываем панель токенов его строки.
+  await page.getByRole('button', { name: 'API-токены', exact: true }).click()
+  await page.getByPlaceholder('deploy').fill('e2e-token')
+  await page.getByRole('button', { name: 'Выпустить', exact: true }).click()
+
+  const fresh = page.locator('.fresh')
+  await expect(fresh.locator('pre.snippet')).toBeVisible()
+
+  const copy = fresh.getByRole('button', { name: 'Копировать', exact: true })
+  await copy.click()
+  await expect(copy).toHaveText('Скопировано')
+  // Подпись гаснет сама (setTimeout 2000 в copyFresh); запас х2 —
+  // на медленном раннере.
+  await expect(copy).toHaveText('Копировать', { timeout: 4000 })
+  await expect(fresh.locator('p.error')).toHaveCount(0)
+})
+
 // Идёт последним: меняет пароль admin, от которого зависят предыдущие
 // тесты (serial, retries=0; global-setup поднимает сервер с пустой БД
 // на каждый прогон, так что состояние между прогонами не течёт).

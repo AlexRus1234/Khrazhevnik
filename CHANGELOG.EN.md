@@ -56,6 +56,14 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   MySQL), the new constraint keeps its explicit name. Reproduced
   against a local mariadb:13 — red → green (the whole
   TestCatalogContractMariaDB).
+- Web: the «Copy» button next to a freshly issued API token did not
+  work outside a secure context (admin UI served over http on LAN:
+  `navigator.clipboard` is undefined, the TypeError was silently
+  swallowed — the button «did nothing»); a fallback via a hidden
+  textarea + `document.execCommand('copy')` is added, and if both
+  paths fail a «Copy failed…» line is shown under the button. The
+  «Copied» label now clears itself after ~2s (previously it hung
+  until the next token issue).
 
 ### Changed
 

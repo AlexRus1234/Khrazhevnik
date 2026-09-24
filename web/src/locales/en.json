@@ -142,6 +142,7 @@
   "users.freshTokenHint": "Token “{name}” is shown once — copy it:",
   "users.copy": "Copy",
   "users.copied": "Copied",
+  "users.copyFailed": "Copy failed — select the text manually",
   "users.tokenName": "Name",
   "users.repoID": "Repo ID",
   "users.issue": "Issue",
