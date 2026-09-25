@@ -32,6 +32,14 @@ export interface Remote {
   created_at: string
 }
 
+// Отчёт POST /remotes/import: created — имена созданных, skipped —
+// пропущенные дубли с номером строки, errors — битые строки.
+export interface ImportReport {
+  created: string[]
+  skipped: { line: number; name: string }[]
+  errors: { line: number; code: string }[]
+}
+
 export interface Quota {
   max_bytes: number
   max_objects: number

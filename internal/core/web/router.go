@@ -287,6 +287,8 @@ func BuildAdminRouter(d Deps) http.Handler {
 			api.With(auditWrap, adminAuth).Route("/remotes", func(remotes chi.Router) {
 				remotes.Get("/", handleListRemotes(d))
 				remotes.Post("/", handleCreateRemote(d))
+				remotes.Get("/export", handleExportRemotes(d))
+				remotes.Post("/import", handleImportRemotes(d))
 				remotes.Patch("/{id}", handleUpdateRemote(d))
 				remotes.Delete("/{id}", handleDeleteRemote(d))
 				remotes.Post("/{id}/sync", handleSyncRemote(d))

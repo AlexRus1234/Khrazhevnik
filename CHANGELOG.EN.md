@@ -45,6 +45,13 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 - Web UI: per-remote proxy controls (tri-state: inherit the global
   proxy / direct / custom URL) and the global upstream proxy on the
   Remotes page; the table shows the effective mode.
+- Admin API: tabular export/import of remotes — GET
+  `/api/v1/remotes/export` (a `text/plain` file with
+  Content-Disposition) and POST `/api/v1/remotes/import` (line by line,
+  body ≤256 KiB and ≤1000 lines). Import returns 200 with a
+  `{created, skipped, errors}` report: name duplicates (already in the
+  DB or within the file) and broken lines are skipped with a report,
+  valid lines are created; `remote.import` audit entry with counters.
 
 ### Fixed
 
