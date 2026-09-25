@@ -26,6 +26,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.2.2] — 2026-09-25
+
 ### Added
 
 - Admin API: per-upstream proxy — the `proxy_url` field in
