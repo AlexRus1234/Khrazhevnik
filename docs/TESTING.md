@@ -250,6 +250,47 @@ Unit-only цифра (~67% на момент внедрения) была зан
   (`/etc/xbps.d`), TOFU-импорт ключа, второй HEAD → `X-Cache: HIT`,
   `/api/v1/cache/stats` `hits>0`.
 
+## Прокси и импорт/экспорт (сессии 148–163)
+
+Глобальный и per-remote прокси исходящих запросов + табличный
+импорт/экспорт источников; закреплены кейсы (покрытие-цели без
+изменений):
+
+- unit `domain` (`proxy_test.go`, 100%): `ValidateProxyURL` —
+  `""`/`direct` валидны тривиально, whitelist схем
+  http/https/socks5/socks5h, пустой host, потолок длины, мусор →
+  `ValidationError`; `MaskProxyURL` — `scheme://***@host:port`, без
+  userinfo/битый URL возвращается как есть; `remotefmt_test.go` —
+  roundtrip `ParseRemoteLine` ↔ `FormatRemote(s)`, комментарии/пустые
+  строки, ровно 8 полей, негативы (пустое обязательное поле, плохой
+  mode/proxy/enabled/interval), `0` duration — пустое поле;
+- unit `engine/cache` (`proxy_doer_test.go`): движок зовёт
+  `DoerFor(target.ProxyURL)` — выбранный Doer определяет, куда ушёл
+  запрос (per-target выбор, а не один общий клиент);
+- unit `cmd/khrazhevnik` (`transport_test.go`): три ветки tri-state
+  (env-дефолт / `direct` без прокси / URL-прокси), кеш «один прокси —
+  один клиент» (повторный вызов — тот же указатель), `upstreamProxyTTL`
+  (смена настройки видна после TTL), сбой чтения стора не роняет
+  трафик (отдаётся последнее значение);
+- контракт каталога (`settings_test.go` на sqlite/postgres/mariadb):
+  `UpstreamProxy` пустой БД — `""` без ошибки, `SetUpstreamProxy`
+  (upsert) → чтение, повторная запись перезаписывает; миграции 0009
+  (`remotes.proxy_url`) и 0010 (`settings`) накатываются идемпотентно;
+- web (`handlers_admin_test.go`, `handlers_settings_test.go`,
+  `handlers_remotes_io_test.go`): `proxy_url` в POST/PATCH/GET remotes
+  (tri-state, 400 на мусор), маска в audit-detail create/update;
+  GET/PUT `/settings/upstream-proxy` (пусто/`direct`/URL, 400, 503 без
+  стора, аудит `settings.update` с маской); GET `/remotes/export` —
+  `text/plain` + `Content-Disposition`; POST `/remotes/import` — отчёт
+  `{created, skipped, errors}` (дубли в БД и в файле — `skipped`,
+  битая строка — `errors`), 413 при теле >256 KiB, 400
+  `import_too_many` при >1000 строк, всегда 200 при разобранном теле;
+- e2e (Playwright, `run_e2e_tests`): копирование свежего API-токена
+  (fallback вне secure context, подпись гаснет через ~2с); прокси —
+  свой URL и `direct` на источнике, сохранение глобального прокси и
+  переживание перезагрузки, клиентская валидация пустого URL; экспорт
+  файла и импорт из текста с отчётом (дубли пропущены).
+
 ## Надёжность
 
 Graceful shutdown каскадом; идемпотентные миграции; resume sync-задач

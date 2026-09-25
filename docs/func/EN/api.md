@@ -92,12 +92,49 @@ tokens immediately; repo tokens are unaffected.
 | PATCH  | `/api/v1/remotes/{id}`      | 200/404      | Update fields                                                |
 | DELETE | `/api/v1/remotes/{id}`      | 204/404      | Delete (the cache remains)                                   |
 | POST   | `/api/v1/remotes/{id}/sync` | 202/409/429  | Start a mirror sync background task; 409 — already running, 429 — worker limit |
+| GET    | `/api/v1/remotes/export`    | 200          | Export remotes as a file (`text/plain`, `Content-Disposition`) |
+| POST   | `/api/v1/remotes/import`    | 200/400/413  | Import remotes line by line; a `{created, skipped, errors}` report |
 
 Remote fields: `name` (slug `[a-z0-9._-]`), `ecosystem` (`apt`,
-`rpm-md`, `pacman`, `apk`, `nix`), `base_url` (http(s)://), `mode`
+`rpm-md`, `pacman`, `apk`, `nix`, `xbps`), `base_url` (http(s)://), `mode`
 (`proxy` | `mirror`), `enabled`, `sync_interval` (duration, 0 — manual
 only), `include` (an array of strings: apt — dists[`/component`];
-pacman — `repo/arch`; apk — architectures; rpm-md/nix — not used).
+pacman — `repo/arch`; apk — architectures; xbps — architectures;
+rpm-md/nix — not used), `proxy_url` (tri-state upstream proxy: empty —
+inherit the global setting, `direct` — go directly, otherwise an
+http/https/socks5/socks5h URL; the password is masked in the audit log).
+
+`/remotes/export` returns tabular text: a comment header and lines
+`name|ecosystem|base_url|mode|proxy|enabled|sync_interval|include` (see
+"File format" below). `/remotes/import` accepts the same text (body
+≤ 256 KiB, ≤ 1000 lines): valid lines are created, duplicate names
+(already in the DB or within the file) and malformed lines are reported
+in `{created, skipped, errors}`, and the response is always 200 (partial
+success); 400 `import_too_many` — line limit exceeded, 413
+`payload_too_large` — body size exceeded.
+
+### Import/export file format
+
+One line per remote, exactly 8 fields separated by `|`; lines starting
+with `#` and empty lines are comments/skips:
+
+```
+# khrazhevnik remotes export v1
+# name|ecosystem|base_url|mode|proxy|enabled|sync_interval|include
+debian|apt|https://deb.debian.org/debian|proxy||true||
+```
+
+`enabled` is strictly `true`/`false`; `sync_interval` is a Go duration
+or empty (manual sync only); `include` is comma-separated. A malformed
+line does not abort the import; it is added to `errors` with its line
+number and reason.
+
+## Global settings (admin)
+
+| Method | Path                              | Code    | Purpose                             |
+|--------|-----------------------------------|---------|-------------------------------------|
+| GET    | `/api/v1/settings/upstream-proxy` | 200     | Current proxy: `{"value": v}` (`""` — not set, env fallback; `direct`; URL) |
+| PUT    | `/api/v1/settings/upstream-proxy` | 200/400 | Set the proxy: body `{"value": s}`; an invalid URL — 400 `validation_error`; audit `settings.update` (password masked) |
 
 ## Personal repositories
 

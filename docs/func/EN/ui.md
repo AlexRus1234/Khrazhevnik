@@ -71,6 +71,17 @@ format depends on the ecosystem, see [ecosystems/](ecosystems/)),
 enable/disable, a button to start a sync for mirrors (the background
 task state is visible right here and on the dashboard).
 
+- **Proxy**: a panel for the global outbound proxy (value `""`/`direct`/
+  URL, applied without a restart within 30s) and a proxy field in the
+  remote form — tri-state "inherit the global / direct / custom URL";
+  the table shows the resulting mode of each remote. The proxy password
+  never reaches the audit log (masked as `socks5://***@…`).
+- **Export/import**: the "Export" button downloads the current remote
+  list as `khrazhevnik-remotes.txt`; the import panel accepts pasted
+  text or a `.txt` file and shows a created/skipped/errors report per
+  line (duplicates are skipped with a report). Format — [api.md](api.md),
+  "Import/export file format".
+
 ## Repos and the repository
 
 - **Repo list**: creation (name-slug, ecosystem, owner,
@@ -91,7 +102,9 @@ task state is visible right here and on the dashboard).
 Creation/deletion of users, issuance of scoped API tokens
 (`repo:<id>:write` with repository selection; the secret is shown
 once — copy it immediately), revocation of tokens, a list of the
-active ones.
+active ones. Copying also works outside a secure context (the admin UI
+over http on a LAN): when `navigator.clipboard` is unavailable, a hidden
+textarea fallback is used, and on failure an error message is shown.
 
 Password change: a **Change your password** block (current/new +
 confirmation) — on success the session token is refreshed on the fly

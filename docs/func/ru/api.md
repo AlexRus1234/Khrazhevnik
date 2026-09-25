@@ -91,12 +91,49 @@ repo-токены — нет.
 | PATCH | `/api/v1/remotes/{id}`      | 200/404        | Обновление полей      |
 | DELETE| `/api/v1/remotes/{id}`      | 204/404        | Удаление (кеш остаётся) |
 | POST  | `/api/v1/remotes/{id}/sync` | 202/409/429    | Запустить sync-задачу зеркала; 409 — уже идёт, 429 — лимит воркеров |
+| GET   | `/api/v1/remotes/export`    | 200            | Выгрузка источников файлом (`text/plain`, `Content-Disposition`) |
+| POST  | `/api/v1/remotes/import`    | 200/400/413    | Импорт источников построчно; отчёт `{created, skipped, errors}` |
 
 Поля remote: `name` (slug `[a-z0-9._-]`), `ecosystem` (`apt`, `rpm-md`,
-`pacman`, `apk`, `nix`), `base_url` (http(s)://), `mode` (`proxy` |
+`pacman`, `apk`, `nix`, `xbps`), `base_url` (http(s)://), `mode` (`proxy` |
 `mirror`), `enabled`, `sync_interval` (duration, 0 — только вручную),
 `include` (массив строк: apt — dists[`/component`]; pacman —
-`repo/arch`; apk — архитектуры; rpm-md/nix — не используется).
+`repo/arch`; apk — архитектуры; xbps — архитектуры; rpm-md/nix — не
+используется), `proxy_url` (tri-state прокси upstream: пусто —
+наследовать глобальную настройку, `direct` — напрямую, иначе URL
+http/https/socks5/socks5h; пароль в аудите маскируется).
+
+Экспорт `/remotes/export` отдаёт табличный текст: заголовок-комментарий
+и строки `name|ecosystem|base_url|mode|proxy|enabled|sync_interval|include`
+(см. «Формат файла» ниже). Импорт `/remotes/import` принимает тот же
+текст (тело ≤ 256 KiB, ≤ 1000 строк): валидные строки создаются, дубли
+по имени (в БД или в файле) и битые строки попадают в отчёт
+`{created, skipped, errors}`, ответ всегда 200 (частичный успех); 400
+`import_too_many` — превышен лимит строк, 413 `payload_too_large` —
+превышен размер тела.
+
+### Формат файла импорта/экспорта
+
+Одна строка — один remote, ровно 8 полей через `|`; строки с `#` и
+пустые — комментарии/пропуск:
+
+```
+# khrazhevnik remotes export v1
+# name|ecosystem|base_url|mode|proxy|enabled|sync_interval|include
+debian|apt|https://deb.debian.org/debian|proxy||true||
+```
+
+`enabled` — строго `true`/`false`; `sync_interval` — Go duration или
+пусто (только ручной sync); `include` — значения через запятую.
+Невалидная строка не прерывает импорт, а попадает в `errors` с номером
+строки и причиной.
+
+## Глобальные настройки (admin)
+
+| Метод | Путь                              | Код     | Назначение                          |
+|-------|-----------------------------------|---------|-------------------------------------|
+| GET   | `/api/v1/settings/upstream-proxy` | 200     | Текущий прокси: `{"value": v}` (`""` — не задано, env-фолбэк; `direct`; URL) |
+| PUT   | `/api/v1/settings/upstream-proxy` | 200/400 | Установить прокси: тело `{"value": s}`; невалидный URL — 400 `validation_error`; аудит `settings.update` (пароль маскируется) |
 
 ## Личные репозитории
 

@@ -192,10 +192,31 @@ of the required adapter fails at startup with a clear registry error.
 ## Upstream (outbound) proxy
 
 All upstream requests — both the caching proxy and mirror sync — go
-through a single outbound HTTP client (`outboundHTTPClient`,
-`cmd/khrazhevnik/wire.go`) using the standard
-`http.ProxyFromEnvironment`. The proxy is configured via regular Go
-env variables — **without** the `KHRZ_` prefix and outside of TOML:
+through an outbound HTTP client chosen by the remote's proxy string
+(`port.DoerFactory`, the transport factory in
+`cmd/khrazhevnik/transport.go`). The priority is:
+
+1. **Global setting** in the database (the `settings` table, key
+   `upstream.proxy`) — set from the web admin UI or via
+   `PUT /api/v1/settings/upstream-proxy`; the value `""` means "not
+   set", `direct` means "no proxy", otherwise it is a proxy URL.
+2. If the global setting is empty — Go **env variables**
+   `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` (the standard
+   `http.ProxyFromEnvironment` of the default client).
+3. **Per-remote override** — the remote's `proxy_url` field: empty —
+   inherit the global setting, `direct` — go directly, bypassing the
+   global proxy, otherwise a proxy URL for this remote only.
+
+The global setting applies **without a restart**: the factory reads it
+through a lazy TTL cache (30s), so a change from the GUI takes effect
+within 30 seconds. The proxy password never reaches the audit log — the
+detail carries a masked URL (`socks5://***@host:1080`). The setting and
+the override are visible on the "Remotes" page (see [ui.md](ui.md)).
+
+### Environment variables (fallback)
+
+Env variables are used only when the global setting is empty. The names
+are **without** the `KHRZ_` prefix and outside of TOML:
 
 | Variable    | Purpose                                                            |
 |-------------|--------------------------------------------------------------------|
@@ -207,10 +228,15 @@ Lowercase names (`https_proxy`, etc.) are also honored. Go does not
 read `ALL_PROXY` — to route "everything through one proxy", set both
 `HTTP_PROXY` and `HTTPS_PROXY`.
 
+### Proxy URL format
+
 URL schemes: `http://`, `https://`, `socks5://`, `socks5h://`
 (equivalent for SOCKS5 — the hostname is resolved by the proxy). The
 scheme is mandatory: a schemeless value is treated by Go as an HTTP
-proxy, and an HTTP CONNECT sent to a SOCKS port will not work.
+proxy, and an HTTP CONNECT sent to a SOCKS port will not work. The same
+format applies to the global setting and to a remote's `proxy_url` field
+(validated by `domain.ValidateProxyURL`, 2048-byte cap; `direct` is
+valid for the per-remote override only).
 
 Authentication is the userinfo in the URL
 (`socks5://user:pass@host:port`): SOCKS5 — RFC 1929 login/password,

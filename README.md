@@ -111,6 +111,10 @@ read-only rootfs) под rootless podman quadlet.
   памяти: upstream-отказ не транслируется клиентам
 - Singleflight на ключ: параллельные запросы одного объекта не бьют в
   upstream; лимит размера кешируемого объекта (`cache.max_object_size`)
+- Прокси исходящих запросов: глобальная настройка (на весь инстанс) и
+  override на источник (`proxy_url`, `direct` — в обход); приоритет —
+  настройка БД → env `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`; применяется
+  без рестарта ≤30с; пароль прокси маскируется в аудите
 
 ### Зеркало
 
@@ -178,6 +182,9 @@ read-only rootfs) под rootless podman quadlet.
 - Метрики Prometheus (`/metrics`, за auth): hits/misses/stale/negative по
   экосистемам, байты от upstream/клиентам, гистограммы длительности и
   размеров объектов
+- Импорт/экспорт источников: табличный файл (`GET /remotes/export`,
+  `POST /remotes/import`; дубли пропускаются с отчётом) и
+  соответствующие кнопки/панель в веб-админке
 - Единая точка path-traversal для всех путей из запросов
 
 Подробное описание приведено в [`docs/func/ru/`](docs/func/ru/).
