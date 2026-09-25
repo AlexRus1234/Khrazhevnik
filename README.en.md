@@ -113,6 +113,10 @@ assistant was used while preparing the source code.[^1]
 - Singleflight per key: concurrent requests for the same object do not
   hit the upstream; a cacheable object size limit
   (`cache.max_object_size`)
+- Outbound proxy: a global setting (whole instance) and a per-remote
+  override (`proxy_url`, `direct` — bypass); the priority is the DB
+  setting → env `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`; applied without a
+  restart within 30s; the proxy password is masked in the audit log
 
 ### Mirror
 
@@ -185,6 +189,9 @@ since the first adapter.
 - Prometheus metrics (`/metrics`, behind auth): hits/misses/stale/
   negative per ecosystem, bytes from upstream/to clients, histograms of
   durations and object sizes
+- Remote import/export: a tabular file (`GET /remotes/export`,
+  `POST /remotes/import`; duplicates are skipped with a report) and the
+  matching buttons/panel in the web admin UI
 - A single path-traversal check point for all request paths
 
 A detailed description is provided in [`docs/func/EN/`](docs/func/EN/).

@@ -153,7 +153,7 @@ func TestPacmanProxyByteExactAndCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := cacheengine.New(storage, index, up.srv.Client(), clock,
+	engine := cacheengine.New(storage, index, testutil.StaticDoerFactory{Doer: up.srv.Client()}, clock,
 		cacheengine.Config{StaleIfError: true, NegativeTTL404: 5 * time.Minute, NegativeTTL5xx: 30 * time.Second},
 		metrics.NewCache())
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

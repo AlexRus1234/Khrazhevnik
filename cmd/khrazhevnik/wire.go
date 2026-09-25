@@ -185,7 +185,16 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		return nil, err
 	}
 	httpClient := outboundHTTPClient()
-	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, httpClient, systemClock{}, cacheengine.Config{StaleIfError: cfg.Cache.StaleIfError, MaxObjectSize: cfg.Cache.MaxObjectSize.Bytes, NegativeTTL404: cfg.Cache.NegativeTTL404.Duration, NegativeTTL5xx: cfg.Cache.NegativeTTL5xx.Duration}, metrics.NewCache())
+	// Глобальный upstream-прокси (сессия 156): ленивый резолвер настройки
+	// с TTL-кешем 30с — смена из GUI применяется без рестарта (лаг ≤ TTL).
+	// catalog собран выше — стор доступен здесь; сбой чтения не роняет
+	// трафик (последнее известное значение), ошибка — в лог.
+	proxyResolve := (&upstreamProxyResolver{
+		store:   catalog.Settings,
+		clock:   systemClock{},
+		onError: func(err error) { log.Warn("upstream proxy setting", "err", err) },
+	}).current
+	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, newDoerFactory(httpClient, proxyResolve), systemClock{}, cacheengine.Config{StaleIfError: cfg.Cache.StaleIfError, MaxObjectSize: cfg.Cache.MaxObjectSize.Bytes, NegativeTTL404: cfg.Cache.NegativeTTL404.Duration, NegativeTTL5xx: cfg.Cache.NegativeTTL5xx.Duration}, metrics.NewCache())
 	// statskeeper (сессия 96): персистентность счётчиков — отдельный
 	// фоновый цикл, движок кеша не получает ни горутин, ни порта БД.
 	// Выключен без модуля БД или при stats_flush_interval=0 (легальная

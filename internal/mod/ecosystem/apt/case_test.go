@@ -63,7 +63,7 @@ func TestCacheKeysCaseSensitive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := cache.New(storage, testutil.NewFakeObjectIndex(), server.Client(),
+	engine := cache.New(storage, testutil.NewFakeObjectIndex(), testutil.StaticDoerFactory{Doer: server.Client()},
 		clock, cache.Config{}, metrics.NewCache())
 
 	fetchBody := func(path string) (string, string) {

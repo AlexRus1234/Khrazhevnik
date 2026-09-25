@@ -128,7 +128,7 @@ func TestProxyRangeEndToEnd(t *testing.T) {
 	clock := testutil.NewManualClock(rangeTestStart)
 	engine := cacheengine.New(
 		testutil.NewFakeStorage(clock), testutil.NewFakeObjectIndex(),
-		up.Client(), clock,
+		testutil.StaticDoerFactory{Doer: up.Client()}, clock,
 		cacheengine.Config{StaleIfError: true, NegativeTTL404: 5 * time.Minute, NegativeTTL5xx: 30 * time.Second},
 		metrics.NewCache(),
 	)

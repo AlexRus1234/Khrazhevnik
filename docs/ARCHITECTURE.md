@@ -62,9 +62,9 @@ runtime-плагины (задел сохранён контрактами), п�
 ## 3. Слои и правила импортов
 
 ```
-cmd/khrazhevnik/           main.go + addremote.go (точка входа, паника разрешена только здесь), wire.go — единственная склейка
+cmd/khrazhevnik/           main.go + addremote.go (точка входа, паника разрешена только здесь), wire.go — единственная склейка, transport.go — фабрика Doer'ов и TTL-резолвер глобального прокси
 internal/core/
-  port/       контракты: Storage, Ecosystem, Catalog*, Signer, Clock, Rand, HTTP
+  port/       контракты: Storage, Ecosystem, Catalog*, Signer, Clock, Rand, HTTP (Doer/DoerFactory), UpstreamProxyStore
   domain/     модели + типизированные ошибки; только stdlib, без os/net
   config/     struct-конфиг: defaults → TOML → env KHRZ_* (+file://-секреты)
   dbtalk/     мини-шим SQL-диалектов каталога: Placeholder/Upsert/эпоха
@@ -157,7 +157,30 @@ type MetaFetcher interface {
 // оставляя неиспользуемое нулевым. Зависимости новых движков
 // (sync-воркеры зеркал — сессия 11) дописываются сюда.
 
-// port/signer.go, port/clock.go, port/rand.go, port/http.go (Doer).
+// port/http.go — выбор исходящего клиента под прокси-строку Target'а
+// (волна «Прокси и импорт/экспорт», сессия 150). Tri-state: "" —
+// дефолтный Doer (глобальная настройка, при пустой — env-прокси),
+// "direct" — без прокси, иначе URL прокси. Движок кеша (engine/cache)
+// не знает про прокси-настройку: он зовёт DoerFor(target.ProxyURL) на
+// каждый запрос, реализация — wire.
+type Doer interface {
+    Do(*http.Request) (*http.Response, error)
+}
+type DoerFactory interface {
+    DoerFor(proxyURL string) Doer
+}
+
+// port/settings.go — глобальная настройка прокси (таблица settings,
+// ключ upstream.proxy, сессия 154). Runtime-значение живёт в БД, чтобы
+// переживать рестарт; env HTTP(S)_PROXY — фолбэк при пустой настройке.
+// Интерфейс специализированный, хотя таблица generic key-value
+// (произвольные настройки через API не предполагаются, YAGNI).
+type UpstreamProxyStore interface {
+    UpstreamProxy(ctx context.Context) (string, error)
+    SetUpstreamProxy(ctx context.Context, value string, at time.Time) error
+}
+
+// port/signer.go, port/clock.go, port/rand.go.
 ```
 
 Инварианты движка кеша:
@@ -207,6 +230,27 @@ type MetaFetcher interface {
   port.Rand; один планировщик на процесс; mode=proxy — только ручной
   sync через API; стоп remote гасит идущий sync (AfterFunc-связка),
   повторный Stop безопасен (sync.Once).
+
+Инварианты исходящего транспорта (волна «Прокси и импорт/экспорт», сессия 151):
+
+- единая точка выбора клиента — `port.DoerFactory` в `wire`/`transport.go`:
+  `DoerFor(proxyURL)` возвращает клиент по прокси-строке, кешируя их «один
+  прокси — один клиент» (общий пул соединений; число различных прокси ≈
+  числу remote'ов, эвикция не нужна);
+- tri-state: `""` — дефолтный клиент (`http.ProxyFromEnvironment`, env-фолбэк);
+  `direct` — транспорт с `Proxy: nil` (явный обход глобальной настройки);
+  иначе URL — транспорт с фиксированным прокси (http/https/socks5(h),
+  userinfo — авторизация на прокси);
+- глобальная настройка (`UpstreamProxyStore`) читается ленивым TTL-кешем
+  (`upstreamProxyResolver`, TTL 30с) — смена в GUI применяется без рестарта
+  не позднее 30с; сбой чтения БД не роняет трафик (отдаётся последнее
+  известное значение, ошибка — в лог);
+- все ветки транспорта сохраняют инвариант identity-запросов
+  (`DisableCompression: true` и таймауты `outboundHTTPClient`) — byte-exact
+  кеш не зависит от пути запроса;
+- прокси-строки валидируются в домене (`domain.ValidateProxyURL`: whitelist
+  схем, непустой host, потолок длины 2048) и маскируются для логов/аудита
+  (`domain.MaskProxyURL` → `scheme://***@host:port`).
 
 Инварианты движка publish (сессия 14):
 

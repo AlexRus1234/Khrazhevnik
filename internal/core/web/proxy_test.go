@@ -50,7 +50,7 @@ func newProxyEnv(t *testing.T, h http.HandlerFunc) (http.Handler, *testutil.Manu
 	exporter := metrics.NewHandler(m, prometheus.NewRegistry())
 	engine := cacheengine.New(
 		testutil.NewFakeStorage(clock), testutil.NewFakeObjectIndex(),
-		up.Client(), clock,
+		testutil.StaticDoerFactory{Doer: up.Client()}, clock,
 		cacheengine.Config{StaleIfError: true, NegativeTTL404: 5 * time.Minute, NegativeTTL5xx: 30 * time.Second},
 		m,
 	)
@@ -162,7 +162,7 @@ func TestProxyStatsProjectionContract(t *testing.T) {
 	exporter := metrics.NewHandler(m, prometheus.NewRegistry())
 	engine := cacheengine.New(
 		testutil.NewFakeStorage(clock), testutil.NewFakeObjectIndex(),
-		up.Client(), clock,
+		testutil.StaticDoerFactory{Doer: up.Client()}, clock,
 		cacheengine.Config{StaleIfError: true, NegativeTTL404: 5 * time.Minute, NegativeTTL5xx: 30 * time.Second},
 		m,
 	)
@@ -385,7 +385,7 @@ func TestProxyErrorCodes(t *testing.T) {
 		}))
 		t.Cleanup(up.Close)
 		clock := testutil.NewManualClock(time.Unix(0, 0))
-		engine := cacheengine.New(testutil.NewFakeStorage(clock), testutil.NewFakeObjectIndex(), up.Client(), clock, cacheengine.Config{MaxObjectSize: 10}, nil)
+		engine := cacheengine.New(testutil.NewFakeStorage(clock), testutil.NewFakeObjectIndex(), testutil.StaticDoerFactory{Doer: up.Client()}, clock, cacheengine.Config{MaxObjectSize: 10}, nil)
 		eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL}
 		h := BuildPublicRouter(Deps{Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}})
 		if rec := get(t, h, "/t/pkg/big.deb"); rec.Code != http.StatusBadGateway {
@@ -412,7 +412,7 @@ func TestProxyErrorCodes(t *testing.T) {
 		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
 		t.Cleanup(up.Close)
 		clock := testutil.NewManualClock(time.Unix(0, 0))
-		engine := cacheengine.New(unavailableStorage{}, testutil.NewFakeObjectIndex(), up.Client(), clock, cacheengine.Config{}, nil)
+		engine := cacheengine.New(unavailableStorage{}, testutil.NewFakeObjectIndex(), testutil.StaticDoerFactory{Doer: up.Client()}, clock, cacheengine.Config{}, nil)
 		eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL}
 		h := BuildPublicRouter(Deps{Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}})
 		if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusServiceUnavailable {
@@ -426,7 +426,7 @@ func TestProxyErrorCodes(t *testing.T) {
 		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
 		t.Cleanup(up.Close)
 		clock := testutil.NewManualClock(time.Unix(0, 0))
-		engine := cacheengine.New(writeFailStorage{testutil.NewFakeStorage(clock)}, testutil.NewFakeObjectIndex(), up.Client(), clock, cacheengine.Config{}, nil)
+		engine := cacheengine.New(writeFailStorage{testutil.NewFakeStorage(clock)}, testutil.NewFakeObjectIndex(), testutil.StaticDoerFactory{Doer: up.Client()}, clock, cacheengine.Config{}, nil)
 		eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL}
 		h := BuildPublicRouter(Deps{Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}})
 		if rec := get(t, h, "/t/pkg/a.deb"); rec.Code != http.StatusServiceUnavailable {
@@ -720,7 +720,7 @@ func newRangeProxyEnv(t *testing.T, h http.HandlerFunc, st port.Storage) (http.H
 	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
 	m := metrics.NewCache()
 	exporter := metrics.NewHandler(m, prometheus.NewRegistry())
-	engine := cacheengine.New(st, testutil.NewFakeObjectIndex(), up.Client(), clock,
+	engine := cacheengine.New(st, testutil.NewFakeObjectIndex(), testutil.StaticDoerFactory{Doer: up.Client()}, clock,
 		cacheengine.Config{StaleIfError: true, NegativeTTL404: 5 * time.Minute, NegativeTTL5xx: 30 * time.Second}, m)
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: 40 * time.Second}
 	return BuildPublicRouter(Deps{Version: "test", Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}, Metrics: exporter}), exporter

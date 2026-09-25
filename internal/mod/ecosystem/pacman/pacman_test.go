@@ -195,6 +195,34 @@ func TestResolveKnownRemote(t *testing.T) {
 	}
 }
 
+func TestResolveProxyURL(t *testing.T) {
+	// Tri-state семантика: "" в remote — «по глобальной настройке»,
+	// и он же должен честно прийти в Target пустым.
+	for _, tc := range []struct {
+		name     string
+		proxyURL string
+	}{
+		{"прокси", "socks5://h:1080"},
+		{"без прокси", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newResolveAdapter(t, domain.Remote{
+				ID: 7, Name: "arch", Ecosystem: "pacman",
+				BaseURL:  "https://mirror.example.com/archlinux",
+				Enabled:  true,
+				ProxyURL: tc.proxyURL,
+			})
+			target, ok := a.Resolve("/pacman/arch/core/os/x86_64/foo-1.0-1-x86_64.pkg.tar.zst")
+			if !ok {
+				t.Fatal("Resolve существующего remote = false")
+			}
+			if target.ProxyURL != tc.proxyURL {
+				t.Errorf("ProxyURL = %q, хочу %q", target.ProxyURL, tc.proxyURL)
+			}
+		})
+	}
+}
+
 func TestResolveRootPath(t *testing.T) {
 	a := newResolveAdapter(t, domain.Remote{
 		ID: 3, Name: "arch", BaseURL: "https://mirror.example.com/archlinux", Enabled: true,

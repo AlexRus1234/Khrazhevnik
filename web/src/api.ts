@@ -16,6 +16,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import type { ImportReport } from './types'
+
 // Обёртка над fetch для REST API админки (docs/SPECIFICATION.md §REST).
 // Токен сессии живёт в localStorage; 401 от любого запроса очищает токен
 // и оповещает приложение событием UNAUTHORIZED_EVENT. Рукописный (без
@@ -95,7 +97,10 @@ async function parseBody(resp: Response): Promise<unknown> {
 export async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { ...authHeaders(), ...opts.headers }
   let body: string | undefined
-  if (opts.body !== undefined) {
+  if (typeof opts.body === 'string') {
+    // Готовое текстовое тело (импорт 159): Content-Type задаёт вызов.
+    body = opts.body
+  } else if (opts.body !== undefined) {
     headers['Content-Type'] = 'application/json'
     body = JSON.stringify(opts.body)
   }
@@ -165,6 +170,40 @@ export async function logout(): Promise<void> {
 export interface UploadProgress {
   loaded: number
   total: number
+}
+
+// exportRemotes — GET /remotes/export: сервер отдаёт текстовый файл
+// (Content-Disposition attachment, формат 158). request() не годится —
+// он парсит JSON-тело; качаем blob'ом и подсовываем временную <a
+// download>. attribute download задаёт имя файла.
+export async function exportRemotes(): Promise<void> {
+  let resp: Response
+  try {
+    resp = await fetch('/api/v1/remotes/export', { headers: authHeaders() })
+  } catch {
+    throw new ApiError(0, 'network', 'network')
+  }
+  if (resp.status === 401) {
+    setToken(null)
+    window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
+    throw new ApiError(401, 'auth_required', 'auth_required')
+  }
+  if (!resp.ok) throw errorFromBody(resp.status, await parseBody(resp))
+  const url = URL.createObjectURL(await resp.blob())
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'khrazhevnik-remotes.txt'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// importRemotes — POST /remotes/import: построчный текст формата 158
+// (Content-Type text/plain) → отчёт {created, skipped, errors} (159).
+export async function importRemotes(text: string): Promise<ImportReport> {
+  return request<ImportReport>('POST', '/remotes/import', {
+    body: text,
+    headers: { 'Content-Type': 'text/plain' },
+  })
 }
 
 // uploadObject — PUT /repos/{id}/objects/* стримом через XHR: только

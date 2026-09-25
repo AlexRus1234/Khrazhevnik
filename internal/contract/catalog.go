@@ -51,6 +51,7 @@ type Catalog struct {
 	Audit       port.AuditLog
 	ObjIndex    port.ObjectIndex
 	Stats       port.StatsStore
+	Settings    port.UpstreamProxyStore
 	Revocations port.SessionRevocationStore
 	Close       func() error
 }
@@ -84,6 +85,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("object_index", func(t *testing.T) { objectIndexSuite(t, newCat(t)) })
 	t.Run("iterate_object_meta", func(t *testing.T) { iterateObjectMetaSuite(t, newCat(t)) })
 	t.Run("stats_snapshot", func(t *testing.T) { statsSnapshotSuite(t, newCat(t)) })
+	t.Run("settings", func(t *testing.T) { settingsSuite(t, newCat(t)) })
 	t.Run("revocations", func(t *testing.T) { revocationsSuite(t, newCat(t)) })
 	t.Run("noop_update", func(t *testing.T) { noopUpdateSuite(t, newCat(t)) })
 	t.Run("concurrent_upsert", func(t *testing.T) { concurrentUpsertSuite(t, newCat(t)) })
@@ -427,7 +429,8 @@ func remoteSuite(t *testing.T, c Catalog) {
 	ctx := context.Background()
 	rm, err := c.Remotes.CreateRemote(ctx, domain.Remote{
 		Name: "deb-main", Ecosystem: "apt", BaseURL: "https://deb.example.org/debian",
-		Mode: domain.ModeProxy, Enabled: true, SyncInterval: 6 * time.Hour,
+		ProxyURL: "http://proxy.example.org:3128",
+		Mode:     domain.ModeProxy, Enabled: true, SyncInterval: 6 * time.Hour,
 		Include: []string{"stable", "stable/main"}, CreatedAt: fixed,
 	})
 	if err != nil || rm.ID == 0 {
@@ -436,7 +439,7 @@ func remoteSuite(t *testing.T, c Catalog) {
 	_, err = c.Remotes.CreateRemote(ctx, domain.Remote{Name: "deb-main", CreatedAt: fixed})
 	wantConflict(t, err)
 	got, err := c.Remotes.Remote(ctx, rm.ID)
-	if err != nil || got.BaseURL != "https://deb.example.org/debian" || got.Mode != domain.ModeProxy || !got.Enabled {
+	if err != nil || got.BaseURL != "https://deb.example.org/debian" || got.ProxyURL != "http://proxy.example.org:3128" || got.Mode != domain.ModeProxy || !got.Enabled {
 		t.Fatalf("Remote = %+v, %v", got, err)
 	}
 	if got.SyncInterval != 6*time.Hour {
@@ -455,7 +458,7 @@ func remoteSuite(t *testing.T, c Catalog) {
 		t.Fatal(err)
 	}
 	got2, _ := c.Remotes.Remote(ctx, rm.ID)
-	if got2.Enabled || got2.Mode != domain.ModeMirror {
+	if got2.Enabled || got2.Mode != domain.ModeMirror || got2.ProxyURL != "http://proxy.example.org:3128" {
 		t.Fatalf("UpdateRemote не применился: %+v", got2)
 	}
 	if got2.SyncInterval != 0 {
@@ -463,6 +466,14 @@ func remoteSuite(t *testing.T, c Catalog) {
 	}
 	if got2.Include != nil {
 		t.Errorf("Include после сброса = %+v", got2.Include)
+	}
+	// Прокси сбрасывается в "" — прямое соединение (сессия 153).
+	got2.ProxyURL = ""
+	if err := c.Remotes.UpdateRemote(ctx, got2); err != nil {
+		t.Fatal(err)
+	}
+	if got3, _ := c.Remotes.Remote(ctx, rm.ID); got3.ProxyURL != "" {
+		t.Errorf("ProxyURL после сброса = %q", got3.ProxyURL)
 	}
 	err = c.Remotes.UpdateRemote(ctx, domain.Remote{ID: 999, Name: "ghost"})
 	wantNotFound(t, err)
@@ -790,6 +801,32 @@ func statsSnapshotSuite(t *testing.T, c Catalog) {
 	got, err = c.Stats.StatsSnapshot(ctx)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("снапшот после Reset = %+v, %v; хочу пусто без ошибки", got, err)
+	}
+}
+
+// settingsSuite — глобальный прокси в settings (сессия 154): пусто →
+// "" без ошибки; put → get roundtrip; повторный put перезаписывает
+// (singleton-строка, не накопление). updated_at через порт не виден —
+// его перезапись ассертится в юнит-тесте sqlite прямым SQL.
+func settingsSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	got, err := c.Settings.UpstreamProxy(ctx)
+	if err != nil || got != "" {
+		t.Fatalf("прокси пустой БД = %q, %v; хочу \"\" без ошибки", got, err)
+	}
+	if err := c.Settings.SetUpstreamProxy(ctx, "socks5://h:1080", fixed); err != nil {
+		t.Fatalf("SetUpstreamProxy: %v", err)
+	}
+	got, err = c.Settings.UpstreamProxy(ctx)
+	if err != nil || got != "socks5://h:1080" {
+		t.Fatalf("roundtrip = %q, %v; хочу socks5://h:1080", got, err)
+	}
+	if err := c.Settings.SetUpstreamProxy(ctx, "http://p.example:3128", fixed.Add(time.Minute)); err != nil {
+		t.Fatalf("повторный SetUpstreamProxy: %v", err)
+	}
+	got, err = c.Settings.UpstreamProxy(ctx)
+	if err != nil || got != "http://p.example:3128" {
+		t.Fatalf("перезапись = %q, %v; хочу http://p.example:3128", got, err)
 	}
 }
 

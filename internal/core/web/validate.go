@@ -183,6 +183,9 @@ type remoteInput struct {
 	Enabled      *bool         `json:"enabled"`
 	SyncInterval time.Duration `json:"sync_interval"`
 	Include      []string      `json:"include"`
+	// ProxyURL — tri-state прокси upstream (domain.Remote.ProxyURL):
+	// "" / "direct" валидны тривиально, прочее — через домен.
+	ProxyURL string `json:"proxy_url"`
 }
 
 // validate проверяет поля remoteInput и возвращает первую ошибку
@@ -192,22 +195,50 @@ func (in *remoteInput) validate() error {
 	in.Name = strings.ToLower(strings.TrimSpace(in.Name))
 	in.Ecosystem = strings.ToLower(strings.TrimSpace(in.Ecosystem))
 	in.BaseURL = strings.TrimRight(strings.TrimSpace(in.BaseURL), "/")
-	if err := domain.ValidateUsername(in.Name); err != nil {
+	return validateRemoteSpec(remoteSpec{
+		Name: in.Name, Ecosystem: in.Ecosystem, BaseURL: in.BaseURL,
+		Mode: in.Mode, SyncInterval: in.SyncInterval, ProxyURL: in.ProxyURL,
+	})
+}
+
+// remoteSpec — семантические поля источника, общие для JSON-входа
+// (remoteInput) и построчного импорта (handlers_remotes_io.go). Значения
+// приходят уже нормализованными (lowercase/trim), режим — строкой.
+type remoteSpec struct {
+	Name         string
+	Ecosystem    string
+	BaseURL      string
+	Mode         string
+	SyncInterval time.Duration
+	ProxyURL     string
+}
+
+// validateRemoteSpec проверяет семантику источника и возвращает первую
+// ошибку домена. Общий кусок remoteInput.validate и импорта: оба пути
+// создают remote, значит правила slug/base_url/mode/interval/proxy
+// обязаны совпадать (сессия 159).
+func validateRemoteSpec(s remoteSpec) error {
+	if err := domain.ValidateUsername(s.Name); err != nil {
 		return err
 	}
-	if in.Ecosystem == "" {
-		return &domain.ValidationError{What: "экосистема", Value: in.Ecosystem, Reason: "пусто"}
+	if s.Ecosystem == "" {
+		return &domain.ValidationError{What: "экосистема", Value: s.Ecosystem, Reason: "пусто"}
 	}
-	if !isHTTPURL(in.BaseURL) {
-		return &domain.ValidationError{What: "base_url", Value: in.BaseURL, Reason: "ожидался http(s):// URL"}
+	if !isHTTPURL(s.BaseURL) {
+		return &domain.ValidationError{What: "base_url", Value: s.BaseURL, Reason: "ожидался http(s):// URL"}
 	}
-	switch domain.RemoteMode(in.Mode) {
+	switch domain.RemoteMode(s.Mode) {
 	case domain.ModeProxy, domain.ModeMirror:
 	default:
-		return &domain.ValidationError{What: "mode", Value: in.Mode, Reason: "ожидалось proxy|mirror"}
+		return &domain.ValidationError{What: "mode", Value: s.Mode, Reason: "ожидалось proxy|mirror"}
 	}
-	if in.SyncInterval < 0 {
-		return &domain.ValidationError{What: "sync_interval", Value: in.SyncInterval.String(), Reason: "не может быть отрицательным"}
+	if s.SyncInterval < 0 {
+		return &domain.ValidationError{What: "sync_interval", Value: s.SyncInterval.String(), Reason: "не может быть отрицательным"}
+	}
+	if s.ProxyURL != "" && s.ProxyURL != domain.ProxyDirect {
+		if err := domain.ValidateProxyURL(s.ProxyURL); err != nil {
+			return err
+		}
 	}
 	return nil
 }

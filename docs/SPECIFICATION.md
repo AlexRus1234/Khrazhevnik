@@ -206,10 +206,16 @@ enabled = true
 - Уровень логов — env `KHRZ_LOG_LEVEL` (`debug|info|warn|error`,
   default `info`), читается при старте.
 - Прокси исходящих upstream-запросов (кеш-фетчи и mirror-sync) —
-  стандартные env `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` без префикса
-  `KHRZ_` (схемы `http(s)://` и `socks5(h)://`, авторизация userinfo
-  в URL; `ALL_PROXY` не читается), через `http.ProxyFromEnvironment`
-  исходящего клиента. Подробности — `docs/func/ru/config.md`
+  приоритет: глобальная настройка в БД (таблица `settings`, ключ
+  `upstream.proxy`; `PUT /api/v1/settings/upstream-proxy`), при пустой —
+  env `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` без префикса `KHRZ_` (схемы
+  `http(s)://` и `socks5(h)://`, авторизация userinfo в URL; `ALL_PROXY`
+  не читается), через `http.ProxyFromEnvironment` дефолтного клиента.
+  Настройка применяется без рестарта не позднее 30с (ленивый TTL-кеш
+  фабрики транспортов). Per-remote override — поле `remotes.proxy_url`
+  (tri-state: пусто — наследовать глобальный прокси, `direct` — в обход,
+  иначе URL прокси); пароль в аудит-лог не попадает (только
+  замаскированный URL). Подробности — `docs/func/ru/config.md`
   («Прокси исходящих запросов»).
 
 ## REST API
@@ -250,6 +256,8 @@ IP — 429; пароль длиннее 72 байт (граница bcrypt) — 
 | PATCH | `/api/v1/remotes/{id}`     | admin       | 200/404 | Обновление remote               |
 | DELETE| `/api/v1/remotes/{id}`     | admin       | 204/404 | Удаление remote                 |
 | POST  | `/api/v1/remotes/{id}/sync`| admin       | 202/409/429 | Запуск sync-задачи; 409 — дубль (kind,label), 429 — лимит воркеров |
+| GET   | `/api/v1/remotes/export`   | admin       | 200 | Выгрузка источников: `text/plain; charset=utf-8`, `Content-Disposition: attachment; filename="khrazhevnik-remotes.txt"`, построчный формат (см. ниже) |
+| POST  | `/api/v1/remotes/import`   | admin       | 200/400/413 | Импорт источников: построчный разбор, всегда 200 с отчётом `{created, skipped, errors}` (частичный успех); 400 `import_too_many` — >1000 строк, 413 `payload_too_large` — тело >256 KiB |
 
 Поля remote: `name` (slug, [a-z0-9._-]), `ecosystem` (`apt`, `rpm-md`,
 `pacman`, `apk`, `nix`, `xbps`), `base_url` (http(s)://), `mode`
@@ -257,10 +265,50 @@ IP — 429; пароль длиннее 72 байт (граница bcrypt) — 
 только вручную), `include` (массив строк: для apt — dists с опциональной
 компонентой, «stable» или «stable/main»; для apk/pacman — архитектуры/
 `repo/arch`; для xbps — список архитектур (`x86_64`, `aarch64`, `noarch`),
-пустой — ошибка; для rpm-md/nix — не используется). Плоский лэйаут
+пустой — ошибка; для rpm-md/nix — не используется), `proxy_url`
+(tri-state прокси upstream: `""` — наследовать глобальную настройку,
+`direct` — явно без прокси, иначе URL схемы http/https/socks5/socks5h;
+валидация через `domain.ValidateProxyURL`, невалидное — 400
+`validation_error`; `GET` отдаёт значение как есть вместе с userinfo —
+читать может только admin-сессия; в аудит-лог create/update пишется
+замаскированный `domain.MaskProxyURL`). Плоский лэйаут
 xbps: архитектура — это имя индексного файла `<arch>-repodata` в корне
 репозитория, а не отдельный путь; `noarch`-пакеты входят в каждую
 arch-группу индекса.
+
+#### Формат файла импорта/экспорта (сессия 158)
+
+Табличный текст, одна строка — один remote, поля через `|` (контракт
+`domain.ParseRemoteLine`/`domain.FormatRemotes`):
+
+```
+# khrazhevnik remotes export v1
+# name|ecosystem|base_url|mode|proxy|enabled|sync_interval|include
+debian|apt|https://deb.debian.org/debian|proxy||true||
+```
+
+Ровно 8 полей: `name`, `ecosystem`, `base_url`, `mode`, `proxy`,
+`enabled` (`true`/`false`), `sync_interval` (Go duration или пусто —
+только ручной sync), `include` (через запятую). Строки, начинающиеся с
+`#`, и пустые после trim — комментарии/пропуск (не ошибка). Строки без
+8 полей, с пустым `name`/`ecosystem`/`base_url`, недопустимым `mode`,
+битым URL прокси, не-`true/false` `enabled` или неразбираемым
+`sync_interval` — ошибки строки в отчёте. ID и `created_at` в формат не
+входят (локальны для инстанса). Дубли по имени (уже в БД или повторно
+внутри файла) — `skipped` (решение владельца 2026-09-23: пропускать с
+отчётом, не 409 на весь файл); валидные строки создаются, транзакции на
+весь файл нет. `POST /remotes/import` нормализует `name`/`ecosystem`
+(нижний регистр, trim) и `base_url` (trim завершающего `/`) как
+JSON-путь. Аудит `remote.import` с detail-счётчиками
+`{"created":N,"skipped":M,"errors":K}`.
+
+### Глобальные настройки (admin)
+
+| Метод | Путь                              | Auth  | Код | Назначение                          |
+|-------|-----------------------------------|-------|-----|-------------------------------------|
+| GET   | `/api/v1/settings/upstream-proxy` | admin | 200 | `{"value": v}`: `""` (не задано — env-фолбэк), `direct` или URL прокси. Чтение без аудита |
+| PUT   | `/api/v1/settings/upstream-proxy` | admin | 200/400 | Тело `{"value": s}`; `""`/`direct` валидны тривиально, иначе `domain.ValidateProxyURL`; невалидное — 400 `validation_error`. Ответ `{"value": s}`. Аудит `settings.update` с маскированным паролем; сбой БД — 503 `settings_unavailable` |
+
 
 ### Личные репозитории (publish, сессия 14)
 
@@ -471,7 +519,8 @@ stale_served,negative_hits,upstream_errors}_total`,
 `stale`, `task_duplicate`, `task_limit`, `invalid_json`,
 `setup_already_done`, `invalid_setup_token`, `invalid_credentials`,
 `tasks_unavailable`, `mirror_unavailable`, `publish_unavailable`,
-`storage_gc_unavailable`, `unsupported`, `internal`.
+`storage_gc_unavailable`, `settings_unavailable`, `import_too_many`,
+`unsupported`, `internal`.
 
 ## Экосистемы
 
@@ -617,7 +666,13 @@ sync и include-фильтры); 0005 — `revoked_sessions` (персистен
 ON DELETE CASCADE; 0007 — `cache_stats` (снапшот per-eco счётчиков
 статистики кеша, переживает рестарт; флаш/загрузка — сессия 96);
 0008 — индекс `idx_sync_jobs_remote_id` на `sync_jobs(remote_id)`
-(точечный `JobByRemote` вместо полного обхода — сессия 117).
+(точечный `JobByRemote` вместо полного обхода — сессия 117);
+0009 — `remotes.proxy_url` (персистентный прокси источника, tri-state,
+пустая строка по умолчанию — наследовать глобальный прокси; волна
+«Прокси и импорт/экспорт», сессия 153); 0010 — таблица `settings`
+(generic key-value: `key` PK, `value`, `updated_at` эпохой; пока
+единственный ключ `upstream.proxy` — глобальный прокси исходящих
+запросов, сессия 154).
 `schema_migrations` — служебная таблица goose.
 
 | Таблица        | Назначение                                        |
@@ -626,12 +681,13 @@ ON DELETE CASCADE; 0007 — `cache_stats` (снапшот per-eco счётчик
 | `api_tokens`   | scoped-токены (только sha256)                     |
 | `repos`        | личные репозитории                                |
 | `repo_perms`   | права на личные репо                              |
-| `remotes`      | upstream'ы (зеркала/прокси)                       |
+| `remotes`      | upstream'ы (зеркала/прокси; `proxy_url` — per-remote прокси, 0009) |
 | `sync_jobs`    | sync-задачи зеркал (состояние, resume-данные; курсор кодирует прогресс `files=N;bytes=M`)     |
 | `audit_log`    | аудит мутаций (actor/action/object/result/detail) |
 | `object_index` | etag/expires mutable-объектов кеша; `storage_key` — ключ версионных байт (миграция 0003; пустой — байты под самим `key`, записи до версионирования) |
 | `revoked_sessions` | отзывы JWT (jti, expires_at); logout переживает рестарт; просроченные чистятся при вставке |
 | `cache_stats`  | снапшот per-eco счётчиков статистики кеша (hits/misses/байты/пакеты, updated_at); снапшот всегда полный, перезапись целиком одной транзакцией |
+| `settings`     | generic key-value настройки инстанса (`key` PK, `value`, `updated_at`); ключ `upstream.proxy` — глобальный прокси исходящих запросов (0010) |
 
 Драйверы — плагин через TOML:
 

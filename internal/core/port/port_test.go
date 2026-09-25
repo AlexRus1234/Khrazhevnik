@@ -44,7 +44,16 @@ func TestConformance(t *testing.T) {
 	var _ port.JobStore = testutil.NewFakeJobStore()
 	var _ port.AuditLog = testutil.NewFakeAuditLog()
 	var _ port.Doer = (*http.Client)(nil)
+	// doerFactoryFunc — минимальный двойник фабрики (порт реализует
+	// wire: *http.Client фабрикой не является).
+	var _ port.DoerFactory = doerFactoryFunc(func(string) port.Doer { return (*http.Client)(nil) })
 }
+
+// doerFactoryFunc — адаптер функции под port.DoerFactory.
+type doerFactoryFunc func(string) port.Doer
+
+// DoerFor вызывает обёрнутую функцию.
+func (f doerFactoryFunc) DoerFor(proxyURL string) port.Doer { return f(proxyURL) }
 
 // TestNewGETRequestIdentity — исходящий upstream-запрос обязан явно
 // объявлять Accept-Encoding: identity (сессия 69, история L9): иначе

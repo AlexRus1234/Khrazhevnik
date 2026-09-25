@@ -110,7 +110,7 @@ func publishIntegrationEnv(t *testing.T, signer port.Signer) (*web.Server, strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, http.DefaultClient, clock, cacheengine.Config{}, metrics.NewCache())
+	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, testutil.StaticDoerFactory{Doer: http.DefaultClient}, clock, cacheengine.Config{}, metrics.NewCache())
 	// Ecosystems — как в wireApp: карта имён адаптеров, по которой
 	// admin-роутер гейтит ecosystem при POST/PATCH /repos (сессия 45).
 	// Цикл лояльный, как в wireRepoAdaptersForTest: бланк-импорт в этом

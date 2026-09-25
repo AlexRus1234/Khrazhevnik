@@ -200,6 +200,34 @@ func TestResolveKnownRemote(t *testing.T) {
 	}
 }
 
+func TestResolveProxyURL(t *testing.T) {
+	// Tri-state семантика: "" в remote — «по глобальной настройке»,
+	// и он же должен честно прийти в Target пустым.
+	for _, tc := range []struct {
+		name     string
+		proxyURL string
+	}{
+		{"прокси", "socks5://h:1080"},
+		{"без прокси", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newResolveAdapter(t, domain.Remote{
+				ID: 7, Name: "fedora", Ecosystem: "rpm-md",
+				BaseURL:  "https://mirrors.fedoraproject.org/fedora/releases/40/Everything/x86_64/os",
+				Enabled:  true,
+				ProxyURL: tc.proxyURL,
+			})
+			target, ok := a.Resolve("/rpm/fedora/Packages/f/foo-1.0-1.x86_64.rpm")
+			if !ok {
+				t.Fatal("Resolve существующего remote = false")
+			}
+			if target.ProxyURL != tc.proxyURL {
+				t.Errorf("ProxyURL = %q, хочу %q", target.ProxyURL, tc.proxyURL)
+			}
+		})
+	}
+}
+
 func TestResolveUppercaseStorageKeyLowercased(t *testing.T) {
 	// StorageKey лоуэркейсит путь (доменный ключ — только [a-z0-9/._-]),
 	// но UpstreamURL/Path сохраняют регистр (byte-exact к upstream).

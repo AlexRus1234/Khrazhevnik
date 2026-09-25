@@ -232,7 +232,7 @@ func newXbpsMirrorEnv(t *testing.T, up *httptest.Server) *xbpsMirrorEnv {
 	// Negative-кеш включён с продовыми TTL: битая sha256 кладёт объект
 	// в negative-кеш на NegativeTTL5xx — сценарий проверяет, что это
 	// окно не блокирует повторный sync навсегда.
-	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, up.Client(), clock,
+	cacheEngine := cacheengine.New(storage, catalog.ObjIndex, testutil.StaticDoerFactory{Doer: up.Client()}, clock,
 		cacheengine.Config{StaleIfError: true, NegativeTTL404: 5 * time.Minute, NegativeTTL5xx: 30 * time.Second},
 		metrics.NewCache())
 	tasks := web.NewTaskRegistry(2, clock, nil)

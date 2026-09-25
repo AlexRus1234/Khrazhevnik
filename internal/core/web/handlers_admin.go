@@ -49,7 +49,12 @@ type remoteOut struct {
 	Enabled      bool              `json:"enabled"`
 	SyncInterval time.Duration     `json:"sync_interval"`
 	Include      []string          `json:"include"`
-	CreatedAt    time.Time         `json:"created_at"`
+	// ProxyURL отдаётся как есть (вместе с userinfo): читать его может
+	// только admin-сессия; маскирование — забота логов и audit-detail.
+	// Решение владельца 2026-09-23: значение правится из веб-GUI,
+	// а без пароля его нельзя ни проверить, ни перебрать.
+	ProxyURL  string    `json:"proxy_url"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // remoteOutFrom модели → DTO.
@@ -61,7 +66,7 @@ func remoteOutFrom(r domain.Remote) remoteOut {
 	return remoteOut{
 		ID: r.ID, Name: r.Name, Ecosystem: r.Ecosystem, BaseURL: r.BaseURL,
 		Mode: r.Mode, Enabled: r.Enabled, Include: include,
-		SyncInterval: r.SyncInterval, CreatedAt: r.CreatedAt,
+		SyncInterval: r.SyncInterval, ProxyURL: r.ProxyURL, CreatedAt: r.CreatedAt,
 	}
 }
 
@@ -101,11 +106,17 @@ func handleCreateRemote(d Deps) http.HandlerFunc {
 		// под fallback-именем метода+пути (create.remotes), а успешная —
 		// под remote.create; два имени одной операции ломали трейл.
 		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.create"))
+		// Пароль прокси в аудит не попадает: detail несёт только
+		// замаскированный URL (domain.MaskProxyURL, сессия 149).
+		if in.ProxyURL != "" {
+			*r = *r.WithContext(WithAuditDetail(r.Context(),
+				fmt.Sprintf(`{"proxy":%q}`, domain.MaskProxyURL(in.ProxyURL))))
+		}
 		rem, err := d.Remotes.CreateRemote(r.Context(), domain.Remote{
 			Name: in.Name, Ecosystem: in.Ecosystem, BaseURL: in.BaseURL,
 			Mode: domain.RemoteMode(in.Mode), Enabled: enabled, Include: in.Include,
-			SyncInterval: in.SyncInterval,
-			CreatedAt:    d.clock().Now(),
+			SyncInterval: in.SyncInterval, ProxyURL: in.ProxyURL,
+			CreatedAt: d.clock().Now(),
 		})
 		if err != nil {
 			writeErr(w, err)
@@ -148,11 +159,16 @@ func handleUpdateRemote(d Deps) http.HandlerFunc {
 			ID: existing.ID, Name: in.Name, Ecosystem: in.Ecosystem,
 			BaseURL: in.BaseURL, Mode: domain.RemoteMode(in.Mode),
 			Enabled: enabled, Include: in.Include, SyncInterval: in.SyncInterval,
-			CreatedAt: existing.CreatedAt,
+			ProxyURL: in.ProxyURL, CreatedAt: existing.CreatedAt,
 		}
 		// Action до каталога — как в handleCreateRemote: единое имя
 		// remote.update для middleware-записи при любом исходе.
 		*r = *r.WithContext(WithAuditAction(r.Context(), "remote.update"))
+		// Маска в аудит — как в create: пароль прокси в трейл не течёт.
+		if in.ProxyURL != "" {
+			*r = *r.WithContext(WithAuditDetail(r.Context(),
+				fmt.Sprintf(`{"proxy":%q}`, domain.MaskProxyURL(in.ProxyURL))))
+		}
 		if err := d.Remotes.UpdateRemote(r.Context(), updated); err != nil {
 			writeErr(w, err)
 			return

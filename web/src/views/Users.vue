@@ -53,6 +53,7 @@ const tError = ref<Record<number, string>>({})
 // Сырой токен показывается один раз: server хранит только sha256.
 const freshToken = ref<Record<number, { token: string; name: string }>>({})
 const copied = ref(false)
+const copyFail = ref('')
 
 // Смена своего пароля: сервер отдаёт свежий JWT (token_version бампнут),
 // кладём его на место старого — иначе текущая сессия гасла бы.
@@ -215,6 +216,7 @@ async function issueToken(u: User): Promise<void> {
     )
     freshToken.value[u.id] = { token: out.token, name: out.name }
     copied.value = false
+    copyFail.value = ''
     tName.value = ''
     tTTL.value = ''
     await loadTokens(u.id)
@@ -232,16 +234,45 @@ async function revokeToken(u: User, t: ApiToken): Promise<void> {
   }
 }
 
+// Clipboard API есть только в secure context (https/localhost), а
+// админка типично раздаётся по http в LAN — поэтому fallback на
+// скрытый textarea + execCommand, работающий в любом контексте.
+async function copyText(s: string): Promise<boolean> {
+  if (window.isSecureContext && navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(s)
+      return true
+    } catch {
+      // secure context не гарантирует permission — падаем в fallback
+    }
+  }
+  const ta = document.createElement('textarea')
+  ta.value = s
+  ta.style.position = 'fixed'
+  ta.style.left = '-9999px'
+  document.body.appendChild(ta)
+  ta.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  ta.remove()
+  return ok
+}
+
 async function copyFresh(): Promise<void> {
   if (expanded.value === null) return
   const f = freshToken.value[expanded.value]
   if (!f) return
-  try {
-    await navigator.clipboard.writeText(f.token)
+  if (await copyText(f.token)) {
     copied.value = true
-  } catch {
-    // clipboard API может быть недоступна (не https) — пользователь
-    // выделяет текст вручную.
+    // Подпись гаснет сама; таймер не храним — выпуск нового токена
+    // и так ставит false, гонка безвредна.
+    window.setTimeout(() => (copied.value = false), 2000)
+  } else {
+    copyFail.value = t('users.copyFailed')
   }
 }
 
@@ -403,6 +434,7 @@ function zeroTime(iso: string | undefined): boolean {
                       {{ copied ? t('users.copied') : t('users.copy') }}
                     </button>
                   </div>
+                  <p v-if="copyFail" class="error">{{ copyFail }}</p>
                 </div>
                 <form class="row" @submit.prevent="issueToken(u)">
                   <label class="field"

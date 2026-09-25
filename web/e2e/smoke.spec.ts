@@ -266,6 +266,228 @@ test('дашборд: панель «Последние транзакции»',
   }
 })
 
+// Кнопка «Скопировать» у свежего токена: headless Chromium на
+// http-origin идёт по execCommand-ветке fallback (clipboard API есть
+// только в secure context) — покрывает именно баг v1.2.1. Полноту
+// буфера обмена не ассертим (permissions на http-origin нет):
+// контракт кнопки — смена подписи и возврат через ~2с.
+test('users: выпуск API-токена и копирование', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+
+  // admin создан первым тестом (serial): обычный вход.
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/users"]')
+  await expect(page.getByRole('heading', { name: 'Пользователи' })).toBeVisible()
+
+  // Пользователь один (admin) — раскрываем панель токенов его строки.
+  await page.getByRole('button', { name: 'API-токены', exact: true }).click()
+  await page.getByPlaceholder('deploy').fill('e2e-token')
+  await page.getByRole('button', { name: 'Выпустить', exact: true }).click()
+
+  const fresh = page.locator('.fresh')
+  await expect(fresh.locator('pre.snippet')).toBeVisible()
+
+  // Локатор по структуре, а не по имени: имя кнопки и есть то, что
+  // меняется («Копировать» ↔ «Скопировано»), getByRole(name) терял
+  // элемент ровно на окно смены подписи (2с) и ассерт фейлился,
+  // хотя кнопка работала.
+  const copy = fresh.locator('.row button')
+  await copy.click()
+  await expect(copy).toHaveText('Скопировано')
+  // Подпись гаснет сама (setTimeout 2000 в copyFresh); запас х2 —
+  // на медленном раннере.
+  await expect(copy).toHaveText('Копировать', { timeout: 4000 })
+  await expect(fresh.locator('p.error')).toHaveCount(0)
+})
+
+// remotes: прокси. Форма источника управляет proxy_url (tri-state),
+// сверху — панель глобального прокси. Строки ассертят ru-pin.
+test('remotes: прокси — свой URL на источнике', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Добавить' }).click()
+  const form = page.locator('.panel', { hasText: 'Новый источник' })
+  await form.getByPlaceholder('debian', { exact: true }).fill('e2e-proxy')
+  await form.getByPlaceholder('https://deb.debian.org/debian').fill('https://example.invalid/debian')
+  await form.locator('select', { has: page.locator('option[value="custom"]') }).selectOption('custom')
+  const proxyURL = 'socks5://user:secret@127.0.0.1:1080'
+  await form.getByPlaceholder('socks5://127.0.0.1:1080').fill(proxyURL)
+  await form.locator('form button[type="submit"]').click()
+
+  const row = page.locator('tbody tr', { hasText: 'e2e-proxy' })
+  await expect(row).toContainText(proxyURL)
+
+  // edit → режим «свой» и URL на месте → сохранить.
+  await row.getByRole('button', { name: 'Править' }).click()
+  const edit = page.locator('.panel', { hasText: 'Источник: e2e-proxy' })
+  await expect(edit.locator('select', { has: page.locator('option[value="custom"]') })).toHaveValue(
+    'custom',
+  )
+  await expect(edit.getByPlaceholder('socks5://127.0.0.1:1080')).toHaveValue(proxyURL)
+  await edit.locator('form button[type="submit"]').click()
+  await expect(row).toContainText(proxyURL)
+})
+
+test('remotes: прокси — напрямую', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Добавить' }).click()
+  const form = page.locator('.panel', { hasText: 'Новый источник' })
+  await form.getByPlaceholder('debian', { exact: true }).fill('e2e-direct')
+  await form.getByPlaceholder('https://deb.debian.org/debian').fill('https://example.invalid/direct')
+  await form.locator('select', { has: page.locator('option[value="custom"]') }).selectOption('direct')
+  await form.locator('form button[type="submit"]').click()
+
+  await expect(page.locator('tbody tr', { hasText: 'e2e-direct' })).toContainText('напрямую')
+})
+
+test('remotes: глобальный прокси сохраняется и переживает перезагрузку', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  const panel = page.locator('.panel', { hasText: 'Глобальный прокси upstream' })
+  await panel.locator('input').fill('direct')
+  await panel.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(panel.getByText('Сохранено')).toBeVisible()
+
+  await page.reload()
+  await expect(
+    page.locator('.panel', { hasText: 'Глобальный прокси upstream' }).locator('input'),
+  ).toHaveValue('direct')
+})
+
+test('remotes: клиентская валидация пустого URL прокси', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Добавить' }).click()
+  const form = page.locator('.panel', { hasText: 'Новый источник' })
+  await form.getByPlaceholder('debian', { exact: true }).fill('e2e-invalid')
+  await form.getByPlaceholder('https://deb.debian.org/debian').fill('https://example.invalid/x')
+  await form.locator('select', { has: page.locator('option[value="custom"]') }).selectOption('custom')
+  await form.locator('form button[type="submit"]').click()
+
+  // Сабмит не ушёл: ошибка видна, форма открыта (не создан источник).
+  await expect(form.locator('p.error')).toBeVisible()
+  await expect(form).toBeVisible()
+})
+
+// remotes: экспорт. Кнопка скачивает актуальный список источников
+// файлом формата 158 (blob + <a download>). Ассерты — ru-pin.
+test('remotes: экспорт источников в файл', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Добавить' }).click()
+  const form = page.locator('.panel', { hasText: 'Новый источник' })
+  await form.getByPlaceholder('debian', { exact: true }).fill('e2e-export')
+  await form.getByPlaceholder('https://deb.debian.org/debian').fill('https://example.invalid/export')
+  await form.locator('form button[type="submit"]').click()
+  await expect(page.locator('tbody tr', { hasText: 'e2e-export' })).toBeVisible()
+
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Экспорт' }).click()
+  const download = await downloadPromise
+  expect(download.suggestedFilename()).toBe('khrazhevnik-remotes.txt')
+  const body = await readFile(await download.path(), 'utf-8')
+  expect(body).toContain('# khrazhevnik remotes export v1')
+  expect(body).toContain('e2e-export')
+  expect(body).toContain('https://example.invalid/export')
+})
+
+// remotes: импорт. Панель принимает вставленный текст или .txt-файл,
+// после отправки показывает построчный отчёт (159) и перечитывает
+// таблицу. Ассерты — ru-pin.
+test('remotes: импорт источников из текста', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Импорт', exact: true }).click()
+  const panel = page.locator('.panel', { hasText: 'Импорт' })
+
+  // Пустая textarea: сабмит не уходит (запрос не шлётся), ошибка панели,
+  // панель остаётся открытой.
+  let importCalls = 0
+  page.on('request', (req) => {
+    if (req.method() === 'POST' && req.url().includes('/remotes/import')) importCalls++
+  })
+  await panel.getByRole('button', { name: 'Импортировать' }).click()
+  await expect(panel.locator('p.error')).toBeVisible()
+  expect(importCalls).toBe(0)
+
+  // 2 новых + дубль существующего (e2e-export из теста экспорта) +
+  // строка с битым интервалом.
+  await panel.locator('textarea').fill(
+    [
+      'e2e-import-a|apt|https://example.invalid/a|proxy||true||',
+      'e2e-import-b|rpm-md|https://example.invalid/b|proxy||true||',
+      'e2e-export|apt|https://example.invalid/export|proxy||true||',
+      'e2e-bad|apt|https://example.invalid/bad|proxy||true|2x|',
+    ].join('\n'),
+  )
+  await panel.getByRole('button', { name: 'Импортировать' }).click()
+
+  await expect(panel).toContainText('Создано')
+  await expect(panel).toContainText('e2e-import-a')
+  await expect(panel).toContainText('e2e-import-b')
+  await expect(panel).toContainText('Пропущено (дубли)')
+  await expect(panel).toContainText('Ошибки строк')
+  expect(importCalls).toBe(1)
+
+  await panel.getByRole('button', { name: 'Закрыть' }).click()
+  await expect(page.locator('tbody tr', { hasText: 'e2e-import-a' })).toBeVisible()
+  await expect(page.locator('tbody tr', { hasText: 'e2e-import-b' })).toBeVisible()
+})
+
 // Идёт последним: меняет пароль admin, от которого зависят предыдущие
 // тесты (serial, retries=0; global-setup поднимает сервер с пустой БД
 // на каждый прогон, так что состояние между прогонами не течёт).

@@ -26,6 +26,40 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.2.2] — 2026-09-25
+
+### Added
+
+- Admin API: per-upstream proxy — the `proxy_url` field in
+  POST/PATCH/GET `/api/v1/remotes` (tri-state: empty — inherit the
+  global proxy, `direct` — no proxy, otherwise an
+  http/https/socks5/socks5h URL with optional userinfo); an invalid
+  value yields 400 validation_error; the proxy password never reaches
+  the audit log — the detail carries the masked URL
+  (`socks5://***@h:1080`).
+- Admin API: global upstream proxy — GET/PUT
+  `/api/v1/settings/upstream-proxy` (`{"value": …}` body; empty —
+  env proxies HTTP_PROXY/HTTPS_PROXY/NO_PROXY as the fallback,
+  `direct`, otherwise a valid URL); an invalid value yields 400
+  validation_error; `settings.update` audit entry with the masked
+  URL. Applied without a restart within 30s (lazy TTL cache of the
+  transport factory).
+- Web UI: per-remote proxy controls (tri-state: inherit the global
+  proxy / direct / custom URL) and the global upstream proxy on the
+  Remotes page; the table shows the effective mode.
+- Admin API: tabular export/import of remotes — GET
+  `/api/v1/remotes/export` (a `text/plain` file with
+  Content-Disposition) and POST `/api/v1/remotes/import` (line by line,
+  body ≤256 KiB and ≤1000 lines). Import returns 200 with a
+  `{created, skipped, errors}` report: name duplicates (already in the
+  DB or within the file) and broken lines are skipped with a report,
+  valid lines are created; `remote.import` audit entry with counters.
+- Web UI: an Export button on the Remotes page downloads the current
+  remote list as `khrazhevnik-remotes.txt` (blob + `<a download>`).
+- Web UI: a remote import panel on the Remotes page — paste
+  line-formatted text or choose a `.txt` file; a
+  created/skipped/errors report per line and a table refresh.
+
 ### Fixed
 
 - Binary: graceful shutdown flake — exit 1 instead of 0 on SIGTERM
@@ -56,6 +90,14 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   MySQL), the new constraint keeps its explicit name. Reproduced
   against a local mariadb:13 — red → green (the whole
   TestCatalogContractMariaDB).
+- Web: the «Copy» button next to a freshly issued API token did not
+  work outside a secure context (admin UI served over http on LAN:
+  `navigator.clipboard` is undefined, the TypeError was silently
+  swallowed — the button «did nothing»); a fallback via a hidden
+  textarea + `document.execCommand('copy')` is added, and if both
+  paths fail a «Copy failed…» line is shown under the button. The
+  «Copied» label now clears itself after ~2s (previously it hung
+  until the next token issue).
 
 ### Changed
 
