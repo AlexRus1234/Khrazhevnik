@@ -99,6 +99,7 @@
   "remotes.globalProxy": "Global upstream proxy",
   "remotes.globalProxyHint": "empty — env HTTP(S)_PROXY; applied without a restart within 30s",
   "remotes.globalSaved": "Saved",
+  "remotes.export": "Export",
 
   "repos.title": "Personal repositories",
   "repos.newRepo": "New repository",

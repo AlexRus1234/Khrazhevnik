@@ -407,6 +407,36 @@ test('remotes: клиентская валидация пустого URL про
   await expect(form).toBeVisible()
 })
 
+// remotes: экспорт. Кнопка скачивает актуальный список источников
+// файлом формата 158 (blob + <a download>). Ассерты — ru-pin.
+test('remotes: экспорт источников в файл', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Добавить' }).click()
+  const form = page.locator('.panel', { hasText: 'Новый источник' })
+  await form.getByPlaceholder('debian', { exact: true }).fill('e2e-export')
+  await form.getByPlaceholder('https://deb.debian.org/debian').fill('https://example.invalid/export')
+  await form.locator('form button[type="submit"]').click()
+  await expect(page.locator('tbody tr', { hasText: 'e2e-export' })).toBeVisible()
+
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Экспорт' }).click()
+  const download = await downloadPromise
+  expect(download.suggestedFilename()).toBe('khrazhevnik-remotes.txt')
+  const body = await readFile(await download.path(), 'utf-8')
+  expect(body).toContain('# khrazhevnik remotes export v1')
+  expect(body).toContain('e2e-export')
+  expect(body).toContain('https://example.invalid/export')
+})
+
 // Идёт последним: меняет пароль admin, от которого зависят предыдущие
 // тесты (serial, retries=0; global-setup поднимает сервер с пустой БД
 // на каждый прогон, так что состояние между прогонами не течёт).

@@ -167,6 +167,31 @@ export interface UploadProgress {
   total: number
 }
 
+// exportRemotes — GET /remotes/export: сервер отдаёт текстовый файл
+// (Content-Disposition attachment, формат 158). request() не годится —
+// он парсит JSON-тело; качаем blob'ом и подсовываем временную <a
+// download>. attribute download задаёт имя файла.
+export async function exportRemotes(): Promise<void> {
+  let resp: Response
+  try {
+    resp = await fetch('/api/v1/remotes/export', { headers: authHeaders() })
+  } catch {
+    throw new ApiError(0, 'network', 'network')
+  }
+  if (resp.status === 401) {
+    setToken(null)
+    window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
+    throw new ApiError(401, 'auth_required', 'auth_required')
+  }
+  if (!resp.ok) throw errorFromBody(resp.status, await parseBody(resp))
+  const url = URL.createObjectURL(await resp.blob())
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'khrazhevnik-remotes.txt'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 // uploadObject — PUT /repos/{id}/objects/* стримом через XHR: только
 // XHR даёт upload.onprogress, а Content-Length браузер ставит сам из
 // File. force=true — перезапись существующего ключа (админ).

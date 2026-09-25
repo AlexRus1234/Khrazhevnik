@@ -52,6 +52,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `{created, skipped, errors}` report: name duplicates (already in the
   DB or within the file) and broken lines are skipped with a report,
   valid lines are created; `remote.import` audit entry with counters.
+- Web UI: an Export button on the Remotes page downloads the current
+  remote list as `khrazhevnik-remotes.txt` (blob + `<a download>`).
 
 ### Fixed
 

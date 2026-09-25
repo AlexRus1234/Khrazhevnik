@@ -18,7 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { request } from '../api'
+import { exportRemotes, request } from '../api'
 import { errText } from '../errors'
 import { formatDuration, formatSpeed, formatTime, parseDuration } from '../format'
 import { t } from '../i18n'
@@ -191,6 +191,21 @@ async function remove(r: Remote): Promise<void> {
   }
 }
 
+const exporting = ref(false)
+
+async function exportNow(): Promise<void> {
+  if (exporting.value) return
+  exporting.value = true
+  error.value = ''
+  try {
+    await exportRemotes()
+  } catch (e) {
+    error.value = errText(e)
+  } finally {
+    exporting.value = false
+  }
+}
+
 // sync + поллинг задачи: 202 → task_id, 409 — уже бежит (подхватываем
 // прогресс из списка задач), 429 — лимит воркеров.
 const syncing = ref<Record<number, boolean>>({})
@@ -253,7 +268,12 @@ onUnmounted(() => {
   <section>
     <div class="row spread">
       <h1>{{ t('remotes.title') }}</h1>
-      <button class="btn primary" @click="openCreate">{{ t('common.add') }}</button>
+      <div class="row">
+        <button class="btn" :disabled="exporting" @click="exportNow">
+          {{ t('remotes.export') }}
+        </button>
+        <button class="btn primary" @click="openCreate">{{ t('common.add') }}</button>
+      </div>
     </div>
     <p v-if="error" class="error">{{ error }}</p>
 

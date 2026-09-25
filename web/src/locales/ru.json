@@ -99,6 +99,7 @@
   "remotes.globalProxy": "Глобальный прокси upstream",
   "remotes.globalProxyHint": "пусто — env HTTP(S)_PROXY; применяется без рестарта в пределах 30с",
   "remotes.globalSaved": "Сохранено",
+  "remotes.export": "Экспорт",
 
   "repos.title": "Личные репозитории",
   "repos.newRepo": "Новый репозиторий",
