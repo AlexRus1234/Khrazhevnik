@@ -14,6 +14,7 @@
   "common.yes": "yes",
   "common.no": "no",
   "common.user": "User",
+  "common.close": "Close",
 
   "nav.dashboard": "Dashboard",
   "nav.remotes": "Remotes",
@@ -100,6 +101,14 @@
   "remotes.globalProxyHint": "empty — env HTTP(S)_PROXY; applied without a restart within 30s",
   "remotes.globalSaved": "Saved",
   "remotes.export": "Export",
+  "remotes.import": "Import",
+  "remotes.importHint": "Format: name|ecosystem|base_url|mode|proxy|enabled|sync_interval|include",
+  "remotes.importRun": "Import",
+  "remotes.importEmpty": "Empty — paste lines or choose a file",
+  "remotes.reportCreated": "Created",
+  "remotes.reportSkipped": "Skipped (duplicates)",
+  "remotes.reportErrors": "Line errors",
+  "remotes.reportLine": "line",
 
   "repos.title": "Personal repositories",
   "repos.newRepo": "New repository",

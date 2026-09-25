@@ -14,6 +14,7 @@
   "common.yes": "да",
   "common.no": "нет",
   "common.user": "Пользователь",
+  "common.close": "Закрыть",
 
   "nav.dashboard": "Дашборд",
   "nav.remotes": "Источники",
@@ -100,6 +101,14 @@
   "remotes.globalProxyHint": "пусто — env HTTP(S)_PROXY; применяется без рестарта в пределах 30с",
   "remotes.globalSaved": "Сохранено",
   "remotes.export": "Экспорт",
+  "remotes.import": "Импорт",
+  "remotes.importHint": "Формат: name|ecosystem|base_url|mode|proxy|enabled|sync_interval|include",
+  "remotes.importRun": "Импортировать",
+  "remotes.importEmpty": "Пусто — вставьте строки или выберите файл",
+  "remotes.reportCreated": "Создано",
+  "remotes.reportSkipped": "Пропущено (дубли)",
+  "remotes.reportErrors": "Ошибки строк",
+  "remotes.reportLine": "строка",
 
   "repos.title": "Личные репозитории",
   "repos.newRepo": "Новый репозиторий",

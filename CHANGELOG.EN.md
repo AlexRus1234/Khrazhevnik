@@ -54,6 +54,9 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   valid lines are created; `remote.import` audit entry with counters.
 - Web UI: an Export button on the Remotes page downloads the current
   remote list as `khrazhevnik-remotes.txt` (blob + `<a download>`).
+- Web UI: a remote import panel on the Remotes page — paste
+  line-formatted text or choose a `.txt` file; a
+  created/skipped/errors report per line and a table refresh.
 
 ### Fixed
 

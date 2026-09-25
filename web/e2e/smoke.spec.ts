@@ -437,6 +437,57 @@ test('remotes: экспорт источников в файл', async ({ page }
   expect(body).toContain('https://example.invalid/export')
 })
 
+// remotes: импорт. Панель принимает вставленный текст или .txt-файл,
+// после отправки показывает построчный отчёт (159) и перечитывает
+// таблицу. Ассерты — ru-pin.
+test('remotes: импорт источников из текста', async ({ page }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Импорт', exact: true }).click()
+  const panel = page.locator('.panel', { hasText: 'Импорт' })
+
+  // Пустая textarea: сабмит не уходит (запрос не шлётся), ошибка панели,
+  // панель остаётся открытой.
+  let importCalls = 0
+  page.on('request', (req) => {
+    if (req.method() === 'POST' && req.url().includes('/remotes/import')) importCalls++
+  })
+  await panel.getByRole('button', { name: 'Импортировать' }).click()
+  await expect(panel.locator('p.error')).toBeVisible()
+  expect(importCalls).toBe(0)
+
+  // 2 новых + дубль существующего (e2e-export из теста экспорта) +
+  // строка с битым интервалом.
+  await panel.locator('textarea').fill(
+    [
+      'e2e-import-a|apt|https://example.invalid/a|proxy||true||',
+      'e2e-import-b|rpm-md|https://example.invalid/b|proxy||true||',
+      'e2e-export|apt|https://example.invalid/export|proxy||true||',
+      'e2e-bad|apt|https://example.invalid/bad|proxy||true|2x|',
+    ].join('\n'),
+  )
+  await panel.getByRole('button', { name: 'Импортировать' }).click()
+
+  await expect(panel).toContainText('Создано')
+  await expect(panel).toContainText('e2e-import-a')
+  await expect(panel).toContainText('e2e-import-b')
+  await expect(panel).toContainText('Пропущено (дубли)')
+  await expect(panel).toContainText('Ошибки строк')
+  expect(importCalls).toBe(1)
+
+  await panel.getByRole('button', { name: 'Закрыть' }).click()
+  await expect(page.locator('tbody tr', { hasText: 'e2e-import-a' })).toBeVisible()
+  await expect(page.locator('tbody tr', { hasText: 'e2e-import-b' })).toBeVisible()
+})
+
 // Идёт последним: меняет пароль admin, от которого зависят предыдущие
 // тесты (serial, retries=0; global-setup поднимает сервер с пустой БД
 // на каждый прогон, так что состояние между прогонами не течёт).

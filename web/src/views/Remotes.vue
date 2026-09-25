@@ -18,11 +18,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { exportRemotes, request } from '../api'
+import { exportRemotes, importRemotes, request } from '../api'
 import { errText } from '../errors'
 import { formatDuration, formatSpeed, formatTime, parseDuration } from '../format'
 import { t } from '../i18n'
-import type { Remote, TaskSnapshot } from '../types'
+import type { ImportReport, Remote, TaskSnapshot } from '../types'
 
 const ECOSYSTEMS = ['apt', 'rpm-md', 'pacman', 'apk', 'nix', 'xbps']
 
@@ -206,6 +206,59 @@ async function exportNow(): Promise<void> {
   }
 }
 
+// Импорт источников: панель принимает вставленный текст или .txt-файл;
+// после отправки показывает построчный отчёт (created/skipped/errors).
+const showImport = ref(false)
+const importText = ref('')
+const importError = ref('')
+const importBusy = ref(false)
+const importReport = ref<ImportReport | null>(null)
+
+function openImport(): void {
+  importText.value = ''
+  importError.value = ''
+  importReport.value = null
+  showImport.value = true
+}
+
+function closeImport(): void {
+  showImport.value = false
+  importText.value = ''
+  importError.value = ''
+  importReport.value = null
+}
+
+// Файл читаем целиком в textarea; дальнейшее ручное редактирование не
+// блокируем — пользователь волен поправить текст перед импортом.
+function onImportFile(e: Event): void {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    importText.value = typeof reader.result === 'string' ? reader.result : ''
+  }
+  reader.readAsText(file)
+}
+
+async function submitImport(): Promise<void> {
+  if (importBusy.value) return
+  if (importText.value.trim() === '') {
+    importError.value = t('remotes.importEmpty')
+    return
+  }
+  importBusy.value = true
+  importError.value = ''
+  importReport.value = null
+  try {
+    importReport.value = await importRemotes(importText.value)
+    await load()
+  } catch (e) {
+    importError.value = errText(e)
+  } finally {
+    importBusy.value = false
+  }
+}
+
 // sync + поллинг задачи: 202 → task_id, 409 — уже бежит (подхватываем
 // прогресс из списка задач), 429 — лимит воркеров.
 const syncing = ref<Record<number, boolean>>({})
@@ -269,6 +322,7 @@ onUnmounted(() => {
     <div class="row spread">
       <h1>{{ t('remotes.title') }}</h1>
       <div class="row">
+        <button class="btn" @click="openImport">{{ t('remotes.import') }}</button>
         <button class="btn" :disabled="exporting" @click="exportNow">
           {{ t('remotes.export') }}
         </button>
@@ -291,6 +345,46 @@ onUnmounted(() => {
       <p class="dim">{{ t('remotes.globalProxyHint') }}</p>
       <p v-if="gError" class="error">{{ gError }}</p>
       <p v-if="gSaved" class="ok">{{ t('remotes.globalSaved') }}</p>
+    </div>
+
+    <div v-if="showImport" class="panel">
+      <h2>{{ t('remotes.import') }}</h2>
+      <label class="field"
+        >{{ t('remotes.import') }}
+        <textarea v-model="importText" rows="8" :placeholder="t('remotes.importHint')"></textarea>
+      </label>
+      <div class="row">
+        <input type="file" accept=".txt,text/plain" @change="onImportFile" />
+      </div>
+      <p v-if="importError" class="error">{{ importError }}</p>
+      <div class="row">
+        <button class="btn primary" type="button" :disabled="importBusy" @click="submitImport">
+          {{ t('remotes.importRun') }}
+        </button>
+        <button class="btn" type="button" @click="closeImport">{{ t('common.close') }}</button>
+      </div>
+      <div v-if="importReport">
+        <p>
+          <strong>{{ t('remotes.reportCreated') }}:</strong>
+          {{ importReport.created.join(', ') || '—' }}
+        </p>
+        <p>
+          <strong>{{ t('remotes.reportSkipped') }}:</strong>
+          {{
+            importReport.skipped
+              .map((s) => `${s.name} (${t('remotes.reportLine')} ${s.line})`)
+              .join(', ') || '—'
+          }}
+        </p>
+        <p>
+          <strong>{{ t('remotes.reportErrors') }}:</strong>
+          {{
+            importReport.errors
+              .map((e) => `${t('remotes.reportLine')} ${e.line}: ${e.code}`)
+              .join(', ') || '—'
+          }}
+        </p>
+      </div>
     </div>
 
     <div v-if="showForm" class="panel">

@@ -16,6 +16,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
+import type { ImportReport } from './types'
+
 // Обёртка над fetch для REST API админки (docs/SPECIFICATION.md §REST).
 // Токен сессии живёт в localStorage; 401 от любого запроса очищает токен
 // и оповещает приложение событием UNAUTHORIZED_EVENT. Рукописный (без
@@ -95,7 +97,10 @@ async function parseBody(resp: Response): Promise<unknown> {
 export async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { ...authHeaders(), ...opts.headers }
   let body: string | undefined
-  if (opts.body !== undefined) {
+  if (typeof opts.body === 'string') {
+    // Готовое текстовое тело (импорт 159): Content-Type задаёт вызов.
+    body = opts.body
+  } else if (opts.body !== undefined) {
     headers['Content-Type'] = 'application/json'
     body = JSON.stringify(opts.body)
   }
@@ -190,6 +195,15 @@ export async function exportRemotes(): Promise<void> {
   a.download = 'khrazhevnik-remotes.txt'
   a.click()
   URL.revokeObjectURL(url)
+}
+
+// importRemotes — POST /remotes/import: построчный текст формата 158
+// (Content-Type text/plain) → отчёт {created, skipped, errors} (159).
+export async function importRemotes(text: string): Promise<ImportReport> {
+  return request<ImportReport>('POST', '/remotes/import', {
+    body: text,
+    headers: { 'Content-Type': 'text/plain' },
+  })
 }
 
 // uploadObject — PUT /repos/{id}/objects/* стримом через XHR: только
