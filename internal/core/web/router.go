@@ -69,7 +69,14 @@ type Deps struct {
 	// Storage — раздача объектов личных репо публичным роутером
 	// (GET /repo/<name>/* на :29202, сессия 14).
 	Storage port.Storage
-	Audit   port.AuditLog
+	// AccessRecorder — фиксация обращений к объектам (сессия 168):
+	// точки — раздача объекта личного репо (:29202) и кеш-HIT/STALE
+	// прокси. Срез accesskeeper.Keeper: Record — O(1) в памяти, без БД
+	// на горячем пути. nil в деградированном режиме (нет модуля БД) и
+	// при выключенном трекинге — фиксаций нет, раздача не меняется
+	// (ретеншн тогда живёт от даты загрузки версий — бутстрап-фолбэк).
+	AccessRecorder AccessRecorder
+	Audit          port.AuditLog
 	// TaskRegistry — общая инфраструктура фоновых задач (sync, publish).
 	Tasks *TaskRegistry
 	// OnRemotesChanged — хук планировщика зеркал: будит reconcile после
@@ -120,6 +127,15 @@ type Deps struct {
 	// фоновых задач (правило «случайность — через port.Rand», инжект
 	// в тестах). nil — системная реализация.
 	Rand port.Rand
+}
+
+// AccessRecorder — тонкий срез accesskeeper.Keeper: фиксация обращения к
+// объекту хранения (scope — domain.AccessScopeRepo/AccessScopeCache, key —
+// ключ единого namespace хранения). Объявление живёт в web, реализация
+// склеивается в wire (образец — PublishAPI): web не импортирует
+// engine-пакеты (depguard).
+type AccessRecorder interface {
+	Record(scope, key string)
 }
 
 // MirrorSync — тонкий срез mirror.Engine, нужный API-хендлеру sync:

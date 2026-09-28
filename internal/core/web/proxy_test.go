@@ -24,6 +24,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -40,8 +41,16 @@ import (
 
 // newProxyEnv — публичный роутер с живым движком кеша над
 // httptest-upstream. Возвращает и Metrics-экспортер (завёрнут в Deps)
-// для smoke-проверок exposition-текста.
+// для smoke-проверок exposition-текста. Фиксации обращений выключены
+// (nil-рекордер — деградация) — вариант с рекордером ниже.
 func newProxyEnv(t *testing.T, h http.HandlerFunc) (http.Handler, *testutil.ManualClock, *metrics.Cache, *metrics.Handler, *httptest.Server) {
+	t.Helper()
+	return newProxyEnvWith(t, h, nil)
+}
+
+// newProxyEnvWith — тот же стенд с инжектированным рекордером обращений
+// (сессия 168): тесты точек фиксации смотрят пары (scope, ключ).
+func newProxyEnvWith(t *testing.T, h http.HandlerFunc, recorder AccessRecorder) (http.Handler, *testutil.ManualClock, *metrics.Cache, *metrics.Handler, *httptest.Server) {
 	t.Helper()
 	up := httptest.NewServer(h)
 	t.Cleanup(up.Close)
@@ -55,7 +64,7 @@ func newProxyEnv(t *testing.T, h http.HandlerFunc) (http.Handler, *testutil.Manu
 		m,
 	)
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: 40 * time.Second}
-	handler := BuildPublicRouter(Deps{Version: "test", Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}, Metrics: exporter})
+	handler := BuildPublicRouter(Deps{Version: "test", Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}, Metrics: exporter, AccessRecorder: recorder})
 	return handler, clock, m, exporter, up
 }
 
@@ -553,6 +562,81 @@ func TestProxyStaleServedWithWarning(t *testing.T) {
 	}
 	if got := rec.Header().Get("Warning"); got != `111 khrazhevnik "revalidation failed"` {
 		t.Errorf("Warning = %q, хочу 111", got)
+	}
+}
+
+// TestProxyAccessRecordingOnCacheHits — точки фиксации обращений на
+// кеш-прокси (сессия 168). Потребление считают HIT и STALE: клиент
+// получил байты из кеша. MISS не считают — объекта в кеше ещё нет
+// (иначе сканер-перебор путей сам себе продлевает жизнь). Ключ —
+// ключ единого namespace хранения из меты объекта (Meta.Key), тот же
+// и на полной выдаче, и на Range (Range — тоже потребление).
+func TestProxyAccessRecordingOnCacheHits(t *testing.T) {
+	requests := 0
+	rec := &accessRecorderMock{}
+	h, clock, _, _, _ := newProxyEnvWith(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		switch requests {
+		case 1: // immutable-пакет: прогрев кеша (MISS)
+			_, _ = io.WriteString(w, "payload")
+		case 2: // mutable-индекс: прогрев кеша (MISS)
+			_, _ = io.WriteString(w, "idx1")
+		default: // дальше upstream сломан: отдаётся протухшая копия
+			w.WriteHeader(500)
+		}
+	}, rec)
+
+	// MISS — ни одной записи.
+	if got := get(t, h, "/t/pkg/a.deb"); got.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("прогрев пакета: X-Cache = %q, хочу MISS", got.Header().Get("X-Cache"))
+	}
+	if got := rec.records(); len(got) != 0 {
+		t.Fatalf("записи после MISS = %v, хочу пусто", got)
+	}
+
+	// HIT — запись с ключом хранения объекта кеша.
+	if got := get(t, h, "/t/pkg/a.deb"); got.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("второй GET пакета: X-Cache = %q, хочу HIT", got.Header().Get("X-Cache"))
+	}
+	want := [][2]string{{domain.AccessScopeCache, "cache/t/pkg/a.deb"}}
+	if got := rec.records(); !slices.Equal(got, want) {
+		t.Errorf("записи после HIT = %v, хочу %v", got, want)
+	}
+
+	// Range по объекту в кеше — HIT и та же запись (ключ тот же).
+	req := httptest.NewRequest(http.MethodGet, "/t/pkg/a.deb", nil)
+	req.Header.Set("Range", "bytes=0-2")
+	recRange := httptest.NewRecorder()
+	h.ServeHTTP(recRange, req)
+	if recRange.Code != http.StatusPartialContent {
+		t.Fatalf("Range-ответ = %d, хочу 206", recRange.Code)
+	}
+	want = append(want, [2]string{domain.AccessScopeCache, "cache/t/pkg/a.deb"})
+	if got := rec.records(); !slices.Equal(got, want) {
+		t.Errorf("записи после Range-HIT = %v, хочу %v", got, want)
+	}
+
+	// STALE — протухшая копия отдана клиенту, поэтому тоже обращение.
+	if got := get(t, h, "/t/idx/idx"); got.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("прогрев индекса: X-Cache = %q, хочу MISS", got.Header().Get("X-Cache"))
+	}
+	if got := rec.records(); !slices.Equal(got, want) {
+		t.Errorf("записи после MISS индекса = %v, хочу прежние %v", got, want)
+	}
+	clock.Advance(41 * time.Second)
+	if got := get(t, h, "/t/idx/idx"); got.Header().Get("X-Cache") != "STALE" {
+		t.Fatalf("протухший индекс: X-Cache = %q, хочу STALE", got.Header().Get("X-Cache"))
+	}
+	// Mutable-объект лежит в хранилище под версионным ключом
+	// (cache/t/idx/idx-<суффикс>: движок пишет версии) — фиксируется
+	// именно он, ключ хранилища целиком, как его вернул движок;
+	// логический путь по нему восстанавливается префиксом.
+	got := rec.records()
+	if len(got) != 3 {
+		t.Fatalf("записи после STALE = %v, хочу 3 записи", got)
+	}
+	if last := got[2]; last[0] != domain.AccessScopeCache || !strings.HasPrefix(last[1], "cache/t/idx/idx") {
+		t.Errorf("запись STALE = %v, хочу {cache, cache/t/idx/idx…}", last)
 	}
 }
 

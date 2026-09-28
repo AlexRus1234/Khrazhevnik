@@ -23,7 +23,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,6 +93,101 @@ func getPublicRange(t *testing.T, env *repoEnv, path, rangeHdr, ifRange string) 
 	rec := httptest.NewRecorder()
 	env.public.ServeHTTP(rec, req)
 	return rec
+}
+
+// accessRecorderMock — локальный мок AccessRecorder со срезом записей
+// (сессия 168): тестам важны факт и параметры фиксации, БД не нужна.
+// Мьютекс — потому что реальный HTTP-стек вызывает хендлер в чужой
+// горутине (httptest-сервер), а читает тест из своей.
+type accessRecorderMock struct {
+	mu   sync.Mutex
+	recs [][2]string
+}
+
+func (m *accessRecorderMock) Record(scope, key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recs = append(m.recs, [2]string{scope, key})
+}
+
+func (m *accessRecorderMock) records() [][2]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([][2]string(nil), m.recs...)
+}
+
+// TestPublicRepoAccessRecording — точки фиксации обращений на публичном
+// роутере личного репо (сессия 168): успешная выдача объекта — запись
+// {repo, ключ единого namespace}; отсутствующий объект — записей нет
+// (404 не потребление: иначе сканер продлевает жизнь мусору); Range —
+// тоже выдача, точка фиксации одна на обе ветки; nil-рекордер
+// (выключенный трекинг/деградация) — раздача как прежде, паник нет.
+func TestPublicRepoAccessRecording(t *testing.T) {
+	clock := testutil.FixedClock(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC))
+	repos := testutil.NewFakeRepoStore()
+	repo, err := repos.CreateRepo(t.Context(), domain.Repo{Name: "alice", OwnerID: 2, Ecosystem: "apt", CreatedAt: clock.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage := testutil.NewFakeStorage(clock)
+	storedKey := port.RepoPrefix(repo) + "/pool/main/a/foo.deb"
+	w, err := storage.Put(t.Context(), storedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(w, rangeFixture); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &accessRecorderMock{}
+	h := BuildPublicRouter(Deps{Storage: storage, Repos: repos, AccessRecorder: rec})
+
+	// Полная выдача: 200 + запись ровно одна и с ключом хранения объекта.
+	if got := get(t, h, "/repo/alice/pool/main/a/foo.deb"); got.Code != http.StatusOK {
+		t.Fatalf("GET объекта = %d, хочу 200", got.Code)
+	}
+	want := [][2]string{{domain.AccessScopeRepo, storedKey}}
+	if got := rec.records(); !slices.Equal(got, want) {
+		t.Errorf("записи после полной выдачи = %v, хочу %v", got, want)
+	}
+
+	// Отсутствующий объект — 404 и НИ одной новой записи.
+	if got := get(t, h, "/repo/alice/pool/main/a/bar.deb"); got.Code != http.StatusNotFound {
+		t.Fatalf("GET отсутствующего объекта = %d, хочу 404", got.Code)
+	}
+	if got := rec.records(); !slices.Equal(got, want) {
+		t.Errorf("записи после 404 = %v, хочу прежние %v", got, want)
+	}
+
+	// Range — та же точка фиксации (ключ тот же).
+	req := httptest.NewRequest(http.MethodGet, "/repo/alice/pool/main/a/foo.deb", nil)
+	req.Header.Set("Range", "bytes=0-9")
+	recRange := httptest.NewRecorder()
+	h.ServeHTTP(recRange, req)
+	if recRange.Code != http.StatusPartialContent {
+		t.Fatalf("Range-ответ = %d, хочу 206", recRange.Code)
+	}
+	want = append(want, [2]string{domain.AccessScopeRepo, storedKey})
+	if got := rec.records(); !slices.Equal(got, want) {
+		t.Errorf("записи после Range = %v, хочу %v", got, want)
+	}
+
+	// nil-рекордер: обе ветки отдают прежние байты, трекинг выключен.
+	hNoRec := BuildPublicRouter(Deps{Storage: storage, Repos: repos})
+	got := get(t, hNoRec, "/repo/alice/pool/main/a/foo.deb")
+	if got.Code != http.StatusOK || got.Body.String() != rangeFixture {
+		t.Errorf("nil-рекордер: GET = %d, тело %q", got.Code, got.Body.String())
+	}
+	reqNoRec := httptest.NewRequest(http.MethodGet, "/repo/alice/pool/main/a/foo.deb", nil)
+	reqNoRec.Header.Set("Range", "bytes=0-9")
+	recNoRec := httptest.NewRecorder()
+	hNoRec.ServeHTTP(recNoRec, reqNoRec)
+	if recNoRec.Code != http.StatusPartialContent || recNoRec.Body.String() != rangeFixture[0:10] {
+		t.Errorf("nil-рекордер: Range = %d, тело %q", recNoRec.Code, recNoRec.Body.String())
+	}
 }
 
 // TestPublicRepoFileHTMLContentIsDownloadedNotRendered — ядро аудита
