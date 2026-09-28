@@ -95,6 +95,11 @@ type Deps struct {
 	// деградированном режиме (нет срезов каталога) — handleStorageGC
 	// отдаёт 503, как Publish выше. Grace живёт в Sweeper (wire).
 	StorageGC *storagegc.Sweeper
+	// Retention — политика ретеншна личных репо (движок сессий 170–171):
+	// прогноз /repos/{id}/retention/preview, применение /apply фоновой
+	// задачей и пины версий (сессия 172). nil в деградированном режиме —
+	// 503 retention_unavailable на всех пяти маршрутах.
+	Retention RetentionAPI
 	// Signer — подписчик метаданных личных репозиториев (сессия 15):
 	// отдаёт публичный ключ через GET /repo/<name>/key.asc на публичном
 	// порту :29202. nil в деградированном режиме — роут /key.asc не
@@ -155,6 +160,26 @@ type PublishAPI interface {
 	DeleteObject(ctx context.Context, repo domain.Repo, path string) error
 	ListObjects(ctx context.Context, repo domain.Repo) iter.Seq2[port.Meta, error]
 	Reindex(ctx context.Context, repoID int64) (taskID string, err error)
+}
+
+// RetentionAPI — тонкий срез движка ретеншна для
+// /repos/{id}/retention/* (сессия 172): прогноз (dry-run отчёт),
+// применение с перегенерацией индексов и пины версий. Задача apply
+// запускается web-слоем через TaskRegistry — движок про реестр не знает
+// (как у publish/mirror). Пины делегируются PinStore'у движка как есть.
+// web не импортирует engine-пакеты (depguard) — срез склеивается в wire
+// (образец PublishAPI выше).
+type RetentionAPI interface {
+	// Preview — сухой проход: счётчики и строки кандидатов, носитель
+	// не меняется.
+	Preview(ctx context.Context, repo domain.Repo) (RetentionPreview, error)
+	// ApplyAndReindex — боевой проход и (при удалениях) перегенерация
+	// индексов адаптером экосистемы.
+	ApplyAndReindex(ctx context.Context, repo domain.Repo, dryRun bool) (RetentionTotals, error)
+	// Pins — ключи хранилища, закреплённые в репо.
+	Pins(ctx context.Context, repoID int64) ([]string, error)
+	// SetPin ставит (pinned=true) или снимает пин; идемпотентен.
+	SetPin(ctx context.Context, repoID int64, key string, pinned bool) error
 }
 
 // BuildPublicRouter — публичный слушатель (:29202): /healthz, раздача
@@ -336,6 +361,12 @@ func BuildAdminRouter(d Deps) http.Handler {
 					admin.Get("/{id}/perms", handleListPerms(d))
 					admin.Post("/{id}/perms", handleGrantPerm(d))
 					admin.Delete("/{id}/perms/{userID}", handleRevokePerm(d))
+					// Ретеншн (сессия 172): политика — админская
+					// настройка репо, как CRUD выше. Прогноз — чтение
+					// (auditWrap пишет только мутации), apply — мутация,
+					// поэтому под тем же audit→adminAuth.
+					admin.Get("/{id}/retention/preview", handleRetentionPreview(d))
+					admin.Post("/{id}/retention/apply", handleRetentionApply(d))
 				})
 				// owner-scoped: objects + reindex под audit→repoWrite.
 				// Паттерны — длинее, чем admin-CRUD, не пересекаются с
@@ -345,6 +376,13 @@ func BuildAdminRouter(d Deps) http.Handler {
 					self.Put("/{id}/objects/*", handlePutObject(d))
 					self.Delete("/{id}/objects/*", handleDeleteObject(d))
 					self.Post("/{id}/reindex", handleReindexRepo(d))
+					// Пины ретеншна — тот же круг прав, что у
+					// upload/delete: пин ставит владелец репо или
+					// scoped-токен repo:<id>:write, не любой
+					// админ-CRUD (ТЗ 172).
+					self.Get("/{id}/retention/pins", handleListRetentionPins(d))
+					self.Put("/{id}/retention/pins/*", handlePutRetentionPin(d))
+					self.Delete("/{id}/retention/pins/*", handleDeleteRetentionPin(d))
 				})
 			})
 

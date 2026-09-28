@@ -35,6 +35,17 @@ major.
 
 ## [Unreleased]
 
+### Добавлено
+
+- Ретеншн-политики личных репозиториев в REST API: поле `retention`
+  (`min_versions`, `max_age_days`) в `GET`/`POST`/`PATCH /api/v1/repos`,
+  прогноз чистки `GET /api/v1/repos/{id}/retention/preview` (dry-run
+  отчёт: кандидаты с причиной защиты и счётчики), применение
+  `POST /api/v1/repos/{id}/retention/apply` (фоновая задача
+  `kind=retention`, 409 при активной), пины версий
+  `GET|PUT|DELETE /api/v1/repos/{id}/retention/pins` (пин держит версию
+  независимо от политики; аудит `repo.retention.pin`/`unpin`).
+
 ## [1.2.2] — 2026-09-25
 
 ### Добавлено

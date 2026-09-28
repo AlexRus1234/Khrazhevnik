@@ -37,12 +37,13 @@ import (
 
 // repoOut — DTO ответа репо: поля без аудит-мусора.
 type repoOut struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	OwnerID   int64     `json:"owner_id"`
-	Ecosystem string    `json:"ecosystem"`
-	Quota     quotaOut  `json:"quota"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        int64        `json:"id"`
+	Name      string       `json:"name"`
+	OwnerID   int64        `json:"owner_id"`
+	Ecosystem string       `json:"ecosystem"`
+	Quota     quotaOut     `json:"quota"`
+	Retention retentionOut `json:"retention"`
+	CreatedAt time.Time    `json:"created_at"`
 }
 
 type quotaOut struct {
@@ -50,20 +51,29 @@ type quotaOut struct {
 	MaxObjects int64 `json:"max_objects"`
 }
 
+// retentionOut — политика ретеншна в теле репо (сессия 172):
+// {0,0} — политика выключена (репо растёт в пределах квоты).
+type retentionOut struct {
+	MinVersions int `json:"min_versions"`
+	MaxAgeDays  int `json:"max_age_days"`
+}
+
 func repoOutFrom(r domain.Repo) repoOut {
 	return repoOut{
 		ID: r.ID, Name: r.Name, OwnerID: r.OwnerID, Ecosystem: r.Ecosystem,
 		Quota:     quotaOut{MaxBytes: r.Quota.MaxBytes, MaxObjects: r.Quota.MaxObjects},
+		Retention: retentionOut{MinVersions: r.Retention.MinVersions, MaxAgeDays: r.Retention.MaxAgeDays},
 		CreatedAt: r.CreatedAt,
 	}
 }
 
 // repoInput — тело POST/PATCH /api/v1/repos.
 type repoInput struct {
-	Name      string   `json:"name"`
-	OwnerID   int64    `json:"owner_id"`
-	Ecosystem string   `json:"ecosystem"`
-	Quota     quotaOut `json:"quota"`
+	Name      string       `json:"name"`
+	OwnerID   int64        `json:"owner_id"`
+	Ecosystem string       `json:"ecosystem"`
+	Quota     quotaOut     `json:"quota"`
+	Retention retentionOut `json:"retention"`
 }
 
 // validate нормализует поля (name/eco → lowercase, trim) и проверяет
@@ -89,7 +99,9 @@ func (in *repoInput) validate(ecosystems map[string]port.Ecosystem) error {
 	if in.Quota.MaxBytes < 0 || in.Quota.MaxObjects < 0 {
 		return &domain.ValidationError{What: "quota", Value: "", Reason: "отрицательные поля недопустимы"}
 	}
-	return nil
+	// Политика ретеншна — доменная валидация сочетания полей (сессия
+	// 172): {0,0} легальна (выключено), MinVersions=1 с возрастом — нет.
+	return domain.ValidateRetention(domain.Retention{MinVersions: in.Retention.MinVersions, MaxAgeDays: in.Retention.MaxAgeDays})
 }
 
 // handleListRepos — GET /api/v1/repos: список репозиториев.
@@ -133,6 +145,7 @@ func handleCreateRepo(d Deps) http.HandlerFunc {
 		repo, err := d.Repos.CreateRepo(r.Context(), domain.Repo{
 			Name: in.Name, OwnerID: in.OwnerID, Ecosystem: in.Ecosystem,
 			Quota:     domain.Quota{MaxBytes: in.Quota.MaxBytes, MaxObjects: in.Quota.MaxObjects},
+			Retention: domain.Retention{MinVersions: in.Retention.MinVersions, MaxAgeDays: in.Retention.MaxAgeDays},
 			CreatedAt: d.clock().Now(),
 		})
 		if err != nil {
@@ -190,6 +203,7 @@ func handleUpdateRepo(d Deps) http.HandlerFunc {
 		updated := domain.Repo{
 			ID: existing.ID, Name: in.Name, OwnerID: in.OwnerID, Ecosystem: in.Ecosystem,
 			Quota:     domain.Quota{MaxBytes: in.Quota.MaxBytes, MaxObjects: in.Quota.MaxObjects},
+			Retention: domain.Retention{MinVersions: in.Retention.MinVersions, MaxAgeDays: in.Retention.MaxAgeDays},
 			CreatedAt: existing.CreatedAt,
 		}
 		if err := d.Repos.UpdateRepo(r.Context(), updated); err != nil {

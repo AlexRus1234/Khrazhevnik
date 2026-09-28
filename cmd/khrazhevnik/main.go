@@ -117,6 +117,7 @@ func run(ctx context.Context, configPath string) error {
 			Mirror:           app.Mirror,
 			Publish:          app.Publish,
 			StorageGC:        app.Sweeper,
+			Retention:        app.RetentionAPI,
 			OnRemotesChanged: app.NotifyRemotesChanged,
 			MetricsHandler:   app.MetricsHandler,
 			Metrics:          app.Metrics,

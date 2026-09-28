@@ -138,15 +138,16 @@ number and reason.
 
 ## Personal repositories
 
-Creation/configuration — admin; upload/delete/reindex/listing — admin,
-the owner, or a `repo:<id>:write` token.
+Creation/configuration — admin; upload/delete/reindex/listing and
+retention pins — admin, the owner, or a `repo:<id>:write` token;
+retention preview and apply — admin only.
 
 | Method | Path                                  | Code             | Purpose                         |
 |--------|---------------------------------------|------------------|---------------------------------|
 | GET    | `/api/v1/repos`                       | 200              | List repositories               |
-| POST   | `/api/v1/repos`                       | 201/400/409      | `{name,ecosystem,owner_id,quota}` |
+| POST   | `/api/v1/repos`                       | 201/400/409      | `{name,ecosystem,owner_id,quota,retention}` |
 | GET    | `/api/v1/repos/{id}`                  | 200/404          | Repository data                 |
-| PATCH  | `/api/v1/repos/{id}`                  | 200/400/404/409  | Name/quota/owner (400 — unknown ecosystem, ecosystem change) |
+| PATCH  | `/api/v1/repos/{id}`                  | 200/400/404/409  | Name/quota/owner/retention policy (400 — unknown ecosystem, ecosystem change, invalid policy) |
 | DELETE | `/api/v1/repos/{id}`                  | 204/404          | Delete with permissions         |
 | GET    | `/api/v1/repos/{id}/perms`            | 200/404          | Write permissions               |
 | POST   | `/api/v1/repos/{id}/perms`            | 204/400/404      | Grant a permission (`{user_id}`) |
@@ -155,14 +156,66 @@ the owner, or a `repo:<id>:write` token.
 | PUT    | `/api/v1/repos/{id}/objects/*`        | 201/409/411/413  | Upload (streaming; `Content-Length` is required, without it — 411) |
 | DELETE | `/api/v1/repos/{id}/objects/*`        | 204/404          | Delete an object                |
 | POST   | `/api/v1/repos/{id}/reindex`          | 202/409/429      | Index generation background task |
+| GET    | `/api/v1/repos/{id}/retention/preview`| 200/404/503      | Retention forecast (dry run): candidates and protection counters |
+| POST   | `/api/v1/repos/{id}/retention/apply`  | 202/404/409/429/503 | Apply the policy as a task (kind=`retention`) |
+| GET    | `/api/v1/repos/{id}/retention/pins`   | 200/404/503      | Repository pins (full storage keys) |
+| PUT    | `/api/v1/repos/{id}/retention/pins/*` | 204/400/404/503  | Pin a version (path inside the repository) |
+| DELETE | `/api/v1/repos/{id}/retention/pins/*` | 204/400/503      | Unpin                           |
 
 `quota` is `{max_bytes, max_objects}`; a zero field means no limit.
-Upload: overwriting an existing key → 409 `conflict` (the `force=true`
+`retention` is `{min_versions, max_age_days}`: the auto-cleanup policy for
+old family versions; `{0,0}` disables it, and `min_versions=1` together
+with a non-zero age is rejected by the server (400 `validation_error` —
+the last version could disappear). Upload:
+overwriting an existing key → 409 `conflict` (the `force=true`
 parameter — admin session only: a scoped token and the owner receive
 403 `admin_required`); exceeding the quota → 413 `quota_exceeded`;
 exceeding the object limit → 413 `too_large`; a `Content-Length`
 mismatch → abort and a clean `tmp/`. Path formats and generated indexes
 per ecosystem — in [personal-repos.md](personal-repos.md).
+
+### Personal-repository retention
+
+`GET .../retention/preview` — a dry run of the engine: the storage is not
+modified and indexes are not regenerated. The response lists the versions
+that passed the `min_versions` filter (the top-N freshest by upload date
+are always protected):
+
+```json
+{
+  "candidates": [
+    {"key": "repo/1/apt/pool/main/h/htop/htop_1.0_amd64.deb",
+     "family": "pool/main/h/htop", "size": 1024,
+     "mod_time": "2026-03-01T10:00:00Z", "last_access": "2026-03-01T10:00:00Z",
+     "protected_by": ""}
+  ],
+  "totals": {"dry_run": true, "duration_seconds": 0.01, "families": 1,
+             "objects_scanned": 5, "candidates": 2, "deleted": 0,
+             "failed_deletes": 0, "bytes_freed": 0, "protected_by_min": 3,
+             "protected_by_access": 0, "protected_by_pin": 0}
+}
+```
+
+`protected_by` is the first protection that fired: `""` — the version is
+deleted, `access` — the version was requested more recently than
+`max_age_days`, `pin` — pinned. Without an access row the age is counted
+from the upload date (bootstrap). A disabled policy yields
+`candidates: []`.
+
+`POST .../retention/apply` — the real pass plus (when anything was
+deleted) index regeneration by the ecosystem adapter, as a background
+task `kind=retention`, label `repo-<id>`; the response is
+`202 {"task_id": …}`, observed via `GET /api/v1/tasks/{id}`. An active
+task of the same repository — 409 `task_duplicate`; worker limit — 429
+`task_limit`; degradation without the engine — 503
+`retention_unavailable`. Audit — `repo.retention.apply`.
+
+Pins: `PUT .../retention/pins/<path inside the repository>` pins a
+version (the object must exist, otherwise 404 `not_found`; a `+` in the
+name may be sent as `%2b`); `DELETE` unpins it (unpinning a missing pin is
+also 204, idempotent). `GET` returns **full** storage keys — they are
+compared against the `key` column of the object listing. Audit —
+`repo.retention.pin` / `repo.retention.unpin`.
 
 ## Public serving (:29202, no auth)
 

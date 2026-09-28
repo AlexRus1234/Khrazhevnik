@@ -26,6 +26,18 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Added
+
+- Personal-repository retention policies in the REST API: the `retention`
+  field (`min_versions`, `max_age_days`) in `GET`/`POST`/`PATCH
+  /api/v1/repos`; cleanup forecast `GET
+  /api/v1/repos/{id}/retention/preview` (dry-run report: candidates with
+  their protection reason plus counters); application `POST
+  /api/v1/repos/{id}/retention/apply` (background task `kind=retention`,
+  409 while one is active); version pins `GET|PUT|DELETE
+  /api/v1/repos/{id}/retention/pins` (a pin keeps a version alive
+  regardless of the policy; audit `repo.retention.pin`/`unpin`).
+
 ## [1.2.2] — 2026-09-25
 
 ### Added

@@ -51,8 +51,51 @@ export interface Repo {
   owner_id: number
   ecosystem: string
   quota: Quota
+  retention: Retention
   created_at: string
 }
+
+// Политика авто-очистки старых версий репо (сессия 172): {0,0} —
+// выключена. min_versions=1 при заданном max_age_days сервер отвергает.
+export interface Retention {
+  min_versions: number
+  max_age_days: number
+}
+
+// Строка прогноза ретеншна (GET /repos/{id}/retention/preview): версия,
+// прошедшая топ-N-фильтр. protected_by: '' — кандидат на удаление,
+// 'access' — свежее обращение, 'pin' — пин.
+export interface RetentionCandidate {
+  key: string
+  family: string
+  size: number
+  mod_time: string
+  last_access: string
+  protected_by: string
+}
+
+export interface RetentionTotals {
+  dry_run: boolean
+  duration_seconds: number
+  families: number
+  objects_scanned: number
+  candidates: number
+  deleted: number
+  failed_deletes: number
+  bytes_freed: number
+  protected_by_min: number
+  protected_by_access: number
+  protected_by_pin: number
+}
+
+export interface RetentionPreview {
+  candidates: RetentionCandidate[]
+  totals: RetentionTotals
+}
+
+// Пин версии: GET .../retention/pins отдаёт полные ключи хранилища,
+// PUT/DELETE принимают путь внутри репо (хвост маршрута).
+export type Pin = string
 
 export interface Perm {
   repo_id: number

@@ -140,6 +140,12 @@ type App struct {
 	// retention.interval=0 (легальное «выключено»: чистка остаётся
 	// ручной). Stop вызывается из graceful shutdown каскада.
 	RetentionRunner *retention.Runner
+	// RetentionAPI — срез движка ретеншна под web.RetentionAPI
+	// (сессия 172): маршруты /repos/{id}/retention/* (прогноз, apply,
+	// пины). Обёртка склеивается здесь (cmd — единственное место, где
+	// core/engine и core/web встречаются; engine → web запрещён
+	// depguard'ом).
+	RetentionAPI web.RetentionAPI
 }
 
 // Таймауты upstream-соединения: обрыв установки соединения и ожидания
@@ -276,6 +282,10 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	// репо с включённой политикой. Адаптеры — те же, что у publish:
 	// семейства и индексы резолвит один и тот же RepoAdapter.
 	retentionEngine, retentionRunner, retentionMetrics := wireRetention(cfg, storage, catalog, publishAdapters, log)
+	// retentionAPI — обёртка retention.Engine → web.RetentionAPI
+	// (сессия 172): web-слой зовёт прогноз/apply/пины через срез, не
+	// зная engine-типов (depguard).
+	retentionAPI := retentionWebAPI{engine: retentionEngine, pins: catalog.Pins}
 	scheduler := mirrorengine.NewScheduler(mirrorEngine, catalog.Remotes, uuidRand{}, systemClock{}, cfg.Mirror.IntervalJitter.Duration)
 	// reconcile-цикл переживает транзиентные сбои БД (ретрай на тике),
 	// ошибки — в лог; старт не может «отключить» авто-sync.
@@ -322,6 +332,7 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		Sweeper:         sweeper,
 		Retention:       retentionEngine,
 		RetentionRunner: retentionRunner,
+		RetentionAPI:    retentionAPI,
 	}, nil
 }
 
@@ -610,6 +621,63 @@ func (pp publishProgress) Update(phase, current string, processed, total int64) 
 	pp.p.Update(phase, current, processed, total)
 }
 func (pp publishProgress) Log(line string) { pp.p.Log(line) }
+
+// retentionWebAPI — обёртка retention.Engine под web.RetentionAPI (сессия
+// 172): прогноз с конвертацией строк отчёта, боевой проход и пины. Пины
+// делегируются PinStore'у того же каталога, что у движка (одна инстанция
+// таблицы repo_pins — иначе пин, поставленный API, не увидел бы проход).
+// Живёт в wire (cmd) — core/engine не импортирует core/web (depguard).
+type retentionWebAPI struct {
+	engine *retention.Engine
+	pins   port.PinStore
+}
+
+// Preview делегирует сухой проход движку и переводит его отчёт в
+// web-типы: строки Report и счётчики Result.
+func (a retentionWebAPI) Preview(ctx context.Context, repo domain.Repo) (web.RetentionPreview, error) {
+	res, reports, err := a.engine.Preview(ctx, repo)
+	if err != nil {
+		return web.RetentionPreview{}, err
+	}
+	out := web.RetentionPreview{Totals: retentionTotals(res), Candidates: make([]web.RetentionCandidate, 0, len(reports))}
+	for _, rep := range reports {
+		out.Candidates = append(out.Candidates, web.RetentionCandidate{
+			Key: rep.Key, Family: rep.Family, Size: rep.Size,
+			ModTime: rep.ModTime, LastAccess: rep.LastAccess, ProtectedBy: rep.ProtectedBy,
+		})
+	}
+	return out, nil
+}
+
+// ApplyAndReindex делегирует движку боевой проход (задачу запускает
+// web-слой: TaskRegistry движку неизвестен).
+func (a retentionWebAPI) ApplyAndReindex(ctx context.Context, repo domain.Repo, dryRun bool) (web.RetentionTotals, error) {
+	res, err := a.engine.ApplyAndReindex(ctx, repo, dryRun)
+	return retentionTotals(res), err
+}
+
+// Pins делегирует PinStore'у (срез метода порта как есть).
+func (a retentionWebAPI) Pins(ctx context.Context, repoID int64) ([]string, error) {
+	return a.pins.Pins(ctx, repoID)
+}
+
+// SetPin делегирует PinStore'у; идемпотентность — свойство порта.
+func (a retentionWebAPI) SetPin(ctx context.Context, repoID int64, key string, pinned bool) error {
+	return a.pins.SetPin(ctx, repoID, key, pinned)
+}
+
+// retentionTotals переводит счётчики прохода в web-представление
+// (Duration — секундами: гистограмма и JSON живут в одной шкале).
+func retentionTotals(res retention.Result) web.RetentionTotals {
+	return web.RetentionTotals{
+		DryRun: res.DryRun, DurationSeconds: res.Duration.Seconds(),
+		Families: res.Families, ObjectsScanned: res.ObjectsScanned,
+		Candidates: res.Candidates, Deleted: res.Deleted,
+		FailedDeletes: res.FailedDeletes, BytesFreed: res.BytesFreed,
+		ProtectedByMin: res.ProtectedByMin, ProtectedByAccess: res.ProtectedByAccess,
+		ProtectedByPin: res.ProtectedByPin,
+	}
+}
 
 // mirrorSyncer — обёртка mirror.Engine под web.MirrorSync: запуск
 // синхронизации remote как фоновой задачи TaskRegistry. Живёт в

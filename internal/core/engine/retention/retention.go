@@ -72,6 +72,21 @@ type Result struct {
 	ProtectedByPin    int64
 }
 
+// Report — строка отчёта Preview (сессия 172: прогноз чистки в GUI и
+// API): версия семейства, прошедшая топ-N-фильтр, и причина, по которой
+// она уцелела. ProtectedBy пуст у настоящего кандидата на удаление,
+// «access» — свежее обращение, «pin» — пин. Версии, защищённые топ-N, в
+// отчёт не входят: их считает Result.ProtectedByMin (отчёт — про то, что
+// политика рассматривает, а не про весь репозиторий).
+type Report struct {
+	Key         string
+	Family      string
+	Size        int64
+	ModTime     time.Time
+	LastAccess  time.Time
+	ProtectedBy string
+}
+
 // version — объект семейства в рамках прохода: ключ, размер и дата
 // загрузки (ModTime носителя).
 type version struct {
@@ -122,12 +137,27 @@ func New(storage port.Storage, repos port.RepoStore, access port.AccessStore, ad
 func (e *Engine) Apply(ctx context.Context, repo domain.Repo, dryRun bool) (Result, error) {
 	res := Result{DryRun: dryRun}
 	start := e.clock.Now()
-	err := e.apply(ctx, &res, repo, dryRun)
+	err := e.apply(ctx, &res, repo, dryRun, nil)
 	res.Duration = e.clock.Now().Sub(start)
 	if e.OnApply != nil {
 		e.OnApply(res, err)
 	}
 	return res, err
+}
+
+// Preview — сухой проход с отчётом по версиям: тот же разбор защит, что
+// у Apply(dryRun=true), плюс строка Report на каждую рассмотренную
+// версию (причина защиты или пусто — кандидат). Носитель не меняется:
+// удалений в dry-run нет по построению. Хук OnApply не зовётся — прогноз
+// инициирует пользователь, это не проход политики: метрика проходов и
+// авто-очистки искажалась бы ручными прогнозами (сессия 171).
+func (e *Engine) Preview(ctx context.Context, repo domain.Repo) (Result, []Report, error) {
+	res := Result{DryRun: true}
+	start := e.clock.Now()
+	var reports []Report
+	err := e.apply(ctx, &res, repo, true, &reports)
+	res.Duration = e.clock.Now().Sub(start)
+	return res, reports, err
 }
 
 // ApplyAndReindex — проход Apply и, если что-то удалено, перегенерация
@@ -176,8 +206,9 @@ func (noopProgress) Update(string, string, int64, int64) {}
 func (noopProgress) Log(string)                          {}
 
 // apply — тело прохода: резолвер → листинг с группировкой по семействам →
-// разбор каждого семейства защитами.
-func (e *Engine) apply(ctx context.Context, res *Result, repo domain.Repo, dryRun bool) error {
+// разбор каждого семейства защитами. reports != nil — наполняется
+// строками отчёта (Preview); nil — проход без деталей (Apply).
+func (e *Engine) apply(ctx context.Context, res *Result, repo domain.Repo, dryRun bool, reports *[]Report) error {
 	if !repo.Retention.Enabled() {
 		return nil
 	}
@@ -222,7 +253,7 @@ func (e *Engine) apply(ctx context.Context, res *Result, repo domain.Repo, dryRu
 			return cerr
 		}
 		res.Families++
-		if err := e.sweepFamily(ctx, res, repo, families[family], pinSet, now, dryRun); err != nil {
+		if err := e.sweepFamily(ctx, res, repo, family, families[family], pinSet, now, dryRun, reports); err != nil {
 			return err
 		}
 	}
@@ -266,7 +297,7 @@ func (e *Engine) familyResolver(repo domain.Repo) (port.FamilyResolver, error) {
 // обращения и пины. Возвращает ошибку только если состояние обращений
 // прочесть нельзя: гадать о давности и удалять «наугад» запрещено —
 // fail-closed, как у листинга.
-func (e *Engine) sweepFamily(ctx context.Context, res *Result, repo domain.Repo, versions []version, pins map[string]struct{}, now time.Time, dryRun bool) error {
+func (e *Engine) sweepFamily(ctx context.Context, res *Result, repo domain.Repo, family string, versions []version, pins map[string]struct{}, now time.Time, dryRun bool, reports *[]Report) error {
 	// Свежие — последние по ModTime; тай-брейк по ключу делает топ-N
 	// детерминированным при совпадении времени (пакетный upload).
 	slices.SortFunc(versions, func(a, b version) int {
@@ -301,19 +332,30 @@ func (e *Engine) sweepFamily(ctx context.Context, res *Result, repo domain.Repo,
 		default:
 			return fmt.Errorf("retention: обращение к %s: %w", v.key, err)
 		}
-		if !cutoff.IsZero() && !lastAccess.Before(cutoff) {
+		// Причина защиты фиксируется первой сработавшей (как и счётчики):
+		// отчёт показывает, что именно спасло версию, а не полный разбор.
+		protectedBy := ""
+		_, pinned := pins[v.key]
+		switch {
+		case !cutoff.IsZero() && !lastAccess.Before(cutoff):
 			res.ProtectedByAccess++
-			continue
-		}
-		if _, ok := pins[v.key]; ok {
+			protectedBy = "access"
+		case pinned:
 			res.ProtectedByPin++
-			continue
+			protectedBy = "pin"
+		default:
+			res.Candidates++
 		}
-		res.Candidates++
-		if dryRun {
-			continue
+		if reports != nil {
+			*reports = append(*reports, Report{
+				Key: v.key, Family: family, Size: v.size,
+				ModTime: v.modTime, LastAccess: lastAccess, ProtectedBy: protectedBy,
+			})
 		}
-		e.deleteKey(ctx, v.key, v.size, res)
+		// Удаляем только настоящего кандидата и только в боевом проходе.
+		if protectedBy == "" && !dryRun {
+			e.deleteKey(ctx, v.key, v.size, res)
+		}
 	}
 	return nil
 }

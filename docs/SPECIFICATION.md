@@ -356,15 +356,26 @@ http://<хражевник>:29202/repo/<name>/key.asc`).
 | PUT   | `/api/v1/repos/{id}/objects/*`            | admin или владелец или `repo:<id>:write` | 201/409/411/413 | Upload объекта (стрим, `Content-Length` обязателен; без него — 411 `length_required`) |
 | DELETE| `/api/v1/repos/{id}/objects/*`            | admin или владелец или `repo:<id>:write` | 204/404 | Удаление объекта |
 | POST  | `/api/v1/repos/{id}/reindex`              | admin или владелец или `repo:<id>:write` | 202/409/429 | Запуск reindex-задачи; 409 — дубль, 429 — лимит воркеров |
+| GET   | `/api/v1/repos/{id}/retention/preview`    | admin                             | 200/404/503 | Прогноз ретеншна (dry-run): `{candidates:[{key,family,size,mod_time,last_access,protected_by}], totals:{…}}`; ничего не удаляет, 503 — деградация без движка (`retention_unavailable`) |
+| POST  | `/api/v1/repos/{id}/retention/apply`      | admin                             | 202/404/409/429/503 | Применение политики как фоновая задача (kind=`retention`, label=`repo-<id>`), аудируется (`repo.retention.apply`); 409 — активная задача этого репо, 429 — лимит воркеров |
+| GET   | `/api/v1/repos/{id}/retention/pins`       | admin или владелец или `repo:<id>:write` | 200/404/503 | Ключи хранилища, закреплённые в репо (пин — третья защита ретеншна) |
+| PUT   | `/api/v1/repos/{id}/retention/pins/*`     | admin или владелец или `repo:<id>:write` | 204/400/404/503 | Закрепить версию (путь внутри репо); объект обязан существовать (404), аудит `repo.retention.pin`; идемпотентно |
+| DELETE| `/api/v1/repos/{id}/retention/pins/*`     | admin или владелец или `repo:<id>:write` | 204/400/503 | Снять пин; идемпотентно (анпин отсутствующего — 204), аудит `repo.retention.unpin` |
 
 Поля repo: `name` (slug), `ecosystem` (`apt`|`nix`|`xbps` — экосистемы
 с генератором метаданных), `owner_id` (существующий пользователь),
-`quota` (`{max_bytes, max_objects}`, нулевое поле = без лимита). Загрузка: путь после
+`quota` (`{max_bytes, max_objects}`, нулевое поле = без лимита),
+`retention` (`{min_versions, max_age_days}` — политика авто-очистки
+старых версий: `min_versions` — сколько версий семейства живы всегда,
+`max_age_days` — порог давности обращения; `{0,0}` — политика
+выключена, `min_versions=1` при заданном возрасте — 400). Загрузка: путь после
 `/objects/` — ключ внутри `repo/<id>/<eco>/...` (apt принимает только
 `pool/*` с известными расширениями; `dists/*` генерируются reindex).
 
-RBAC: admin — везде; владелец репо — upload/delete/reindex/list;
-`repo:<id>:write` scoped-токен — то же. Чтение публичное — без auth.
+RBAC: admin — везде; владелец репо — upload/delete/reindex/list и
+пины ретеншна; `repo:<id>:write` scoped-токен — то же. Прогноз и
+применение ретеншна — admin-only (политика — админская настройка
+репо). Чтение публичное — без auth.
 
 Публичный роутер (:29202): `GET /repo/<repo-name>/<путь>` — lookup
 репо по имени (не id, для красивых URL клиентов), раздача объектов и

@@ -137,15 +137,16 @@ debian|apt|https://deb.debian.org/debian|proxy||true||
 
 ## Личные репозитории
 
-Создание/настройка — admin; upload/delete/reindex/листинг — admin,
-владелец или токен `repo:<id>:write`.
+Создание/настройка — admin; upload/delete/reindex/листинг и пины
+ретеншна — admin, владелец или токен `repo:<id>:write`; прогноз и
+применение ретеншна — только admin.
 
 | Метод | Путь                                 | Код                  | Назначение               |
 |-------|--------------------------------------|----------------------|--------------------------|
 | GET   | `/api/v1/repos`                      | 200                  | Список репо              |
-| POST  | `/api/v1/repos`                      | 201/400/409          | `{name,ecosystem,owner_id,quota}` |
+| POST  | `/api/v1/repos`                      | 201/400/409          | `{name,ecosystem,owner_id,quota,retention}` |
 | GET   | `/api/v1/repos/{id}`                 | 200/404              | Данные репо              |
-| PATCH | `/api/v1/repos/{id}`                 | 200/400/404/409      | Имя/квота/владелец (400 — неизвестная экосистема, смена экосистемы) |
+| PATCH | `/api/v1/repos/{id}`                 | 200/400/404/409      | Имя/квота/владелец/политика ретеншна (400 — неизвестная экосистема, смена экосистемы, недопустимая политика) |
 | DELETE| `/api/v1/repos/{id}`                 | 204/404              | Удаление с правами       |
 | GET   | `/api/v1/repos/{id}/perms`           | 200/404              | Права на запись          |
 | POST  | `/api/v1/repos/{id}/perms`           | 204/400/404          | Выдать право (`{user_id}`) |
@@ -154,14 +155,63 @@ debian|apt|https://deb.debian.org/debian|proxy||true||
 | PUT   | `/api/v1/repos/{id}/objects/*`       | 201/409/411/413 | Upload (стрим; `Content-Length` обязателен, без него — 411) |
 | DELETE| `/api/v1/repos/{id}/objects/*`       | 204/404              | Удаление объекта         |
 | POST  | `/api/v1/repos/{id}/reindex`         | 202/409/429          | Задача генерации индексов |
+| GET   | `/api/v1/repos/{id}/retention/preview` | 200/404/503        | Прогноз чистки (dry-run): кандидаты и счётчики защит |
+| POST  | `/api/v1/repos/{id}/retention/apply` | 202/404/409/429/503  | Применить политику задачей (kind=`retention`) |
+| GET   | `/api/v1/repos/{id}/retention/pins`  | 200/404/503          | Пины репо (полные ключи хранилища) |
+| PUT   | `/api/v1/repos/{id}/retention/pins/*`| 204/400/404/503      | Закрепить версию (путь внутри репо) |
+| DELETE| `/api/v1/repos/{id}/retention/pins/*`| 204/400/503          | Снять пин                |
 
-`quota` — `{max_bytes, max_objects}`, нулевое поле = без лимита. Upload:
+`quota` — `{max_bytes, max_objects}`, нулевое поле = без лимита.
+`retention` — `{min_versions, max_age_days}`: политика авто-очистки
+старых версий семейства; `{0,0}` выключает её, `min_versions=1` вместе с
+заданным возрастом сервер отвергает (400 `validation_error` — последняя
+версия могла бы исчезнуть). Upload:
 перезапись существующего ключа → 409 `conflict` (параметр `force=true`
 — только админ-сессия: scoped-токен и владелец получают 403
 `admin_required`); превышение квоты → 413 `quota_exceeded`; лимит
 объекта → 413 `too_large`; несовпадение `Content-Length` → abort и
 чистый `tmp/`. Формат путей и генерируемые индексы — по экосистемам в
 [personal-repos.md](personal-repos.md).
+
+### Ретеншн личного репо
+
+`GET .../retention/preview` — сухой проход движка: носитель не меняется,
+индексы не перегенерируются. Ответ — версии, прошедшие фильтр
+`min_versions` (топ-N свежих по дате загрузки защищены всегда):
+
+```json
+{
+  "candidates": [
+    {"key": "repo/1/apt/pool/main/h/htop/htop_1.0_amd64.deb",
+     "family": "pool/main/h/htop", "size": 1024,
+     "mod_time": "2026-03-01T10:00:00Z", "last_access": "2026-03-01T10:00:00Z",
+     "protected_by": ""}
+  ],
+  "totals": {"dry_run": true, "duration_seconds": 0.01, "families": 1,
+             "objects_scanned": 5, "candidates": 2, "deleted": 0,
+             "failed_deletes": 0, "bytes_freed": 0, "protected_by_min": 3,
+             "protected_by_access": 0, "protected_by_pin": 0}
+}
+```
+
+`protected_by` — первая сработавшая защита: `""` — удаляется, `access` —
+обращение к версии свежее `max_age_days`, `pin` — пин. Нет строки
+обращений — давность считается от даты загрузки (бутстрап). Политика
+выключена — `candidates: []`.
+
+`POST .../retention/apply` — боевой проход и (при удалениях)
+перегенерация индексов адаптером экосистемы, фоновой задачей
+`kind=retention`, label `repo-<id>`; ответ `202 {"task_id": …}`,
+наблюдение — `GET /api/v1/tasks/{id}`. Активная задача того же репо —
+409 `task_duplicate`; лимит воркеров — 429 `task_limit`; деградация без
+движка — 503 `retention_unavailable`. Аудит — `repo.retention.apply`.
+
+Пины: `PUT .../retention/pins/<путь внутри репо>` закрепляет версию
+(объект обязан существовать — иначе 404 `not_found`; `+` в имени можно
+слать как `%2b`), `DELETE` — снимает (анпин отсутствующего — тоже 204,
+идемпотентность). `GET` отдаёт **полные** ключи хранилища — они
+сравниваются с колонкой `key` листинга объектов. Аудит —
+`repo.retention.pin` / `repo.retention.unpin`.
 
 ## Публичная раздача (:29202, без auth)
 
