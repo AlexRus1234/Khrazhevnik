@@ -37,6 +37,12 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   409 while one is active); version pins `GET|PUT|DELETE
   /api/v1/repos/{id}/retention/pins` (a pin keeps a version alive
   regardless of the policy; audit `repo.retention.pin`/`unpin`).
+- Web UI: the “Retention” panel on a personal repository page — a policy
+  form (`min_versions`/`max_age_days`; disabling sends `{0,0}`), the
+  forecast (dry-run candidate table with the protection reason),
+  application behind a `confirm` (background task + polling) and version
+  pins (a lock in the object table row); for nix repositories the panel
+  is hidden — retention does not apply.
 
 ## [1.2.2] — 2026-09-25
 

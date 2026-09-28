@@ -488,6 +488,88 @@ test('remotes: импорт источников из текста', async ({ pa
   await expect(page.locator('tbody tr', { hasText: 'e2e-import-b' })).toBeVisible()
 })
 
+// repos: ретеншн (сессия 173). Репо REPO создан первым тестом (serial);
+// сверки через /api токеном текущей UI-сессии (лишний логин не делаем —
+// /auth/login под лимитером). Ассерты — ru-pin.
+test('repos: ретеншн — политика, прогноз, пины', async ({ page, request }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  const token = await page.evaluate(() => localStorage.getItem('khrazhevnik_token'))
+  expect(token).not.toBeNull()
+  const auth = { Authorization: `Bearer ${String(token)}` }
+  const api = `${ADMIN}/api/v1`
+  const repos = (await (await request.get(`${api}/repos`, { headers: auth })).json()) as {
+    id: number
+    name: string
+  }[]
+  const repoID = repos.find((r) => r.name === REPO)?.id
+  expect(repoID).toBeTruthy()
+
+  await page.click('a[href="/ui/repos"]')
+  await page.getByRole('link', { name: REPO, exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Загрузка пакета' })).toBeVisible()
+  const panel = page.locator('.panel', { hasText: 'Ретеншн' })
+  await expect(panel.getByRole('heading', { name: 'Ретеншн' })).toBeVisible()
+
+  // 1. Политика {3, 90}: PATCH — full-replace телом репо; после
+  // перезагрузки страницы поля показывают значения ИЗ БД.
+  await panel.getByLabel('включена').check()
+  await panel.getByLabel('Минимум версий на семейство').fill('3')
+  await panel.getByLabel('Максимальный возраст, дней').fill('90')
+  await panel.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(panel.locator('p.ok')).toContainText('Сохранено')
+  const saved = (await (await request.get(`${api}/repos/${repoID}`, { headers: auth })).json()) as {
+    retention: { min_versions: number; max_age_days: number }
+  }
+  expect(saved.retention).toEqual({ min_versions: 3, max_age_days: 90 })
+
+  await page.reload()
+  await expect(page.getByLabel('включена')).toBeChecked()
+  await expect(page.getByLabel('Минимум версий на семейство')).toHaveValue('3')
+  await expect(page.getByLabel('Максимальный возраст, дней')).toHaveValue('90')
+
+  // 2. Прогноз: у репо одна версия семейства (min 3) — кандидатов нет,
+  // панель рисует dim-строку, а не пустую таблицу.
+  await panel.getByRole('button', { name: 'Прогноз' }).click()
+  await expect(page.getByText('Кандидатов нет.')).toBeVisible()
+
+  // 3. Пин единственной версии: замок в строке таблицы объектов →
+  // GET pins (API) содержит полный storage-ключ.
+  const fullKey = `repo/${repoID}/apt/${DEB_PATH}`
+  const debRow = page.locator('tbody tr', { hasText: DEB_PATH })
+  await expect(debRow).toHaveCount(1)
+  await debRow.getByRole('button', { name: 'Закрепить' }).click()
+  await expect(debRow.getByRole('button', { name: 'Снять пин' })).toBeVisible()
+  let pins = (await (
+    await request.get(`${api}/repos/${repoID}/retention/pins`, { headers: auth })
+  ).json()) as string[]
+  expect(pins).toContain(fullKey)
+
+  // 4. Анпин: замок открыт, ключа в пинах нет.
+  await debRow.getByRole('button', { name: 'Снять пин' }).click()
+  await expect(debRow.getByRole('button', { name: 'Закрепить' })).toBeVisible()
+  pins = (await (
+    await request.get(`${api}/repos/${repoID}/retention/pins`, { headers: auth })
+  ).json()) as string[]
+  expect(pins).not.toContain(fullKey)
+
+  // 5. Клиентская валидация (зеркало domain.ValidateRetention): возраст
+  // задан + MinVersions=1 — ошибка панели, PATCH не уходит вовсе.
+  let patches = 0
+  page.on('request', (req) => {
+    if (req.method() === 'PATCH' && req.url().includes('/api/v1/repos/')) patches++
+  })
+  await panel.getByLabel('Минимум версий на семейство').fill('1')
+  await panel.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(panel.locator('p.error')).toContainText('минимум версий')
+  expect(patches).toBe(0)
+})
+
 // Идёт последним: меняет пароль admin, от которого зависят предыдущие
 // тесты (serial, retries=0; global-setup поднимает сервер с пустой БД
 // на каждый прогон, так что состояние между прогонами не течёт).
