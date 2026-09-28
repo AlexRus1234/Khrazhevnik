@@ -43,6 +43,9 @@ type CatalogSet struct {
 	// Access — учёт обращений к объектам (сессия 166): давность
 	// обращения к версии — критерий ретеншна/eviction.
 	Access port.AccessStore
+	// Pins — точечные исключения ретеншна (сессия 170): закреплённая
+	// версия не удаляется политикой.
+	Pins port.PinStore
 	// Settings — глобальные настройки инстанса (сессия 154): пока
 	// только upstream.proxy.
 	Settings port.UpstreamProxyStore

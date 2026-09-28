@@ -159,6 +159,22 @@ type AccessStore interface {
 	AccessEntry(ctx context.Context, scope, key string) (domain.ObjectAccess, error)
 }
 
+// PinStore — точечные исключения ретеншна: версия, закреплённая
+// пользователем, жива независимо от политики (третья защита, складывается
+// с топ-N и свежим обращением по ИЛИ — решение владельца 2026-09-25).
+// Строковая таблица repo_pins (не колонка объектного индекса): пины —
+// редкие ручные ключи хранилища, а не свойство каждого объекта.
+// SetPin идемпотентен в обе стороны: pinned=true на существующем пине и
+// pinned=false на отсутствующем — успех (повторная установка/снятие
+// идемпотентны, «ненайденного пина» не существует как ошибки).
+type PinStore interface {
+	// Pins — ключи хранилища, закреплённые в репозитории, по возрастанию
+	// ключа; пусто без ошибки — «пинов нет».
+	Pins(ctx context.Context, repoID int64) ([]string, error)
+	// SetPin ставит (pinned=true) или снимает (pinned=false) пин.
+	SetPin(ctx context.Context, repoID int64, key string, pinned bool) error
+}
+
 // SessionRevocationStore — персистентный отзыв JWT-сессий: logout
 // переживает рестарт процесса, in-memory карта в auth.Service — только
 // fast-path (аудит 2026-08-27: in-memory отзыв «оживал» после

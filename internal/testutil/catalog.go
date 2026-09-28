@@ -754,3 +754,44 @@ func (s *FakeAccessStore) Merges() [][]domain.ObjectAccess {
 
 // fakeAccessID — ключ map'а: (scope, key) без коллизий склейки.
 func fakeAccessID(scope, key string) string { return scope + "\x00" + key }
+
+// FakePinStore — map-реализация port.PinStore: как боевой адаптер,
+// держит пины по (repoID, key), идемпотентна в обе стороны, отдаёт ключи
+// по возрастанию. Своей CASCADE не имеет: удаление репо тестами движка
+// не моделируется (это свойство миграции, его проверяет контрактный
+// suite на настоящем драйвере).
+type FakePinStore struct {
+	mu   sync.Mutex
+	keys map[string]struct{}
+}
+
+// NewFakePinStore создаёт пустое хранилище пинов.
+func NewFakePinStore() *FakePinStore { return &FakePinStore{keys: map[string]struct{}{}} }
+
+// Pins отдаёт ключи репо по возрастанию.
+func (s *FakePinStore) Pins(_ context.Context, repoID int64) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prefix := strconv.FormatInt(repoID, 10) + "\x00"
+	var out []string
+	for id := range s.keys {
+		if strings.HasPrefix(id, prefix) {
+			out = append(out, strings.TrimPrefix(id, prefix))
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+// SetPin ставит или снимает пин; идемпотентно.
+func (s *FakePinStore) SetPin(_ context.Context, repoID int64, key string, pinned bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := strconv.FormatInt(repoID, 10) + "\x00" + key
+	if pinned {
+		s.keys[id] = struct{}{}
+		return nil
+	}
+	delete(s.keys, id)
+	return nil
+}

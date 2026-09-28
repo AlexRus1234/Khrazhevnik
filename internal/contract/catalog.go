@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +53,7 @@ type Catalog struct {
 	ObjIndex    port.ObjectIndex
 	Stats       port.StatsStore
 	Access      port.AccessStore
+	Pins        port.PinStore
 	Settings    port.UpstreamProxyStore
 	Revocations port.SessionRevocationStore
 	Close       func() error
@@ -88,6 +90,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("iterate_object_meta", func(t *testing.T) { iterateObjectMetaSuite(t, newCat(t)) })
 	t.Run("stats_snapshot", func(t *testing.T) { statsSnapshotSuite(t, newCat(t)) })
 	t.Run("object_access_merge", func(t *testing.T) { accessMergeSuite(t, newCat(t)) })
+	t.Run("repo_pins_roundtrip", func(t *testing.T) { pinSuite(t, newCat(t)) })
 	t.Run("settings", func(t *testing.T) { settingsSuite(t, newCat(t)) })
 	t.Run("revocations", func(t *testing.T) { revocationsSuite(t, newCat(t)) })
 	t.Run("noop_update", func(t *testing.T) { noopUpdateSuite(t, newCat(t)) })
@@ -944,6 +947,65 @@ func accessMergeSuite(t *testing.T, c Catalog) {
 	var nf *domain.NotFoundError
 	if !errors.As(err, &nf) {
 		t.Fatalf("AccessEntry отсутствующего = %v, хочу *domain.NotFoundError", err)
+	}
+}
+
+// pinSuite — пины ретеншна (repo_pins, сессия 170): пусто без ошибки,
+// постановка → выдача по возрастанию ключа, идемпотентность в обе
+// стороны (повторный SetPin и снятие отсутствующего — не ошибки),
+// изоляция по repo_id, удаление репо уносит пины (FK CASCADE 0013 —
+// иначе ретеншн держал бы ключи удалённого репо).
+func pinSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	owner, _ := c.Users.CreateUser(ctx, domain.User{Username: "pinowner", PasswordHash: "h", CreatedAt: fixed})
+	r, err := c.Repos.CreateRepo(ctx, domain.Repo{Name: "pinned", OwnerID: owner.ID, Ecosystem: "apt", CreatedAt: fixed})
+	if err != nil || r.ID == 0 {
+		t.Fatalf("CreateRepo = %+v, %v", r, err)
+	}
+	empty, err := c.Pins.Pins(ctx, r.ID)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("пустой набор пинов = %v, %v; хочу пусто без ошибки", empty, err)
+	}
+	keys := []string{
+		"repo/1/apt/pool/main/h/htop/htop_3.3.0_amd64.deb",
+		"repo/1/apt/pool/main/h/htop/htop_3.2.0_amd64.deb",
+	}
+	for _, k := range keys {
+		if err := c.Pins.SetPin(ctx, r.ID, k, true); err != nil {
+			t.Fatalf("SetPin(%s) = %v", k, err)
+		}
+		// Идемпотентность: повторная постановка — успех, не конфликт PK.
+		if err := c.Pins.SetPin(ctx, r.ID, k, true); err != nil {
+			t.Fatalf("повторный SetPin(%s) = %v, хочу nil", k, err)
+		}
+	}
+	got, err := c.Pins.Pins(ctx, r.ID)
+	if err != nil || !slices.Equal(got, []string{keys[1], keys[0]}) {
+		t.Fatalf("Pins = %v, %v; хочу оба ключа по возрастанию", got, err)
+	}
+	// Пин одного репо не виден другому: repo_id — часть первичного ключа.
+	other, err := c.Repos.CreateRepo(ctx, domain.Repo{Name: "pinother", OwnerID: owner.ID, Ecosystem: "apt", CreatedAt: fixed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.Pins.Pins(ctx, other.ID); err != nil || len(got) != 0 {
+		t.Fatalf("пины чужого репо = %v, %v; хочу пусто", got, err)
+	}
+	if err := c.Pins.SetPin(ctx, r.ID, keys[0], false); err != nil {
+		t.Fatalf("снятие пина = %v", err)
+	}
+	if err := c.Pins.SetPin(ctx, r.ID, keys[0], false); err != nil {
+		t.Fatalf("повторное снятие = %v, хочу nil (идемпотентно)", err)
+	}
+	if got, err := c.Pins.Pins(ctx, r.ID); err != nil || !slices.Equal(got, []string{keys[1]}) {
+		t.Fatalf("после снятия Pins = %v, %v; хочу один ключ", got, err)
+	}
+	// CASCADE: удаление репо уносит пины.
+	if err := c.Repos.DeleteRepo(ctx, r.ID); err != nil {
+		t.Fatalf("DeleteRepo = %v", err)
+	}
+	if got, err := c.Pins.Pins(ctx, r.ID); err != nil || len(got) != 0 {
+		t.Fatalf("пины удалённого репо = %v, %v; хочу пусто (FK CASCADE 0013)", got, err)
 	}
 }
 

@@ -43,6 +43,7 @@ func TestConformance(t *testing.T) {
 	var _ port.RepoStore = testutil.NewFakeRepoStore()
 	var _ port.JobStore = testutil.NewFakeJobStore()
 	var _ port.AuditLog = testutil.NewFakeAuditLog()
+	var _ port.PinStore = testutil.NewFakePinStore()
 	var _ port.Doer = (*http.Client)(nil)
 	// doerFactoryFunc — минимальный двойник фабрики (порт реализует
 	// wire: *http.Client фабрикой не является).

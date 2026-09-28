@@ -68,6 +68,7 @@ func init() {
 			ObjIndex:    st,
 			Stats:       st,
 			Access:      st,
+			Pins:        st,
 			Settings:    st,
 			Revocations: st,
 		}, nil
