@@ -67,6 +67,7 @@ func TestLoadDefaults(t *testing.T) {
 		{"storage.gc_interval", cfg.Storage.GCInterval.Duration, 24 * time.Hour},
 		{"storage.gc_grace", cfg.Storage.GCGrace.Duration, 7 * 24 * time.Hour},
 		{"storage.access_flush_interval", cfg.Storage.AccessFlushInterval.Duration, 30 * time.Second},
+		{"retention.interval", cfg.Retention.Interval.Duration, 24 * time.Hour},
 		{"database.driver", cfg.Database.Driver, "sqlite"},
 		{"database.dsn", cfg.Database.DSN, "/var/lib/khrazhevnik/khrazhevnik.db"},
 		{"auth.jwt_secret", cfg.Auth.JWTSecret, "topsecret-topsecret-topsecret-0123456789"},
@@ -482,6 +483,44 @@ access_flush_interval = "0s"
 `)
 	if _, err := Load(path, withJWT(nil)); err != nil {
 		t.Errorf("access_flush_interval = 0 легален (трекинг выключен), got %v", err)
+	}
+}
+
+// TestLoadRetentionInterval — ручка периодического прохода ретеншна
+// (сессия 171): дефолт 24h, 0 («проход выключен, чистка остаётся
+// ручной») легален, отрицательный — ошибка конфига.
+func TestLoadRetentionInterval(t *testing.T) {
+	path := writeTemp(t, "conf-neg.toml", `
+[retention]
+interval = "-5s"
+`)
+	_, err := Load(path, withJWT(nil))
+	if err == nil || !strings.Contains(err.Error(), "retention.interval") {
+		t.Fatalf("отрицательный retention.interval прошёл валидацию: %v", err)
+	}
+
+	path = writeTemp(t, "conf-off.toml", `
+[retention]
+interval = "0s"
+`)
+	cfg, err := Load(path, withJWT(nil))
+	if err != nil {
+		t.Fatalf("retention.interval = 0 легален (проход выключен), got %v", err)
+	}
+	if cfg.Retention.Interval.Duration != 0 {
+		t.Fatalf("retention.interval = %v, хочу 0", cfg.Retention.Interval.Duration)
+	}
+
+	path = writeTemp(t, "conf-custom.toml", `
+[retention]
+interval = "6h"
+`)
+	cfg, err = Load(path, withJWT(nil))
+	if err != nil {
+		t.Fatalf("retention.interval = 6h: %v", err)
+	}
+	if cfg.Retention.Interval.Duration != 6*time.Hour {
+		t.Fatalf("retention.interval = %v, хочу 6h", cfg.Retention.Interval.Duration)
 	}
 }
 

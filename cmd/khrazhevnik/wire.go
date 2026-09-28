@@ -44,6 +44,7 @@ import (
 	cacheengine "khrazhevnik/internal/core/engine/cache"
 	mirrorengine "khrazhevnik/internal/core/engine/mirror"
 	publishengine "khrazhevnik/internal/core/engine/publish"
+	"khrazhevnik/internal/core/engine/retention"
 	statskeeper "khrazhevnik/internal/core/engine/statskeeper"
 	"khrazhevnik/internal/core/engine/storagegc"
 	"khrazhevnik/internal/core/metrics"
@@ -128,6 +129,17 @@ type App struct {
 	// проход — сессия 121). Stop вызывается из graceful shutdown
 	// каскада.
 	Sweeper *storagegc.Sweeper
+	// Retention — движок политики ретеншна личных репо (сессия 170):
+	// preview/apply/pins API (сессия 172) берёт его отсюда. Создаётся
+	// всегда при слинкованных модулях — недоступный каталог защит
+	// отказывает в рантайме (UnsupportedError внутри Apply), а не
+	// выглядит как «фичи нет».
+	Retention *retention.Engine
+	// RetentionRunner — периодический (суточный) проход ретеншна по
+	// репо с включённой политикой (сессия 171); nil при
+	// retention.interval=0 (легальное «выключено»: чистка остаётся
+	// ручной). Stop вызывается из graceful shutdown каскада.
+	RetentionRunner *retention.Runner
 }
 
 // Таймауты upstream-соединения: обрыв установки соединения и ожидания
@@ -260,6 +272,10 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	publishAdapters := wireRepoAdapters(signer, narSigner, rsaSigner, systemClock{})
 	publishEngine := publishengine.New(publishengine.Config{MaxObjectSize: cfg.Publish.MaxObjectSize.Bytes}, storage, catalog.Repos, systemClock{}, publishAdapters)
 	publishAPI := publishSyncer{engine: publishEngine, repos: catalog.Repos, tasks: tasks}
+	// retention (сессии 170–171): движок политики + суточный проход по
+	// репо с включённой политикой. Адаптеры — те же, что у publish:
+	// семейства и индексы резолвит один и тот же RepoAdapter.
+	retentionEngine, retentionRunner, retentionMetrics := wireRetention(cfg, storage, catalog, publishAdapters, log)
 	scheduler := mirrorengine.NewScheduler(mirrorEngine, catalog.Remotes, uuidRand{}, systemClock{}, cfg.Mirror.IntervalJitter.Duration)
 	// reconcile-цикл переживает транзиентные сбои БД (ретрай на тике),
 	// ошибки — в лог; старт не может «отключить» авто-sync.
@@ -279,30 +295,33 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	if cfg.Metrics.Enabled {
 		reg := newPromRegistry()
 		gcMetrics.Register(reg)
+		retentionMetrics.Register(reg)
 		metricsExporter = metrics.NewHandler(cacheEngine.Metrics(), reg)
 		metricsHandler = metricsExporter.MetricsHandler()
 	}
 	return &App{
-		Clock:          systemClock{},
-		Rand:           uuidRand{},
-		Storage:        storage,
-		Catalog:        catalog,
-		Auth:           authService,
-		HTTP:           httpClient,
-		Ecosystems:     ecosystems,
-		Cache:          cacheEngine,
-		Tasks:          tasks,
-		MetricsHandler: metricsHandler,
-		Metrics:        metricsExporter,
-		Mirror:         mirrorAPI,
-		Publish:        publishAPI,
-		Scheduler:      scheduler,
-		Signer:         signer,
-		NarSigner:      narSigner,
-		RsaSigner:      rsaSigner,
-		StatsKeeper:    statsKeeper,
-		AccessKeeper:   accessKeeper,
-		Sweeper:        sweeper,
+		Clock:           systemClock{},
+		Rand:            uuidRand{},
+		Storage:         storage,
+		Catalog:         catalog,
+		Auth:            authService,
+		HTTP:            httpClient,
+		Ecosystems:      ecosystems,
+		Cache:           cacheEngine,
+		Tasks:           tasks,
+		MetricsHandler:  metricsHandler,
+		Metrics:         metricsExporter,
+		Mirror:          mirrorAPI,
+		Publish:         publishAPI,
+		Scheduler:       scheduler,
+		Signer:          signer,
+		NarSigner:       narSigner,
+		RsaSigner:       rsaSigner,
+		StatsKeeper:     statsKeeper,
+		AccessKeeper:    accessKeeper,
+		Sweeper:         sweeper,
+		Retention:       retentionEngine,
+		RetentionRunner: retentionRunner,
 	}, nil
 }
 
@@ -341,6 +360,42 @@ func wireStorageGC(cfg config.Config, storage port.Storage, catalog registry.Cat
 		sweeper.Run(context.Background(), cfg.Storage.GCInterval.Duration)
 	}
 	return sweeper, gcMetrics
+}
+
+// wireRetention собирает движок ретеншна личных репо и его периодический
+// проход (сессии 170/171). Движок создаётся всегда — в отличие от
+// nil-Sweeper выше: при недоступных срезах каталога проход отказывает
+// честной ошибкой в рантайме (fail-closed внутри Apply), а не
+// маскируется под «фичи нет»; API ретеншна (сессия 172) отдаёт по этому
+// отказу внятный ответ. Runner поднимается только при
+// retention.interval > 0 (0 — легальное «выключено»: чистка остаётся
+// ручной) и при живом каталоге репо — фоновая горутина не должна
+// упасть на пустом срезе. Метрики — по образцу wireStorageGC: создаются
+// всегда, при выключенных метриках счётчики просто не экспортируются,
+// nil-проверок в хуках не нужно. OnApply наполняет
+// счётчики/гистограмму (ошибку прохода не логирует: её отдаёт
+// вызывающий — RunOnce агрегатом в OnError, API — ответом), OnPass
+// ставит отметку времени последнего прохода.
+func wireRetention(cfg config.Config, storage port.Storage, catalog registry.CatalogSet, adapters map[string]port.RepoAdapter, log *slog.Logger) (*retention.Engine, *retention.Runner, *metrics.Retention) {
+	retentionMetrics := metrics.NewRetention()
+	engine := retention.New(storage, catalog.Repos, catalog.Access, adapters, catalog.Pins, systemClock{})
+	engine.OnApply = func(res retention.Result, err error) {
+		retentionMetrics.ObserveApply(res.Deleted, res.BytesFreed, res.FailedDeletes, res.Duration.Seconds())
+	}
+	if cfg.Retention.Interval.Duration <= 0 || catalog.Repos == nil {
+		return engine, nil, retentionMetrics
+	}
+	runner := retention.NewRunner(engine, catalog.Repos, cfg.Retention.Interval.Duration)
+	runner.OnError = func(err error) { log.Error("retention runner", "err", err) }
+	runner.OnPass = func(repoName string, res retention.Result, err error) {
+		retentionMetrics.ObservePass(systemClock{}.Now())
+		if err == nil && res.Deleted > 0 {
+			log.Info("retention: удалены старые версии", "repo", repoName,
+				"deleted", res.Deleted, "bytes_freed", res.BytesFreed)
+		}
+	}
+	runner.Run(context.Background())
+	return engine, runner, retentionMetrics
 }
 
 // wireRepoAdapters собирает RepoAdapter'ы из compile-time реестра по
@@ -643,6 +698,7 @@ const (
 	gcStopBudget        = 10 * time.Second
 	statsFlushBudget    = 5 * time.Second
 	accessFlushBudget   = 5 * time.Second
+	retentionStopBudget = 60 * time.Second
 	drainDeletesBudget  = 5 * time.Second
 )
 
@@ -661,11 +717,10 @@ func stopAccessKeeper(ctx context.Context, k *accesskeeper.Keeper) error {
 // задач и ждёт их завершения в рамках таймаута каскада (server.go).
 // Зеркало: сначала стопаем scheduler (per-remote тикеры), затем
 // TaskRegistry (ручные sync и потенциальные publish — сессия 14),
-// затем keeper чистки хранилища (гашение тикера без финального
-// прохода — сессия 120), затем keeper статистики (финальный флаш
-// cache_stats — сессия 96), затем keeper обращений (финальный
-// батч-мёрж object_access — сессия 167), затем дожимаем фоновые
-// удаления прошлых версий mutable-объектов.
+// затем keeper'ы-накопители (stopKeepers: чистка хранилища, статистика,
+// проход ретеншна, обращения — сессии 120/96/171/167), затем дожимаем
+// фоновые удаления прошлых версий mutable-объектов, затем закрываем
+// каталог.
 // Каждой стадии — своя доля бюджета; ошибки агрегируются, ни одна
 // стадия не пропускается из-за ошибки предыдущей.
 func (a *App) WaitTasks(ctx context.Context) error {
@@ -684,25 +739,7 @@ func (a *App) WaitTasks(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("tasks wait: %w", err))
 		}
 	}
-	if a.Sweeper != nil {
-		gctx, cancel := context.WithTimeout(ctx, gcStopBudget)
-		defer cancel()
-		if err := a.Sweeper.Stop(gctx); err != nil {
-			errs = append(errs, fmt.Errorf("storage gc stop: %w", err))
-		}
-	}
-	if a.StatsKeeper != nil {
-		fctx, cancel := context.WithTimeout(ctx, statsFlushBudget)
-		defer cancel()
-		if err := a.StatsKeeper.Stop(fctx); err != nil {
-			errs = append(errs, fmt.Errorf("stats keeper stop: %w", err))
-		}
-	}
-	// stopAccessKeeper сам пропускает выключенный keeper (nil) —
-	// отдельная ветка nil-проверки каскаду не нужна.
-	if err := stopAccessKeeper(ctx, a.AccessKeeper); err != nil {
-		errs = append(errs, fmt.Errorf("access keeper stop: %w", err))
-	}
+	errs = append(errs, a.stopKeepers(ctx)...)
 	if a.Cache != nil {
 		dctx, cancel := context.WithTimeout(ctx, drainDeletesBudget)
 		defer cancel()
@@ -724,6 +761,50 @@ func (a *App) WaitTasks(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// stopKeepers — стадии каскада «keeper'ы-накопители»: гашение чистки
+// хранилища (сессия 120), флаш статистики (cache_stats, сессия 96),
+// гашение суточного прохода ретеншна (сессия 171) и финальный мёрж
+// обращений (object_access, сессия 167). Все стадии до
+// DrainBackgroundDeletes: данные на момент останова в БД, фоновые
+// удаления прошлых версий не конкурируют с проходом политики. У каждой
+// свой бюджет (проходу ретеншна — 60s против 5s у накопителей: он
+// работает по хранилищу и индексам, а не сбрасывает накопленное в
+// памяти, финального прохода у него нет — см. retention.Runner.Stop),
+// nil-keeper (выключено конфигом или деградация) — пропуск; ошибки
+// возвращаются агрегатом, ни одна стадия не пропускается из-за ошибки
+// предыдущей (правило сессии 35). Вынесено из WaitTasks: тому упор в
+// gocyclo.
+func (a *App) stopKeepers(ctx context.Context) []error {
+	var errs []error
+	if a.Sweeper != nil {
+		gctx, cancel := context.WithTimeout(ctx, gcStopBudget)
+		defer cancel()
+		if err := a.Sweeper.Stop(gctx); err != nil {
+			errs = append(errs, fmt.Errorf("storage gc stop: %w", err))
+		}
+	}
+	if a.StatsKeeper != nil {
+		fctx, cancel := context.WithTimeout(ctx, statsFlushBudget)
+		defer cancel()
+		if err := a.StatsKeeper.Stop(fctx); err != nil {
+			errs = append(errs, fmt.Errorf("stats keeper stop: %w", err))
+		}
+	}
+	if a.RetentionRunner != nil {
+		rctx, cancel := context.WithTimeout(ctx, retentionStopBudget)
+		defer cancel()
+		if err := a.RetentionRunner.Stop(rctx); err != nil {
+			errs = append(errs, fmt.Errorf("retention runner stop: %w", err))
+		}
+	}
+	// stopAccessKeeper сам пропускает выключенный keeper (nil) —
+	// отдельная ветка nil-проверки каскаду не нужна.
+	if err := stopAccessKeeper(ctx, a.AccessKeeper); err != nil {
+		errs = append(errs, fmt.Errorf("access keeper stop: %w", err))
+	}
+	return errs
 }
 
 // NotifyRemotesChanged — хук для web.Deps: будит reconcile-цикл

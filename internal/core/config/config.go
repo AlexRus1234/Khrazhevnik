@@ -77,6 +77,15 @@ type Storage struct {
 	AccessFlushInterval Duration `toml:"access_flush_interval"`
 }
 
+// Retention — периодический проход по личным репозиториям с включённой
+// политикой (волна «Ретеншн», сессия 171). Сама политика живёт per-repo
+// (domain.Retention в каталоге, правится через API сессии 172); здесь —
+// только период прохода и его включённость. Interval=0 — легальное
+// «выключено» (чистка остаётся ручной), отрицательное — ошибка конфига.
+type Retention struct {
+	Interval Duration `toml:"interval"`
+}
+
 // FSStorage — posix-хранилище (mod/storage/fs).
 type FSStorage struct {
 	Path string `toml:"path"`
@@ -173,6 +182,7 @@ type Config struct {
 	Server    Server               `toml:"server"`
 	HTTP      HTTP                 `toml:"http"`
 	Storage   Storage              `toml:"storage"`
+	Retention Retention            `toml:"retention"`
 	Database  Database             `toml:"database"`
 	Auth      Auth                 `toml:"auth"`
 	Cache     Cache                `toml:"cache"`
@@ -199,6 +209,7 @@ const (
 	defaultGCInterval   = 24 * time.Hour
 	defaultGCGrace      = 7 * 24 * time.Hour
 	defaultAccessFlush  = 30 * time.Second
+	defaultRetentionRun = 24 * time.Hour
 	defaultWorkers      = 4
 	defaultJitter       = 10 * time.Minute
 	defaultMaxBandwidth = int64(0)       // безлимит
@@ -214,6 +225,10 @@ func defaultConfig() Config {
 	return Config{
 		Server:  Server{PublicListen: defaultPublicListen, AdminListen: defaultAdminListen},
 		Storage: Storage{Driver: DriverFS, FS: FSStorage{Path: defaultFSPath}, S3: S3Storage{SpoolDir: defaultS3Spool}, GCInterval: Duration{defaultGCInterval}, GCGrace: Duration{defaultGCGrace}, AccessFlushInterval: Duration{defaultAccessFlush}},
+		// Периодический проход ретеншна включён по умолчанию (сутки):
+		// политика включается per-repo, а проход — общий механизм её
+		// соблюдения; выключить — retention.interval = "0s".
+		Retention: Retention{Interval: Duration{defaultRetentionRun}},
 		Database: Database{
 			Driver: DriverSQLite,
 			DSN:    defaultSQLiteDSN,
@@ -324,6 +339,7 @@ func (c Config) validate() []error {
 	problems = append(problems, c.validateStorage()...)
 	problems = append(problems, c.validateStorageGC()...)
 	problems = append(problems, c.validateStorageAccess()...)
+	problems = append(problems, c.validateRetention()...)
 	problems = append(problems, c.validateDatabase()...)
 
 	if c.Auth.JWTSecret == "" {
@@ -474,6 +490,17 @@ func (c Config) validateStorageAccess() []error {
 	if c.Storage.AccessFlushInterval.Duration < 0 {
 		return []error{errors.New(
 			"конфигурация: storage.access_flush_interval: не может быть отрицательным (0 — трекинг обращений выключен)")}
+	}
+	return nil
+}
+
+// validateRetention проверяет период периодического прохода ретеншна:
+// 0 — легальное «выключено» (чистка остаётся ручной, API сессии 173),
+// отрицательный — опечатка (как у остальных интервалов фоновых циклов).
+func (c Config) validateRetention() []error {
+	if c.Retention.Interval.Duration < 0 {
+		return []error{errors.New(
+			"конфигурация: retention.interval: не может быть отрицательным (0 — периодический проход выключен)")}
 	}
 	return nil
 }

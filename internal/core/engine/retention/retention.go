@@ -55,9 +55,12 @@ const deleteConcurrency = 4
 
 // Result — итоги одного прохода. Счётчики защит диагностические: версия
 // попадает ровно в один из них (первая сработавшая защита), а жива она
-// при любой из трёх — защиты складываются по ИЛИ.
+// при любой из трёх — защиты складываются по ИЛИ. Duration — время
+// прохода (для гистограммы метрик, сессия 171), измеряется часами
+// движка — образец storagegc.Result.
 type Result struct {
 	DryRun            bool
+	Duration          time.Duration
 	Families          int64
 	ObjectsScanned    int64
 	Candidates        int64
@@ -118,12 +121,59 @@ func New(storage port.Storage, repos port.RepoStore, access port.AccessStore, ad
 // «нечего удалять»; частично выполненные удаления остаются выполненными.
 func (e *Engine) Apply(ctx context.Context, repo domain.Repo, dryRun bool) (Result, error) {
 	res := Result{DryRun: dryRun}
+	start := e.clock.Now()
 	err := e.apply(ctx, &res, repo, dryRun)
+	res.Duration = e.clock.Now().Sub(start)
 	if e.OnApply != nil {
 		e.OnApply(res, err)
 	}
 	return res, err
 }
+
+// ApplyAndReindex — проход Apply и, если что-то удалено, перегенерация
+// индексов тем же адаптером экосистемы (единственная точка генерации —
+// port.RepoAdapter.GenerateIndexes; прецедент publish.Engine.Reindex).
+// Порядок «сначала удаления, затем индексы» — из планирования волны:
+// индекс, собранный по ещё живым жертвам, ссылался бы на объекты,
+// исчезающие через мгновение. Окно рассогласования («индекс ссылается
+// на удалённое») живёт до конца reindex — цена KISS, принята при
+// планировании. Dry-run индексы не трогает по построению: удалений в
+// нём нет (Deleted == 0 — единственный триггер reindex). Сбой reindex
+// удаления не откатывает (они уже сделаны): ошибка возвращается вместе
+// с их счётчиками — вызывающий решает, эскалировать ли.
+func (e *Engine) ApplyAndReindex(ctx context.Context, repo domain.Repo, dryRun bool) (Result, error) {
+	res, err := e.Apply(ctx, repo, dryRun)
+	if err != nil {
+		return res, err
+	}
+	if res.Deleted == 0 {
+		return res, nil
+	}
+	if err := e.reindex(ctx, repo); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+// reindex — генерация индексов репо. Прогресс — noop: проход фоновый
+// (задачи TaskRegistry у него нет, репортёра тоже). Адаптер после
+// успешного Apply заведомо есть (его требовал резолвер семейств), но
+// ошибка лукапа не глушится: «перегенерировать нечем» должно быть
+// видно вызывающему.
+func (e *Engine) reindex(ctx context.Context, repo domain.Repo) error {
+	adapter, err := e.adapterFor(repo)
+	if err != nil {
+		return err
+	}
+	return adapter.GenerateIndexes(ctx, repo, e.storage, noopProgress{})
+}
+
+// noopProgress — заглушка прогресса фонового reindex (прецедент
+// publish.noopProgress).
+type noopProgress struct{}
+
+func (noopProgress) Update(string, string, int64, int64) {}
+func (noopProgress) Log(string)                          {}
 
 // apply — тело прохода: резолвер → листинг с группировкой по семействам →
 // разбор каждого семейства защитами.
@@ -179,17 +229,28 @@ func (e *Engine) apply(ctx context.Context, res *Result, repo domain.Repo, dryRu
 	return nil
 }
 
-// familyResolver достаёт резолвер семейств у адаптера экосистемы.
-// Отсутствие резолвера — UnsupportedError: у nix семейств нет
-// (content-addressed — старых версий одного пути не бывает), и молчаливый
-// no-op скрыл бы, что политика не работает вовсе.
-func (e *Engine) familyResolver(repo domain.Repo) (port.FamilyResolver, error) {
+// adapterFor — адаптер экосистемы репо. Отсутствующий адаптер — честный
+// UnsupportedError, а не «объектов нет»: движок не знает, что чистить
+// (ни семейств, ни генератора индексов), и молчаливый no-op скрыл бы,
+// что политика не работает вовсе.
+func (e *Engine) adapterFor(repo domain.Repo) (port.RepoAdapter, error) {
 	adapter, ok := e.adapters[repo.Ecosystem]
-	if !ok {
+	if !ok || adapter == nil {
 		return nil, &domain.UnsupportedError{
 			What: "retention",
 			Why:  "нет адаптера экосистемы " + repo.Ecosystem,
 		}
+	}
+	return adapter, nil
+}
+
+// familyResolver достаёт резолвер семейств у адаптера экосистемы.
+// Отсутствие резолвера — тот же UnsupportedError: у nix семейств нет
+// (content-addressed — старых версий одного пути не бывает).
+func (e *Engine) familyResolver(repo domain.Repo) (port.FamilyResolver, error) {
+	adapter, err := e.adapterFor(repo)
+	if err != nil {
+		return nil, err
 	}
 	resolver, ok := adapter.(port.FamilyResolver)
 	if !ok {

@@ -101,6 +101,20 @@ not grow it indefinitely).
 
 For details on the drivers, see [storage-db.md](storage-db.md).
 
+## `[retention]`
+
+| Key        | Default | Env                        | Purpose               |
+|------------|---------|----------------------------|-----------------------|
+| `interval` | `24h`   | `KHRZ_RETENTION__INTERVAL` | Period of the recurring retention pass over personal repos with the policy enabled (deleting old versions and regenerating indexes); `0` = disabled — cleanup stays manual (API/GUI) |
+
+The retention policy is configured per repository (via API and GUI); this
+section only sets the period of the shared pass. The pass walks the
+repositories sequentially (one `Apply` → index regeneration at a time,
+with a cancellation check between repos): the TTL guard (`max_age_days`)
+ages on its own, so versions that were alive at the last upload become
+deletion candidates over time — without the pass nobody deletes them. A
+failure in one repository does not stop the pass over the others.
+
 ## `[database]`
 
 | Key     | Default                                | Env                     |
