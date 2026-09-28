@@ -77,6 +77,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("user_token_cascade", func(t *testing.T) { userTokenCascadeSuite(t, newCat(t)) })
 	t.Run("tokens", func(t *testing.T) { tokenSuite(t, newCat(t)) })
 	t.Run("repos", func(t *testing.T) { repoSuite(t, newCat(t)) })
+	t.Run("repo_retention_roundtrip", func(t *testing.T) { repoRetentionSuite(t, newCat(t)) })
 	t.Run("remotes", func(t *testing.T) { remoteSuite(t, newCat(t)) })
 	t.Run("jobs", func(t *testing.T) { jobSuite(t, newCat(t)) })
 	t.Run("job_by_remote", func(t *testing.T) { jobByRemoteSuite(t, newCat(t)) })
@@ -423,6 +424,50 @@ func repoSuite(t *testing.T, c Catalog) {
 		t.Fatal(err)
 	}
 	wantNotFound(t, c.Repos.DeleteRepo(ctx, r.ID))
+}
+
+// repoRetentionSuite — политика ретеншна личного репо на колонках repos
+// (сессия 165, волна «Ретеншн-политики»): новый репо без политики читается
+// как выключенная (0/0 — обратная совместимость), UpdateRepo с {3,90}
+// возвращается чтением (и одиночным Repo, и списком Repos — драйверы не
+// расходятся в колонках), {0,0} сбрасывает политику. Путь DEFAULT-значения
+// на до-0011 строках — unit-тест миграции sqlite (raw-INSERT без колонок).
+func repoRetentionSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	owner, _ := c.Users.CreateUser(ctx, domain.User{Username: "alice", PasswordHash: "h", CreatedAt: fixed})
+	plain, err := c.Repos.CreateRepo(ctx, domain.Repo{
+		Name: "plain", OwnerID: owner.ID, Ecosystem: "apt", CreatedAt: fixed,
+	})
+	if err != nil || plain.ID == 0 {
+		t.Fatalf("CreateRepo = %+v, %v", plain, err)
+	}
+	got, err := c.Repos.Repo(ctx, plain.ID)
+	if err != nil || got.Retention != (domain.Retention{}) {
+		t.Fatalf("новый репо: Retention = %+v, %v; хочу нулевую (политика выключена)", got.Retention, err)
+	}
+	got.Retention = domain.Retention{MinVersions: 3, MaxAgeDays: 90}
+	if err := c.Repos.UpdateRepo(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	back, err := c.Repos.Repo(ctx, plain.ID)
+	if err != nil || back.Retention != (domain.Retention{MinVersions: 3, MaxAgeDays: 90}) {
+		t.Fatalf("после UpdateRepo: Retention = %+v, %v; хочу {3 90}", back.Retention, err)
+	}
+	if back.Quota != got.Quota || back.Name != got.Name {
+		t.Fatalf("UpdateRepo задел соседние поля: %+v", back)
+	}
+	all, err := c.Repos.Repos(ctx)
+	if err != nil || len(all) != 1 || all[0].Retention != (domain.Retention{MinVersions: 3, MaxAgeDays: 90}) {
+		t.Fatalf("Repos = %+v, %v; хочу политику {3 90}", all, err)
+	}
+	back.Retention = domain.Retention{}
+	if err := c.Repos.UpdateRepo(ctx, back); err != nil {
+		t.Fatal(err)
+	}
+	reset, err := c.Repos.Repo(ctx, plain.ID)
+	if err != nil || reset.Retention != (domain.Retention{}) {
+		t.Fatalf("сброс политики: Retention = %+v, %v; хочу нулевую", reset.Retention, err)
+	}
 }
 
 func remoteSuite(t *testing.T, c Catalog) {
