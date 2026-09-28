@@ -39,6 +39,7 @@ import (
 
 	"khrazhevnik/internal/core/config"
 	"khrazhevnik/internal/core/domain"
+	accesskeeper "khrazhevnik/internal/core/engine/accesskeeper"
 	"khrazhevnik/internal/core/engine/auth"
 	cacheengine "khrazhevnik/internal/core/engine/cache"
 	mirrorengine "khrazhevnik/internal/core/engine/mirror"
@@ -116,6 +117,11 @@ type App struct {
 	// cache_stats (сессия 96); nil при stats_flush_interval=0 или
 	// без модуля БД. Stop вызывается из graceful shutdown каскада.
 	StatsKeeper *statskeeper.Keeper
+	// AccessKeeper — накопитель обращений к объектам с фоновым
+	// батч-мёржем в object_access (сессия 167); nil без модуля БД или
+	// при storage.access_flush_interval=0 (трекинг обращений
+	// выключен). Stop вызывается из graceful shutdown каскада.
+	AccessKeeper *accesskeeper.Keeper
 	// Sweeper — консервативная выметающая чистка хранилища (сессия 119)
 	// с периодическим keeper-циклом (сессия 120); nil без модуля БД.
 	// Sweeper есть и при storage.gc_interval=0 (цикл выключен, ручной
@@ -210,6 +216,10 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		}
 		statsKeeper.Run(context.Background())
 	}
+	// accesskeeper (сессия 167): фиксация обращений — точки фиксации
+	// (168) копят их в памяти на горячем пути, отдельный цикл мёржит
+	// батч в object_access.
+	accessKeeper := newAccessKeeper(cfg, catalog.Access, log)
 	tasks := web.NewTaskRegistry(cfg.Mirror.Workers, systemClock{}, uuidRand{})
 	mirrorEngine := mirrorengine.New(mirrorengine.Config{
 		Workers:        cfg.Mirror.Workers,
@@ -291,6 +301,7 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		NarSigner:      narSigner,
 		RsaSigner:      rsaSigner,
 		StatsKeeper:    statsKeeper,
+		AccessKeeper:   accessKeeper,
 		Sweeper:        sweeper,
 	}, nil
 }
@@ -582,6 +593,20 @@ func (mp mirrorProgress) Update(phase, current string, processed, total int64) {
 }
 func (mp mirrorProgress) Log(line string) { mp.p.Log(line) }
 
+// newAccessKeeper собирает накопитель обращений (сессия 167) и
+// запускает его тик-цикл; nil — без модуля БД или при
+// storage.access_flush_interval=0 (инстанс без трекинга обращений —
+// легальная конфигурация: ретеншн тогда живёт от даты загрузки версий).
+func newAccessKeeper(cfg config.Config, store port.AccessStore, log *slog.Logger) *accesskeeper.Keeper {
+	if store == nil || cfg.Storage.AccessFlushInterval.Duration <= 0 {
+		return nil
+	}
+	k := accesskeeper.New(store, systemClock{}, cfg.Storage.AccessFlushInterval.Duration)
+	k.OnError = func(err error) { log.Error("access keeper", "err", err) }
+	k.Run(context.Background())
+	return k
+}
+
 // wireEcosystems создаёт адаптеры для включённых секций конфига;
 // секция с неизвестным реестру именем — понятная ошибка старта.
 // EcosystemDeps передаёт срезы каталога (Remotes) и Clock — первый
@@ -617,8 +642,20 @@ const (
 	tasksWaitBudget     = 15 * time.Second
 	gcStopBudget        = 10 * time.Second
 	statsFlushBudget    = 5 * time.Second
+	accessFlushBudget   = 5 * time.Second
 	drainDeletesBudget  = 5 * time.Second
 )
+
+// stopAccessKeeper делает финальный батч-мёрж обращений в рамках доли
+// бюджета каскада; nil-keeper (трекинг выключен) — no-op.
+func stopAccessKeeper(ctx context.Context, k *accesskeeper.Keeper) error {
+	if k == nil {
+		return nil
+	}
+	sctx, cancel := context.WithTimeout(ctx, accessFlushBudget)
+	defer cancel()
+	return k.Stop(sctx)
+}
 
 // WaitTasks — хук graceful shutdown: отменяет ctx-дерево фоновых
 // задач и ждёт их завершения в рамках таймаута каскада (server.go).
@@ -626,8 +663,9 @@ const (
 // TaskRegistry (ручные sync и потенциальные publish — сессия 14),
 // затем keeper чистки хранилища (гашение тикера без финального
 // прохода — сессия 120), затем keeper статистики (финальный флаш
-// cache_stats — сессия 96), затем дожимаем фоновые удаления прошлых
-// версий mutable-объектов.
+// cache_stats — сессия 96), затем keeper обращений (финальный
+// батч-мёрж object_access — сессия 167), затем дожимаем фоновые
+// удаления прошлых версий mutable-объектов.
 // Каждой стадии — своя доля бюджета; ошибки агрегируются, ни одна
 // стадия не пропускается из-за ошибки предыдущей.
 func (a *App) WaitTasks(ctx context.Context) error {
@@ -659,6 +697,11 @@ func (a *App) WaitTasks(ctx context.Context) error {
 		if err := a.StatsKeeper.Stop(fctx); err != nil {
 			errs = append(errs, fmt.Errorf("stats keeper stop: %w", err))
 		}
+	}
+	// stopAccessKeeper сам пропускает выключенный keeper (nil) —
+	// отдельная ветка nil-проверки каскаду не нужна.
+	if err := stopAccessKeeper(ctx, a.AccessKeeper); err != nil {
+		errs = append(errs, fmt.Errorf("access keeper stop: %w", err))
 	}
 	if a.Cache != nil {
 		dctx, cancel := context.WithTimeout(ctx, drainDeletesBudget)

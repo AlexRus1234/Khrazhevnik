@@ -68,6 +68,13 @@ type Storage struct {
 	// раньше, чем их перестанет видеть читатель (ногострел).
 	GCInterval Duration `toml:"gc_interval"`
 	GCGrace    Duration `toml:"gc_grace"`
+	// AccessFlushInterval — период фонового батч-мёржа обращений к
+	// объектам (accesskeeper, сессия 167): накопленное в памяти уходит
+	// в object_access одной транзакцией. AccessFlushInterval=0 —
+	// легальное «выключено» (инстанс без трекинга обращений: ретеншн
+	// тогда опирается на дату загрузки версии — бутстрап), как у
+	// gc_interval; отрицательное — ошибка конфига.
+	AccessFlushInterval Duration `toml:"access_flush_interval"`
 }
 
 // FSStorage — posix-хранилище (mod/storage/fs).
@@ -191,6 +198,7 @@ const (
 	defaultStatsFlush   = time.Minute
 	defaultGCInterval   = 24 * time.Hour
 	defaultGCGrace      = 7 * 24 * time.Hour
+	defaultAccessFlush  = 30 * time.Second
 	defaultWorkers      = 4
 	defaultJitter       = 10 * time.Minute
 	defaultMaxBandwidth = int64(0)       // безлимит
@@ -205,7 +213,7 @@ const (
 func defaultConfig() Config {
 	return Config{
 		Server:  Server{PublicListen: defaultPublicListen, AdminListen: defaultAdminListen},
-		Storage: Storage{Driver: DriverFS, FS: FSStorage{Path: defaultFSPath}, S3: S3Storage{SpoolDir: defaultS3Spool}, GCInterval: Duration{defaultGCInterval}, GCGrace: Duration{defaultGCGrace}},
+		Storage: Storage{Driver: DriverFS, FS: FSStorage{Path: defaultFSPath}, S3: S3Storage{SpoolDir: defaultS3Spool}, GCInterval: Duration{defaultGCInterval}, GCGrace: Duration{defaultGCGrace}, AccessFlushInterval: Duration{defaultAccessFlush}},
 		Database: Database{
 			Driver: DriverSQLite,
 			DSN:    defaultSQLiteDSN,
@@ -315,6 +323,7 @@ func (c Config) validate() []error {
 	problems = append(problems, c.validateHTTP()...)
 	problems = append(problems, c.validateStorage()...)
 	problems = append(problems, c.validateStorageGC()...)
+	problems = append(problems, c.validateStorageAccess()...)
 	problems = append(problems, c.validateDatabase()...)
 
 	if c.Auth.JWTSecret == "" {
@@ -455,6 +464,18 @@ func (c Config) validateStorageGC() []error {
 		problems = append(problems, positiveField("storage.gc_grace"))
 	}
 	return problems
+}
+
+// validateStorageAccess проверяет период батч-мёржа обращений
+// (accesskeeper): отрицательное — ошибка, 0 — легальное «выключено»
+// (копия семантики gc_interval: инстанс без трекинга обращений —
+// легальная конфигурация, ретеншн живёт от даты загрузки версий).
+func (c Config) validateStorageAccess() []error {
+	if c.Storage.AccessFlushInterval.Duration < 0 {
+		return []error{errors.New(
+			"конфигурация: storage.access_flush_interval: не может быть отрицательным (0 — трекинг обращений выключен)")}
+	}
+	return nil
 }
 
 // validateDatabase проверяет драйвер каталога и DSN.

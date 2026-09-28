@@ -79,6 +79,7 @@ not grow it indefinitely).
 | `driver`| `fs`    | `KHRZ_STORAGE__DRIVER` | `fs` \| `s3` |
 | `gc_interval` | `24h` | `KHRZ_STORAGE__GC_INTERVAL` | Period of the background sweeping cleanup of the storage (orphaned versions of mutable cache objects and `repo/<id>/` of deleted repos); `0` = disabled |
 | `gc_grace` | `168h` (7 days) | `KHRZ_STORAGE__GC_GRACE` | Minimum age of a cleanup candidate (ModTime older than `now−gc_grace`); strictly `> 0` — zero would delete fresh versions |
+| `access_flush_interval` | `30s` | `KHRZ_STORAGE__ACCESS_FLUSH_INTERVAL` | Period of the background batch merge of object accesses (`object_access`: the age of the last access is the criterion for retention deletion); `0` = tracking disabled (retention counts from the version upload date) |
 
 ### `[storage.fs]`
 

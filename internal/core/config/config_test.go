@@ -66,6 +66,7 @@ func TestLoadDefaults(t *testing.T) {
 		{"storage.fs.path", cfg.Storage.FS.Path, "/var/lib/khrazhevnik/store"},
 		{"storage.gc_interval", cfg.Storage.GCInterval.Duration, 24 * time.Hour},
 		{"storage.gc_grace", cfg.Storage.GCGrace.Duration, 7 * 24 * time.Hour},
+		{"storage.access_flush_interval", cfg.Storage.AccessFlushInterval.Duration, 30 * time.Second},
 		{"database.driver", cfg.Database.Driver, "sqlite"},
 		{"database.dsn", cfg.Database.DSN, "/var/lib/khrazhevnik/khrazhevnik.db"},
 		{"auth.jwt_secret", cfg.Auth.JWTSecret, "topsecret-topsecret-topsecret-0123456789"},
@@ -459,6 +460,28 @@ gc_interval = "0s"
 `)
 	if _, err := Load(path, withJWT(nil)); err != nil {
 		t.Errorf("gc_interval = 0 легален (чистка выключена), got %v", err)
+	}
+}
+
+// TestLoadAccessFlushInterval — ручка батч-мёржа обращений:
+// отрицательный access_flush_interval — ошибка конфига, 0 («трекинг
+// обращений выключен») легален (сессия 167).
+func TestLoadAccessFlushInterval(t *testing.T) {
+	path := writeTemp(t, "conf.toml", `
+[storage]
+access_flush_interval = "-5s"
+`)
+	_, err := Load(path, withJWT(nil))
+	if err == nil || !strings.Contains(err.Error(), "storage.access_flush_interval") {
+		t.Fatalf("отрицательный access_flush_interval прошёл валидацию: %v", err)
+	}
+
+	path = writeTemp(t, "conf-off.toml", `
+[storage]
+access_flush_interval = "0s"
+`)
+	if _, err := Load(path, withJWT(nil)); err != nil {
+		t.Errorf("access_flush_interval = 0 легален (трекинг выключен), got %v", err)
 	}
 }
 
