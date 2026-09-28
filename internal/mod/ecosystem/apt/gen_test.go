@@ -542,6 +542,39 @@ func TestValidateObjectPath(t *testing.T) {
 	}
 }
 
+// port.FamilyResolver — compile-time контракт генератора.
+var _ port.FamilyResolver = (*Generator)(nil)
+
+// TestObjectFamily — port.FamilyResolver: семейство версий объекта личного
+// репо для ретеншна. Имена — реальные (урок сессии 65), семейство — каталог
+// пула Debian: в нём лежат все бинарные пакеты одного исходника.
+func TestObjectFamily(t *testing.T) {
+	g := &Generator{}
+	cases := []struct {
+		path   string
+		family string
+		ok     bool
+	}{
+		{"pool/main/h/htop/htop_3.3.0-2_amd64.deb", "main/h/htop", true},
+		{"pool/main/libn/libnl-core3/libnl-3-200_3.7.0-0.2+b1_amd64.deb", "main/libn/libnl-core3", true},
+		// Другой бинарник того же исходника — то же семейство (retention
+		// считает версии пакета, а не отдельные .deb).
+		{"pool/main/libn/libnl-core3/libnl-3-200-dbg_3.7.0-0.2+b1_amd64.deb", "main/libn/libnl-core3", true},
+		{"pool/main/g/gcc-14/gcc-14-base_14.2.0-1_amd64.deb", "main/g/gcc-14", true},
+		// Индексы, by-hash-копии и подписи — вне семейств.
+		{"dists/stable/main/binary-amd64/Packages", "", false},
+		{"dists/stable/main/binary-amd64/by-hash/sha256/2b3f0f", "", false},
+		{"dists/stable/Release.gpg", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		family, ok := g.ObjectFamily(c.path)
+		if ok != c.ok || family != c.family {
+			t.Errorf("ObjectFamily(%q) = (%q, %v), want (%q, %v)", c.path, family, ok, c.family, c.ok)
+		}
+	}
+}
+
 // putDeb складывает .deb-байты в FakeStorage по ключу pool/main/.../<name>.deb
 // под префиксом repo/<id>/apt. Возвращает ключ.
 func putDeb(t *testing.T, storage *testutil.FakeStorage, repo domain.Repo, name, control string) string {

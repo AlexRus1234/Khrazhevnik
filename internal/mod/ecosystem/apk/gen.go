@@ -74,6 +74,49 @@ func (g *Generator) ValidateObjectPath(p string) error {
 	return &domain.ValidationError{What: "путь apk-репо", Value: p, Reason: "неизвестное расширение (ожидалось .apk)"}
 }
 
+// ObjectFamily — port.FamilyResolver: семейство версий apk-объекта —
+// имя пакета из basename файла: <имя>-<версия>-r<релиз>.apk. Граница
+// «имя-версия» — эвристика ROADMAP: версия — первый сегмент (после
+// деления по «-»), начинающийся с цифры, всё до него — семейство.
+// Реальные имена Alpine с дефисами и цифрами держатся именно так:
+// py3-pip-25.1.1-r0 → py3-pip, libnl3-3.11.0-r0 → libnl3,
+// ca-certificates-20250605-r0 → ca-certificates. Генерируемые
+// APKINDEX.tar.gz (+ .sig) и ключи (khrazhevnik.rsa.pub) — ok=false.
+func (g *Generator) ObjectFamily(p string) (string, bool) {
+	name := baseName(p)
+	if !strings.HasSuffix(name, ".apk") {
+		return "", false
+	}
+	return pkgFamily(strings.TrimSuffix(name, ".apk"))
+}
+
+// baseName — последний сегмент пути. Не path.Base: разделитель ключей
+// Storage всегда «/» независимо от ОС.
+func baseName(p string) string {
+	if idx := strings.LastIndexByte(p, '/'); idx >= 0 {
+		return p[idx+1:]
+	}
+	return p
+}
+
+// pkgFamily — имя пакета из имени файла без расширения: часть до первого
+// сегмента, начинающегося с цифры (граница «имя-версия»), сегменты — по
+// «-». Пакет без границы версии — ok=false.
+func pkgFamily(stem string) (string, bool) {
+	segs := strings.Split(stem, "-")
+	for i := 1; i < len(segs); i++ {
+		if segs[i] == "" || !isASCIIDigit(segs[i][0]) {
+			continue
+		}
+		return strings.Join(segs[:i], "-"), true
+	}
+	return "", false
+}
+
+// isASCIIDigit — цифра ASCII-диапазона: версия пакета всегда начинается
+// с «0»–«9», unicode-цифры в именах пакетов не встречаются.
+func isASCIIDigit(b byte) bool { return b >= '0' && b <= '9' }
+
 // GenerateIndexes обходит .apk, читает .PKGINFO, собирает APKINDEX.tar.gz
 // (+ .sig при Signer). Прогресс — обработанные пакеты.
 //

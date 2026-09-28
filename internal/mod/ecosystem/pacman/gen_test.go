@@ -250,6 +250,41 @@ func TestValidateObjectPath(t *testing.T) {
 	}
 }
 
+// port.FamilyResolver — compile-time контракт генератора.
+var _ port.FamilyResolver = (*Generator)(nil)
+
+// TestObjectFamily — port.FamilyResolver: семейство версий pacman-объекта —
+// имя пакета из basename до сегмента-версии. Реальные имена Arch.
+func TestObjectFamily(t *testing.T) {
+	g := &Generator{}
+	cases := []struct {
+		path   string
+		family string
+		ok     bool
+	}{
+		{"htop-3.3.0-2-x86_64.pkg.tar.zst", "htop", true},
+		// Имя с дефисом и цифрой: семейство — всё до сегмента-версии.
+		{"python-pysocks-1.7.1-1-any.pkg.tar.zst", "python-pysocks", true},
+		{"gcc-libs-14.2.1-1-x86_64.pkg.tar.zst", "gcc-libs", true},
+		{"libreoffice-fresh-24.8.4-1-x86_64.pkg.tar.zst", "libreoffice-fresh", true},
+		// Пакеты могут лежать в подкаталоге — берём basename.
+		{"x86_64/htop-3.3.0-2-x86_64.pkg.tar.zst", "htop", true},
+		// Имя без границы версии (мусор) — вне семейств.
+		{"htop.pkg.tar.zst", "", false},
+		// Генерация (.db/.files/.sig) и legacy-упаковки — вне семейств.
+		{"khrazhevnik.db", "", false},
+		{"khrazhevnik.db.sig", "", false},
+		{"htop-3.3.0-2-x86_64.pkg.tar.xz", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		family, ok := g.ObjectFamily(c.path)
+		if ok != c.ok || family != c.family {
+			t.Errorf("ObjectFamily(%q) = (%q, %v), want (%q, %v)", c.path, family, ok, c.family, c.ok)
+		}
+	}
+}
+
 // TestValidateObjectPathLegacyReason — legacy .xz/.gz отвергаются
 // ValidationError с внятной причиной (маппится в 400): клиент должен
 // понять, что пакет надо переупаковать, а не гадать, почему «неизвестное

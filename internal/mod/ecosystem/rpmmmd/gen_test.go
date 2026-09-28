@@ -297,6 +297,42 @@ func TestValidateObjectPath(t *testing.T) {
 	}
 }
 
+// port.FamilyResolver — compile-time контракт генератора.
+var _ port.FamilyResolver = (*Generator)(nil)
+
+// TestObjectFamily — port.FamilyResolver: семейство версий .rpm-объекта —
+// имя пакета из basename до сегмента-версии. Реальные имена (урок сессии 65).
+func TestObjectFamily(t *testing.T) {
+	g := &Generator{}
+	cases := []struct {
+		path   string
+		family string
+		ok     bool
+	}{
+		{"htop-3.3.0-4.fc44.x86_64.rpm", "htop", true},
+		{"libnl3-3.11.0-1.fc44.x86_64.rpm", "libnl3", true},
+		{"python3-pip-25.1.1-1.fc44.noarch.rpm", "python3-pip", true},
+		// .src.rpm — то же семейство, что бинарный: имя совпадает.
+		{"htop-3.3.0-4.fc44.src.rpm", "htop", true},
+		// Пакеты лежат где угодно под корнем репо — берём basename.
+		{"packages/x86_64/htop-3.3.0-4.fc44.x86_64.rpm", "htop", true},
+		// DeltaRPM — тот же разбор, что у .rpm.
+		{"bash-5.2.26-1.fc44.x86_64.drpm", "bash", true},
+		// Имя без границы версии (мусор) — вне семейств.
+		{"htop.rpm", "", false},
+		// Индексы, подписи и ключи — вне семейств.
+		{"repodata/primary.xml.gz", "", false},
+		{"repodata/repomd.xml.asc", "", false},
+		{"RPM-GPG-KEY-khrazhevnik", "", false},
+	}
+	for _, c := range cases {
+		family, ok := g.ObjectFamily(c.path)
+		if ok != c.ok || family != c.family {
+			t.Errorf("ObjectFamily(%q) = (%q, %v), want (%q, %v)", c.path, family, ok, c.family, c.ok)
+		}
+	}
+}
+
 // putRpm складывает .rpm-байты в FakeStorage по ключу под префиксом
 // repo/<id>/rpm-md. Возвращает полный ключ.
 func putRpm(t *testing.T, storage *testutil.FakeStorage, repo domain.Repo, name string, rpm []byte) string {

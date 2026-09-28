@@ -230,6 +230,41 @@ func TestValidateObjectPath(t *testing.T) {
 	}
 }
 
+// port.FamilyResolver — compile-time контракт генератора.
+var _ port.FamilyResolver = (*Generator)(nil)
+
+// TestObjectFamily — port.FamilyResolver: семейство версий apk-объекта —
+// имя пакета из basename до сегмента-версии. Реальные имена Alpine.
+func TestObjectFamily(t *testing.T) {
+	g := &Generator{}
+	cases := []struct {
+		path   string
+		family string
+		ok     bool
+	}{
+		{"htop-3.3.0-r2.apk", "htop", true},
+		{"libnl3-3.11.0-r0.apk", "libnl3", true},
+		// Имя с дефисом: семейство — всё до сегмента-версии.
+		{"py3-pip-25.1.1-r0.apk", "py3-pip", true},
+		{"ca-certificates-20250605-r0.apk", "ca-certificates", true},
+		// Пакеты могут лежать в подкаталоге — берём basename.
+		{"x86_64/htop-3.3.0-r2.apk", "htop", true},
+		// Имя без границы версии (мусор) — вне семейств.
+		{"htop.apk", "", false},
+		// Индексы, подписи и ключи — вне семейств.
+		{"APKINDEX.tar.gz", "", false},
+		{"APKINDEX.tar.gz.sig", "", false},
+		{"khrazhevnik.rsa.pub", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		family, ok := g.ObjectFamily(c.path)
+		if ok != c.ok || family != c.family {
+			t.Errorf("ObjectFamily(%q) = (%q, %v), want (%q, %v)", c.path, family, ok, c.family, c.ok)
+		}
+	}
+}
+
 // putApk складывает .apk-байты в FakeStorage.
 func putApk(t *testing.T, storage *testutil.FakeStorage, repo domain.Repo, name, pkginfo string) string {
 	t.Helper()
