@@ -25,6 +25,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 | core/domain             | 100%          | unit                             |
 | core/engine             | ≥90%          | unit + fakes (testutil)          |
 | core/engine/storagegc   | ≥90%          | unit + fakes (ModTime-инжект)    |
+| core/engine/retention   | ≥90%          | unit + fakes + integration       |
+| core/engine/accesskeeper| ≥90%          | unit + fakes (FixedClock)        |
 | mod/ecosystem/* (парсеры)| ≥90%         | unit + golden + fuzz             |
 | mod/ecosystem/xbps      | ≥90%          | unit + golden + fuzz + integration |
 | mod/storage, mod/db     | ≥85%          | контрактные suite на всех драйверах |
@@ -290,6 +292,59 @@ Unit-only цифра (~67% на момент внедрения) была зан
   свой URL и `direct` на источнике, сохранение глобального прокси и
   переживание перезагрузки, клиентская валидация пустого URL; экспорт
   файла и импорт из текста с отчётом (дубли пропущены).
+
+## Ретеншн-политики личных репо (волна «Ретеншн-политики», сессии 164–175)
+
+Авто-очистка старых версий: политика per-repo, учёт обращений, пины,
+суточный проход; закреплены кейсы:
+
+- unit `domain` (`retention_test.go`, 100%): `ValidateRetention` —
+  границы политики (`0/0` — выключена, `min_versions≥2` при заданном
+  возрасте, отказ на `min_versions=1` с возрастом, на `max_age_days`
+  без `min_versions` и на отрицательных значениях → `ValidationError`);
+- unit движка `engine/retention` (`retention_test.go`, 12 кейсов
+  `Apply`): топ-N семейства по `ModTime` с тай-брейком по ключу,
+  защита свежим обращением, пином и топ-N (счётчики `ProtectedBy*`),
+  `dry-run` без изменений носителя, «только keep-N» при
+  `max_age_days=0`, исчезнувший объект — не сбой удаления, сбои
+  удалений копятся, ошибка чтения обращений — fail-closed,
+  `UnsupportedError` для экосистемы без `FamilyResolver`;
+  `runner_test.go` — проход только по репо с включённой политикой,
+  сбой одного репо не стопает остальных, отмена между репо,
+  переиндексация только при непустых удалениях (`ApplyAndReindex`);
+- unit `engine/accesskeeper` (`keeper_test.go`): накопитель и
+  флаш-мёрж одной транзакцией, пустой флаш — без похода в БД,
+  время не откатывается назад, `Run`/`Stop` (финальный флаш,
+  идемпотентность), потолок карты (`maxKeys`) считает `dropped`, а не
+  вытесняет;
+- unit конфига (`config_test.go`): дефолты (`30s`, `24h`) и негативы
+  `storage.access_flush_interval` / `retention.interval` (`<0` —
+  ошибка конфига);
+- unit резолверов семейств — `TestObjectFamily` в apt, rpm-md, pacman,
+  apk и xbps: семейство из реальных имён пакетов, объекты вне семейств
+  (индексы, подписи) — `ok=false`; nix метода не имеет;
+- контракт каталога (`internal/contract`, sqlite/postgres/mariadb):
+  `repo_retention_roundtrip` (колонки 0011 переживают roundtrip;
+  строки, созданные до миграции, получают `0/0`), `object_access_merge`
+  (префикс с литеральным `_`, скоупы не смешиваются, `last_access_at`
+  не откатывается назад, `hits` складываются, пустой батч — no-op,
+  `NotFound` у `AccessEntry`), `repo_pins_roundtrip` (идемпотентный
+  `SetPin`, порядок по `key`, CASCADE при удалении репо); миграции
+  0011–0013 накатываются идемпотентно;
+- web (`handlers_retention_test.go`): политика через POST/PATCH/GET
+  `/repos` (`min_versions=1` с возрастом → 400), прогноз кандидатов и
+  счётчики защит, применение — удаления и переиндексация, 409 при
+  активной задаче репо, пины (полный ключ в `GET`, путь внутри репо в
+  `PUT`/`DELETE`, 404 на несуществующий объект), 503
+  `retention_unavailable` без движка; фиксация обращений —
+  `repo_public_test.go` (публичный GET, обе ветки — полная и Range) и
+  `proxy_test.go` (кеш-HIT/STALE в `object_access`, MISS — нет);
+- integration `retention_test.go` (build-tag): сквозной сценарий на
+  живых sqlite + fs — upload, обращение через публичный роутер, флаш
+  keeper'а, проход движка удаляет забытую версию и перегенерирует
+  индексы; пин-сценарий и выключенная политика (no-op);
+- e2e (Playwright, `run_e2e_tests`): политика в панели «Ретеншн»,
+  прогноз, пин/анпин и клиентская валидация (`min=1` с возрастом).
 
 ## Надёжность
 

@@ -160,13 +160,14 @@ retention preview and apply — admin only.
 | POST   | `/api/v1/repos/{id}/retention/apply`  | 202/404/409/429/503 | Apply the policy as a task (kind=`retention`) |
 | GET    | `/api/v1/repos/{id}/retention/pins`   | 200/404/503      | Repository pins (full storage keys) |
 | PUT    | `/api/v1/repos/{id}/retention/pins/*` | 204/400/404/503  | Pin a version (path inside the repository) |
-| DELETE | `/api/v1/repos/{id}/retention/pins/*` | 204/400/503      | Unpin                           |
+| DELETE | `/api/v1/repos/{id}/retention/pins/*` | 204/400/404/503  | Unpin (404 — no such repository) |
 
 `quota` is `{max_bytes, max_objects}`; a zero field means no limit.
 `retention` is `{min_versions, max_age_days}`: the auto-cleanup policy for
-old family versions; `{0,0}` disables it, and `min_versions=1` together
-with a non-zero age is rejected by the server (400 `validation_error` —
-the last version could disappear). Upload:
+old family versions; `{0,0}` disables it, `max_age_days=0` with
+`min_versions≥2` means "keep-N only". 400 `validation_error`: negative
+values, `min_versions=1` together with a non-zero age (the last version
+could disappear) and `max_age_days` without `min_versions`. Upload:
 overwriting an existing key → 409 `conflict` (the `force=true`
 parameter — admin session only: a scoped token and the owner receive
 403 `admin_required`); exceeding the quota → 413 `quota_exceeded`;
@@ -215,7 +216,14 @@ version (the object must exist, otherwise 404 `not_found`; a `+` in the
 name may be sent as `%2b`); `DELETE` unpins it (unpinning a missing pin is
 also 204, idempotent). `GET` returns **full** storage keys — they are
 compared against the `key` column of the object listing. Audit —
-`repo.retention.pin` / `repo.retention.unpin`.
+`repo.retention.pin` / `repo.retention.unpin`. A pin is removed together
+with the repository (FK CASCADE).
+
+Not every ecosystem is subject to the policy: version families are
+resolved by the adapter (`port.FamilyResolver`), and nix
+(content-addressed objects) has none — the forecast of such a repository
+answers 501 `unsupported` and the GUI panel is hidden. Objects outside
+families (indexes, signatures, keys) are never touched.
 
 ## Public serving (:29202, no auth)
 

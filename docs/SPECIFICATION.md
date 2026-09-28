@@ -134,11 +134,15 @@ admin_listen = ":30202"
 driver = "fs"                    # fs | s3
 gc_interval = "24h"              # период фоновой выметающей чистки хранилища; 0 = выключено
 gc_grace = "168h"                # мин. возраст кандидата на вымет; строго > 0 (0 = ногострел)
+access_flush_interval = "30s"    # батч-мёрж обращений к объектам (object_access); 0 = трекинг выключен
 [storage.fs]
 path = "/var/lib/khrazhevnik/store"
 [storage.s3]
 endpoint = "" ; region = "" ; bucket = "" ; path_style = true
 access_key_id = "" ; secret_access_key = ""
+
+[retention]
+interval = "24h"                 # период прохода ретеншна по личным репо; 0 = выключено
 
 [database]
 driver = "sqlite"                # sqlite | postgres | mariadb
@@ -360,15 +364,19 @@ http://<хражевник>:29202/repo/<name>/key.asc`).
 | POST  | `/api/v1/repos/{id}/retention/apply`      | admin                             | 202/404/409/429/503 | Применение политики как фоновая задача (kind=`retention`, label=`repo-<id>`), аудируется (`repo.retention.apply`); 409 — активная задача этого репо, 429 — лимит воркеров |
 | GET   | `/api/v1/repos/{id}/retention/pins`       | admin или владелец или `repo:<id>:write` | 200/404/503 | Ключи хранилища, закреплённые в репо (пин — третья защита ретеншна) |
 | PUT   | `/api/v1/repos/{id}/retention/pins/*`     | admin или владелец или `repo:<id>:write` | 204/400/404/503 | Закрепить версию (путь внутри репо); объект обязан существовать (404), аудит `repo.retention.pin`; идемпотентно |
-| DELETE| `/api/v1/repos/{id}/retention/pins/*`     | admin или владелец или `repo:<id>:write` | 204/400/503 | Снять пин; идемпотентно (анпин отсутствующего — 204), аудит `repo.retention.unpin` |
+| DELETE| `/api/v1/repos/{id}/retention/pins/*`     | admin или владелец или `repo:<id>:write` | 204/400/404/503 | Снять пин; идемпотентно (анпин отсутствующего — 204), 404 — нет такого репо, аудит `repo.retention.unpin` |
 
 Поля repo: `name` (slug), `ecosystem` (`apt`|`nix`|`xbps` — экосистемы
 с генератором метаданных), `owner_id` (существующий пользователь),
 `quota` (`{max_bytes, max_objects}`, нулевое поле = без лимита),
 `retention` (`{min_versions, max_age_days}` — политика авто-очистки
 старых версий: `min_versions` — сколько версий семейства живы всегда,
-`max_age_days` — порог давности обращения; `{0,0}` — политика
-выключена, `min_versions=1` при заданном возрасте — 400). Загрузка: путь после
+`max_age_days` — порог давности обращения в сутках; `{0,0}` — политика
+выключена, `max_age_days=0` при `min_versions≥2` — легальное «только
+keep-N» (возраст не ограничен). 400 `validation_error`: отрицательные
+значения, `min_versions=1` при заданном возрасте (могла бы исчезнуть
+последняя версия) и `max_age_days` без `min_versions` (политика без
+гарантии минимума). Загрузка: путь после
 `/objects/` — ключ внутри `repo/<id>/<eco>/...` (apt принимает только
 `pool/*` с известными расширениями; `dists/*` генерируются reindex).
 
@@ -376,6 +384,13 @@ RBAC: admin — везде; владелец репо — upload/delete/reindex/
 пины ретеншна; `repo:<id>:write` scoped-токен — то же. Прогноз и
 применение ретеншна — admin-only (политика — админская настройка
 репо). Чтение публичное — без auth.
+
+Семейства версий для ретеншна резолвит адаптер экосистемы
+(`port.FamilyResolver`): apt, rpm-md, pacman, apk и xbps — да, nix
+(content-addressed) — нет: политика к nix-репо не применяется, проход
+отдаёт `UnsupportedError`, панель в GUI скрыта. Объекты вне семейств
+(индексы, подписи, ключи) проход не трогает. Помимо ручного запуска
+проход идёт фоновым тикером (`retention.interval`, дефолт `24h`).
 
 Публичный роутер (:29202): `GET /repo/<repo-name>/<путь>` — lookup
 репо по имени (не id, для красивых URL клиентов), раздача объектов и
@@ -504,6 +519,12 @@ stale_served,negative_hits,upstream_errors}_total`,
 `khrazhevnik_cache_background_panics_total` — паники, recover'нутые
 в фоновых операциях кеша; плюс runtime-коллекторы Go
 (`go_*` — heap/goroutines/GC) и процесса (`process_*` — CPU/fd/uptime).
+Ретеншн личных репо (регистрируются при `metrics.enabled`):
+`khrazhevnik_retention_runs_total`, `…_deleted_keys_total`,
+`…_deleted_bytes_total`, `…_failed_deletes_total`, гейдж
+`khrazhevnik_retention_last_pass_timestamp` и гистограмма
+`khrazhevnik_retention_duration_seconds` — считает проход (и
+периодический, и ручной; прогноз метрик не трогает).
 
 ### Обслуживание хранилища
 
@@ -530,7 +551,8 @@ stale_served,negative_hits,upstream_errors}_total`,
 `stale`, `task_duplicate`, `task_limit`, `invalid_json`,
 `setup_already_done`, `invalid_setup_token`, `invalid_credentials`,
 `tasks_unavailable`, `mirror_unavailable`, `publish_unavailable`,
-`storage_gc_unavailable`, `settings_unavailable`, `import_too_many`,
+`storage_gc_unavailable`, `retention_unavailable`,
+`settings_unavailable`, `import_too_many`,
 `unsupported`, `internal`.
 
 ## Экосистемы
@@ -690,7 +712,10 @@ ON DELETE CASCADE; 0007 — `cache_stats` (снапшот per-eco счётчик
 таблица `object_access` (учёт обращений к объектам: `scope` ∈ {repo,
 cache}, `key`, `last_access_at` эпохой, `hits`; давность обращения к
 конкретной версии — критерий удаления ретеншна, волна «Ретеншн-политики»,
-сессия 166).
+сессия 166); 0013 — таблица `repo_pins` (пины версий личного репо:
+`repo_id` + `key` (ключ хранилища) — PK, `created_at` эпохой; FK на
+`repos(id)` ON DELETE CASCADE — удаление репо уносит его пины; волна
+«Ретеншн-политики», сессия 170).
 `schema_migrations` — служебная таблица goose.
 
 | Таблица        | Назначение                                        |
@@ -706,6 +731,7 @@ cache}, `key`, `last_access_at` эпохой, `hits`; давность обра�
 | `revoked_sessions` | отзывы JWT (jti, expires_at); logout переживает рестарт; просроченные чистятся при вставке |
 | `cache_stats`  | снапшот per-eco счётчиков статистики кеша (hits/misses/байты/пакеты, updated_at); снапшот всегда полный, перезапись целиком одной транзакцией |
 | `object_access` | учёт обращений к объектам (`scope` ∈ {repo, cache} + `key` — PK, `last_access_at` эпохой, `hits`); чтение — префиксом `key` в рамках скоупа, запись — батч-мёржем: время не откатывается назад, `hits` складываются (0012) |
+| `repo_pins`    | пины версий личного репо (`repo_id` + `key` (ключ хранилища) — PK, `created_at`); FK на `repos(id)` ON DELETE CASCADE — удаление репо уносит пины (0013) |
 | `settings`     | generic key-value настройки инстанса (`key` PK, `value`, `updated_at`); ключ `upstream.proxy` — глобальный прокси исходящих запросов (0010) |
 
 Драйверы — плагин через TOML:

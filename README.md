@@ -147,6 +147,12 @@ read-only rootfs) под rootless podman quadlet.
   подписчике репо работают без подписи
 - Публичные ключи — `GET /repo/<name>/key.asc` (OpenPGP),
   `nix-key.asc` (nix), `xbps-key` (PEM RSA) на публичном порту
+- Ретеншн-политики: авто-очистка старых версий по per-repo политике
+  (`min_versions`/`max_age_days`), защиты по ИЛИ — топ-N свежих /
+  свежее обращение / пин; суточный проход и ручной прогноз (dry-run) с
+  применением; nix — исключение (content-addressed, старых версий не
+  бывает); конфиг `retention.interval` (`24h`, `0` — выключено),
+  `storage.access_flush_interval` (`30s`)
 
 ### Экосистемы
 

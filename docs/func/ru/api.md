@@ -159,13 +159,14 @@ debian|apt|https://deb.debian.org/debian|proxy||true||
 | POST  | `/api/v1/repos/{id}/retention/apply` | 202/404/409/429/503  | Применить политику задачей (kind=`retention`) |
 | GET   | `/api/v1/repos/{id}/retention/pins`  | 200/404/503          | Пины репо (полные ключи хранилища) |
 | PUT   | `/api/v1/repos/{id}/retention/pins/*`| 204/400/404/503      | Закрепить версию (путь внутри репо) |
-| DELETE| `/api/v1/repos/{id}/retention/pins/*`| 204/400/503          | Снять пин                |
+| DELETE| `/api/v1/repos/{id}/retention/pins/*`| 204/400/404/503      | Снять пин (404 — нет репо) |
 
 `quota` — `{max_bytes, max_objects}`, нулевое поле = без лимита.
 `retention` — `{min_versions, max_age_days}`: политика авто-очистки
-старых версий семейства; `{0,0}` выключает её, `min_versions=1` вместе с
-заданным возрастом сервер отвергает (400 `validation_error` — последняя
-версия могла бы исчезнуть). Upload:
+старых версий семейства; `{0,0}` выключает её, `max_age_days=0` при
+`min_versions≥2` — «только keep-N». 400 `validation_error`: отрицательные
+значения, `min_versions=1` вместе с заданным возрастом (последняя версия
+могла бы исчезнуть) и `max_age_days` без `min_versions`. Upload:
 перезапись существующего ключа → 409 `conflict` (параметр `force=true`
 — только админ-сессия: scoped-токен и владелец получают 403
 `admin_required`); превышение квоты → 413 `quota_exceeded`; лимит
@@ -211,7 +212,13 @@ debian|apt|https://deb.debian.org/debian|proxy||true||
 слать как `%2b`), `DELETE` — снимает (анпин отсутствующего — тоже 204,
 идемпотентность). `GET` отдаёт **полные** ключи хранилища — они
 сравниваются с колонкой `key` листинга объектов. Аудит —
-`repo.retention.pin` / `repo.retention.unpin`.
+`repo.retention.pin` / `repo.retention.unpin`. Пин снимается вместе с
+репо (FK CASCADE).
+
+Политику применяют не все экосистемы: семейства версий резолвит адаптер
+(`port.FamilyResolver`), и у nix (контент-адресуемые объекты) его нет —
+прогноз такого репо отвечает 501 `unsupported`, панель в GUI скрыта.
+Объекты вне семейств (индексы, подписи, ключи) проход не трогает.
 
 ## Публичная раздача (:29202, без auth)
 

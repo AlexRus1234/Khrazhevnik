@@ -86,6 +86,53 @@ response headers are the same as for a full serve (`ETag`/`Last-Modified`/
 have no ETag — the tag form does not match (the response is the full
 body), while `If-Range` by a `Last-Modified` date (file mtime) works.
 
+## Retention (automatic cleanup of old versions)
+
+By default a personal repository grows until it hits the quota: old
+package versions stay forever. The retention policy deletes them. It is
+configured per repository (the `retention` field of `POST`/`PATCH
+/api/v1/repos/{id}`, or the "Retention" panel on the repository page) and
+applied by a daily background pass or manually from the GUI/API.
+
+- **Criterion (two conditions).** A version is deleted only if it is not
+  among the top `min_versions` of its family by upload date, AND it has
+  not been requested for longer than `max_age_days` days, AND it is not
+  pinned. The protections combine with OR: only what is protected by none
+  of them is deleted. `{0,0}` disables the policy; `max_age_days=0` with
+  `min_versions≥2` means "keep-N only" (no age limit).
+- **A version family** is the set of independent objects of one package
+  (`htop_1.0` and `htop_1.1`); it is resolved by the ecosystem adapter
+  (apt — `pool/…/<source name>`, rpm-md — the name up to the first
+  digit-containing segment, pacman/apk/xbps — the package name). Objects
+  outside families (indexes, signatures, keys) are never touched.
+  **nix is the exception:** its objects are content-addressed, so there
+  are no old versions of the same path — retention does not apply to nix
+  repositories (the GUI panel is hidden, the forecast answers 501
+  `unsupported`).
+- **An access extends the life of a version.** Every public
+  `GET /repo/<name>/<path>` records an access to the version, and the
+  access age is the second half of the criterion: a package that keeps
+  being downloaded is never deleted. Without an access row the age is
+  counted from the upload date (`ModTime`), so a freshly uploaded version
+  survives even without access tracking (`storage.access_flush_interval =
+  "0s"` disables tracking only, not the pass).
+- **Pins** are a pinpoint exception: `PUT .../retention/pins/<path
+  inside the repository>` pins a version, `DELETE` unpins it (in the GUI
+  — a lock in the object table). A pin outlives any policy; deleting the
+  repository removes its pins.
+- **What the pass does:** it deletes the candidate versions and then
+  regenerates the ecosystem indexes so that clients see a consistent set.
+  A failed deletion of one version does not roll back the others.
+- **When it runs:** once a day (`retention.interval`, default `24h`, `0`
+  — disabled, manual runs only) over every repository with the policy
+  enabled; manually — "Forecast" (a dry run: candidates, size, access,
+  protection) and "Apply" (confirmation → background task, the log is in
+  the repository card). There is deliberately no "after upload" trigger:
+  deleting a version right after an upload is risky and the daily pass is
+  enough.
+- **Permissions:** policy, forecast and apply — admin; pins — admin, the
+  repository owner or a `repo:<id>:write` token.
+
 ## apt
 
 - **Upload:** `pool/...` with the extensions

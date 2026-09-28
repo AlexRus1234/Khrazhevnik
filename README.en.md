@@ -151,6 +151,12 @@ assistant was used while preparing the source code.[^1]
   unavailable, repositories keep working without signatures
 - Public keys are served at `GET /repo/<name>/key.asc` (OpenPGP),
   `nix-key.asc` (nix), `xbps-key` (RSA PEM) on the public port
+- Retention policies: old versions are cleaned up automatically by a
+  per-repository policy (`min_versions`/`max_age_days`), the protections
+  combine with OR — top-N newest / fresh access / pin; a daily pass plus
+  a manual dry-run forecast and application; nix is the exception
+  (content-addressed, no old versions); config `retention.interval`
+  (`24h`, `0` — disabled), `storage.access_flush_interval` (`30s`)
 
 ### Ecosystems
 

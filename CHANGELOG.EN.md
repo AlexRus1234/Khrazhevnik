@@ -28,8 +28,27 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ### Added
 
-- Personal-repository retention policies in the REST API: the `retention`
-  field (`min_versions`, `max_age_days`) in `GET`/`POST`/`PATCH
+- **DB (migrations 0011–0013):** the repository retention policy columns
+  `repos.min_versions`/`max_age_days`, the object-access table
+  `object_access(scope, key, last_access_at, hits)` — shared with the
+  cache proxy (future eviction reuses it) — and version pins
+  `repo_pins(repo_id, key, created_at)` with FK CASCADE on the
+  repository.
+- **Config:** `storage.access_flush_interval` (default `30s`, `0` —
+  access tracking off), `retention.interval` (default `24h`, `0` — the
+  periodic pass is off, cleanup stays manual).
+- **Engine:** access recording (the accesskeeper batch merge on the
+  public repository router and on cache HIT/STALE) and retention — a
+  candidate is a version OUTSIDE the family's top `min_versions` by
+  upload date, whose last access is older than
+  `now − max_age_days·24h` and which is not pinned; the protections
+  combine with OR (top-N / fresh access / pin), `max_age_days=0` means
+  “keep-N only”; dry-run forecast and application (delete + reindex), a
+  daily pass over the enabled repositories, metrics
+  `khrazhevnik_retention_*`; nix is the exception (content-addressed,
+  `UnsupportedError`).
+- **API:** personal-repository retention policies: the `retention` field
+  (`min_versions`, `max_age_days`) in `GET`/`POST`/`PATCH
   /api/v1/repos`; cleanup forecast `GET
   /api/v1/repos/{id}/retention/preview` (dry-run report: candidates with
   their protection reason plus counters); application `POST
@@ -37,12 +56,15 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   409 while one is active); version pins `GET|PUT|DELETE
   /api/v1/repos/{id}/retention/pins` (a pin keeps a version alive
   regardless of the policy; audit `repo.retention.pin`/`unpin`).
-- Web UI: the “Retention” panel on a personal repository page — a policy
+- **UI:** the “Retention” panel on a personal repository page — a policy
   form (`min_versions`/`max_age_days`; disabling sends `{0,0}`), the
   forecast (dry-run candidate table with the protection reason),
   application behind a `confirm` (background task + polling) and version
   pins (a lock in the object table row); for nix repositories the panel
   is hidden — retention does not apply.
+- **Docs (session 175):** HISTORY (the wave section: commits, decisions,
+  API/config), ROADMAP (the plan collapsed into a “completed” status),
+  README and CHANGELOG.
 
 ## [1.2.2] — 2026-09-25
 
