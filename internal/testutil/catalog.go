@@ -23,8 +23,10 @@ package testutil
 import (
 	"cmp"
 	"context"
+	"iter"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -659,3 +661,96 @@ func (s *FakeStatsStore) Saves() [][]domain.CacheStatsRow {
 	}
 	return out
 }
+
+// FakeAccessStore — map-реализация port.AccessStore: мёрж повторяет
+// семантику боевого адаптера (last_access_at не откатывается назад,
+// hits складываются; пустой батч — no-op без записи в историю), чтение
+// по префиксу — по возрастанию ключа. Каждый непустой MergeAccess
+// записывается в историю: тестам keeper'а обращений (сессия 167) нужно
+// число и содержимое батчей, а не только финальное состояние.
+type FakeAccessStore struct {
+	mu     sync.Mutex
+	rows   map[string]domain.ObjectAccess
+	merges [][]domain.ObjectAccess
+}
+
+// NewFakeAccessStore создаёт пустое хранилище обращений.
+func NewFakeAccessStore() *FakeAccessStore {
+	return &FakeAccessStore{rows: map[string]domain.ObjectAccess{}}
+}
+
+// MergeAccess применяет пачку: время — максимум старого и нового,
+// hits — сумма. Пустой срез — no-op (как у боевого адаптера: без записи
+// в историю и без похода в БД).
+func (s *FakeAccessStore) MergeAccess(_ context.Context, rows []domain.ObjectAccess) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]domain.ObjectAccess, len(rows))
+	copy(cp, rows)
+	s.merges = append(s.merges, cp)
+	for _, a := range rows {
+		id := fakeAccessID(a.Scope, a.Key)
+		cur, ok := s.rows[id]
+		if !ok {
+			s.rows[id] = a
+			continue
+		}
+		cur.Hits += a.Hits
+		if a.LastAccess.After(cur.LastAccess) {
+			cur.LastAccess = a.LastAccess
+		}
+		s.rows[id] = cur
+	}
+	return nil
+}
+
+// AccessByPrefix отдаёт записи scope с префиксом key, по возрастанию
+// ключа.
+func (s *FakeAccessStore) AccessByPrefix(_ context.Context, scope, prefix string) (iter.Seq2[domain.ObjectAccess, error], error) {
+	s.mu.Lock()
+	out := make([]domain.ObjectAccess, 0, len(s.rows))
+	for _, a := range s.rows {
+		if a.Scope == scope && strings.HasPrefix(a.Key, prefix) {
+			out = append(out, a)
+		}
+	}
+	s.mu.Unlock()
+	slices.SortFunc(out, func(a, b domain.ObjectAccess) int { return cmp.Compare(a.Key, b.Key) })
+	return func(yield func(domain.ObjectAccess, error) bool) {
+		for _, a := range out {
+			if !yield(a, nil) {
+				return
+			}
+		}
+	}, nil
+}
+
+// AccessEntry — точечный лукап; отсутствие — NotFound, как у боевого
+// адаптера БД.
+func (s *FakeAccessStore) AccessEntry(_ context.Context, scope, key string) (domain.ObjectAccess, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.rows[fakeAccessID(scope, key)]
+	if !ok {
+		return domain.ObjectAccess{}, &domain.NotFoundError{What: "обращения к объектам", Key: scope + "/" + key}
+	}
+	return a, nil
+}
+
+// Merges возвращает копию истории мёржей (для проверок числа
+// и содержимого батчей).
+func (s *FakeAccessStore) Merges() [][]domain.ObjectAccess {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]domain.ObjectAccess, len(s.merges))
+	for i, m := range s.merges {
+		out[i] = append([]domain.ObjectAccess(nil), m...)
+	}
+	return out
+}
+
+// fakeAccessID — ключ map'а: (scope, key) без коллизий склейки.
+func fakeAccessID(scope, key string) string { return scope + "\x00" + key }

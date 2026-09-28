@@ -51,6 +51,7 @@ type Catalog struct {
 	Audit       port.AuditLog
 	ObjIndex    port.ObjectIndex
 	Stats       port.StatsStore
+	Access      port.AccessStore
 	Settings    port.UpstreamProxyStore
 	Revocations port.SessionRevocationStore
 	Close       func() error
@@ -86,6 +87,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("object_index", func(t *testing.T) { objectIndexSuite(t, newCat(t)) })
 	t.Run("iterate_object_meta", func(t *testing.T) { iterateObjectMetaSuite(t, newCat(t)) })
 	t.Run("stats_snapshot", func(t *testing.T) { statsSnapshotSuite(t, newCat(t)) })
+	t.Run("object_access_merge", func(t *testing.T) { accessMergeSuite(t, newCat(t)) })
 	t.Run("settings", func(t *testing.T) { settingsSuite(t, newCat(t)) })
 	t.Run("revocations", func(t *testing.T) { revocationsSuite(t, newCat(t)) })
 	t.Run("noop_update", func(t *testing.T) { noopUpdateSuite(t, newCat(t)) })
@@ -846,6 +848,102 @@ func statsSnapshotSuite(t *testing.T, c Catalog) {
 	got, err = c.Stats.StatsSnapshot(ctx)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("снапшот после Reset = %+v, %v; хочу пусто без ошибки", got, err)
+	}
+}
+
+// accessMergeSuite — учёт обращений к объектам (сессия 166): пусто →
+// мёрж батча → чтение по префиксу верно (порядок по ключу; «_» в
+// префиксе — литерал, не «любой символ») → скоупы repo/cache не
+// смешиваются → повторный мёрж со СТАРЫМ временем и новыми hits
+// (MAX-семантика: время не откатилось, hits сложились) → пустой батч —
+// no-op → AccessEntry отсутствующего — NotFound.
+func accessMergeSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	collect := func(scope, prefix string) []domain.ObjectAccess {
+		t.Helper()
+		seq, err := c.Access.AccessByPrefix(ctx, scope, prefix)
+		if err != nil {
+			t.Fatalf("AccessByPrefix(%q, %q): %v", scope, prefix, err)
+		}
+		var out []domain.ObjectAccess
+		for a, err := range seq {
+			if err != nil {
+				t.Fatalf("обход обращений: %v", err)
+			}
+			out = append(out, a)
+		}
+		return out
+	}
+
+	if got := collect(domain.AccessScopeRepo, "repo/1/"); len(got) != 0 {
+		t.Fatalf("обращения на пустой таблице = %+v, хочу пусто", got)
+	}
+	if err := c.Access.MergeAccess(ctx, nil); err != nil {
+		t.Fatalf("пустой срез — no-op, не ошибка: %v", err)
+	}
+
+	// «pkg_1.0» рядом с decoy «pkgX1.9»: префикс «pkg_1» обязан совпасть
+	// только с литеральным «_».
+	first := []domain.ObjectAccess{
+		{Scope: domain.AccessScopeRepo, Key: "repo/1/apt/pkg_1.0_amd64.deb", LastAccess: fixed, Hits: 2},
+		{Scope: domain.AccessScopeRepo, Key: "repo/1/apt/pkg_1.1_amd64.deb", LastAccess: fixed.Add(-time.Hour), Hits: 1},
+		{Scope: domain.AccessScopeRepo, Key: "repo/1/apt/pkgX1.9_amd64.deb", LastAccess: fixed, Hits: 7},
+		{Scope: domain.AccessScopeCache, Key: "cache/apt/1/pkg_1.0_amd64.deb", LastAccess: fixed, Hits: 5},
+	}
+	if err := c.Access.MergeAccess(ctx, first); err != nil {
+		t.Fatalf("MergeAccess: %v", err)
+	}
+	got := collect(domain.AccessScopeRepo, "repo/1/apt/pkg_1")
+	if len(got) != 2 {
+		t.Fatalf("префикс с «_» вернул %d записей, хочу 2: %+v", len(got), got)
+	}
+	for i, w := range first[:2] {
+		if got[i] != w {
+			t.Fatalf("запись %d = %+v, хочу %+v", i, got[i], w)
+		}
+	}
+	if got := collect(domain.AccessScopeRepo, "repo/1/apt/"); len(got) != 3 {
+		t.Fatalf("префикс repo-скоупа вернул %d записей, хочу 3: %+v", len(got), got)
+	}
+	if got := collect(domain.AccessScopeCache, "cache/apt/1/"); len(got) != 1 || got[0].Hits != 5 {
+		t.Fatalf("cache-скоуп вернул %+v, хочу одну запись с hits=5", got)
+	}
+
+	entry, err := c.Access.AccessEntry(ctx, domain.AccessScopeRepo, "repo/1/apt/pkg_1.0_amd64.deb")
+	if err != nil || entry.Hits != 2 || !entry.LastAccess.Equal(fixed) {
+		t.Fatalf("AccessEntry = %+v, %v; хочу hits=2, время %v", entry, err, fixed)
+	}
+
+	// Повторный мёрж со СТАРЫМ временем: MAX-семантика — время не
+	// откатывается, hits складываются.
+	if err := c.Access.MergeAccess(ctx, []domain.ObjectAccess{
+		{Scope: domain.AccessScopeRepo, Key: "repo/1/apt/pkg_1.0_amd64.deb", LastAccess: fixed.Add(-24 * time.Hour), Hits: 3},
+	}); err != nil {
+		t.Fatalf("повторный MergeAccess: %v", err)
+	}
+	entry, err = c.Access.AccessEntry(ctx, domain.AccessScopeRepo, "repo/1/apt/pkg_1.0_amd64.deb")
+	if err != nil {
+		t.Fatalf("AccessEntry после мёржа: %v", err)
+	}
+	if !entry.LastAccess.Equal(fixed) {
+		t.Fatalf("время обращения откатилось назад: %v, хочу %v", entry.LastAccess, fixed)
+	}
+	if entry.Hits != 5 {
+		t.Fatalf("hits после мёржа = %d, хочу 5 (2+3)", entry.Hits)
+	}
+
+	// Пустой батч — no-op: ни строк, ни счётчиков не трогает.
+	if err := c.Access.MergeAccess(ctx, []domain.ObjectAccess{}); err != nil {
+		t.Fatalf("пустой батч — no-op: %v", err)
+	}
+	if got := collect(domain.AccessScopeRepo, "repo/1/apt/"); len(got) != 3 {
+		t.Fatalf("после пустого батча записей %d, хочу 3: %+v", len(got), got)
+	}
+
+	_, err = c.Access.AccessEntry(ctx, domain.AccessScopeRepo, "repo/1/apt/nope.deb")
+	var nf *domain.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("AccessEntry отсутствующего = %v, хочу *domain.NotFoundError", err)
 	}
 }
 

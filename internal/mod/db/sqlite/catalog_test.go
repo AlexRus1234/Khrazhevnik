@@ -86,6 +86,7 @@ func TestCatalogContract(t *testing.T) {
 			Audit:       st,
 			ObjIndex:    st,
 			Stats:       st,
+			Access:      st,
 			Settings:    st,
 			Revocations: st,
 			Close:       st.Close,

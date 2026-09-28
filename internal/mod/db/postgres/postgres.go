@@ -67,6 +67,7 @@ func init() {
 			Audit:       st,
 			ObjIndex:    st,
 			Stats:       st,
+			Access:      st,
 			Settings:    st,
 			Revocations: st,
 		}, nil

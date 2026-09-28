@@ -40,6 +40,9 @@ type CatalogSet struct {
 	// Stats — снапшот per-eco счётчиков статистики кеша (сессия 95):
 	// переживает рестарт процесса.
 	Stats port.StatsStore
+	// Access — учёт обращений к объектам (сессия 166): давность
+	// обращения к версии — критерий ретеншна/eviction.
+	Access port.AccessStore
 	// Settings — глобальные настройки инстанса (сессия 154): пока
 	// только upstream.proxy.
 	Settings port.UpstreamProxyStore
