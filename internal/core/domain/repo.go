@@ -32,6 +32,9 @@ type Repo struct {
 	Name      string
 	Ecosystem string
 	Quota     Quota
+	// Retention — политика авто-очистки старых версий личного репо;
+	// нулевые поля — политика выключена (текущее поведение).
+	Retention Retention
 	CreatedAt time.Time
 }
 
