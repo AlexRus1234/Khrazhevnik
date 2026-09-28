@@ -369,7 +369,9 @@ async function applyRetention(): Promise<void> {
 }
 
 // Пины: замок в строке таблицы объектов. GET pins отдаёт полные
-// storage-ключи (сверяем с o.key), PUT/DELETE — путь внутри репо.
+// storage-ключи (сверяем с o.key), PUT/DELETE — путь ВНУТРИ репо:
+// хендлер сам приклеивает префикс repo/<id>/<eco>/ (handlers_retention.go
+// retentionPinKey), полный ключ дал бы двойной префикс и 404.
 const pins = ref<string[]>([])
 const pinError = ref('')
 
@@ -388,7 +390,10 @@ async function loadPins(): Promise<void> {
 
 async function togglePin(key: string): Promise<void> {
   pinError.value = ''
-  const path = key.split('/').map(encodeURIComponent).join('/')
+  const path = relKey(key)
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/')
   try {
     await request(isPinned(key) ? 'DELETE' : 'PUT', `/repos/${repoID}/retention/pins/${path}`)
     await loadPins()
