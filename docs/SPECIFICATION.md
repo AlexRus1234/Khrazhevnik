@@ -373,9 +373,11 @@ http://<хражевник>:29202/repo/<name>/key.asc`).
 | PUT   | `/api/v1/repos/{id}/retention/pins/*`     | admin или владелец или `repo:<id>:write` | 204/400/404/503 | Закрепить версию (путь внутри репо); объект обязан существовать (404), аудит `repo.retention.pin`; идемпотентно |
 | DELETE| `/api/v1/repos/{id}/retention/pins/*`     | admin или владелец или `repo:<id>:write` | 204/400/404/503 | Снять пин; идемпотентно (анпин отсутствующего — 204), 404 — нет такого репо, аудит `repo.retention.unpin` |
 
-Поля repo: `name` (slug), `ecosystem` (`apt`|`nix`|`xbps` — экосистемы
-с генератором метаданных), `owner_id` (существующий пользователь),
-`quota` (`{max_bytes, max_objects}`, нулевое поле = без лимита),
+Поля repo: `name` (slug), `ecosystem` (`apt`|`rpm-md`|`pacman`|`apk`|
+`nix`|`xbps` — все шесть экосистем сборки имеют генератор метаданных;
+список доступных отдаёт `GET /api/v1/ecosystems`), `owner_id`
+(существующий пользователь), `quota` (`{max_bytes, max_objects}`,
+нулевое поле = без лимита),
 `retention` (`{min_versions, max_age_days}` — политика авто-очистки
 старых версий: `min_versions` — сколько версий семейства живы всегда,
 `max_age_days` — порог давности обращения в сутках; `{0,0}` — политика
