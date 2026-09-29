@@ -343,6 +343,12 @@ func BuildAdminRouter(d Deps) http.Handler {
 				settings.Put("/upstream-proxy", handlePutUpstreamProxy(d))
 			})
 
+			// /ecosystems — справочник экосистем сборки (сессия 178):
+			// читает его дропдаун формы личного репо, чтобы список не
+			// отставал от реестра адаптеров. Чтение — без аудита
+			// (прецедент GET /repos из той же цепочки).
+			api.With(auditWrap, adminAuth).Get("/ecosystems", handleListEcosystems(d))
+
 			// /repos — личные репозитории. admin-only CRUD/perms под
 			// adminAuth; upload/delete/reindex под RequireRepoAccess
 			// (admin|owner|repo:<id>:write). Group (не Route) — чтобы

@@ -136,6 +136,38 @@ number and reason.
 | GET    | `/api/v1/settings/upstream-proxy` | 200     | Current proxy: `{"value": v}` (`""` — not set, env fallback; `direct`; URL) |
 | PUT    | `/api/v1/settings/upstream-proxy` | 200/400 | Set the proxy: body `{"value": s}`; an invalid URL — 400 `validation_error`; audit `settings.update` (password masked) |
 
+## Directories (admin)
+
+| Method | Path                 | Code | Purpose                                   |
+|--------|----------------------|------|-------------------------------------------|
+| GET    | `/api/v1/ecosystems` | 200  | Available ecosystems: `{"ecosystems": ["apk", "apt", …]}` |
+
+The list is served by the backend, not by the SPA: its source is the
+adapter map the instance was built with (`Deps.Ecosystems`, which wire
+assembles from the registry). Only the ecosystems **enabled by the
+config** (`[ecosystem.<name>] enabled = true`) appear in the response —
+a disabled adapter is absent from the map, so “available” is an honest
+word rather than a list of “everything ever compiled in”. The order is
+lexicographic: the UI renders the names in it, without client-side
+sorting.
+
+The practical reason for such an endpoint: the ecosystem dropdown of the
+personal-repository creation form used to be hard-coded in the SPA and
+lagged behind the registry — ecosystems added on the backend (the
+rpm-md/pacman/apk wave) could not be picked in the web admin, even though
+they were created through the API and worked. Since the list comes from
+the registry, a new adapter shows up in the UI by itself.
+
+The request is admin-auth (like the other admin routes: 401 without a
+token, 403 for an identified non-admin session); it is a read and is not
+written to the audit log. A failed load shows an error in the form — a
+silently empty dropdown would look like “there are no ecosystems”.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://admin.example:30202/api/v1/ecosystems
+# {"ecosystems":["apk","apt","nix","pacman","rpm-md","xbps"]}
+```
+
 ## Personal repositories
 
 Creation/configuration — admin; upload/delete/reindex/listing and

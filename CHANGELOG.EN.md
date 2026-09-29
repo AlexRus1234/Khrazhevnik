@@ -65,8 +65,19 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 - **Docs (session 175):** HISTORY (the wave section: commits, decisions,
   API/config), ROADMAP (the plan collapsed into a “completed” status),
   README and CHANGELOG.
+- **Admin API:** the build ecosystem directory `GET /api/v1/ecosystems`
+  (admin) → `{"ecosystems":[…]}`: the adapter registry keys, i.e. only
+  the ecosystems enabled by the config, in alphabetical order. The
+  personal-repository form takes its ecosystem dropdown from there
+  instead of the hard-coded list in the SPA.
 
 ### Fixed
+
+- **UI:** the ecosystem dropdown of the personal-repository creation
+  form was missing `pacman`, `apk` and `rpm-md` — the hard-coded list
+  lagged behind the adapter registry, so repositories of those
+  ecosystems could only be created through the API. The list now comes
+  from the backend (`GET /api/v1/ecosystems`).
 
 - **API:** `PATCH /api/v1/repos/{id}` without the `retention` field no
   longer resets the retention policy to `{0,0}`: an absent field means

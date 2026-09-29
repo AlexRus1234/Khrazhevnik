@@ -120,6 +120,7 @@
   "repos.quotaError": "quotas must be non-negative numbers (bytes and files; 0 = unlimited)",
   "repos.deleteConfirm": "Delete repository “{name}”? Permissions are revoked cascade.",
   "repos.empty": "No repositories.",
+  "repos.ecosystemsError": "failed to load the ecosystem list",
 
   "repo.reindex": "Reindex",
   "repo.reindexing": "Reindexing…",
