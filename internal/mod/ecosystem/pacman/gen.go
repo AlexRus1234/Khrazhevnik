@@ -62,6 +62,20 @@ func init() {
 // Generator реализует port.RepoAdapter для pacman-репо.
 type Generator struct {
 	signer port.Signer
+
+	// decompressLimit — потолок разжатого .pkg.tar.zst (0 = прод-дефолт
+	// maxDecompressed). Поле только для тестов: прод-инстанс собирается
+	// реестром без параметров; уменьшенный кап не ослабляет контракт
+	// бомб-тестов — проверяется та же ветка limitedReader-отказа.
+	decompressLimit int64
+}
+
+// decompressCap возвращает эффективный лимит декомпрессии.
+func (g *Generator) decompressCap() int64 {
+	if g.decompressLimit > 0 {
+		return g.decompressLimit
+	}
+	return maxDecompressed
 }
 
 // SetSigner внедряет подписчик: после .db генератор эмитит .db.sig
@@ -160,7 +174,7 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		de, err := buildDescEntry(ctx, storage, key)
+		de, err := buildDescEntry(ctx, storage, key, g.decompressCap())
 		if err != nil {
 			return fmt.Errorf("pacman.gen: %s: %w", key, err)
 		}
@@ -234,7 +248,7 @@ func collectPkgTar(ctx context.Context, storage port.Storage, prefix string) ([]
 // всего файла) и собирает desc-запись. %FILENAME% — basename .pkg.tar.*;
 // %CSIZE% — фактический размер файла (счётчик tee); %SHA256SUM% — sha256
 // файла; %ISIZE% — size из .PKGINFO. Каталог в .db: <pkgname>-<pkgver>-<arch>.
-func buildDescEntry(ctx context.Context, storage port.Storage, pkgKey string) (descEntry, error) {
+func buildDescEntry(ctx context.Context, storage port.Storage, pkgKey string, decompressLimit int64) (descEntry, error) {
 	obj, err := storage.Get(ctx, pkgKey)
 	if err != nil {
 		return descEntry{}, err
@@ -243,7 +257,7 @@ func buildDescEntry(ctx context.Context, storage port.Storage, pkgKey string) (d
 	h := sha256.New()
 	cr := &countReader{r: obj.Body}
 	tee := io.TeeReader(cr, h)
-	pi, err := readPkgInfoFromPackage(ctx, tee)
+	pi, err := readPkgInfoFromPackage(ctx, tee, decompressLimit)
 	if err != nil {
 		return descEntry{}, err
 	}

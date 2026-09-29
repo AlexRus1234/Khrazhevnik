@@ -117,11 +117,15 @@ func (c *movingClock) Now() time.Time { return c.now }
 
 var _ port.Clock = (*movingClock)(nil)
 
+// newTestAuth — общий конструктор тестового сервиса. BcryptCost=4
+// (минимум bcrypt): прод-дефолт 10 делал каждый логин ~0.5с под -race —
+// пакет выезжал за 100с в CI без пользы для покрытия (контракт cost
+// отдельно гоняет TestBcryptCostConfig).
 func newTestAuth(t *testing.T) (*Service, *tokenFake) {
 	t.Helper()
 	users := testutil.NewFakeUserStore()
 	tf := &tokenFake{values: map[int64]domain.APIToken{}}
-	a, err := New(Config{Users: users, Tokens: tf, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour})
+	a, err := New(Config{Users: users, Tokens: tf, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, BcryptCost: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +212,7 @@ func TestAuthDelegatesAndDeleteBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, _ := New(Config{Users: users, Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(1, 0)), Rand: testutil.FixedRand(), JWTSecret: "x", SessionTTL: time.Hour})
+	s, _ := New(Config{Users: users, Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(1, 0)), Rand: testutil.FixedRand(), JWTSecret: "x", SessionTTL: time.Hour, BcryptCost: 4})
 	if ok, _ := s.HasUsers(ctx); !ok {
 		t.Fatal("HasUsers")
 	}
@@ -376,7 +380,7 @@ func TestTouchIntervalThrottle(t *testing.T) {
 	ctx := context.Background()
 	users := testutil.NewFakeUserStore()
 	tf := &tokenFake{values: map[int64]domain.APIToken{}}
-	a, err := New(Config{Users: users, Tokens: tf, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, TouchInterval: time.Hour})
+	a, err := New(Config{Users: users, Tokens: tf, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, TouchInterval: time.Hour, BcryptCost: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +441,7 @@ func TestRevocationPersistsAcrossRestart(t *testing.T) {
 	tf := &tokenFake{values: map[int64]domain.APIToken{}}
 	revocations := testutil.NewFakeRevocations()
 	build := func(rand port.Rand) *Service {
-		a, err := New(Config{Users: users, Tokens: tf, Revocations: revocations, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: rand, JWTSecret: "secret", SessionTTL: time.Hour})
+		a, err := New(Config{Users: users, Tokens: tf, Revocations: revocations, Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: rand, JWTSecret: "secret", SessionTTL: time.Hour, BcryptCost: 4})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -547,7 +551,7 @@ func (l *ctxAwareAuditLog) Record(ctx context.Context, e domain.AuditEntry) erro
 // WithoutCancel + свой таймаут (по образцу web-аудита, сессия 37).
 func TestLoginAuditSurvivesCancelledContext(t *testing.T) {
 	log := &ctxAwareAuditLog{}
-	a, err := New(Config{Users: testutil.NewFakeUserStore(), Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, Audit: log})
+	a, err := New(Config{Users: testutil.NewFakeUserStore(), Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, Audit: log, BcryptCost: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +584,7 @@ func TestLoginAuditSurvivesCancelledContext(t *testing.T) {
 // теста сессии 58).
 func TestUserAuditSurvivesCancelledContext(t *testing.T) {
 	log := &ctxAwareAuditLog{}
-	a, err := New(Config{Users: testutil.NewFakeUserStore(), Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, Audit: log})
+	a, err := New(Config{Users: testutil.NewFakeUserStore(), Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, Audit: log, BcryptCost: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -621,7 +625,7 @@ func TestStoreFailuresSurfaceAsUnavailable(t *testing.T) {
 	ctx := context.Background()
 	users := testutil.NewFakeUserStore()
 	tf := &tokenFake{values: map[int64]domain.APIToken{}}
-	a, err := New(Config{Users: users, Tokens: tf, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour})
+	a, err := New(Config{Users: users, Tokens: tf, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, BcryptCost: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -873,7 +877,7 @@ func TestAdminSetPassword(t *testing.T) {
 // кто действие выполняет (сессия 124).
 func TestPasswordChangeAudit(t *testing.T) {
 	log := &testutil.FakeAuditLog{}
-	a, err := New(Config{Users: testutil.NewFakeUserStore(), Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, Audit: log})
+	a, err := New(Config{Users: testutil.NewFakeUserStore(), Tokens: &tokenFake{values: map[int64]domain.APIToken{}}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("11111111-1111-4111-8111-111111111111"), JWTSecret: "secret", SessionTTL: time.Hour, Audit: log, BcryptCost: 4})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -208,7 +208,7 @@ func TestParsePkgInfoDeterminism(t *testing.T) {
 func TestReadPkgInfoFromPackage(t *testing.T) {
 	t.Parallel()
 	pkg := buildPkgTarZst(t, pkginfoText)
-	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(pkg))
+	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(pkg), 0)
 	if err != nil {
 		t.Fatalf("readPkgInfoFromPackage: %v", err)
 	}
@@ -803,10 +803,15 @@ func pkgBombZst(t *testing.T, huge int64) []byte {
 // readPkgInfoFromPackage на той же бомбе.
 func TestReadPkgInfoDecompressBomb(t *testing.T) {
 	t.Parallel()
-	const huge = maxDecompressed + (1 << 20) // 1 GiB + 1 MiB
+	// Кап уменьшен (4 MiB против прод-дефолта 1 GiB): та же ветка
+	// limitedReader-отказа, без гигабайтной декомпрессии под -race
+	// (прод-дефолт гоняет TestBcryptCostConfig-подобная параметризация
+	// невозможна для const — потому лимит инжектится полем Generator).
+	const cap = int64(4 << 20)
+	const huge = cap + (1 << 20)
 	bomb := pkgBombZst(t, huge)
 
-	dr, err := decompressPkg(bytes.NewReader(bomb))
+	dr, err := decompressPkg(bytes.NewReader(bomb), cap)
 	if err != nil {
 		t.Fatalf("decompressPkg: %v", err)
 	}
@@ -824,7 +829,7 @@ func TestReadPkgInfoDecompressBomb(t *testing.T) {
 		t.Fatalf("dr.Close: %v", err)
 	}
 
-	if _, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(bomb)); !errors.Is(err, ErrDecompressTooLarge) {
+	if _, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(bomb), cap); !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("readPkgInfoFromPackage: ожидали ErrDecompressTooLarge, получили %v", err)
 	}
 }
@@ -837,7 +842,10 @@ func TestGenerateIndexesPkgBomb(t *testing.T) {
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
-	bomb := pkgBombZst(t, maxDecompressed+(1<<20))
+	// Кап 4 MiB инжектом (прод-дефолт 1 GiB): контракт тот же — задача
+	// failed с ErrDecompressTooLarge, индексы не закоммичены.
+	const cap = int64(4 << 20)
+	bomb := pkgBombZst(t, cap+(1<<20))
 	key := port.RepoPrefix(repo) + "/bomb-1.0-1-x86_64.pkg.tar.zst"
 	w, err := storage.Put(context.Background(), key)
 	if err != nil {
@@ -850,7 +858,7 @@ func TestGenerateIndexesPkgBomb(t *testing.T) {
 		t.Fatalf("w.Commit: %v", err)
 	}
 
-	err = (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil)
+	err = (&Generator{decompressLimit: cap}).GenerateIndexes(context.Background(), repo, storage, nil)
 	if !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
 	}
@@ -868,7 +876,7 @@ func TestReadPkgInfoCancelDuringDecompress(t *testing.T) {
 	pkg := buildPkgTarZst(t, pkginfoText)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := readPkgInfoFromPackage(ctx, bytes.NewReader(pkg))
+	_, err := readPkgInfoFromPackage(ctx, bytes.NewReader(pkg), 0)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ожидали context.Canceled, получили %v", err)
 	}

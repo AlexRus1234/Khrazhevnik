@@ -176,7 +176,7 @@ func TestParsePkgInfoTooLarge(t *testing.T) {
 func TestReadPkgInfoFromPackageGzip(t *testing.T) {
 	t.Parallel()
 	apk := buildApkTarGz(t, pkginfoText)
-	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(apk))
+	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(apk), 0)
 	if err != nil {
 		t.Fatalf("readPkgInfoFromPackage gzip: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestReadPkgInfoFromPackageGzip(t *testing.T) {
 func TestReadPkgInfoFromPackageZstd(t *testing.T) {
 	t.Parallel()
 	apk := buildApkTarZst(t, pkginfoText)
-	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(apk))
+	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(apk), 0)
 	if err != nil {
 		t.Fatalf("readPkgInfoFromPackage zstd: %v", err)
 	}
@@ -753,8 +753,11 @@ func apkBombCompressed(t *testing.T, huge int64, gz bool) []byte {
 // (OOM-килл на CI-runner'е с 8 ГБ, см. pacman-замер VmHWM 13 GiB).
 func TestDecompressApkBomb(t *testing.T) {
 	t.Parallel()
-	const huge = maxDecompressedApk + (1 << 20) // 1 GiB + 1 MiB
-	dr, err := decompressApk(bufio.NewReader(bytes.NewReader(apkBombGz(t, huge))))
+	// Кап уменьшен (4 MiB против прод-дефолта 1 GiB): та же ветка
+	// limitedReader-отказа, без гигабайтной декомпрессии под -race.
+	const cap = int64(4 << 20)
+	const huge = cap + (1 << 20)
+	dr, err := decompressApk(bufio.NewReader(bytes.NewReader(apkBombGz(t, huge))), cap)
 	if err != nil {
 		t.Fatalf("decompressApk: %v", err)
 	}
@@ -766,7 +769,7 @@ func TestDecompressApkBomb(t *testing.T) {
 	if _, err := io.Copy(io.Discard, dr); !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидали ErrDecompressTooLarge на чтении, получили %v", err)
 	}
-	if want := maxDecompressedApk + 8192; lr.n > want {
+	if want := cap + 8192; lr.n > want {
 		t.Errorf("разжато %d байт, хочу не более ~%d (кап + буфер)", lr.n, want)
 	}
 }
@@ -779,7 +782,10 @@ func TestGenerateIndexesApkBomb(t *testing.T) {
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
-	bomb := apkBombGz(t, maxDecompressedApk+(1<<20))
+	// Кап 4 MiB инжектом (прод-дефолт 1 GiB): контракт тот же — задача
+	// failed с ErrDecompressTooLarge, индексы не закоммичены.
+	const cap = int64(4 << 20)
+	bomb := apkBombGz(t, cap+(1<<20))
 	key := port.RepoPrefix(repo) + "/x86_64/bomb-1.0-r0.apk"
 	w, err := storage.Put(context.Background(), key)
 	if err != nil {
@@ -792,7 +798,7 @@ func TestGenerateIndexesApkBomb(t *testing.T) {
 		t.Fatalf("w.Commit: %v", err)
 	}
 
-	err = (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil)
+	err = (&Generator{decompressLimit: cap}).GenerateIndexes(context.Background(), repo, storage, nil)
 	if !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
 	}
@@ -813,8 +819,11 @@ func TestGenerateIndexesApkBomb(t *testing.T) {
 // индексы не закоммичены.
 func TestGenerateIndexesZstdBomb(t *testing.T) {
 	t.Parallel()
-	const huge = 2 * maxDecompressedApk
-	dr, err := decompressApk(bufio.NewReader(bytes.NewReader(apkBombZst(t, huge))))
+	// Кап уменьшен (4 MiB против прод-дефолта 1 GiB): та же zstd-ветка
+	// limitedReader-отказа, бомба 2× капа — ассерты неизменны.
+	const cap = int64(4 << 20)
+	const huge = 2 * cap
+	dr, err := decompressApk(bufio.NewReader(bytes.NewReader(apkBombZst(t, huge))), cap)
 	if err != nil {
 		t.Fatalf("decompressApk: %v", err)
 	}
@@ -848,7 +857,7 @@ func TestGenerateIndexesZstdBomb(t *testing.T) {
 		t.Fatalf("w.Commit: %v", err)
 	}
 
-	err = (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil)
+	err = (&Generator{decompressLimit: cap}).GenerateIndexes(context.Background(), repo, storage, nil)
 	if !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
 	}
@@ -866,7 +875,7 @@ func TestReadPkgInfoCancelDuringDecompress(t *testing.T) {
 	apk := buildApkTarGz(t, pkginfoText)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := readPkgInfoFromPackage(ctx, bytes.NewReader(apk))
+	_, err := readPkgInfoFromPackage(ctx, bytes.NewReader(apk), 0)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ожидали context.Canceled, получили %v", err)
 	}

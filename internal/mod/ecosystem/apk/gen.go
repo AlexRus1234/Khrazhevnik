@@ -56,6 +56,20 @@ func init() {
 // Generator реализует port.RepoAdapter для apk-репо.
 type Generator struct {
 	signer port.Signer
+
+	// decompressLimit — потолок разжатого .apk (0 = прод-дефолт
+	// maxDecompressedApk). Поле только для тестов: прод-инстанс
+	// собирается реестром без параметров; уменьшенный кап не ослабляет
+	// контракт бомб-тестов — проверяется та же ветка limitedReader-отказа.
+	decompressLimit int64
+}
+
+// decompressCap возвращает эффективный лимит декомпрессии.
+func (g *Generator) decompressCap() int64 {
+	if g.decompressLimit > 0 {
+		return g.decompressLimit
+	}
+	return maxDecompressedApk
 }
 
 // SetSigner внедряет подписчик: после APKINDEX.tar.gz генератор эмитит
@@ -145,7 +159,7 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err := appendIndexEntry(ctx, storage, key, prefix, &indexText); err != nil {
+		if err := appendIndexEntry(ctx, storage, key, prefix, &indexText, g.decompressCap()); err != nil {
 			return fmt.Errorf("apk.gen: %s: %w", key, err)
 		}
 		p.Update("pkginfo", repo.Name, int64(i+1), int64(len(apkKeys)))
@@ -206,7 +220,7 @@ func collectApks(ctx context.Context, storage port.Storage, prefix string) ([]st
 // appendIndexEntry читает .apk одним проходом (.PKGINFO + sha1 всего
 // файла) и дописывает запись в APKINDEX-текст (K:V-формат). F: — путь
 // .apk относительно корня репо (apk кладёт полный относительный путь).
-func appendIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix string, buf *bytes.Buffer) error {
+func appendIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix string, buf *bytes.Buffer, decompressLimit int64) error {
 	obj, err := storage.Get(ctx, apkKey)
 	if err != nil {
 		return err
@@ -215,7 +229,7 @@ func appendIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix 
 	h := sha1.New()
 	cr := &countReader{r: obj.Body}
 	tee := io.TeeReader(cr, h)
-	pi, err := readPkgInfoFromPackage(ctx, tee)
+	pi, err := readPkgInfoFromPackage(ctx, tee, decompressLimit)
 	if err != nil {
 		return err
 	}

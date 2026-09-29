@@ -611,10 +611,15 @@ func TestEnumerateRpmMdGzPrimary(t *testing.T) {
 // бомба в сжатом виде ~2 МБ.
 func TestEnumerateRpmMdGzZipBomb(t *testing.T) {
 	t.Parallel()
+	// Кап уменьшен (4 MiB против прод-дефолта 1 GiB): та же ветка
+	// limitedReader-отказа, без гигабайтной декомпрессии под -race;
+	// члены по ~512 KiB гарантированно крупнее потолка парсера.
+	const cap = int64(4 << 20)
 	pad := bytes.Repeat([]byte("x"), 512<<10) // 512 KiB на член
 	member := newGz(t, append(append([]byte("<package><name>n</name><location href=\"p/x.rpm\"/></package><pad>"), pad...), []byte("</pad>")...))
-	bomb := bytes.Repeat(member, 4096) // 4096 × 512 KiB ≈ 2 GiB разжатых
+	bomb := bytes.Repeat(member, 16) // 16 × ~512 KiB ≈ 8 MiB разжатых > кап
 	a := newEnumerateAdapter(t)
+	a.decompressLimit = cap
 	meta := fakeMeta{files: map[string][]byte{
 		"/rpm/fedora/repodata/repomd.xml":     []byte(`<?xml version="1.0"?><repomd xmlns="http://linux.duke.edu/metadata/repo"><data type="primary"><location href="repodata/primary.xml.gz"/></data></repomd>`),
 		"/rpm/fedora/repodata/primary.xml.gz": bomb,
@@ -680,11 +685,15 @@ func TestEnumeratePrimaryZst(t *testing.T) {
 // упреждением MiB-класса (отступление сессии 81, apt gen_test.go).
 func TestEnumeratePrimaryZstBomb(t *testing.T) {
 	t.Parallel()
+	// Кап уменьшен (4 MiB против прод-дефолта 1 GiB): та же ветка
+	// limitedReader-отказа; ассерты («не дочитана», ErrDecompressTooLarge)
+	// неизменны.
+	const cap = int64(4 << 20)
 	pad := bytes.Repeat([]byte("x"), 512<<10) // 512 KiB на член
 	rawMember := append(append([]byte("<package><name>n</name><location href=\"p/x.rpm\"/></package><pad>"), pad...), []byte("</pad>")...)
 	member := zstBytes(t, rawMember)
-	bomb := bytes.Repeat(member, 4096) // 4096 × ~512 KiB ≈ 2 GiB разжатых
-	r, err := unwrapPrimary(io.NopCloser(bytes.NewReader(bomb)), "repodata/primary.xml.zst")
+	bomb := bytes.Repeat(member, 16) // 16 × ~512 KiB ≈ 8 MiB разжатых > кап
+	r, err := unwrapPrimary(io.NopCloser(bytes.NewReader(bomb)), "repodata/primary.xml.zst", cap)
 	if err != nil {
 		t.Fatalf("unwrapPrimary: %v", err)
 	}
@@ -701,7 +710,7 @@ func TestEnumeratePrimaryZstBomb(t *testing.T) {
 			break
 		}
 	}
-	if lr.n >= int64(len(rawMember))*4096 { // точный объём разжатой бомбы
+	if lr.n >= int64(len(rawMember))*16 { // точный объём разжатой бомбы
 		t.Errorf("разжато %d байт — бомба не должна быть дочитана (упреждение декодера ≠ конец тела)", lr.n)
 	}
 }

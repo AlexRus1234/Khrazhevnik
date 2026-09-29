@@ -435,12 +435,16 @@ func TestParseDBZipBombGuard(t *testing.T) {
 
 func TestParseDBGzipBombGuard(t *testing.T) {
 	t.Parallel()
-	// настоящая gzip-бомба: 1100 desc-записей по ~1MiB — распакованный
-	// поток > 1GiB (кап maxDecompressed), сжатый файл — килобайты
+	// Настоящая gzip-бомба: desc-записи по ~1MiB, распакованный поток
+	// больше уменьшенного капа (4 MiB против прод-дефолта 1 GiB —
+	// параметризация parseLimits, та же ветка errDecompressLimit-отказа
+	// без гигабайтной декомпрессии под -race). Сжатый файл — килобайты
 	// (повторы). Чтение стримингом: итератор гаснет на ошибке, никакого
 	// ReadAll распакованной бомбы (OOM-урок 77). Content каждой desc —
 	// строго меньше descSize-потолка, чтобы помеха проверяла именно
 	// декомпресс-лимит, а не ErrDescTooLarge.
+	const cap = int64(4 << 20)
+	const members = 8                                   // 8 × ~1MiB ≈ 8 MiB разжатых > кап
 	block := bytes.Repeat([]byte("x"), (1<<20)-(1<<10)) // 1MiB-1KiB
 	var buf bytes.Buffer
 	gw, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
@@ -448,7 +452,7 @@ func TestParseDBGzipBombGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	tw := tar.NewWriter(gw)
-	for i := 0; i < 1100; i++ {
+	for i := 0; i < members; i++ {
 		name := fmt.Sprintf("pkg-%04d-1.0-1-x86_64/desc", i)
 		if err := tw.WriteHeader(&tar.Header{
 			Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(block)),
@@ -467,7 +471,9 @@ func TestParseDBGzipBombGuard(t *testing.T) {
 	}
 	bomb := buf.Bytes()
 
-	_, err = collectDB(ParseDB(bytes.NewReader(bomb)))
+	_, err = collectDB(parseDB(bytes.NewReader(bomb), parseLimits{
+		decompressed: cap, entries: maxDescEntries, descSize: maxDescSize, descLines: maxDescLines,
+	}))
 	if !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидалась ErrDecompressTooLarge, получено %v", err)
 	}

@@ -98,6 +98,12 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `jq`, `nodejs`, `npm`, `openssl`) come through the Khrazhevnik cache
   proxy — only the bootstrap downloads (`git`+`curl`), without which the
   step-ca root cannot be fetched, still go outside.
+- **Tests:** decompression bombs (`rpm-md`, `apk`, `pacman`) and auth
+  logins no longer decompress/hash gigabytes: the parser decompression
+  limit is injected reduced in tests (the production default of 1 GiB
+  is unchanged, the ErrDecompressTooLarge contract is the same), and
+  bcrypt in config tests uses cost 4 (the minimum). The CI "Go tests"
+  step is ~10 minutes shorter; production behavior is untouched.
 
 ## [1.2.2] — 2026-09-25
 

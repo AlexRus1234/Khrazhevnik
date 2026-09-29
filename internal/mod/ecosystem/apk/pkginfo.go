@@ -168,9 +168,9 @@ func setOnceInt(p *int64, v string) {
 // .PKGINFO → ParsePkgInfo. r — сырые байты .apk (генератор tee'ит через
 // sha1, поэтому читает ровно столько, сколько нужно для .PKGINFO, а
 // остаток дочитывает вызывающий для хеша — как apt/pacman/rpm генераторы).
-func readPkgInfoFromPackage(ctx context.Context, r io.Reader) (*PkgInfo, error) {
+func readPkgInfoFromPackage(ctx context.Context, r io.Reader, decompressLimit int64) (*PkgInfo, error) {
 	br := bufio.NewReader(r)
-	dr, err := decompressApk(br)
+	dr, err := decompressApk(br, decompressLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -189,14 +189,17 @@ func readPkgInfoFromPackage(ctx context.Context, r io.Reader) (*PkgInfo, error) 
 // напрямую: errors.Is работает через любые %w-обёртки tar-уровня без
 // ручной трансляции. Вызывающий обязан Close (zstd-декодер держит
 // worker-горутины до Close).
-func decompressApk(br *bufio.Reader) (io.ReadCloser, error) {
+func decompressApk(br *bufio.Reader, decompressLimit int64) (io.ReadCloser, error) {
 	peek, err := br.Peek(4)
 	if err != nil && err != io.EOF {
 		return nil, fmt.Errorf("%w: peek: %w", ErrBadApk, err)
 	}
+	if decompressLimit <= 0 {
+		decompressLimit = maxDecompressedApk
+	}
 	limit := func(rc io.ReadCloser) io.ReadCloser {
 		return &limitedReadCloser{
-			limitedReader: &limitedReader{r: rc, limit: maxDecompressedApk, sentinel: ErrDecompressTooLarge},
+			limitedReader: &limitedReader{r: rc, limit: decompressLimit, sentinel: ErrDecompressTooLarge},
 			closer:        rc,
 		}
 	}
