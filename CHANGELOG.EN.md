@@ -26,6 +26,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-09-29
+
 ### Added
 
 - **DB (migrations 0011–0013):** the repository retention policy columns
