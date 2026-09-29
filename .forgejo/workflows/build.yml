@@ -247,12 +247,21 @@ jobs:
           curl -s -o /dev/null --max-time 5 http://s3:9000/
 
       - name: Install Go toolchain
+        # Fedora 44 ships an older Go; khrazhevnik needs 1.27 (go.mod).
+        # Тарбол тулчейна — из кеша Nora (raw-хранилище), не с go.dev:
+        # go.dev был последней внешней загрузкой build-test мимо зеркала
+        # и точкой отказа на 70 МБ. Версия и sha256 пинованы в шаге —
+        # подмена или обрезка файла в кеше падает здесь, а не всплывает
+        # позже непонятной ошибкой компилятора. -f: ошибка на HTTP-коде
+        # (не льём HTML в tar). Скачиваем до распаковки — внятная ошибка,
+        # если URL неверен.
+        env:
+          GO_TARBALL: go1.27.1.linux-amd64.tar.gz
+          GO_SHA256: 63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+          GO_CACHE_URL: https://nora.panelka.yadr01.internal/raw/toolchain
         run: |
-          # Fedora 44 ships an older Go; khrazhevnik needs 1.27 (go.mod).
-          # Tarball from go.dev. -f: fail on HTTP errors (don't pipe HTML
-          # error page into tar). Download first, then extract, so we get a
-          # clear error if URL is wrong.
-          curl -fsSL https://go.dev/dl/go1.27.1.linux-amd64.tar.gz -o /tmp/go.tar.gz
+          curl -fsSL "$GO_CACHE_URL/$GO_TARBALL" -o /tmp/go.tar.gz
+          echo "$GO_SHA256  /tmp/go.tar.gz" | sha256sum -c -
           ls -lh /tmp/go.tar.gz
           tar -C /usr/local -xzf /tmp/go.tar.gz
           echo "/usr/local/go/bin" >> $GITHUB_PATH
@@ -957,6 +966,50 @@ jobs:
               xbps-install -S -y htop
 
     steps:
+      - name: Bootstrap git+curl (minimal fedora image lacks them)
+        # Chicken-and-egg, как в build-test: curl нужен, чтобы достать
+        # корень step-ca (172.20.0.1:9000), без него нельзя довериться
+        # ни кешу, ни инстансу; git — checkout. Это единственный
+        # dnf-вызов ноги МИМО кеша — осознанная дыра (решение владельца
+        # 2026-09-29, та же, что bootstrap в build-test).
+        run: dnf install -y --setopt=install_weak_deps=False git curl
+
+      - name: Trust Local CA
+        # До Configure Khrazhevnik RPM repos: baseurl кеша — https с
+        # сертификатом step-ca, иначе dnf упадёт на TLS. До Checkout:
+        # git.yadr00.internal — сертификат step-ca.
+        run: |
+          curl -k https://172.20.0.1:9000/roots.pem -o /etc/pki/ca-trust/source/anchors/step-ca.crt
+          update-ca-trust
+          git config --global http.sslCAInfo /etc/pki/ca-trust/source/anchors/step-ca.crt
+
+      - name: Configure Khrazhevnik RPM repos (dogfood)
+        # Паттерн oci-джобы: priority=1, БЕЗ rm дефолтных fedora*.repo.
+        # База та же fedora:44, но дефолты (metalink на внешние зеркала)
+        # оставлены fallback'ом — приоритет у кеша, герметичность мягче,
+        # чем в build-test: нога не должна краснеть, если какого-то
+        # пакета в кеше ещё нет. gpgcheck=0 — passthrough чужих подписей
+        # байтово (инвариант кеша), ключ Fedora ноге не ставим.
+        run: |
+          cat > /etc/yum.repos.d/khrz.repo << 'EOF'
+          [khrz-fedora]
+          name=Khrazhevnik Fedora 44 (release)
+          baseurl=https://khrazhevnik.panelka.yadr01.internal/rpm/fedora/
+          gpgcheck=0
+          enabled=1
+          priority=1
+          sslverify=1
+          EOF
+          cat > /etc/yum.repos.d/khrz-updates.repo << 'EOF'
+          [khrz-fedora-updates]
+          name=Khrazhevnik Fedora 44 (updates)
+          baseurl=https://khrazhevnik.panelka.yadr01.internal/rpm/fedora-updates/
+          gpgcheck=0
+          enabled=1
+          priority=1
+          sslverify=1
+          EOF
+
       - name: Install dependencies
         # nodejs — НЕ проекту, а раннеру: act/act_runner исполняет JS-экшены
         # (actions/checkout@v7) через node ВНУТРИ job-контейнера; fedora:44
@@ -965,14 +1018,10 @@ jobs:
         # только openssl-libs), а Start app генерирует JWT-секрет
         # `openssl rand -hex 32`. podman — DooD-клиент; jq/curl —
         # bootstrap admin-API; git — checkout.
+        # git+curl уже стоят bootstrap-шагом — подтянутся из локальной
+        # базы; остальное dnf берёт через кеш (priority=1), дефолтные
+        # fedora-репы остаются fallback'ом.
         run: dnf install -y --setopt=install_weak_deps=False podman jq curl git nodejs npm openssl
-
-      - name: Trust Local CA
-        # До Checkout: git.yadr00.internal — сертификат step-ca.
-        run: |
-          curl -k https://172.20.0.1:9000/roots.pem -o /etc/pki/ca-trust/source/anchors/step-ca.crt
-          update-ca-trust
-          git config --global http.sslCAInfo /etc/pki/ca-trust/source/anchors/step-ca.crt
 
       - name: Check socks secret (opt-in proxy)
         # use_socks_proxy=true без секрета — конфигурационная ошибка

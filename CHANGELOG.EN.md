@@ -86,6 +86,19 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   policy. `POST /api/v1/repos` without the field creates a repository
   with the policy disabled, exactly as before.
 
+### Changed
+
+- **CI:** the push-to-verdict cycle is shorter. The tests of four hot
+  packages (`rpmmmd`, `apk`, `pacman`, `core/web`) are now parallelized
+  inside their packages (`t.Parallel()` — those packages accounted for
+  79% of the run's CPU time, while the tail was held by one or two hot
+  packages on a single core). The `Install Go toolchain` step now pulls
+  the Go toolchain tarball from the cache (Nora raw) with a pinned
+  version and sha256, and the distro-test leg's dependencies (`podman`,
+  `jq`, `nodejs`, `npm`, `openssl`) come through the Khrazhevnik cache
+  proxy — only the bootstrap downloads (`git`+`curl`), without which the
+  step-ca root cannot be fetched, still go outside.
+
 ## [1.2.2] — 2026-09-25
 
 ### Added
