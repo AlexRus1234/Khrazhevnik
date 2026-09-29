@@ -32,6 +32,7 @@ import (
 // HistogramVec: метод вне allowlist записывается как "other", обычные
 // методы — как есть (лейбл-кардинальность ограничена константой).
 func TestObserveMetricsMethodAllowlist(t *testing.T) {
+	t.Parallel()
 	h := metrics.NewHandler(metrics.NewCache(), prometheus.NewRegistry())
 	observe := ObserveMetrics(h)
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

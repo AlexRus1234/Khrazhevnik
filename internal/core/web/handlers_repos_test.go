@@ -228,6 +228,7 @@ func issueRepoWriteToken(t *testing.T, env *repoEnv, userID int64, repoID int64)
 // на invalid_key); PATCH со сменой ecosystem → 400 (immutable field:
 // ключи «repo/<id>/<eco>/…» осиротели бы), без смены → 200.
 func TestRepoEcosystemGate(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	for _, eco := range []string{"bogus", "foo bar", ""} {
 		body := `{"name":"gate","owner_id":2,"ecosystem":"` + eco + `","quota":{}}`
@@ -252,6 +253,7 @@ func TestRepoEcosystemGate(t *testing.T) {
 }
 
 func TestReposAdminCRUD(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	// Create.
 	rec := callRepo(env, http.MethodPost, "/api/v1/repos", `{"name":"alice","owner_id":2,"ecosystem":"apt","quota":{"max_bytes":1024,"max_objects":10}}`, env.jwtAdmin)
@@ -333,6 +335,7 @@ func createRepoRetentionViaAPI(t *testing.T, env *repoEnv, name string, ownerID,
 // нет → политика выключена {0,0} (как было всегда); поле с {3,90} →
 // политика применена (full-replace).
 func TestRepoRetentionCreateContract(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	id := createRepoViaAPI(t, env, "plain", 2) // тело без retention
 	if got := repoRetentionViaAPI(t, env, id); got.MinVersions != 0 || got.MaxAgeDays != 0 {
@@ -350,6 +353,7 @@ func TestRepoRetentionCreateContract(t *testing.T) {
 // политика молча становилась {0,0}). Явный сброс полем {0,0} остаётся
 // легальным.
 func TestRepoRetentionPatchWithoutFieldKeepsPolicy(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	id := createRepoRetentionViaAPI(t, env, "keep", 2, 3, 90)
 	// Тело формы списка репо: retention не прислан вовсе.
@@ -387,6 +391,7 @@ func TestRepoRetentionPatchWithoutFieldKeepsPolicy(t *testing.T) {
 // full-replace; недопустимое сочетание отклоняется доменной валидацией
 // (400 validation_error) и политику не меняет.
 func TestRepoRetentionPatchReplacesPolicy(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	id := createRepoRetentionViaAPI(t, env, "replace", 2, 3, 90)
 	rec := callRepo(env, http.MethodPatch, "/api/v1/repos/"+itoaRepo(id),
@@ -417,6 +422,7 @@ func TestRepoRetentionPatchReplacesPolicy(t *testing.T) {
 // PATCH с политикой {3,90} → PATCH без retention (смена имени из формы
 // списка репо) → политика на месте.
 func TestRepoRetentionPatchRegression(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	id := createRepoViaAPI(t, env, "regress", 2)
 	rec := callRepo(env, http.MethodPatch, "/api/v1/repos/"+itoaRepo(id),
@@ -436,6 +442,7 @@ func TestRepoRetentionPatchRegression(t *testing.T) {
 }
 
 func TestReposNonAdminForbidden(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	// Non-admin JWT cannot create repo.
 	rec := callRepo(env, http.MethodPost, "/api/v1/repos", `{"name":"alice","owner_id":2,"ecosystem":"apt","quota":{}}`, env.jwtUser)
@@ -483,6 +490,7 @@ func TestRepoUploadRBAC(t *testing.T) {
 }
 
 func TestRepoUploadConflict(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	body := []byte("hello apt")
@@ -520,6 +528,7 @@ func TestRepoUploadConflict(t *testing.T) {
 // API-токен перезапись опубликованных объектов не делают (403
 // admin_required); конфликт без force — 409 как раньше.
 func TestRepoUploadForceAdminOnly(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	path := "/api/v1/repos/" + itoaRepo(repoID) + "/objects/pool/main/a/foo.deb"
@@ -577,6 +586,7 @@ func TestRepoUploadForceAdminOnly(t *testing.T) {
 }
 
 func TestRepoUploadNoContentLength(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/repos/"+itoaRepo(repoID)+"/objects/pool/main/a/foo.deb", strings.NewReader("x"))
@@ -592,6 +602,7 @@ func TestRepoUploadNoContentLength(t *testing.T) {
 }
 
 func TestRepoReindex(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	rec := callRepo(env, http.MethodPost, "/api/v1/repos/"+itoaRepo(repoID)+"/reindex", "", env.jwtAdmin)
@@ -610,6 +621,7 @@ func TestRepoReindex(t *testing.T) {
 // TestRepoGrantPermIdempotent — повторный грант той же пары → 204:
 // модель perms как set (сессия 41, не сломали идемпотентность).
 func TestRepoGrantPermIdempotent(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	for i := 0; i < 2; i++ {
@@ -624,6 +636,7 @@ func TestRepoGrantPermIdempotent(t *testing.T) {
 // user_id → 404 not_found, а не ложный 204 «успех» (FK 23503
 // мапится mapWrite в ConflictError — аудит 2026-08-30, сессия 41).
 func TestRepoGrantPermUnknownUser404(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	rec := callRepo(env, http.MethodPost, "/api/v1/repos/"+itoaRepo(repoID)+"/perms", `{"user_id":999}`, env.jwtAdmin)
@@ -638,6 +651,7 @@ func TestRepoGrantPermUnknownUser404(t *testing.T) {
 // TestRepoGrantPermUnknownRepo404 — грант в несуществующий repo
 // → 404 (parseInt64URLParam отсекает мусор, Repo — числовой id).
 func TestRepoGrantPermUnknownRepo404(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	rec := callRepo(env, http.MethodPost, "/api/v1/repos/999/perms", `{"user_id":2}`, env.jwtAdmin)
 	if rec.Code != http.StatusNotFound {
@@ -662,6 +676,7 @@ func (s *grantConflictRepoStore) Grant(_ context.Context, _ domain.Perm) error {
 // несуществующего пользователя 404 отдаётся ДО вызова Grant
 // (вариант 1 сессии 41 — пред-проверка пары).
 func TestRepoGrantPermConflictBeforeGrant(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	conflict := &grantConflictRepoStore{FakeRepoStore: env.repos}
 	// Подменим store в собранном роутере нельзя — пересоберём env
@@ -706,6 +721,7 @@ func (s *grantFKConflictRepoStore) Grant(_ context.Context, _ domain.Perm) error
 // без виновного (сессия 62): FK стоит и на repo_id, удалён мог быть
 // и репозиторий, хендлер этого не знает.
 func TestRepoGrantPermFKConflict404(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	fk := &grantFKConflictRepoStore{FakeRepoStore: env.repos}
 	tasks := NewTaskRegistry(2, env.clock, nil)
@@ -747,6 +763,7 @@ func TestRepoGrantPermFKConflict404(t *testing.T) {
 // TestRepoGrantPermUniqueConflict204 — пустой Reason (unique-нарушение,
 // контракт mapWrite сессии 21) за пред-проверкой → идемпотентный 204.
 func TestRepoGrantPermUniqueConflict204(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	conflict := &grantConflictRepoStore{FakeRepoStore: env.repos}
 	tasks := NewTaskRegistry(2, env.clock, nil)
@@ -775,6 +792,7 @@ func TestRepoGrantPermUniqueConflict204(t *testing.T) {
 // ставится до Grant, иначе дубль уходил под fallback create.repos.perms
 // и трейл показывал два имени одной операции.
 func TestRepoGrantPermDuplicateAuditAction(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	for i := 0; i < 2; i++ {
@@ -814,6 +832,7 @@ func (p *failingPublish) Upload(_ context.Context, _ domain.Repo, _ string, _ in
 // кодом ошибки: action ставится в контекст ДО вызова мутации
 // (сессия 87; тот же инвариант, что у repo.perm.grant — сессия 58).
 func TestRepoUploadFailureAuditAction(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	fail := &failingPublish{
 		publishStub: env.publish,
@@ -883,6 +902,7 @@ func awaitTaskLabel(t *testing.T, r *TaskRegistry, kind, label, want string) {
 // фоновую задачу gc|repo-<id> (сессия 122), которая выметает префикс
 // repo/<id>/ и не трогает чужие ключи.
 func TestRepoDeleteSweepsStoragePrefix(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	prefix := "repo/" + itoaRepo(repoID) + "/"
@@ -914,6 +934,7 @@ func TestRepoDeleteSweepsStoragePrefix(t *testing.T) {
 // TestRepoDeleteWithoutSweeperKeepsObjects — StorageGC=nil (деградация):
 // DELETE остаётся 204, объекты сохраняются (прежнее поведение).
 func TestRepoDeleteWithoutSweeperKeepsObjects(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	key := "repo/" + itoaRepo(repoID) + "/pool/main/a/foo.deb"
@@ -930,6 +951,7 @@ func TestRepoDeleteWithoutSweeperKeepsObjects(t *testing.T) {
 // TestRepoDeleteTaskLimitStillDeletes — воркеры заняты: Start вернёт
 // ErrTaskLimit, но DELETE не фейлится (best-effort), репо удалено.
 func TestRepoDeleteTaskLimitStillDeletes(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	sweeper := storagegc.New(env.storage, testutil.NewFakeObjectIndex(), env.repos, env.clock, 0)
@@ -969,6 +991,7 @@ func (*deleteFailRepoStore) DeleteRepo(context.Context, int64) error {
 // аудит под repo.delete (не fallback-именем delete.repos): action
 // ставится в контекст ДО мутации (сессия 87).
 func TestRepoDeleteFailureAuditAction(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	fail := &deleteFailRepoStore{FakeRepoStore: env.repos}
 	tasks := NewTaskRegistry(2, env.clock, nil)
@@ -1001,6 +1024,7 @@ func TestRepoDeleteFailureAuditAction(t *testing.T) {
 
 // Публичный роутер: раздача объектов репо.
 func TestPublicRepoFile(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	// Upload through admin API.
@@ -1030,6 +1054,7 @@ func TestPublicRepoFile(t *testing.T) {
 }
 
 func TestPublicRepoFileNotFound(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	createRepoViaAPI(t, env, "alice", 2)
 	// Repo exists, file doesn't.
@@ -1052,6 +1077,7 @@ func TestPublicRepoFileNotFound(t *testing.T) {
 // отдаёт 400 invalid_key/«invalid storage path», а не 5xx-флод в
 // логах (аудит 2026-08-27).
 func TestPublicRepoFileInvalidKeyPath(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	createRepoViaAPI(t, env, "alice", 2)
 	for _, path := range []string{"/repo/alice/../../y", "/repo/alice/pool/../a.deb"} {
@@ -1069,6 +1095,7 @@ func TestPublicRepoFileInvalidKeyPath(t *testing.T) {
 // и DELETE работают, ключ сохраняется raw-написанием (генераторы
 // индексов ищут «+»).
 func TestRepoObjectPercentEscapedPath(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	body := []byte("gxx-pkg-bytes")
@@ -1123,6 +1150,7 @@ func TestRepoObjectPercentEscapedPath(t *testing.T) {
 }
 
 func TestPublicRepoKey(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	createRepoViaAPI(t, env, "alice", 2)
 	// /repo/<existing>/key.asc — публичный ключ инстанса.
@@ -1141,6 +1169,7 @@ func TestPublicRepoKey(t *testing.T) {
 }
 
 func TestPublicRepoKey_UnknownRepo404(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	req := httptest.NewRequest(http.MethodGet, "/repo/ghost/key.asc", nil)
 	rec := httptest.NewRecorder()
@@ -1151,6 +1180,7 @@ func TestPublicRepoKey_UnknownRepo404(t *testing.T) {
 }
 
 func TestPublicRepoKey_NilSigner404(t *testing.T) {
+	t.Parallel()
 	// Без Signer (деградированный режим) /key.asc не регистрируется
 	// вообще — BuildPublicRouter пропускает роут. Проверяем что роут
 	// отсутствует: запрос уходит в 404 (chi default), а не в handler.
@@ -1204,6 +1234,7 @@ func newRepoEnvWithNarSigner(t *testing.T) *repoEnv {
 }
 
 func TestPublicRepoNixKey(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnvWithNarSigner(t)
 	createRepoViaAPI(t, env, "alice", 2)
 	// /repo/<existing>/nix-key.asc — публичный narinfo-ключ инстанса.
@@ -1224,6 +1255,7 @@ func TestPublicRepoNixKey(t *testing.T) {
 }
 
 func TestPublicRepoNixKey_UnknownRepo404(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnvWithNarSigner(t)
 	req := httptest.NewRequest(http.MethodGet, "/repo/ghost/nix-key.asc", nil)
 	rec := httptest.NewRecorder()
@@ -1234,6 +1266,7 @@ func TestPublicRepoNixKey_UnknownRepo404(t *testing.T) {
 }
 
 func TestPublicRepoNixKey_NilNarSigner404(t *testing.T) {
+	t.Parallel()
 	// Без NarSigner (деградированный режим) /nix-key.asc не
 	// регистрируется вообще — BuildPublicRouter пропускает роут.
 	storage := testutil.NewFakeStorage(testutil.FixedClock(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)))
@@ -1265,6 +1298,7 @@ func newRepoEnvWithRsaSigner(t *testing.T) *repoEnv {
 }
 
 func TestPublicRepoXbpsKey(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnvWithRsaSigner(t)
 	createRepoViaAPI(t, env, "alice", 2)
 	// /repo/<existing>/xbps-key — публичный RSA-ключ инстанса (SPKI-PEM).
@@ -1283,6 +1317,7 @@ func TestPublicRepoXbpsKey(t *testing.T) {
 }
 
 func TestPublicRepoXbpsKey_UnknownRepo404(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnvWithRsaSigner(t)
 	req := httptest.NewRequest(http.MethodGet, "/repo/ghost/xbps-key", nil)
 	rec := httptest.NewRecorder()
@@ -1293,6 +1328,7 @@ func TestPublicRepoXbpsKey_UnknownRepo404(t *testing.T) {
 }
 
 func TestPublicRepoXbpsKey_NilRsaSigner404(t *testing.T) {
+	t.Parallel()
 	// Без RsaSigner (деградированный режим) /xbps-key не регистрируется
 	// вообще — BuildPublicRouter пропускает роут.
 	storage := testutil.NewFakeStorage(testutil.FixedClock(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)))

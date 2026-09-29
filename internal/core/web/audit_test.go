@@ -32,6 +32,7 @@ import (
 )
 
 func TestActionFromRequest(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		method, path, want string
 	}{
@@ -49,6 +50,7 @@ func TestActionFromRequest(t *testing.T) {
 }
 
 func TestAuditMiddlewareWritesResultByStatus(t *testing.T) {
+	t.Parallel()
 	log := testutil.NewFakeAuditLog()
 	clock := testutil.NewManualClock(time.Unix(1000, 0))
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +101,7 @@ func TestAuditMiddlewareWritesResultByStatus(t *testing.T) {
 }
 
 func TestAuditMiddlewareActorFromAuthContext(t *testing.T) {
+	t.Parallel()
 	log := testutil.NewFakeAuditLog()
 	clock := testutil.NewManualClock(time.Unix(1000, 0))
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -117,6 +120,7 @@ func TestAuditMiddlewareActorFromAuthContext(t *testing.T) {
 }
 
 func TestAuditMiddlewareNilLogIsSafe(t *testing.T) {
+	t.Parallel()
 	clock := testutil.NewManualClock(time.Unix(0, 0))
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 	h := AuditMiddleware(nil, clock)(next)
@@ -128,6 +132,7 @@ func TestAuditMiddlewareNilLogIsSafe(t *testing.T) {
 }
 
 func TestWithAuditActionAndDetail(t *testing.T) {
+	t.Parallel()
 	log := testutil.NewFakeAuditLog()
 	clock := testutil.NewManualClock(time.Unix(1000, 0))
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +157,7 @@ func TestWithAuditActionAndDetail(t *testing.T) {
 }
 
 func TestStatusForMapping(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		err  error
 		want int
@@ -195,6 +201,7 @@ func (s *slowAuditLog) Record(ctx context.Context, e domain.AuditEntry) error {
 // r.Context() до Record (клиент оборвал соединение посреди мутации)
 // не должна терять запись аудита — WithoutCancel + свой таймаут.
 func TestAuditRecordSurvivesCancelledContext(t *testing.T) {
+	t.Parallel()
 	log := &slowAuditLog{}
 	clock := testutil.NewManualClock(time.Unix(1000, 0))
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -218,6 +225,7 @@ func TestAuditRecordSurvivesCancelledContext(t *testing.T) {
 // TestAuditMiddlewareRecordsPanic — паника хендлера мутации: запись
 // result=500 остаётся, паника прокидывается наружу (её ловит Recoverer).
 func TestAuditMiddlewareRecordsPanic(t *testing.T) {
+	t.Parallel()
 	log := testutil.NewFakeAuditLog()
 	clock := testutil.NewManualClock(time.Unix(1000, 0))
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -255,6 +263,7 @@ func (h *hangingAuditLog) Record(ctx context.Context, e domain.AuditEntry) error
 // клиенту (500 от Recoverer'а) существенно раньше обычного 5s-потолка —
 // после смерти хендлера ждать запись некому.
 func TestAuditPanicRecordTimeoutShort(t *testing.T) {
+	t.Parallel()
 	log := &hangingAuditLog{}
 	clock := testutil.NewManualClock(time.Unix(1000, 0))
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -280,6 +289,7 @@ func TestAuditPanicRecordTimeoutShort(t *testing.T) {
 // и перекрывает остаточный auth-контекст (reject-ветки затирают user
 // заглушкой — Username пуст, маркер приоритетнее).
 func TestAuditActorFromRejectedAuth(t *testing.T) {
+	t.Parallel()
 	log := testutil.NewFakeAuditLog()
 	clock := testutil.NewManualClock(time.Unix(1000, 0))
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -314,6 +324,7 @@ func TestAuditActorFromRejectedAuth(t *testing.T) {
 // actor — опознанная сессия (аутентификация прошла; 503 — не отказ
 // в правах, «403 от alice» дезинформировал бы трейл).
 func TestRepoAccessOutageAudits503(t *testing.T) {
+	t.Parallel()
 	users := testutil.NewFakeUserStore()
 	a, err := auth.New(auth.Config{
 		Users: users, Tokens: &handlerTokens{}, Audit: nil,

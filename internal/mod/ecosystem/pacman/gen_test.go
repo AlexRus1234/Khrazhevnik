@@ -90,6 +90,7 @@ license = MIT
 `
 
 func TestParsePkgInfoGolden(t *testing.T) {
+	t.Parallel()
 	pi, err := ParsePkgInfo(strings.NewReader(pkginfoText))
 	if err != nil {
 		t.Fatalf("ParsePkgInfo: %v", err)
@@ -121,6 +122,7 @@ func TestParsePkgInfoGolden(t *testing.T) {
 }
 
 func TestParsePkgInfoMultiLicense(t *testing.T) {
+	t.Parallel()
 	// license повторяется — все значения собираются.
 	pi, err := ParsePkgInfo(strings.NewReader(
 		"pkgname = foo\nlicense = MIT\nlicense = GPL-2.0\n"))
@@ -133,6 +135,7 @@ func TestParsePkgInfoMultiLicense(t *testing.T) {
 }
 
 func TestParsePkgInfoCommentsAndCRLF(t *testing.T) {
+	t.Parallel()
 	pi, err := ParsePkgInfo(strings.NewReader(
 		"# comment\r\npkgname = foo\r\n\r\npkgver = 1.0\r\n"))
 	if err != nil {
@@ -144,6 +147,7 @@ func TestParsePkgInfoCommentsAndCRLF(t *testing.T) {
 }
 
 func TestParsePkgInfoUnknownKeyIgnored(t *testing.T) {
+	t.Parallel()
 	pi, err := ParsePkgInfo(strings.NewReader(
 		"futurefield = x\npkgname = foo\n"))
 	if err != nil {
@@ -155,6 +159,7 @@ func TestParsePkgInfoUnknownKeyIgnored(t *testing.T) {
 }
 
 func TestParsePkgInfoNoEquals(t *testing.T) {
+	t.Parallel()
 	// строки без «=» — tolerant, не ломают.
 	pi, err := ParsePkgInfo(strings.NewReader("just text\npkgname = bar\n"))
 	if err != nil {
@@ -166,6 +171,7 @@ func TestParsePkgInfoNoEquals(t *testing.T) {
 }
 
 func TestParsePkgInfoBadNumber(t *testing.T) {
+	t.Parallel()
 	pi, err := ParsePkgInfo(strings.NewReader("size = not-a-number\nbuilddate = 5\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -179,6 +185,7 @@ func TestParsePkgInfoBadNumber(t *testing.T) {
 }
 
 func TestParsePkgInfoTooLarge(t *testing.T) {
+	t.Parallel()
 	big := strings.Repeat("a", maxPkgInfoSize+1)
 	_, err := ParsePkgInfo(strings.NewReader(big))
 	if !errors.Is(err, ErrPkgInfoTooLarge) {
@@ -187,6 +194,7 @@ func TestParsePkgInfoTooLarge(t *testing.T) {
 }
 
 func TestParsePkgInfoDeterminism(t *testing.T) {
+	t.Parallel()
 	first, ferr := ParsePkgInfo(strings.NewReader(pkginfoText))
 	second, serr := ParsePkgInfo(strings.NewReader(pkginfoText))
 	if !sameErr(ferr, serr) {
@@ -198,6 +206,7 @@ func TestParsePkgInfoDeterminism(t *testing.T) {
 }
 
 func TestReadPkgInfoFromPackage(t *testing.T) {
+	t.Parallel()
 	pkg := buildPkgTarZst(t, pkginfoText)
 	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(pkg))
 	if err != nil {
@@ -209,6 +218,7 @@ func TestReadPkgInfoFromPackage(t *testing.T) {
 }
 
 func TestReadPkgInfoFromTarMissing(t *testing.T) {
+	t.Parallel()
 	// tar без .PKGINFO → ошибка.
 	var tarBuf bytes.Buffer
 	tw := tar.NewWriter(&tarBuf)
@@ -221,6 +231,7 @@ func TestReadPkgInfoFromTarMissing(t *testing.T) {
 }
 
 func TestGeneratorName(t *testing.T) {
+	t.Parallel()
 	g := &Generator{}
 	if g.Name() != Name {
 		t.Errorf("Name = %q, want %q", g.Name(), Name)
@@ -228,6 +239,7 @@ func TestGeneratorName(t *testing.T) {
 }
 
 func TestValidateObjectPath(t *testing.T) {
+	t.Parallel()
 	g := &Generator{}
 	cases := []struct {
 		path string
@@ -256,6 +268,7 @@ var _ port.FamilyResolver = (*Generator)(nil)
 // TestObjectFamily — port.FamilyResolver: семейство версий pacman-объекта —
 // имя пакета из basename до сегмента-версии. Реальные имена Arch.
 func TestObjectFamily(t *testing.T) {
+	t.Parallel()
 	g := &Generator{}
 	cases := []struct {
 		path   string
@@ -291,6 +304,7 @@ func TestObjectFamily(t *testing.T) {
 // расширение». Один загруженный legacy-пакет без этого фильтра валил бы
 // GenerateIndexes целиком (парсер читает .PKGINFO только через zstd).
 func TestValidateObjectPathLegacyReason(t *testing.T) {
+	t.Parallel()
 	g := &Generator{}
 	for _, p := range []string{"foo-1.0-1-x86_64.pkg.tar.xz", "foo-1.0-1-any.pkg.tar.gz"} {
 		var ve *domain.ValidationError
@@ -340,6 +354,7 @@ func readStorage(t *testing.T, storage *testutil.FakeStorage, key string) []byte
 }
 
 func TestGenerateIndexesSinglePkg(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -391,6 +406,7 @@ func findDescInTar(r io.Reader, want string) (string, error) {
 
 // roundtrip: список .pkg.tar.zst → .db → ParseDB → те же filenames.
 func TestGenerateIndexesRoundtrip(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -436,6 +452,7 @@ func TestGenerateIndexesRoundtrip(t *testing.T) {
 }
 
 func TestGenerateIndexesEmptyRepo(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -452,6 +469,7 @@ func TestGenerateIndexesEmptyRepo(t *testing.T) {
 }
 
 func TestGenerateIndexesWrongEcosystem(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
@@ -464,6 +482,7 @@ func TestGenerateIndexesWrongEcosystem(t *testing.T) {
 }
 
 func TestGenerateIndexesContextCanceled(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -488,6 +507,7 @@ func (r *recordingProgress) Update(phase, current string, processed, total int64
 func (r *recordingProgress) Log(line string) { r.logs = append(r.logs, line) }
 
 func TestGenerateIndexesProgress(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -523,6 +543,7 @@ func (fakeSigner) SignDetached(_ context.Context, _ io.Reader) (io.Reader, error
 func (fakeSigner) PublicKey() ([]byte, error) { return []byte("pub-stub"), nil }
 
 func TestGenerateIndexesUnsignedNoSig(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -537,6 +558,7 @@ func TestGenerateIndexesUnsignedNoSig(t *testing.T) {
 }
 
 func TestGenerateIndexesSignedWritesSig(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -571,6 +593,7 @@ func (failSigner) SignDetached(context.Context, io.Reader) (io.Reader, error) {
 func (failSigner) PublicKey() ([]byte, error) { return nil, nil }
 
 func TestGenerateIndexesSignedSignerErrorFails(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -583,6 +606,7 @@ func TestGenerateIndexesSignedSignerErrorFails(t *testing.T) {
 }
 
 func TestSetSigner(t *testing.T) {
+	t.Parallel()
 	g := &Generator{}
 	if g.signer != nil {
 		t.Fatal("новый Generator уже имеет signer")
@@ -616,6 +640,7 @@ func (f *failingListStorage) List(_ context.Context, _ string) iter.Seq2[port.Me
 // генерация падает, прежний .db остаётся байт-в-байт (fail-closed:
 // транзиентный сбой носителя не «опустошает» репо).
 func TestGenerateIndexesListingErrorKeepsOldIndexes(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -644,6 +669,7 @@ func TestGenerateIndexesListingErrorKeepsOldIndexes(t *testing.T) {
 // строку, как repo-add): без них `pacman -S` не резолвит зависимости
 // из личного репо.
 func TestGenerateIndexesDependencies(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -679,6 +705,7 @@ func TestGenerateIndexesDependencies(t *testing.T) {
 // TestGenerateIndexesNoDependenciesOmitsFields — без depend/provides/
 // conflict поля %DEPENDS%/%PROVIDES%/%CONFLICTS% не эмитятся.
 func TestGenerateIndexesNoDependenciesOmitsFields(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -775,6 +802,7 @@ func pkgBombZst(t *testing.T, huge int64) []byte {
 // пик под -race — OOM-килл на CI-runner'е с 8 ГБ). Плюс полный путь
 // readPkgInfoFromPackage на той же бомбе.
 func TestReadPkgInfoDecompressBomb(t *testing.T) {
+	t.Parallel()
 	const huge = maxDecompressed + (1 << 20) // 1 GiB + 1 MiB
 	bomb := pkgBombZst(t, huge)
 
@@ -805,6 +833,7 @@ func TestReadPkgInfoDecompressBomb(t *testing.T) {
 // с ошибкой декомпресс-лимита, индексы не закоммичены (пишутся только
 // после успешного прохода всех пакетов).
 func TestGenerateIndexesPkgBomb(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -835,6 +864,7 @@ func TestGenerateIndexesPkgBomb(t *testing.T) {
 // только между пакетами (раунд 5). Честный пакет с отменённым контекстом
 // отказывается до первого tr.Next.
 func TestReadPkgInfoCancelDuringDecompress(t *testing.T) {
+	t.Parallel()
 	pkg := buildPkgTarZst(t, pkginfoText)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -875,6 +905,7 @@ func (g *gateReader) Read(p []byte) (int, error) {
 // члена был бы найден без ошибки; счётчик gate-ридера доказывает, что
 // члены после отмены не доставлялись.
 func TestReadPkgInfoCancelMidStream(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	for _, name := range []string{"usr/bin/a", "usr/bin/b", ".PKGINFO"} {

@@ -55,6 +55,7 @@ func fakeEcosystems(names ...string) map[string]port.Ecosystem {
 // TestEcosystemsFullRegistrySorted — полный реестр (шесть экосистем
 // v1) → 200, массив из шести имён в лексическом порядке.
 func TestEcosystemsFullRegistrySorted(t *testing.T) {
+	t.Parallel()
 	env := newEcosystemsEnv(t, fakeEcosystems("apt", "rpm-md", "pacman", "apk", "nix", "xbps"))
 
 	rec := callAdmin(env, http.MethodGet, "/api/v1/ecosystems", "", env.jwtAdmin)
@@ -75,6 +76,7 @@ func TestEcosystemsFullRegistrySorted(t *testing.T) {
 // 200 ровно с ней: выключенных и незарегистрированных в ответе нет
 // (карта Deps собирается wire'ом из реестра по конфигу).
 func TestEcosystemsOnlyEnabled(t *testing.T) {
+	t.Parallel()
 	env := newEcosystemsEnv(t, fakeEcosystems("apt"))
 
 	rec := callAdmin(env, http.MethodGet, "/api/v1/ecosystems", "", env.jwtAdmin)
@@ -93,6 +95,7 @@ func TestEcosystemsOnlyEnabled(t *testing.T) {
 // TestEcosystemsAuthMatrix — тот же adminAuth, что у прочих admin-роутов:
 // без токена 401, опознанная не-админ сессия 403.
 func TestEcosystemsAuthMatrix(t *testing.T) {
+	t.Parallel()
 	env := newEcosystemsEnv(t, fakeEcosystems("apt"))
 
 	rec := callAdmin(env, http.MethodGet, "/api/v1/ecosystems", "", "")

@@ -34,6 +34,7 @@ import (
 // 2026-08-27). Стек — как в Build*Router: RequestID → LogRequests →
 // Recoverer.
 func TestRecovererTurnsPanicInto500(t *testing.T) {
+	t.Parallel()
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewTextHandler(buf, nil))
 	h := RequestID(nil)(LogRequests(log)(chimw.Recoverer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -52,6 +53,7 @@ func TestRecovererTurnsPanicInto500(t *testing.T) {
 // TestMetricsFailClosedWithoutAuth — без auth-сервиса /metrics не
 // отдаётся вовсе (503), а не живёт без защиты (аудит 2026-08-27).
 func TestMetricsFailClosedWithoutAuth(t *testing.T) {
+	t.Parallel()
 	h := BuildAdminRouter(Deps{Version: "test", MetricsHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("secret counters"))
 	})})
@@ -65,6 +67,7 @@ func TestMetricsFailClosedWithoutAuth(t *testing.T) {
 // TestAdminSecurityHeaders — nosniff/DENY/CSP на API и /ui (аудит
 // 2026-08-27).
 func TestAdminSecurityHeaders(t *testing.T) {
+	t.Parallel()
 	h := BuildAdminRouter(Deps{Version: "test"})
 	for _, path := range []string{"/api/v1/", "/ui"} {
 		rec := httptest.NewRecorder()
@@ -82,11 +85,13 @@ func TestAdminSecurityHeaders(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
+	t.Parallel()
 	for name, h := range map[string]http.Handler{
 		"public": BuildPublicRouter(Deps{Version: "test"}),
 		"admin":  BuildAdminRouter(Deps{Version: "test"}),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 			if rec.Code != http.StatusOK {
@@ -103,6 +108,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestRequestIDPassthrough(t *testing.T) {
+	t.Parallel()
 	const incoming = "req-12345678"
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -115,6 +121,7 @@ func TestRequestIDPassthrough(t *testing.T) {
 }
 
 func TestRequestIDInvalidReplaced(t *testing.T) {
+	t.Parallel()
 	for _, bad := range []string{"short", "с-кириллицей-и-лишним", "", "0123456789012345678901234567890123456789012345678901234567890123456789"} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -129,6 +136,7 @@ func TestRequestIDInvalidReplaced(t *testing.T) {
 }
 
 func TestRequestIDFromContext(t *testing.T) {
+	t.Parallel()
 	var fromCtx string
 	rec := httptest.NewRecorder()
 	h := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -141,6 +149,7 @@ func TestRequestIDFromContext(t *testing.T) {
 }
 
 func TestRequestIDInjectedRand(t *testing.T) {
+	t.Parallel()
 	// port.Rand инжект: FixedRand даёт детерминированный ID (UUID4 без
 	// дефисов = те же 32 hex-символа из 16 байт); раньше crypto/rand был
 	// недоступен для подмены (ревью 2026-09-03).
@@ -154,6 +163,7 @@ func TestRequestIDInjectedRand(t *testing.T) {
 }
 
 func TestAdminAPIStub(t *testing.T) {
+	t.Parallel()
 	rec := httptest.NewRecorder()
 	BuildAdminRouter(Deps{Version: "v42"}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/", nil))
 
@@ -172,6 +182,7 @@ func TestAdminAPIStub(t *testing.T) {
 }
 
 func TestNotFound(t *testing.T) {
+	t.Parallel()
 	rec := httptest.NewRecorder()
 	BuildPublicRouter(Deps{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/no/such/path", nil))
 	if rec.Code != http.StatusNotFound {
@@ -180,6 +191,7 @@ func TestNotFound(t *testing.T) {
 }
 
 func TestLogRequests(t *testing.T) {
+	t.Parallel()
 	buf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(buf, nil))
 

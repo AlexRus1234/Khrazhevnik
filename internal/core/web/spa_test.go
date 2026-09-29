@@ -28,6 +28,7 @@ import (
 // Работает и со stub-заглушкой (make clean), и с собранным бандлом
 // (make web-build): оба содержат <title>khrazhevnik</title>.
 func TestSPAIndex(t *testing.T) {
+	t.Parallel()
 	h := BuildAdminRouter(Deps{Version: "test"})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ui/", nil))
@@ -48,6 +49,7 @@ func TestSPAIndex(t *testing.T) {
 // TestSPADeepLinkFallback — /ui/<клиентский-роут> отдаёт тот же index.html
 // (vue-router берёт навигацию на себя); не 404.
 func TestSPADeepLinkFallback(t *testing.T) {
+	t.Parallel()
 	h := BuildAdminRouter(Deps{Version: "test"})
 	indexRec := httptest.NewRecorder()
 	h.ServeHTTP(indexRec, httptest.NewRequest(http.MethodGet, "/ui/", nil))
@@ -67,6 +69,7 @@ func TestSPADeepLinkFallback(t *testing.T) {
 // TestSPAIndexPath — прямой запрос /ui/index.html эквивалентен /ui/ и
 // тоже отдается с no-cache (не immutable).
 func TestSPAIndexPath(t *testing.T) {
+	t.Parallel()
 	h := BuildAdminRouter(Deps{Version: "test"})
 	rootRec := httptest.NewRecorder()
 	h.ServeHTTP(rootRec, httptest.NewRequest(http.MethodGet, "/ui/", nil))
@@ -87,6 +90,7 @@ func TestSPAIndexPath(t *testing.T) {
 // (assets/<name>-<hash>.<ext>) отдаются с immutable. Появляются только
 // после make web-build; при stub-only сборке (make clean) их нет — skip.
 func TestSPAHashedAssetImmutable(t *testing.T) {
+	t.Parallel()
 	var hashed string
 	_ = fs.WalkDir(assetsFS, "assets", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || hashed != "" || d.IsDir() {
@@ -114,6 +118,7 @@ func TestSPAHashedAssetImmutable(t *testing.T) {
 // TestSPAUINotOnPublic — SPA живёт только на админском порту; публичный
 // роутер (:29202) /ui не обслуживает (там пакеты и /repo).
 func TestSPAUINotOnPublic(t *testing.T) {
+	t.Parallel()
 	pub := BuildPublicRouter(Deps{})
 	rec := httptest.NewRecorder()
 	pub.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ui/", nil))

@@ -407,6 +407,7 @@ func waitReindex(t *testing.T, a *retentionTestAdapter, want int) {
 // валидацией (окно 404: последняя версия удалялась бы по возрасту),
 // {0,0} — легальный сброс политики.
 func TestRepoRetentionPolicyViaAPI(t *testing.T) {
+	t.Parallel()
 	e := newRetentionEnv(t)
 	path := e.path(e.repoID, "")
 	patch := func(ret string) *httptest.ResponseRecorder {
@@ -458,6 +459,7 @@ func TestRepoRetentionPolicyViaAPI(t *testing.T) {
 // 200, два кандидата (две самые старые версии), защита топ-N посчитана;
 // dry-run ничего не удалил и индексы не трогал.
 func TestRetentionPreviewCandidates(t *testing.T) {
+	t.Parallel()
 	e := newRetentionEnv(t)
 	keys := e.seedVersions(t, retVersions)
 	e.setPolicy(t, e.repoID, domain.Retention{MinVersions: 3, MaxAgeDays: 90})
@@ -509,6 +511,7 @@ func TestRetentionPreviewCandidates(t *testing.T) {
 // доходит до succeeded, жертвы удалены, живые версии целы, индексы
 // перегенерированы тем же адаптером; аудит — repo.retention.apply/ok.
 func TestRetentionApplyDeletesAndReindexes(t *testing.T) {
+	t.Parallel()
 	e := newRetentionEnv(t)
 	keys := e.seedVersions(t, retVersions)
 	e.setPolicy(t, e.repoID, domain.Retention{MinVersions: 3, MaxAgeDays: 90})
@@ -543,6 +546,7 @@ func TestRetentionApplyDeletesAndReindexes(t *testing.T) {
 // активной задаче → 409 (ErrTaskDuplicate → statusFor), задача-победитель
 // доигрывается до succeeded.
 func TestRetentionApplyConflictWhileRunning(t *testing.T) {
+	t.Parallel()
 	e := newRetentionEnv(t)
 	e.seedVersions(t, retVersions)
 	e.setPolicy(t, e.repoID, domain.Retention{MinVersions: 3, MaxAgeDays: 90})
@@ -567,6 +571,7 @@ func TestRetentionApplyConflictWhileRunning(t *testing.T) {
 // обращение («access») и пин («pin») держат версию живой, кандидатом
 // остаётся только незащищённая; apply удаляет ровно её.
 func TestRetentionPreviewProtections(t *testing.T) {
+	t.Parallel()
 	e := newRetentionEnv(t)
 	// 7 версий, топ-3 защищены → 4 жертвы: из них одна посещалась,
 	// вторая пинована, две — кандидаты.
@@ -624,6 +629,7 @@ func TestRetentionPreviewProtections(t *testing.T) {
 // 404 (Stat), DELETE → 204 и пропажа из списка, scoped-токен своего репо
 // проходит, чужого — 403; аудит pin/unpin под своими именами.
 func TestRetentionPins(t *testing.T) {
+	t.Parallel()
 	e := newRetentionEnv(t)
 	keys := e.seedVersions(t, 2)
 	pinsPath := e.path(e.repoID, "/retention/pins")
@@ -701,6 +707,7 @@ func TestRetentionPins(t *testing.T) {
 // маршрутов отвечают 503 retention_unavailable, а не 500/404 — фича
 // честно выключена, а не «сломана».
 func TestRetentionUnavailable(t *testing.T) {
+	t.Parallel()
 	e := newRetentionEnv(t)
 	handler := BuildAdminRouter(Deps{
 		Log: nil, Version: "test", Auth: e.auth, SetupToken: "setup",

@@ -109,6 +109,7 @@ func collectIndex(it func(yield func(*IndexEntry, error) bool)) ([]*IndexEntry, 
 }
 
 func TestParseAPKINDEXGolden(t *testing.T) {
+	t.Parallel()
 	indexText := mustReadTestdata(t, "APKINDEX.golden")
 	db := newTarGz(t, tarEntries{
 		"APKINDEX": indexText,
@@ -135,6 +136,7 @@ func TestParseAPKINDEXGolden(t *testing.T) {
 }
 
 func TestParseAPKINDEXTarGolden(t *testing.T) {
+	t.Parallel()
 	// Точка входа ParseAPKINDEXTar без gzip — для фаззинга и прямых
 	// тестов tar-парсера.
 	indexText := mustReadTestdata(t, "APKINDEX.golden")
@@ -154,6 +156,7 @@ func TestParseAPKINDEXTarGolden(t *testing.T) {
 }
 
 func TestParseAPKINDEXSkipsNonAPKINDEXFiles(t *testing.T) {
+	t.Parallel()
 	// tar с посторонним файлом — парсер его пропускает, читает APKINDEX.
 	indexText := mustReadTestdata(t, "APKINDEX.golden")
 	raw := newTar(t, tarEntries{
@@ -170,6 +173,7 @@ func TestParseAPKINDEXSkipsNonAPKINDEXFiles(t *testing.T) {
 }
 
 func TestParseAPKINDEXEmpty(t *testing.T) {
+	t.Parallel()
 	// пустой tar (без APKINDEX) — пустой результат, не ошибка.
 	raw := newTar(t, tarEntries{})
 	entries, err := collectIndex(ParseAPKINDEXTar(bytes.NewReader(raw)))
@@ -182,6 +186,7 @@ func TestParseAPKINDEXEmpty(t *testing.T) {
 }
 
 func TestParseAPKINDEXEmptyText(t *testing.T) {
+	t.Parallel()
 	// tar с пустым APKINDEX — пустой результат, не ошибка.
 	raw := newTar(t, tarEntries{
 		"APKINDEX": []byte(""),
@@ -196,6 +201,7 @@ func TestParseAPKINDEXEmptyText(t *testing.T) {
 }
 
 func TestParseAPKINDEXBadGzip(t *testing.T) {
+	t.Parallel()
 	// мусор вместо gzip-потока — ErrBadGzip.
 	_, err := collectIndex(ParseAPKINDEX(bytes.NewReader([]byte("not a gzip stream"))))
 	if !errors.Is(err, ErrBadGzip) {
@@ -204,6 +210,7 @@ func TestParseAPKINDEXBadGzip(t *testing.T) {
 }
 
 func TestParseAPKINDEXBadTar(t *testing.T) {
+	t.Parallel()
 	// валидный gzip, но содержимое — не tar. gzip разжимает, tar.NewReader
 	// ловит ошибку формата.
 	var buf bytes.Buffer
@@ -217,6 +224,7 @@ func TestParseAPKINDEXBadTar(t *testing.T) {
 }
 
 func TestParseAPKINDEXEntryWithoutFilepath(t *testing.T) {
+	t.Parallel()
 	// запись без F: — пустой FilePath (Enumerate отфильтрует).
 	raw := newTar(t, tarEntries{
 		"APKINDEX": []byte("P:foo\nV:1.0-r0\n\nP:bar\nV:2.0-r1\nF:bar-2.0-r1.apk\n\n"),
@@ -240,6 +248,7 @@ func TestParseAPKINDEXEntryWithoutFilepath(t *testing.T) {
 }
 
 func TestParseAPKINDEXMultipleFields(t *testing.T) {
+	t.Parallel()
 	// несколько полей в записи; парсер берёт первое F: (если дубль —
 	// игнорирует второй, как и для P:/V:).
 	raw := newTar(t, tarEntries{
@@ -262,6 +271,7 @@ func TestParseAPKINDEXMultipleFields(t *testing.T) {
 }
 
 func TestParseAPKINDEXLineWithoutColon(t *testing.T) {
+	t.Parallel()
 	// строка без «:» — tolerant: игнорируется, парсер не падает.
 	raw := newTar(t, tarEntries{
 		"APKINDEX": []byte("P:foo\nthis line has no colon\nV:1.0-r0\nF:foo.apk\n\n"),
@@ -279,6 +289,7 @@ func TestParseAPKINDEXLineWithoutColon(t *testing.T) {
 }
 
 func TestParseAPKINDEXTooManyEntries(t *testing.T) {
+	t.Parallel()
 	// потолок числа записей: маленький лимит, на (lim+1)-й — ошибка.
 	const lim = 3
 	var b strings.Builder
@@ -304,6 +315,7 @@ func TestParseAPKINDEXTooManyEntries(t *testing.T) {
 }
 
 func TestParseAPKINDEXIndexTooLarge(t *testing.T) {
+	t.Parallel()
 	// файл APKINDEX длиннее лимита — ErrIndexTooLarge. Лимит стянут до 64 байт.
 	big := bytes.Repeat([]byte("P:foo\n"), 20) // ~100 байт
 	raw := newTar(t, tarEntries{
@@ -318,6 +330,7 @@ func TestParseAPKINDEXIndexTooLarge(t *testing.T) {
 }
 
 func TestParseAPKINDEXZipBombGuard(t *testing.T) {
+	t.Parallel()
 	// gzip-файл, декомпресс-лимит 1KiB — разжатый поток превышает лимит
 	// → ErrDecompressTooLarge. payload: APKINDEX > 1KiB.
 	payload := bytes.Repeat([]byte("P:foo\nF:foo.apk\n\n"), 100) // ~1.4KiB
@@ -334,6 +347,7 @@ func TestParseAPKINDEXZipBombGuard(t *testing.T) {
 }
 
 func TestParseAPKINDEXDeterminism(t *testing.T) {
+	t.Parallel()
 	// повторный разбор того же потока обязан дать идентичный результат.
 	indexText := mustReadTestdata(t, "APKINDEX.golden")
 	db := newTarGz(t, tarEntries{
@@ -355,12 +369,14 @@ func TestParseAPKINDEXDeterminism(t *testing.T) {
 }
 
 func TestParseAPKINDEXTarOnGarbage(t *testing.T) {
+	t.Parallel()
 	// произвольный мусор как tar-поток — не паника, ошибка или пустой.
 	_, err := collectIndex(ParseAPKINDEXTar(bytes.NewReader([]byte("garbage"))))
 	_ = err
 }
 
 func TestParseAPKINDEXTarFirstNonAPKINDEXThenAPKINDEX(t *testing.T) {
+	t.Parallel()
 	// tar с посторонним файлом первым, APKINDEX вторым — парсер
 	// пропускает посторонние и читает APKINDEX.
 	indexText := mustReadTestdata(t, "APKINDEX.golden")
@@ -379,6 +395,7 @@ func TestParseAPKINDEXTarFirstNonAPKINDEXThenAPKINDEX(t *testing.T) {
 }
 
 func TestParseAPKINDEXTextTooManyLines(t *testing.T) {
+	t.Parallel()
 	// потолок числа строк в одном APKINDEX: маленький лимит, превышение
 	// → ErrIndexTooLarge. payload: много строк без разделителя записей.
 	big := bytes.Repeat([]byte("P:foo\n"), 200) // 200 строк
@@ -394,6 +411,7 @@ func TestParseAPKINDEXTextTooManyLines(t *testing.T) {
 }
 
 func TestParseAPKINDEXTextReaderError(t *testing.T) {
+	t.Parallel()
 	// ридер, падающий посреди APKINDEX — ошибка прокидывается.
 	r := &errReader{data: []byte("P:foo\nF:foo.apk\n"), err: io.ErrUnexpectedEOF}
 	raw := newTar(t, tarEntries{
@@ -411,6 +429,7 @@ func TestParseAPKINDEXTextReaderError(t *testing.T) {
 }
 
 func TestParseAPKINDEXGzipReaderError(t *testing.T) {
+	t.Parallel()
 	// gzip-поток обрывается посреди — gzip.Reader.Read отдаёт ошибку,
 	// parseAPKINDEX прокидывает её. Используем усечённый gzip.
 	var buf bytes.Buffer
@@ -426,6 +445,7 @@ func TestParseAPKINDEXGzipReaderError(t *testing.T) {
 }
 
 func TestParseAPKINDEXTarTarReaderError(t *testing.T) {
+	t.Parallel()
 	// ридер, падающий посреди tar — tar.NewReader прокидывает ошибку.
 	r := &errReader{data: []byte("garbage tar header"), err: io.ErrUnexpectedEOF}
 	_, err := collectIndex(ParseAPKINDEXTar(r))
@@ -435,6 +455,7 @@ func TestParseAPKINDEXTarTarReaderError(t *testing.T) {
 }
 
 func TestParseAPKINDEXTarApkindexInSubdir(t *testing.T) {
+	t.Parallel()
 	// APKINDEX в подкаталоге — isAPKINDEXName терпим к префиксу.
 	indexText := mustReadTestdata(t, "APKINDEX.golden")
 	raw := newTar(t, tarEntries{
@@ -450,6 +471,7 @@ func TestParseAPKINDEXTarApkindexInSubdir(t *testing.T) {
 }
 
 func TestParseAPKINDEXTextLastLineNoNewline(t *testing.T) {
+	t.Parallel()
 	// последняя строка без \n — всё равно отдаётся (tolerant).
 	raw := newTar(t, tarEntries{
 		"APKINDEX": []byte("P:foo\nV:1.0\nF:foo.apk"),
@@ -467,6 +489,7 @@ func TestParseAPKINDEXTextLastLineNoNewline(t *testing.T) {
 }
 
 func TestParseAPKINDEXTextCRLF(t *testing.T) {
+	t.Parallel()
 	// CRLF-окончания — \r срезается, парсер не ломается.
 	raw := newTar(t, tarEntries{
 		"APKINDEX": []byte("P:foo\r\nV:1.0\r\nF:foo.apk\r\n\r\n"),
@@ -484,6 +507,7 @@ func TestParseAPKINDEXTextCRLF(t *testing.T) {
 }
 
 func TestIsAPKINDEXName(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		want bool

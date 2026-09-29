@@ -46,6 +46,7 @@ func newTestAdapter(t *testing.T) *Adapter {
 }
 
 func TestNewValidatesDeps(t *testing.T) {
+	t.Parallel()
 	if _, err := New(nil, testutil.NewManualClock(time.Now())); err == nil {
 		t.Error("New(nil, clock) должен ошибаться")
 	}
@@ -55,6 +56,7 @@ func TestNewValidatesDeps(t *testing.T) {
 }
 
 func TestName(t *testing.T) {
+	t.Parallel()
 	if got := newTestAdapter(t).Name(); got != "rpm-md" {
 		t.Errorf("Name() = %q, хочу rpm-md", got)
 	}
@@ -69,6 +71,7 @@ type classifyCase struct {
 }
 
 func TestClassifyTable(t *testing.T) {
+	t.Parallel()
 	a := newTestAdapter(t)
 	cases := []classifyCase{
 		// Immutable: RPM пакеты (бинарные, delta, source).
@@ -117,6 +120,7 @@ func TestClassifyTable(t *testing.T) {
 }
 
 func TestClassifyEmptyPath(t *testing.T) {
+	t.Parallel()
 	a := newTestAdapter(t)
 	_, err := a.Classify("")
 	var ve *domain.ValidationError
@@ -129,6 +133,7 @@ func TestClassifyEmptyPath(t *testing.T) {
 // хотя бы один тест-кейс выше — иначе правило мертво (никогда не
 // сработает из-за порядка или опечатки).
 func TestClassifyRulesCovered(t *testing.T) {
+	t.Parallel()
 	a := newTestAdapter(t)
 	covered := make(map[string]bool, len(a.rules))
 	for _, r := range a.rules {
@@ -180,6 +185,7 @@ func newResolveAdapter(t *testing.T, rs ...domain.Remote) *Adapter {
 }
 
 func TestResolveKnownRemote(t *testing.T) {
+	t.Parallel()
 	a := newResolveAdapter(t, domain.Remote{
 		ID: 7, Name: "fedora", Ecosystem: "rpm-md",
 		BaseURL: "https://mirrors.fedoraproject.org/fedora/releases/40/Everything/x86_64/os", Enabled: true,
@@ -201,6 +207,7 @@ func TestResolveKnownRemote(t *testing.T) {
 }
 
 func TestResolveProxyURL(t *testing.T) {
+	t.Parallel()
 	// Tri-state семантика: "" в remote — «по глобальной настройке»,
 	// и он же должен честно прийти в Target пустым.
 	for _, tc := range []struct {
@@ -211,6 +218,7 @@ func TestResolveProxyURL(t *testing.T) {
 		{"без прокси", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			a := newResolveAdapter(t, domain.Remote{
 				ID: 7, Name: "fedora", Ecosystem: "rpm-md",
 				BaseURL:  "https://mirrors.fedoraproject.org/fedora/releases/40/Everything/x86_64/os",
@@ -229,6 +237,7 @@ func TestResolveProxyURL(t *testing.T) {
 }
 
 func TestResolveUppercaseStorageKeyLowercased(t *testing.T) {
+	t.Parallel()
 	// StorageKey лоуэркейсит путь (доменный ключ — только [a-z0-9/._-]),
 	// но UpstreamURL/Path сохраняют регистр (byte-exact к upstream).
 	a := newResolveAdapter(t, domain.Remote{
@@ -247,6 +256,7 @@ func TestResolveUppercaseStorageKeyLowercased(t *testing.T) {
 }
 
 func TestResolveRootPath(t *testing.T) {
+	t.Parallel()
 	// /rpm/<remote> без остатка → upstreamPath «/» (корень репозитория)
 	a := newResolveAdapter(t, domain.Remote{
 		ID: 3, Name: "rhel", BaseURL: "https://cdn.redhat.com/content/dist/rhel9/9/x86_64/baseos/os", Enabled: true,
@@ -264,6 +274,7 @@ func TestResolveRootPath(t *testing.T) {
 }
 
 func TestResolveUnknownRemote(t *testing.T) {
+	t.Parallel()
 	a := newResolveAdapter(t, domain.Remote{ID: 1, Name: "fedora", BaseURL: "https://x", Enabled: true})
 	if _, ok := a.Resolve("/rpm/fedoris/repodata/repomd.xml"); ok {
 		t.Error("Resolve неизвестного remote должен дать false")
@@ -271,6 +282,7 @@ func TestResolveUnknownRemote(t *testing.T) {
 }
 
 func TestResolveDisabledRemote(t *testing.T) {
+	t.Parallel()
 	a := newResolveAdapter(t, domain.Remote{ID: 1, Name: "fedora", BaseURL: "https://x", Enabled: false})
 	if _, ok := a.Resolve("/rpm/fedora/repodata/repomd.xml"); ok {
 		t.Error("Resolve выключенного remote должен дать false")
@@ -278,6 +290,7 @@ func TestResolveDisabledRemote(t *testing.T) {
 }
 
 func TestResolveWrongEcosystemPrefix(t *testing.T) {
+	t.Parallel()
 	a := newResolveAdapter(t, domain.Remote{ID: 1, Name: "fedora", BaseURL: "https://x", Enabled: true})
 	for _, path := range []string{
 		"/apt/fedora/repodata/repomd.xml",
@@ -291,6 +304,7 @@ func TestResolveWrongEcosystemPrefix(t *testing.T) {
 }
 
 func TestResolveTraversalRemoteName(t *testing.T) {
+	t.Parallel()
 	// path-traversal в remote-name: «..» / «.» / слэш не должны
 	// пробраться в StorageKey или upstream-путь.
 	a := newResolveAdapter(t, domain.Remote{ID: 1, Name: "fedora", BaseURL: "https://x", Enabled: true})
@@ -333,6 +347,7 @@ func (c *countingRemotes) Remotes(ctx context.Context) ([]domain.Remote, error) 
 }
 
 func TestLookupRemoteReloadBoundedByTimeout(t *testing.T) {
+	t.Parallel()
 	// Зависший каталог не держит hot-path дольше шапки: reload
 	// срывается по таймауту, отдаётся stale-кеш («старый кеш лучше
 	// пустого»).
@@ -366,6 +381,7 @@ func TestLookupRemoteReloadBoundedByTimeout(t *testing.T) {
 }
 
 func TestLookupRemoteReloadCounting(t *testing.T) {
+	t.Parallel()
 	// Свежий кеш (TTL не истёк) не обращается к RemoteStore вовсе;
 	// после истечения TTL — ровно один reload, подхватывающий новые
 	// записи.
@@ -399,6 +415,7 @@ func TestLookupRemoteReloadCounting(t *testing.T) {
 }
 
 func TestResolvePicksUpNewRemote(t *testing.T) {
+	t.Parallel()
 	// кеш remotes инвалидится по TTL: добавленный remote подхватывается
 	// без перезапуска процесса
 	store := testutil.NewFakeRemoteStore()
@@ -446,6 +463,7 @@ func (e *errorRemoteStore) Remotes(ctx context.Context) ([]domain.Remote, error)
 }
 
 func TestResolveStaleCacheOnReloadError(t *testing.T) {
+	t.Parallel()
 	// инвариант: reload упал, но в кеше ещё есть remote — отдаём
 	// протухшую по TTL копию, не пустую ошибку. Кратковременный сбой
 	// каталога не валит прокси.
@@ -473,6 +491,7 @@ func TestResolveStaleCacheOnReloadError(t *testing.T) {
 }
 
 func TestGlobToRegex(t *testing.T) {
+	t.Parallel()
 	// прямой прогон веток globToRegex: **/, ** (без /), *, ?, literal.
 	cases := []struct {
 		glob string
@@ -533,6 +552,7 @@ func newEnumerateAdapter(t *testing.T) *Adapter {
 }
 
 func TestEnumerateRpmMdChain(t *testing.T) {
+	t.Parallel()
 	// repomd → primary.xml → 3 package hrefs
 	a := newEnumerateAdapter(t)
 	meta := fakeMeta{files: map[string][]byte{
@@ -562,6 +582,7 @@ func TestEnumerateRpmMdChain(t *testing.T) {
 }
 
 func TestEnumerateRpmMdGzPrimary(t *testing.T) {
+	t.Parallel()
 	// primary.xml.gz — Enumerate распаковывает.
 	primaryGz := newGz(t, mustReadTestdata(t, "primary.golden"))
 	a := newEnumerateAdapter(t)
@@ -589,6 +610,7 @@ func TestEnumerateRpmMdGzPrimary(t *testing.T) {
 // Конкатенация gzip-членов — multistream, валидна по RFC 1952; вся
 // бомба в сжатом виде ~2 МБ.
 func TestEnumerateRpmMdGzZipBomb(t *testing.T) {
+	t.Parallel()
 	pad := bytes.Repeat([]byte("x"), 512<<10) // 512 KiB на член
 	member := newGz(t, append(append([]byte("<package><name>n</name><location href=\"p/x.rpm\"/></package><pad>"), pad...), []byte("</pad>")...))
 	bomb := bytes.Repeat(member, 4096) // 4096 × 512 KiB ≈ 2 GiB разжатых
@@ -606,6 +628,7 @@ func TestEnumerateRpmMdGzZipBomb(t *testing.T) {
 }
 
 func TestEnumeratePrimaryZst(t *testing.T) {
+	t.Parallel()
 	// primary.xml.zst (Fedora 41+/Leap 16.0 отдают primary только в
 	// zst) — те же package-пути, что у gz-фикстуры. Чексумма СЖАТОГО
 	// zst-файла из repomd попадает в sums: движок кеша сверяет скачанные
@@ -656,6 +679,7 @@ func TestEnumeratePrimaryZst(t *testing.T) {
 // «бомба не дочитана», НЕ «кап+δ» — декодер отдаёт блоками с
 // упреждением MiB-класса (отступление сессии 81, apt gen_test.go).
 func TestEnumeratePrimaryZstBomb(t *testing.T) {
+	t.Parallel()
 	pad := bytes.Repeat([]byte("x"), 512<<10) // 512 KiB на член
 	rawMember := append(append([]byte("<package><name>n</name><location href=\"p/x.rpm\"/></package><pad>"), pad...), []byte("</pad>")...)
 	member := zstBytes(t, rawMember)
@@ -683,6 +707,7 @@ func TestEnumeratePrimaryZstBomb(t *testing.T) {
 }
 
 func TestEnumerateRpmMdUnsupportedPrimary(t *testing.T) {
+	t.Parallel()
 	// primary в сжатиях вне whitelist: Enumerate обязана упасть с
 	// честной причиной (формат назван) до fetch'а primary — раньше
 	// бинарный поток уходил в XML-парсер и sync падал с общим

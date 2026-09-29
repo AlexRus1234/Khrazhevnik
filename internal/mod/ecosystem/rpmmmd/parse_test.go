@@ -49,6 +49,7 @@ func mustOpenRepomd(t *testing.T, name string) io.Reader {
 }
 
 func TestParseRepomdGolden(t *testing.T) {
+	t.Parallel()
 	els, err := collectRepomd(ParseRepomd(mustOpenRepomd(t, "repomd.golden")))
 	if err != nil {
 		t.Fatalf("ParseRepomd: %v", err)
@@ -89,6 +90,7 @@ func TestParseRepomdGolden(t *testing.T) {
 }
 
 func TestParseRepomdEmpty(t *testing.T) {
+	t.Parallel()
 	// repomd без data-элементов — пустой результат, не ошибка.
 	els, err := collectRepomd(ParseRepomd(mustOpenRepomd(t, "repomd-empty.golden")))
 	if err != nil {
@@ -100,6 +102,7 @@ func TestParseRepomdEmpty(t *testing.T) {
 }
 
 func TestParseRepomdTrulyEmpty(t *testing.T) {
+	t.Parallel()
 	// совсем пустой ввод — EOF без данных, без ошибки.
 	els, err := collectRepomd(ParseRepomd(bytes.NewReader(nil)))
 	if err != nil {
@@ -111,6 +114,7 @@ func TestParseRepomdTrulyEmpty(t *testing.T) {
 }
 
 func TestParseRepomdUnclosedTags(t *testing.T) {
+	t.Parallel()
 	// <data> без закрывающего тега — ErrUnexpectedEOF.
 	input := []byte(`<repomd><data type="primary"><checksum>abc</checksum>`)
 	_, err := collectRepomd(ParseRepomd(bytes.NewReader(input)))
@@ -120,6 +124,7 @@ func TestParseRepomdUnclosedTags(t *testing.T) {
 }
 
 func TestParseRepomdUnknownElementsIgnored(t *testing.T) {
+	t.Parallel()
 	// неизвестные дочерние элементы не ломают парсер (forward-compat).
 	input := []byte(`<repomd><data type="primary">` +
 		`<checksum>abc</checksum><mystery-field>ignored</mystery-field>` +
@@ -135,6 +140,7 @@ func TestParseRepomdUnknownElementsIgnored(t *testing.T) {
 }
 
 func TestParseRepomdBadLocationAbsolute(t *testing.T) {
+	t.Parallel()
 	// абсолютный URL в href — отказ: dnf/zypper ждут относительный путь.
 	input := []byte(`<repomd><data type="primary">` +
 		`<location href="https://evil.example/primary.xml.gz"/>` +
@@ -146,6 +152,7 @@ func TestParseRepomdBadLocationAbsolute(t *testing.T) {
 }
 
 func TestParseRepomdBadLocationLeadingSlash(t *testing.T) {
+	t.Parallel()
 	// ведущий «/» в href — traversal за пределы репо, отказ.
 	input := []byte(`<repomd><data type="primary">` +
 		`<location href="/etc/passwd"/>` +
@@ -157,6 +164,7 @@ func TestParseRepomdBadLocationLeadingSlash(t *testing.T) {
 }
 
 func TestParseRepomdBadLocationTraversal(t *testing.T) {
+	t.Parallel()
 	// «..» в href — path-traversal, отказ.
 	input := []byte(`<repomd><data type="primary">` +
 		`<location href="repodata/../../etc/passwd"/>` +
@@ -168,6 +176,7 @@ func TestParseRepomdBadLocationTraversal(t *testing.T) {
 }
 
 func TestParseRepomdTextTooLong(t *testing.T) {
+	t.Parallel()
 	// текст длиннее лимита — ErrTextTooLong. Лимит стянут до 16 байт,
 	// чтобы не плодить мегабайты в тесте (через parseRepomd с lim).
 	big := bytes.Repeat([]byte("x"), 17)
@@ -181,6 +190,7 @@ func TestParseRepomdTextTooLong(t *testing.T) {
 }
 
 func TestParseRepomdTooManyData(t *testing.T) {
+	t.Parallel()
 	// потолок числа data-элементов: маленький лимит, на (lim+1)-й —
 	// ErrTooManyData. Реальный лимит — 16к; гонять его бессмысленно,
 	// поэтому parseRepomd с lim=3.
@@ -201,6 +211,7 @@ func TestParseRepomdTooManyData(t *testing.T) {
 }
 
 func TestParseRepomdSelfClosingData(t *testing.T) {
+	t.Parallel()
 	// <data/> без дочерних элементов — пустая запись, не ошибка.
 	input := []byte(`<repomd><data type="empty"/></repomd>`)
 	els, err := collectRepomd(ParseRepomd(bytes.NewReader(input)))
@@ -213,6 +224,7 @@ func TestParseRepomdSelfClosingData(t *testing.T) {
 }
 
 func TestParseRepomdExternalEntityRejected(t *testing.T) {
+	t.Parallel()
 	// внешний entity (XXE-попытка): encoding/xml раскрывает только
 	// предопределённые сущности и отказывает на CUSTOM-сущности
 	// («invalid character entity») — внешний ресурс не тянется.
@@ -231,6 +243,7 @@ func TestParseRepomdExternalEntityRejected(t *testing.T) {
 }
 
 func TestParseRepomdCommentsIgnored(t *testing.T) {
+	t.Parallel()
 	// комментарии и processing instructions пропускаются Decoder'ом.
 	input := []byte(`<repomd><!-- comment --><data type="primary">` +
 		`<location href="repodata/abc-primary.xml.gz"/></data></repomd>`)
@@ -244,6 +257,7 @@ func TestParseRepomdCommentsIgnored(t *testing.T) {
 }
 
 func TestParseRepomdReaderError(t *testing.T) {
+	t.Parallel()
 	// ридер, падающий посреди потока, прокидывает ошибку.
 	r := &errReader{data: []byte(`<repomd><data type="primary">`), err: io.ErrUnexpectedEOF}
 	_, err := collectRepomd(ParseRepomd(r))
@@ -253,6 +267,7 @@ func TestParseRepomdReaderError(t *testing.T) {
 }
 
 func TestParseInt64(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want int64
@@ -272,6 +287,7 @@ func TestParseInt64(t *testing.T) {
 }
 
 func TestIsRelativePath(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		href string
 		want bool
@@ -309,6 +325,7 @@ func (r *errReader) Read(p []byte) (int, error) {
 }
 
 func TestParsePrimaryGolden(t *testing.T) {
+	t.Parallel()
 	hrefs, err := collectPrimary(ParsePrimary(mustOpenRepomd(t, "primary.golden")))
 	if err != nil {
 		t.Fatalf("ParsePrimary: %v", err)
@@ -343,6 +360,7 @@ func collectPrimary(it func(yield func(string, error) bool)) ([]string, error) {
 }
 
 func TestParsePrimaryEmpty(t *testing.T) {
+	t.Parallel()
 	// metadata без package — пустой результат, не ошибка.
 	input := []byte(`<metadata xmlns="http://linux.duke.edu/metadata/common" packages="0"></metadata>`)
 	hrefs, err := collectPrimary(ParsePrimary(bytes.NewReader(input)))
@@ -355,6 +373,7 @@ func TestParsePrimaryEmpty(t *testing.T) {
 }
 
 func TestParsePrimaryPackageWithoutLocation(t *testing.T) {
+	t.Parallel()
 	// <package> без <location> — пустой href (Enumerate отфильтрует).
 	input := []byte(`<metadata><package type="rpm"><name>x</name></package><package type="rpm"><location href="r/a.rpm"/></package></metadata>`)
 	hrefs, err := collectPrimary(ParsePrimary(bytes.NewReader(input)))
@@ -374,6 +393,7 @@ func TestParsePrimaryPackageWithoutLocation(t *testing.T) {
 }
 
 func TestParsePrimaryBadLocationAbsolute(t *testing.T) {
+	t.Parallel()
 	input := []byte(`<metadata><package type="rpm"><location href="https://evil/x.rpm"/></package></metadata>`)
 	_, err := collectPrimary(ParsePrimary(bytes.NewReader(input)))
 	if !errors.Is(err, ErrBadLocation) {
@@ -382,6 +402,7 @@ func TestParsePrimaryBadLocationAbsolute(t *testing.T) {
 }
 
 func TestParsePrimaryTooManyPackages(t *testing.T) {
+	t.Parallel()
 	const lim = 3
 	var b bytes.Buffer
 	b.WriteString(`<metadata>`)
@@ -399,6 +420,7 @@ func TestParsePrimaryTooManyPackages(t *testing.T) {
 }
 
 func TestParsePrimaryUnclosedPackage(t *testing.T) {
+	t.Parallel()
 	input := []byte(`<metadata><package type="rpm"><location href="r/x.rpm"/>`)
 	_, err := collectPrimary(ParsePrimary(bytes.NewReader(input)))
 	if !errors.Is(err, ErrUnexpectedEOF) {
@@ -407,6 +429,7 @@ func TestParsePrimaryUnclosedPackage(t *testing.T) {
 }
 
 func TestParsePrimaryReaderError(t *testing.T) {
+	t.Parallel()
 	r := &errReader{data: []byte(`<metadata><package type="rpm">`), err: io.ErrUnexpectedEOF}
 	_, err := collectPrimary(ParsePrimary(r))
 	if err == nil {

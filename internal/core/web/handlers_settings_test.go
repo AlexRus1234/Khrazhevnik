@@ -71,6 +71,7 @@ func newSettingsEnv(t *testing.T) (*adminEnv, *fakeSettingsStore) {
 // socks5-URL с паролем → 200, повторный GET → значение; PUT "" → 200
 // и GET → "". Пароль в audit-detail замаскирован.
 func TestSettingsUpstreamProxyContract(t *testing.T) {
+	t.Parallel()
 	env, store := newSettingsEnv(t)
 
 	// GET пустой БД — "".
@@ -166,6 +167,7 @@ func TestSettingsUpstreamProxyContract(t *testing.T) {
 // TestSettingsUpstreamProxyDegraded — Settings nil (деградация):
 // GET отдаёт пустое значение (честный env-фолбэк), PUT — 503.
 func TestSettingsUpstreamProxyDegraded(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 
 	rec := callAdmin(env, http.MethodGet, "/api/v1/settings/upstream-proxy", "", env.jwtAdmin)
@@ -185,6 +187,7 @@ func TestSettingsUpstreamProxyDegraded(t *testing.T) {
 
 // TestSettingsUpstreamProxyAuthMatrix — маршрут admin-only, как /remotes.
 func TestSettingsUpstreamProxyAuthMatrix(t *testing.T) {
+	t.Parallel()
 	env, _ := newSettingsEnv(t)
 	for _, tc := range []struct {
 		name, bearer string
@@ -196,6 +199,7 @@ func TestSettingsUpstreamProxyAuthMatrix(t *testing.T) {
 		{"admin api token", env.apiAdmin, http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rec := callAdmin(env, http.MethodGet, "/api/v1/settings/upstream-proxy", "", tc.bearer)
 			if rec.Code != tc.want {
 				t.Fatalf("GET = %d, хочу %d (тело %s)", rec.Code, tc.want, rec.Body.String())

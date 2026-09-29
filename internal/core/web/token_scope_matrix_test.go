@@ -134,6 +134,7 @@ func callScopeMatrix(env *scopeMatrixEnv, path, bearer string) *httptest.Respons
 }
 
 func TestTokenScopeIdentityMatrix(t *testing.T) {
+	t.Parallel()
 	env := newScopeMatrixEnv(t)
 	for _, tc := range []struct {
 		name, path, bearer string
@@ -156,6 +157,7 @@ func TestTokenScopeIdentityMatrix(t *testing.T) {
 		{"ci-admin-token-users", "/api/v1/users", env.ciAdminToken, http.StatusUnauthorized},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if rec := callScopeMatrix(env, tc.path, tc.bearer); rec.Code != tc.want {
 				t.Fatalf("%s %s = %d, хочу %d, тело %s", tc.name, tc.path, rec.Code, tc.want, rec.Body.String())
 			}

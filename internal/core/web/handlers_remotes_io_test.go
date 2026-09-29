@@ -29,6 +29,7 @@ import (
 // заголовок; два источника — заголовок + две строки формата; заголовки
 // Content-Type/Content-Disposition фиксированы.
 func TestExportRemotes(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 
 	rec := callAdmin(env, http.MethodGet, "/api/v1/remotes/export", "", env.jwtAdmin)
@@ -71,6 +72,7 @@ func TestExportRemotes(t *testing.T) {
 // существующего, 1 битый интервал → 200 и отчёт 2/1/1; в БД ровно 3
 // remote; аудит remote.import с совпадающими счётчиками.
 func TestImportRemotesReport(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	existing := `{"name":"existing","ecosystem":"apt","base_url":"https://e.example","mode":"proxy"}`
 	if rec := callAdmin(env, http.MethodPost, "/api/v1/remotes", existing, env.jwtAdmin); rec.Code != http.StatusCreated {
@@ -121,6 +123,7 @@ func TestImportRemotesReport(t *testing.T) {
 // TestImportRemotesInternalDuplicate — две одинаковые name в файле:
 // вторая в skipped, создаётся один remote.
 func TestImportRemotesInternalDuplicate(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	body := "dup|apt|https://one.example|proxy||true||\n" +
 		"dup|apt|https://two.example|proxy||true||\n"
@@ -140,6 +143,7 @@ func TestImportRemotesInternalDuplicate(t *testing.T) {
 // TestImportRemotesEmpty — пустое тело, только комментарий и пустая
 // строка → 200 с нулями (не null-срезами).
 func TestImportRemotesEmpty(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	for _, body := range []string{"", "# только комментарий\n", "\n"} {
 		rec := callAdmin(env, http.MethodPost, "/api/v1/remotes/import", body, env.jwtAdmin)
@@ -161,6 +165,7 @@ func TestImportRemotesEmpty(t *testing.T) {
 
 // TestImportRemotesTooManyLines — 1001 строка → 400 import_too_many.
 func TestImportRemotesTooManyLines(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	body := strings.Repeat("x|apt|https://h.example|proxy||true||\n", 1001)
 	rec := callAdmin(env, http.MethodPost, "/api/v1/remotes/import", body, env.jwtAdmin)
@@ -179,6 +184,7 @@ func TestImportRemotesTooManyLines(t *testing.T) {
 // TestImportRemotesProxyURL — строка с socks5-прокси создаёт remote с
 // proxy_url (поле 5 формата).
 func TestImportRemotesProxyURL(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	body := "p|apt|https://h.example|proxy|socks5://u:p@h:1080|true||\n"
 	rec := callAdmin(env, http.MethodPost, "/api/v1/remotes/import", body, env.jwtAdmin)

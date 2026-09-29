@@ -139,6 +139,7 @@ func callAdmin(env *adminEnv, method, path, body, bearer string) *httptest.Respo
 // даёт 400 validation_error от движка (отдельной валидации в хендлере
 // нет — движок единственная точка), а не 500/201.
 func TestCreateUserPasswordMinimumLength(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	rec := callAdmin(env, http.MethodPost, "/api/v1/users", `{"username":"bob","password":"","role":"user"}`, env.jwtAdmin)
 	if rec.Code != http.StatusBadRequest {
@@ -150,6 +151,7 @@ func TestCreateUserPasswordMinimumLength(t *testing.T) {
 }
 
 func TestAdminRemotesCRUD(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 
 	// Create.
@@ -210,6 +212,7 @@ func TestAdminRemotesCRUD(t *testing.T) {
 }
 
 func TestAdminRemotesValidation(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	for _, tc := range []struct {
 		name, body string
@@ -224,6 +227,7 @@ func TestAdminRemotesValidation(t *testing.T) {
 		{"bad json", `{"name":"x"`, "invalid_json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rec := callAdmin(env, http.MethodPost, "/api/v1/remotes", tc.body, env.jwtAdmin)
 			var e apiError
 			if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil {
@@ -262,6 +266,7 @@ func TestAdminRemotesAuthMatrix(t *testing.T) {
 // в "" отдаёт "" последующим GET; пароль прокси в audit-detail
 // замаскирован (domain.MaskProxyURL).
 func TestAdminRemotesProxyURL(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 
 	// Create с socks5-прокси и паролем → 201, proxy_url вернулся.
@@ -368,6 +373,7 @@ func TestAdminRemotesProxyURL(t *testing.T) {
 }
 
 func TestAdminSyncRemoteReturnsTaskID(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	// Сначала создаём remote.
 	body := `{"name":"debian","ecosystem":"apt","base_url":"https://deb.debian.org/debian","mode":"mirror"}`
@@ -402,6 +408,7 @@ func TestAdminSyncRemoteReturnsTaskID(t *testing.T) {
 }
 
 func TestAdminSyncRemoteNotFound(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	rec := callAdmin(env, http.MethodPost, "/api/v1/remotes/999/sync", "", env.jwtAdmin)
 	if rec.Code != http.StatusNotFound {
@@ -410,6 +417,7 @@ func TestAdminSyncRemoteNotFound(t *testing.T) {
 }
 
 func TestAdminTasksList(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	// Без задач — пустой список (json.Encoder добавляет trailing newline).
 	rec := callAdmin(env, http.MethodGet, "/api/v1/tasks", "", env.jwtAdmin)
@@ -423,6 +431,7 @@ func TestAdminTasksList(t *testing.T) {
 }
 
 func TestAdminTaskNotFound(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	rec := callAdmin(env, http.MethodGet, "/api/v1/tasks/no-such", "", env.jwtAdmin)
 	if rec.Code != http.StatusNotFound {
@@ -448,6 +457,7 @@ func TestAdminTaskNotFound(t *testing.T) {
 }
 
 func TestAdminCacheStats(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	rec := callAdmin(env, http.MethodGet, "/api/v1/cache/stats", "", env.jwtAdmin)
 	if rec.Code != http.StatusOK {
@@ -467,6 +477,7 @@ func TestAdminCacheStats(t *testing.T) {
 // агрегатах. newAdminEnv Cache не подаёт — до сессии 83 живую ветку
 // агрегации гонял только пустой кеш, корневые нули не замечались.
 func TestAdminCacheStatsLive(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "payload")
@@ -520,6 +531,7 @@ func TestAdminCacheStatsLive(t *testing.T) {
 // (сессия 92): каждая экосистема получает свой ряд с теми же полями,
 // что и глобал; суммы рядов равны глобальным полям.
 func TestAdminCacheStatsPerEcosystem(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "payload")
@@ -612,6 +624,7 @@ func (s *resetCountingStats) ResetStats(_ context.Context) error {
 // сбое БД с живыми атомиками, аудит под cache.stats.reset,
 // идемпотентность. Образец живого харнесса — TestAdminCacheStatsLive.
 func TestAdminCacheStatsReset(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "payload")
@@ -700,6 +713,7 @@ func TestAdminCacheStatsReset(t *testing.T) {
 // TestAdminCacheStatsResetDBFailure — сбой БД → 503 unavailable, атомики
 // НЕ тронуты (полусброс хуже отсутствия сброса, сессия 97).
 func TestAdminCacheStatsResetDBFailure(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "payload")
@@ -771,6 +785,7 @@ func TestAdminCacheStatsResetDBFailure(t *testing.T) {
 // limit режет самые свежие, невалидный limit — 400, деградация без
 // Cache — 200 []. Образец харнесса — TestAdminCacheStatsLive.
 func TestAdminCacheTransactions(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -890,6 +905,7 @@ func TestAdminCacheTransactions(t *testing.T) {
 }
 
 func TestAdminAuditPagination(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	// Пишем 100 записей напрямую в фейковый аудит.
 	for i := 0; i < 100; i++ {
@@ -949,6 +965,7 @@ func TestAdminAuditPagination(t *testing.T) {
 }
 
 func TestAdminAuditDefaultLimit(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	// 5 записей, запрос без limit — fallback 100 (но вернутся все 5).
 	for i := 0; i < 5; i++ {
@@ -972,6 +989,7 @@ func TestAdminAuditDefaultLimit(t *testing.T) {
 // TestAdminAuditMiddlewareRecordsMutations — проверка, что audit
 // middleware автоматически пишет записи о не-GET мутациях.
 func TestAdminAuditMiddlewareRecordsMutations(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	body := `{"name":"debian","ecosystem":"apt","base_url":"https://deb.debian.org/debian","mode":"proxy"}`
 	rec := callAdmin(env, http.MethodPost, "/api/v1/remotes", body, env.jwtAdmin)
@@ -997,6 +1015,7 @@ func TestAdminAuditMiddlewareRecordsMutations(t *testing.T) {
 
 // TestAdminAuditMiddlewareSkipsGET — GET-запросы не пишутся в аудит.
 func TestAdminAuditMiddlewareSkipsGET(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	callAdmin(env, http.MethodGet, "/api/v1/remotes", "", env.jwtAdmin)
 	callAdmin(env, http.MethodGet, "/api/v1/audit", "", env.jwtAdmin)
@@ -1008,6 +1027,7 @@ func TestAdminAuditMiddlewareSkipsGET(t *testing.T) {
 // TestAdminMetricsEndpointBehindAuth — /metrics отдаёт 200 за admin
 // token, 401 без auth.
 func TestAdminMetricsEndpointBehindAuth(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	// Создаём новый роутер с MetricsHandler.
 	h := BuildAdminRouter(Deps{
@@ -1075,6 +1095,7 @@ func lastAudit(t *testing.T, log *testutil.FakeAuditLog) domain.AuditEntry {
 // actor=anonymous; 403 (валидная сессия без прав) → result="403",
 // actor=username.
 func TestAuditRejectedMutations(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	// 401: POST /remotes с кривым bearer.
 	rec := callAdmin(env, http.MethodPost, "/api/v1/remotes", `{}`, "garbage")
@@ -1103,6 +1124,7 @@ func TestAuditRejectedMutations(t *testing.T) {
 // но не на это репо: 403 с actor=token:<prefix> (не anonymous —
 // личность атакующего известна из токена).
 func TestAuditScopedTokenForbiddenOnForeignRepo(t *testing.T) {
+	t.Parallel()
 	// Свой auth-сервис: FixedRand в newRepoEnv один UUID — все токены
 	// коллидируют по SHA256, TokenBySHA256 нашёл бы admin-токен.
 	// Здесь Rand с двумя значениями: admin-токен и scoped различимы.
@@ -1171,6 +1193,7 @@ func TestAuditScopedTokenForbiddenOnForeignRepo(t *testing.T) {
 // TestAuditLogoutAndSetup — security-события: logout (успешный и
 // отклонённый) и setup-попытки (брутфорс X-Setup-Token) аудируются.
 func TestAuditLogoutAndSetup(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	// Успешный logout — auth.logout от username сессии.
 	rec := callAdmin(env, http.MethodPost, "/api/v1/auth/logout", "", env.jwtAdmin)
@@ -1230,6 +1253,7 @@ func itoa64(n int64) string {
 // гранта, сессия 58): отклонённая мутация уходила под fallback
 // create.users и трейл показывал два имени одной операции.
 func TestUserAuditActionsUnified(t *testing.T) {
+	t.Parallel()
 	clock := testutil.NewManualClock(time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
 	auditLog := testutil.NewFakeAuditLog()
 	a, err := auth.New(auth.Config{
@@ -1308,6 +1332,7 @@ func TestUserAuditActionsUnified(t *testing.T) {
 // мутация писалась бы middleware под fallback-именем create.remotes —
 // два имени одной операции в трейле.
 func TestRemoteAuditActionsUnified(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	body := `{"name":"debian","ecosystem":"apt","base_url":"https://deb.debian.org/debian","mode":"proxy"}`
 	if rec := callAdmin(env, http.MethodPost, "/api/v1/remotes", body, env.jwtAdmin); rec.Code != http.StatusCreated {
@@ -1449,6 +1474,7 @@ func gcHas(t *testing.T, st port.Storage, key string) bool {
 // доходит до succeeded и выметает осиротевшую версию кеша и префикс
 // удалённого репо; живые объекты не тронуты. Аудит — storage.gc/ok.
 func TestStorageGCSweep(t *testing.T) {
+	t.Parallel()
 	g := newGCHarness(t)
 	g.seedOrphans(t)
 	rec := g.post(t, "/api/v1/storage/gc")
@@ -1485,6 +1511,7 @@ func TestStorageGCSweep(t *testing.T) {
 // TestStorageGCDryRun — ?dry_run=true: задача succeeded, но ни один
 // объект не удалён (ревизия перед боевым запуском).
 func TestStorageGCDryRun(t *testing.T) {
+	t.Parallel()
 	g := newGCHarness(t)
 	g.seedOrphans(t)
 	rec := g.post(t, "/api/v1/storage/gc?dry_run=true")
@@ -1506,6 +1533,7 @@ func TestStorageGCDryRun(t *testing.T) {
 // TestStorageGCDuplicate — активная задача gc|storage → 409
 // task_duplicate (не запускается второй проход).
 func TestStorageGCDuplicate(t *testing.T) {
+	t.Parallel()
 	g := newGCHarness(t)
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
@@ -1528,6 +1556,7 @@ func TestStorageGCDuplicate(t *testing.T) {
 // TestStorageGCUnavailable — деградация без Sweeper → 503
 // storage_gc_unavailable (задача не запускается).
 func TestStorageGCUnavailable(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	h := BuildAdminRouter(Deps{Auth: env.auth, Tasks: env.tasks, Clock: env.clock})
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/storage/gc", nil)
@@ -1547,6 +1576,7 @@ func TestStorageGCUnavailable(t *testing.T) {
 // 204, token_version цели вырос (JWT-сессии цели гаснут), не-админ —
 // 403, мусорный id — 404; аудит под user.password.set.
 func TestAdminSetPasswordRoute(t *testing.T) {
+	t.Parallel()
 	env := newAdminEnv(t)
 	// Не-админ (user) на admin-маршрут — 403.
 	if w := callAdmin(env, http.MethodPost, "/api/v1/users/1/password", `{"new_password":"reset-horse-2"}`, env.jwtUser); w.Code != http.StatusForbidden {
