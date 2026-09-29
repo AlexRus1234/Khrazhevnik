@@ -66,6 +66,15 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   API/config), ROADMAP (the plan collapsed into a “completed” status),
   README and CHANGELOG.
 
+### Fixed
+
+- **API:** `PATCH /api/v1/repos/{id}` without the `retention` field no
+  longer resets the retention policy to `{0,0}`: an absent field means
+  “leave the policy alone” (the only such PATCH field — the rest are
+  full-replace), while a field that is present still replaces the whole
+  policy. `POST /api/v1/repos` without the field creates a repository
+  with the policy disabled, exactly as before.
+
 ## [1.2.2] — 2026-09-25
 
 ### Added

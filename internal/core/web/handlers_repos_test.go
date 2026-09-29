@@ -295,6 +295,146 @@ func TestReposAdminCRUD(t *testing.T) {
 	}
 }
 
+// --- Контракт retention в POST/PATCH /api/v1/repos (сессия 177):
+// ассерты — состояние репо после запроса (GET), не механика тела.
+
+// repoRetentionViaAPI — политика ретеншна репо на момент чтения.
+func repoRetentionViaAPI(t *testing.T, env *repoEnv, id int64) retentionOut {
+	t.Helper()
+	rec := callRepo(env, http.MethodGet, "/api/v1/repos/"+itoaRepo(id), "", env.jwtAdmin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get repo = %d, тело %s", rec.Code, rec.Body.String())
+	}
+	var got repoOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	return got.Retention
+}
+
+// createRepoRetentionViaAPI — POST /api/v1/repos с непустой политикой
+// в теле (парный к createRepoViaAPI, который поля retention не шлёт).
+func createRepoRetentionViaAPI(t *testing.T, env *repoEnv, name string, ownerID, minVersions, maxAgeDays int64) int64 {
+	t.Helper()
+	body := `{"name":"` + name + `","owner_id":` + itoaRepo(ownerID) + `,"ecosystem":"apt","quota":{},` +
+		`"retention":{"min_versions":` + itoaRepo(minVersions) + `,"max_age_days":` + itoaRepo(maxAgeDays) + `}}`
+	rec := callRepo(env, http.MethodPost, "/api/v1/repos", body, env.jwtAdmin)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create repo с retention = %d, тело %s", rec.Code, rec.Body.String())
+	}
+	var created repoOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	return created.ID
+}
+
+// TestRepoRetentionCreateContract — POST /repos: поля retention в теле
+// нет → политика выключена {0,0} (как было всегда); поле с {3,90} →
+// политика применена (full-replace).
+func TestRepoRetentionCreateContract(t *testing.T) {
+	env := newRepoEnv(t)
+	id := createRepoViaAPI(t, env, "plain", 2) // тело без retention
+	if got := repoRetentionViaAPI(t, env, id); got.MinVersions != 0 || got.MaxAgeDays != 0 {
+		t.Errorf("POST без retention: политика %+v, хочу {0,0}", got)
+	}
+	id2 := createRepoRetentionViaAPI(t, env, "withpolicy", 2, 3, 90)
+	if got := repoRetentionViaAPI(t, env, id2); got.MinVersions != 3 || got.MaxAgeDays != 90 {
+		t.Errorf("POST с retention {3,90}: политика %+v, хочу {3,90}", got)
+	}
+}
+
+// TestRepoRetentionPatchWithoutFieldKeepsPolicy — PATCH /repos без поля
+// retention сохраняет настроенную политику (сценарий владельца
+// 2026-09-29: включил политику → «Изменить» имя/квоту из списка репо →
+// политика молча становилась {0,0}). Явный сброс полем {0,0} остаётся
+// легальным.
+func TestRepoRetentionPatchWithoutFieldKeepsPolicy(t *testing.T) {
+	env := newRepoEnv(t)
+	id := createRepoRetentionViaAPI(t, env, "keep", 2, 3, 90)
+	// Тело формы списка репо: retention не прислан вовсе.
+	rec := callRepo(env, http.MethodPatch, "/api/v1/repos/"+itoaRepo(id),
+		`{"name":"renamed","owner_id":2,"ecosystem":"apt","quota":{"max_bytes":2048,"max_objects":20}}`, env.jwtAdmin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch без retention = %d, тело %s", rec.Code, rec.Body.String())
+	}
+	var updated repoOut
+	if err := json.Unmarshal(rec.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Retention.MinVersions != 3 || updated.Retention.MaxAgeDays != 90 {
+		t.Errorf("ответ PATCH: политика %+v, хочу {3,90}", updated.Retention)
+	}
+	if updated.Name != "renamed" {
+		t.Errorf("имя не применилось: %q", updated.Name)
+	}
+	if got := repoRetentionViaAPI(t, env, id); got.MinVersions != 3 || got.MaxAgeDays != 90 {
+		t.Errorf("после PATCH без retention политика %+v, хочу {3,90}", got)
+	}
+	// Явный сброс политики присланным полем — по-прежнему легален.
+	rec = callRepo(env, http.MethodPatch, "/api/v1/repos/"+itoaRepo(id),
+		`{"name":"renamed","owner_id":2,"ecosystem":"apt","quota":{"max_bytes":2048,"max_objects":20},`+
+			`"retention":{"min_versions":0,"max_age_days":0}}`, env.jwtAdmin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch с retention {0,0} = %d, тело %s", rec.Code, rec.Body.String())
+	}
+	if got := repoRetentionViaAPI(t, env, id); got.MinVersions != 0 || got.MaxAgeDays != 0 {
+		t.Errorf("после PATCH с {0,0} политика %+v, хочу {0,0}", got)
+	}
+}
+
+// TestRepoRetentionPatchReplacesPolicy — присланное поле retention —
+// full-replace; недопустимое сочетание отклоняется доменной валидацией
+// (400 validation_error) и политику не меняет.
+func TestRepoRetentionPatchReplacesPolicy(t *testing.T) {
+	env := newRepoEnv(t)
+	id := createRepoRetentionViaAPI(t, env, "replace", 2, 3, 90)
+	rec := callRepo(env, http.MethodPatch, "/api/v1/repos/"+itoaRepo(id),
+		`{"name":"replace","owner_id":2,"ecosystem":"apt","quota":{},`+
+			`"retention":{"min_versions":5,"max_age_days":180}}`, env.jwtAdmin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch с retention {5,180} = %d, тело %s", rec.Code, rec.Body.String())
+	}
+	if got := repoRetentionViaAPI(t, env, id); got.MinVersions != 5 || got.MaxAgeDays != 180 {
+		t.Errorf("после PATCH {5,180} политика %+v, хочу {5,180}", got)
+	}
+	// MinVersions=1 при заданном возрасте — окно 404 (domain.ValidateRetention).
+	rec = callRepo(env, http.MethodPatch, "/api/v1/repos/"+itoaRepo(id),
+		`{"name":"replace","owner_id":2,"ecosystem":"apt","quota":{},`+
+			`"retention":{"min_versions":1,"max_age_days":90}}`, env.jwtAdmin)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("patch {1,90} = %d, хочу 400 (тело %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "validation_error") {
+		t.Errorf("тело 400 = %s, хочу validation_error", rec.Body.String())
+	}
+	if got := repoRetentionViaAPI(t, env, id); got.MinVersions != 5 || got.MaxAgeDays != 180 {
+		t.Errorf("отклонённый PATCH изменил политику: %+v, хочу {5,180}", got)
+	}
+}
+
+// TestRepoRetentionPatchRegression — сценарий бага целиком: create →
+// PATCH с политикой {3,90} → PATCH без retention (смена имени из формы
+// списка репо) → политика на месте.
+func TestRepoRetentionPatchRegression(t *testing.T) {
+	env := newRepoEnv(t)
+	id := createRepoViaAPI(t, env, "regress", 2)
+	rec := callRepo(env, http.MethodPatch, "/api/v1/repos/"+itoaRepo(id),
+		`{"name":"regress","owner_id":2,"ecosystem":"apt","quota":{},`+
+			`"retention":{"min_versions":3,"max_age_days":90}}`, env.jwtAdmin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("включение политики = %d, тело %s", rec.Code, rec.Body.String())
+	}
+	rec = callRepo(env, http.MethodPatch, "/api/v1/repos/"+itoaRepo(id),
+		`{"name":"regress-renamed","owner_id":2,"ecosystem":"apt","quota":{"max_bytes":4096,"max_objects":40}}`, env.jwtAdmin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH без retention = %d, тело %s", rec.Code, rec.Body.String())
+	}
+	if got := repoRetentionViaAPI(t, env, id); got.MinVersions != 3 || got.MaxAgeDays != 90 {
+		t.Fatalf("политика после PATCH без retention = %+v, хочу {3,90}", got)
+	}
+}
+
 func TestReposNonAdminForbidden(t *testing.T) {
 	env := newRepoEnv(t)
 	// Non-admin JWT cannot create repo.
