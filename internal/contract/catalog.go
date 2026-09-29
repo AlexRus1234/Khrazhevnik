@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,6 +52,8 @@ type Catalog struct {
 	Audit       port.AuditLog
 	ObjIndex    port.ObjectIndex
 	Stats       port.StatsStore
+	Access      port.AccessStore
+	Pins        port.PinStore
 	Settings    port.UpstreamProxyStore
 	Revocations port.SessionRevocationStore
 	Close       func() error
@@ -77,6 +80,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("user_token_cascade", func(t *testing.T) { userTokenCascadeSuite(t, newCat(t)) })
 	t.Run("tokens", func(t *testing.T) { tokenSuite(t, newCat(t)) })
 	t.Run("repos", func(t *testing.T) { repoSuite(t, newCat(t)) })
+	t.Run("repo_retention_roundtrip", func(t *testing.T) { repoRetentionSuite(t, newCat(t)) })
 	t.Run("remotes", func(t *testing.T) { remoteSuite(t, newCat(t)) })
 	t.Run("jobs", func(t *testing.T) { jobSuite(t, newCat(t)) })
 	t.Run("job_by_remote", func(t *testing.T) { jobByRemoteSuite(t, newCat(t)) })
@@ -85,6 +89,8 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("object_index", func(t *testing.T) { objectIndexSuite(t, newCat(t)) })
 	t.Run("iterate_object_meta", func(t *testing.T) { iterateObjectMetaSuite(t, newCat(t)) })
 	t.Run("stats_snapshot", func(t *testing.T) { statsSnapshotSuite(t, newCat(t)) })
+	t.Run("object_access_merge", func(t *testing.T) { accessMergeSuite(t, newCat(t)) })
+	t.Run("repo_pins_roundtrip", func(t *testing.T) { pinSuite(t, newCat(t)) })
 	t.Run("settings", func(t *testing.T) { settingsSuite(t, newCat(t)) })
 	t.Run("revocations", func(t *testing.T) { revocationsSuite(t, newCat(t)) })
 	t.Run("noop_update", func(t *testing.T) { noopUpdateSuite(t, newCat(t)) })
@@ -423,6 +429,50 @@ func repoSuite(t *testing.T, c Catalog) {
 		t.Fatal(err)
 	}
 	wantNotFound(t, c.Repos.DeleteRepo(ctx, r.ID))
+}
+
+// repoRetentionSuite — политика ретеншна личного репо на колонках repos
+// (сессия 165, волна «Ретеншн-политики»): новый репо без политики читается
+// как выключенная (0/0 — обратная совместимость), UpdateRepo с {3,90}
+// возвращается чтением (и одиночным Repo, и списком Repos — драйверы не
+// расходятся в колонках), {0,0} сбрасывает политику. Путь DEFAULT-значения
+// на до-0011 строках — unit-тест миграции sqlite (raw-INSERT без колонок).
+func repoRetentionSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	owner, _ := c.Users.CreateUser(ctx, domain.User{Username: "alice", PasswordHash: "h", CreatedAt: fixed})
+	plain, err := c.Repos.CreateRepo(ctx, domain.Repo{
+		Name: "plain", OwnerID: owner.ID, Ecosystem: "apt", CreatedAt: fixed,
+	})
+	if err != nil || plain.ID == 0 {
+		t.Fatalf("CreateRepo = %+v, %v", plain, err)
+	}
+	got, err := c.Repos.Repo(ctx, plain.ID)
+	if err != nil || got.Retention != (domain.Retention{}) {
+		t.Fatalf("новый репо: Retention = %+v, %v; хочу нулевую (политика выключена)", got.Retention, err)
+	}
+	got.Retention = domain.Retention{MinVersions: 3, MaxAgeDays: 90}
+	if err := c.Repos.UpdateRepo(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	back, err := c.Repos.Repo(ctx, plain.ID)
+	if err != nil || back.Retention != (domain.Retention{MinVersions: 3, MaxAgeDays: 90}) {
+		t.Fatalf("после UpdateRepo: Retention = %+v, %v; хочу {3 90}", back.Retention, err)
+	}
+	if back.Quota != got.Quota || back.Name != got.Name {
+		t.Fatalf("UpdateRepo задел соседние поля: %+v", back)
+	}
+	all, err := c.Repos.Repos(ctx)
+	if err != nil || len(all) != 1 || all[0].Retention != (domain.Retention{MinVersions: 3, MaxAgeDays: 90}) {
+		t.Fatalf("Repos = %+v, %v; хочу политику {3 90}", all, err)
+	}
+	back.Retention = domain.Retention{}
+	if err := c.Repos.UpdateRepo(ctx, back); err != nil {
+		t.Fatal(err)
+	}
+	reset, err := c.Repos.Repo(ctx, plain.ID)
+	if err != nil || reset.Retention != (domain.Retention{}) {
+		t.Fatalf("сброс политики: Retention = %+v, %v; хочу нулевую", reset.Retention, err)
+	}
 }
 
 func remoteSuite(t *testing.T, c Catalog) {
@@ -801,6 +851,161 @@ func statsSnapshotSuite(t *testing.T, c Catalog) {
 	got, err = c.Stats.StatsSnapshot(ctx)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("снапшот после Reset = %+v, %v; хочу пусто без ошибки", got, err)
+	}
+}
+
+// accessMergeSuite — учёт обращений к объектам (сессия 166): пусто →
+// мёрж батча → чтение по префиксу верно (порядок по ключу; «_» в
+// префиксе — литерал, не «любой символ») → скоупы repo/cache не
+// смешиваются → повторный мёрж со СТАРЫМ временем и новыми hits
+// (MAX-семантика: время не откатилось, hits сложились) → пустой батч —
+// no-op → AccessEntry отсутствующего — NotFound.
+func accessMergeSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	collect := func(scope, prefix string) []domain.ObjectAccess {
+		t.Helper()
+		seq, err := c.Access.AccessByPrefix(ctx, scope, prefix)
+		if err != nil {
+			t.Fatalf("AccessByPrefix(%q, %q): %v", scope, prefix, err)
+		}
+		var out []domain.ObjectAccess
+		for a, err := range seq {
+			if err != nil {
+				t.Fatalf("обход обращений: %v", err)
+			}
+			out = append(out, a)
+		}
+		return out
+	}
+
+	if got := collect(domain.AccessScopeRepo, "repo/1/"); len(got) != 0 {
+		t.Fatalf("обращения на пустой таблице = %+v, хочу пусто", got)
+	}
+	if err := c.Access.MergeAccess(ctx, nil); err != nil {
+		t.Fatalf("пустой срез — no-op, не ошибка: %v", err)
+	}
+
+	// «pkg_1.0» рядом с decoy «pkgX1.9»: префикс «pkg_1» обязан совпасть
+	// только с литеральным «_».
+	first := []domain.ObjectAccess{
+		{Scope: domain.AccessScopeRepo, Key: "repo/1/apt/pkg_1.0_amd64.deb", LastAccess: fixed, Hits: 2},
+		{Scope: domain.AccessScopeRepo, Key: "repo/1/apt/pkg_1.1_amd64.deb", LastAccess: fixed.Add(-time.Hour), Hits: 1},
+		{Scope: domain.AccessScopeRepo, Key: "repo/1/apt/pkgX1.9_amd64.deb", LastAccess: fixed, Hits: 7},
+		{Scope: domain.AccessScopeCache, Key: "cache/apt/1/pkg_1.0_amd64.deb", LastAccess: fixed, Hits: 5},
+	}
+	if err := c.Access.MergeAccess(ctx, first); err != nil {
+		t.Fatalf("MergeAccess: %v", err)
+	}
+	got := collect(domain.AccessScopeRepo, "repo/1/apt/pkg_1")
+	if len(got) != 2 {
+		t.Fatalf("префикс с «_» вернул %d записей, хочу 2: %+v", len(got), got)
+	}
+	for i, w := range first[:2] {
+		if got[i] != w {
+			t.Fatalf("запись %d = %+v, хочу %+v", i, got[i], w)
+		}
+	}
+	if got := collect(domain.AccessScopeRepo, "repo/1/apt/"); len(got) != 3 {
+		t.Fatalf("префикс repo-скоупа вернул %d записей, хочу 3: %+v", len(got), got)
+	}
+	if got := collect(domain.AccessScopeCache, "cache/apt/1/"); len(got) != 1 || got[0].Hits != 5 {
+		t.Fatalf("cache-скоуп вернул %+v, хочу одну запись с hits=5", got)
+	}
+
+	entry, err := c.Access.AccessEntry(ctx, domain.AccessScopeRepo, "repo/1/apt/pkg_1.0_amd64.deb")
+	if err != nil || entry.Hits != 2 || !entry.LastAccess.Equal(fixed) {
+		t.Fatalf("AccessEntry = %+v, %v; хочу hits=2, время %v", entry, err, fixed)
+	}
+
+	// Повторный мёрж со СТАРЫМ временем: MAX-семантика — время не
+	// откатывается, hits складываются.
+	if err := c.Access.MergeAccess(ctx, []domain.ObjectAccess{
+		{Scope: domain.AccessScopeRepo, Key: "repo/1/apt/pkg_1.0_amd64.deb", LastAccess: fixed.Add(-24 * time.Hour), Hits: 3},
+	}); err != nil {
+		t.Fatalf("повторный MergeAccess: %v", err)
+	}
+	entry, err = c.Access.AccessEntry(ctx, domain.AccessScopeRepo, "repo/1/apt/pkg_1.0_amd64.deb")
+	if err != nil {
+		t.Fatalf("AccessEntry после мёржа: %v", err)
+	}
+	if !entry.LastAccess.Equal(fixed) {
+		t.Fatalf("время обращения откатилось назад: %v, хочу %v", entry.LastAccess, fixed)
+	}
+	if entry.Hits != 5 {
+		t.Fatalf("hits после мёржа = %d, хочу 5 (2+3)", entry.Hits)
+	}
+
+	// Пустой батч — no-op: ни строк, ни счётчиков не трогает.
+	if err := c.Access.MergeAccess(ctx, []domain.ObjectAccess{}); err != nil {
+		t.Fatalf("пустой батч — no-op: %v", err)
+	}
+	if got := collect(domain.AccessScopeRepo, "repo/1/apt/"); len(got) != 3 {
+		t.Fatalf("после пустого батча записей %d, хочу 3: %+v", len(got), got)
+	}
+
+	_, err = c.Access.AccessEntry(ctx, domain.AccessScopeRepo, "repo/1/apt/nope.deb")
+	var nf *domain.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("AccessEntry отсутствующего = %v, хочу *domain.NotFoundError", err)
+	}
+}
+
+// pinSuite — пины ретеншна (repo_pins, сессия 170): пусто без ошибки,
+// постановка → выдача по возрастанию ключа, идемпотентность в обе
+// стороны (повторный SetPin и снятие отсутствующего — не ошибки),
+// изоляция по repo_id, удаление репо уносит пины (FK CASCADE 0013 —
+// иначе ретеншн держал бы ключи удалённого репо).
+func pinSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	owner, _ := c.Users.CreateUser(ctx, domain.User{Username: "pinowner", PasswordHash: "h", CreatedAt: fixed})
+	r, err := c.Repos.CreateRepo(ctx, domain.Repo{Name: "pinned", OwnerID: owner.ID, Ecosystem: "apt", CreatedAt: fixed})
+	if err != nil || r.ID == 0 {
+		t.Fatalf("CreateRepo = %+v, %v", r, err)
+	}
+	empty, err := c.Pins.Pins(ctx, r.ID)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("пустой набор пинов = %v, %v; хочу пусто без ошибки", empty, err)
+	}
+	keys := []string{
+		"repo/1/apt/pool/main/h/htop/htop_3.3.0_amd64.deb",
+		"repo/1/apt/pool/main/h/htop/htop_3.2.0_amd64.deb",
+	}
+	for _, k := range keys {
+		if err := c.Pins.SetPin(ctx, r.ID, k, true); err != nil {
+			t.Fatalf("SetPin(%s) = %v", k, err)
+		}
+		// Идемпотентность: повторная постановка — успех, не конфликт PK.
+		if err := c.Pins.SetPin(ctx, r.ID, k, true); err != nil {
+			t.Fatalf("повторный SetPin(%s) = %v, хочу nil", k, err)
+		}
+	}
+	got, err := c.Pins.Pins(ctx, r.ID)
+	if err != nil || !slices.Equal(got, []string{keys[1], keys[0]}) {
+		t.Fatalf("Pins = %v, %v; хочу оба ключа по возрастанию", got, err)
+	}
+	// Пин одного репо не виден другому: repo_id — часть первичного ключа.
+	other, err := c.Repos.CreateRepo(ctx, domain.Repo{Name: "pinother", OwnerID: owner.ID, Ecosystem: "apt", CreatedAt: fixed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.Pins.Pins(ctx, other.ID); err != nil || len(got) != 0 {
+		t.Fatalf("пины чужого репо = %v, %v; хочу пусто", got, err)
+	}
+	if err := c.Pins.SetPin(ctx, r.ID, keys[0], false); err != nil {
+		t.Fatalf("снятие пина = %v", err)
+	}
+	if err := c.Pins.SetPin(ctx, r.ID, keys[0], false); err != nil {
+		t.Fatalf("повторное снятие = %v, хочу nil (идемпотентно)", err)
+	}
+	if got, err := c.Pins.Pins(ctx, r.ID); err != nil || !slices.Equal(got, []string{keys[1]}) {
+		t.Fatalf("после снятия Pins = %v, %v; хочу один ключ", got, err)
+	}
+	// CASCADE: удаление репо уносит пины.
+	if err := c.Repos.DeleteRepo(ctx, r.ID); err != nil {
+		t.Fatalf("DeleteRepo = %v", err)
+	}
+	if got, err := c.Pins.Pins(ctx, r.ID); err != nil || len(got) != 0 {
+		t.Fatalf("пины удалённого репо = %v, %v; хочу пусто (FK CASCADE 0013)", got, err)
 	}
 }
 

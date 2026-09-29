@@ -159,6 +159,7 @@ func collectDB(it func(yield func(*DescEntry, error) bool)) ([]*DescEntry, error
 }
 
 func TestParseDBGolden(t *testing.T) {
+	t.Parallel()
 	desc1 := mustReadTestdata(t, "desc-1.golden")
 	desc2 := mustReadTestdata(t, "desc-2.golden")
 	db := newTarZst(t, tarEntries{
@@ -187,6 +188,7 @@ func TestParseDBGolden(t *testing.T) {
 }
 
 func TestParseDBGzipGolden(t *testing.T) {
+	t.Parallel()
 	// gzip-ветка (sync-БД Arch — core.db это tar.gz): те же entries,
 	// что у zstd-golden — те же desc-результаты (детект по magic-байтам,
 	// не по расширению).
@@ -218,6 +220,7 @@ func TestParseDBGzipGolden(t *testing.T) {
 }
 
 func TestParseDBAutoDetect(t *testing.T) {
+	t.Parallel()
 	// детект по magic, не по расширению: поток без имени файла —
 	// gzip и zstd оба разбираются одной точкой входа.
 	desc := mustReadTestdata(t, "desc-1.golden")
@@ -247,6 +250,7 @@ func TestParseDBAutoDetect(t *testing.T) {
 }
 
 func TestParseDBTarGolden(t *testing.T) {
+	t.Parallel()
 	// Точка входа parseDBTar без zstd — для фаззинга и прямых тестов
 	// tar-парсера.
 	desc1 := mustReadTestdata(t, "desc-1.golden")
@@ -266,6 +270,7 @@ func TestParseDBTarGolden(t *testing.T) {
 }
 
 func TestParseDBSkipsNonDescFiles(t *testing.T) {
+	t.Parallel()
 	desc := mustReadTestdata(t, "desc-1.golden")
 	raw := newTar(t, tarEntries{
 		"foo-1.0-1-x86_64/desc":    desc,
@@ -282,6 +287,7 @@ func TestParseDBSkipsNonDescFiles(t *testing.T) {
 }
 
 func TestParseDBEmpty(t *testing.T) {
+	t.Parallel()
 	// пустой tar — пустой результат, не ошибка.
 	raw := newTar(t, tarEntries{})
 	entries, err := collectDB(ParseDBTar(bytes.NewReader(raw)))
@@ -294,6 +300,7 @@ func TestParseDBEmpty(t *testing.T) {
 }
 
 func TestParseDBBadZstd(t *testing.T) {
+	t.Parallel()
 	// мусор вместо zstd-потока — ошибка (ErrBadZstd или битый tar,
 	// зависит от того, когда zstd-декодер спохватится; главное — не
 	// паника и детерминизм). zstd.NewReader ленив: на мусоре может
@@ -306,6 +313,7 @@ func TestParseDBBadZstd(t *testing.T) {
 }
 
 func TestParseDBBadTar(t *testing.T) {
+	t.Parallel()
 	// валидный zstd, но содержимое — не tar. zstd разжимает, tar.NewReader
 	// ловит ошибку формата.
 	zw, _ := zstd.NewWriter(io.Discard)
@@ -320,6 +328,7 @@ func TestParseDBBadTar(t *testing.T) {
 }
 
 func TestParseDBDescWithoutFilename(t *testing.T) {
+	t.Parallel()
 	// desc без %FILENAME% — пустой Filename (Enumerate отфильтрует).
 	raw := newTar(t, tarEntries{
 		"foo-1.0-1-x86_64/desc": []byte("%NAME%\nfoo\n%VERSION%\n1.0-1\n"),
@@ -340,6 +349,7 @@ func TestParseDBDescWithoutFilename(t *testing.T) {
 }
 
 func TestParseDBDescMultilineField(t *testing.T) {
+	t.Parallel()
 	// многострочное поле %DEPENDS% — не ломает парсер, следующие поля
 	// читаются корректно.
 	raw := newTar(t, tarEntries{
@@ -365,6 +375,7 @@ func TestParseDBDescMultilineField(t *testing.T) {
 }
 
 func TestParseDBTooManyEntries(t *testing.T) {
+	t.Parallel()
 	// потолок числа desc-записей: маленький лимит, на (lim+1)-й — ошибка.
 	const lim = 3
 	desc := []byte("%FILENAME%\nf.pkg.tar.zst\n")
@@ -385,6 +396,7 @@ func TestParseDBTooManyEntries(t *testing.T) {
 }
 
 func TestParseDBDescTooLarge(t *testing.T) {
+	t.Parallel()
 	// desc длиннее лимита — ErrDescTooLarge. Лимит стянут до 64 байт.
 	big := bytes.Repeat([]byte("x"), 65)
 	raw := newTar(t, tarEntries{
@@ -399,6 +411,7 @@ func TestParseDBDescTooLarge(t *testing.T) {
 }
 
 func TestParseDBZipBombGuard(t *testing.T) {
+	t.Parallel()
 	// zst-файл, декомпресс-лимит 1KiB — разжатый поток превышает лимит
 	// → ErrDecompressTooLarge. payload: tar с одним desc > 1KiB.
 	desc := bytes.Repeat([]byte("%NAME%\nfoo\n"), 200) // ~1.6KiB
@@ -421,12 +434,17 @@ func TestParseDBZipBombGuard(t *testing.T) {
 }
 
 func TestParseDBGzipBombGuard(t *testing.T) {
-	// настоящая gzip-бомба: 1100 desc-записей по ~1MiB — распакованный
-	// поток > 1GiB (кап maxDecompressed), сжатый файл — килобайты
+	t.Parallel()
+	// Настоящая gzip-бомба: desc-записи по ~1MiB, распакованный поток
+	// больше уменьшенного капа (4 MiB против прод-дефолта 1 GiB —
+	// параметризация parseLimits, та же ветка errDecompressLimit-отказа
+	// без гигабайтной декомпрессии под -race). Сжатый файл — килобайты
 	// (повторы). Чтение стримингом: итератор гаснет на ошибке, никакого
 	// ReadAll распакованной бомбы (OOM-урок 77). Content каждой desc —
 	// строго меньше descSize-потолка, чтобы помеха проверяла именно
 	// декомпресс-лимит, а не ErrDescTooLarge.
+	const cap = int64(4 << 20)
+	const members = 8                                   // 8 × ~1MiB ≈ 8 MiB разжатых > кап
 	block := bytes.Repeat([]byte("x"), (1<<20)-(1<<10)) // 1MiB-1KiB
 	var buf bytes.Buffer
 	gw, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
@@ -434,7 +452,7 @@ func TestParseDBGzipBombGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	tw := tar.NewWriter(gw)
-	for i := 0; i < 1100; i++ {
+	for i := 0; i < members; i++ {
 		name := fmt.Sprintf("pkg-%04d-1.0-1-x86_64/desc", i)
 		if err := tw.WriteHeader(&tar.Header{
 			Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(block)),
@@ -453,7 +471,9 @@ func TestParseDBGzipBombGuard(t *testing.T) {
 	}
 	bomb := buf.Bytes()
 
-	_, err = collectDB(ParseDB(bytes.NewReader(bomb)))
+	_, err = collectDB(parseDB(bytes.NewReader(bomb), parseLimits{
+		decompressed: cap, entries: maxDescEntries, descSize: maxDescSize, descLines: maxDescLines,
+	}))
 	if !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидалась ErrDecompressTooLarge, получено %v", err)
 	}
@@ -477,6 +497,7 @@ func TestParseDBGzipBombGuard(t *testing.T) {
 }
 
 func TestParseDBTarOnGarbage(t *testing.T) {
+	t.Parallel()
 	// произвольный мусор как tar-поток — не паника, ошибка или пустой.
 	_, err := collectDB(ParseDBTar(bytes.NewReader([]byte("garbage"))))
 	// tar.NewReader на мусоре обычно отдаёт ошибку; пустой результат
@@ -485,6 +506,7 @@ func TestParseDBTarOnGarbage(t *testing.T) {
 }
 
 func TestParseDBDeterminism(t *testing.T) {
+	t.Parallel()
 	// повторный разбор того же потока обязан дать идентичный результат.
 	desc1 := mustReadTestdata(t, "desc-1.golden")
 	desc2 := mustReadTestdata(t, "desc-2.golden")

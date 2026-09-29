@@ -25,9 +25,7 @@ import { formatBytes, formatTime } from '../format'
 import { t } from '../i18n'
 import type { Repo, User } from '../types'
 
-// Генераторы метаданных есть у apt, nix и xbps (сессии 14/15/16/141);
-// остальные экосистемы можно создать, но reindex ответит unsupported.
-const ECOSYSTEMS = ['apt', 'nix', 'xbps']
+const ecosystems = ref<string[]>([])
 
 const repos = ref<Repo[]>([])
 const users = ref<User[]>([])
@@ -65,6 +63,22 @@ async function loadUsers(): Promise<void> {
   }
 }
 
+// Экосистемы — с бекенда (GET /ecosystems, сессия 178): источник истины
+// — реестр адаптеров сборки, хардкод в UI от него отставал (pacman/apk/
+// rpm-md создавались только через API). Сбой загрузки — в formError:
+// пустой дропдаун заметен, а молчание — нет.
+async function loadEcosystems(): Promise<void> {
+  try {
+    ecosystems.value = (await request<{ ecosystems: string[] }>('GET', '/ecosystems')).ecosystems
+    // Дефолт формы создания: apt, если доступен, иначе первая из списка.
+    if (editingID.value === null && !ecosystems.value.includes(fEcosystem.value)) {
+      fEcosystem.value = ecosystems.value.includes('apt') ? 'apt' : ecosystems.value[0] ?? ''
+    }
+  } catch {
+    formError.value = t('repos.ecosystemsError')
+  }
+}
+
 onMounted(() => {
   void load()
   void loadUsers()
@@ -79,6 +93,7 @@ function openCreate(): void {
   fQuotaFiles.value = ''
   formError.value = ''
   showForm.value = true
+  void loadEcosystems()
 }
 
 function openEdit(r: Repo): void {
@@ -90,6 +105,7 @@ function openEdit(r: Repo): void {
   fQuotaFiles.value = r.quota.max_objects > 0 ? String(r.quota.max_objects) : ''
   formError.value = ''
   showForm.value = true
+  void loadEcosystems()
 }
 
 async function submit(): Promise<void> {
@@ -167,7 +183,7 @@ function ownerName(id: number): string {
           <label class="field"
             >{{ t('common.ecosystem') }}
             <select v-model="fEcosystem">
-              <option v-for="e in ECOSYSTEMS" :key="e" :value="e">{{ e }}</option>
+              <option v-for="e in ecosystems" :key="e" :value="e">{{ e }}</option>
             </select>
           </label>
           <label class="field"

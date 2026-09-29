@@ -37,12 +37,13 @@ import (
 
 // repoOut — DTO ответа репо: поля без аудит-мусора.
 type repoOut struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	OwnerID   int64     `json:"owner_id"`
-	Ecosystem string    `json:"ecosystem"`
-	Quota     quotaOut  `json:"quota"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        int64        `json:"id"`
+	Name      string       `json:"name"`
+	OwnerID   int64        `json:"owner_id"`
+	Ecosystem string       `json:"ecosystem"`
+	Quota     quotaOut     `json:"quota"`
+	Retention retentionOut `json:"retention"`
+	CreatedAt time.Time    `json:"created_at"`
 }
 
 type quotaOut struct {
@@ -50,20 +51,42 @@ type quotaOut struct {
 	MaxObjects int64 `json:"max_objects"`
 }
 
+// retentionOut — политика ретеншна в теле репо (сессия 172):
+// {0,0} — политика выключена (репо растёт в пределах квоты).
+type retentionOut struct {
+	MinVersions int `json:"min_versions"`
+	MaxAgeDays  int `json:"max_age_days"`
+}
+
 func repoOutFrom(r domain.Repo) repoOut {
 	return repoOut{
 		ID: r.ID, Name: r.Name, OwnerID: r.OwnerID, Ecosystem: r.Ecosystem,
 		Quota:     quotaOut{MaxBytes: r.Quota.MaxBytes, MaxObjects: r.Quota.MaxObjects},
+		Retention: retentionOut{MinVersions: r.Retention.MinVersions, MaxAgeDays: r.Retention.MaxAgeDays},
 		CreatedAt: r.CreatedAt,
 	}
 }
 
-// repoInput — тело POST/PATCH /api/v1/repos.
+// repoInput — тело POST/PATCH /api/v1/repos. Retention — указатель:
+// «поля в теле нет» — не «{0,0}», а «не трогать политику» (фикс сессии
+// 177: PATCH без retention сбрасывал настроенную политику в ноль);
+// для POST отсутствие поля по-прежнему означает выключенную политику.
 type repoInput struct {
-	Name      string   `json:"name"`
-	OwnerID   int64    `json:"owner_id"`
-	Ecosystem string   `json:"ecosystem"`
-	Quota     quotaOut `json:"quota"`
+	Name      string        `json:"name"`
+	OwnerID   int64         `json:"owner_id"`
+	Ecosystem string        `json:"ecosystem"`
+	Quota     quotaOut      `json:"quota"`
+	Retention *retentionOut `json:"retention"`
+}
+
+// retentionOrDefault разыменовывает политику из тела запроса; поля в
+// теле нет — берётся fallback (POST — нулевая политика, PATCH —
+// текущая политика репо).
+func retentionOrDefault(in *retentionOut, fallback domain.Retention) domain.Retention {
+	if in == nil {
+		return fallback
+	}
+	return domain.Retention{MinVersions: in.MinVersions, MaxAgeDays: in.MaxAgeDays}
 }
 
 // validate нормализует поля (name/eco → lowercase, trim) и проверяет
@@ -89,7 +112,14 @@ func (in *repoInput) validate(ecosystems map[string]port.Ecosystem) error {
 	if in.Quota.MaxBytes < 0 || in.Quota.MaxObjects < 0 {
 		return &domain.ValidationError{What: "quota", Value: "", Reason: "отрицательные поля недопустимы"}
 	}
-	return nil
+	// Политика ретеншна — доменная валидация сочетания полей (сессия
+	// 172): {0,0} легальна (выключено), MinVersions=1 с возрастом — нет.
+	// Поля в теле нет (nil) — валидировать нечего: PATCH сохранит
+	// текущую политику, POST даст выключенную (сессия 177).
+	if in.Retention == nil {
+		return nil
+	}
+	return domain.ValidateRetention(domain.Retention{MinVersions: in.Retention.MinVersions, MaxAgeDays: in.Retention.MaxAgeDays})
 }
 
 // handleListRepos — GET /api/v1/repos: список репозиториев.
@@ -133,6 +163,7 @@ func handleCreateRepo(d Deps) http.HandlerFunc {
 		repo, err := d.Repos.CreateRepo(r.Context(), domain.Repo{
 			Name: in.Name, OwnerID: in.OwnerID, Ecosystem: in.Ecosystem,
 			Quota:     domain.Quota{MaxBytes: in.Quota.MaxBytes, MaxObjects: in.Quota.MaxObjects},
+			Retention: retentionOrDefault(in.Retention, domain.Retention{}),
 			CreatedAt: d.clock().Now(),
 		})
 		if err != nil {
@@ -159,7 +190,8 @@ func handleGetRepo(d Deps) http.HandlerFunc {
 	}
 }
 
-// handleUpdateRepo — PATCH /api/v1/repos/{id}: full-replace.
+// handleUpdateRepo — PATCH /api/v1/repos/{id}: full-replace, кроме
+// retention: поля в теле нет — политика репо сохраняется (сессия 177).
 func handleUpdateRepo(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseInt64URLParam(w, r, "id")
@@ -189,7 +221,12 @@ func handleUpdateRepo(d Deps) http.HandlerFunc {
 		}
 		updated := domain.Repo{
 			ID: existing.ID, Name: in.Name, OwnerID: in.OwnerID, Ecosystem: in.Ecosystem,
-			Quota:     domain.Quota{MaxBytes: in.Quota.MaxBytes, MaxObjects: in.Quota.MaxObjects},
+			Quota: domain.Quota{MaxBytes: in.Quota.MaxBytes, MaxObjects: in.Quota.MaxObjects},
+			// retention — политика настраивается отдельно (панель репо,
+			// retention-эндпоинты), остальные поля формы всегда полные:
+			// поля в теле нет = «не трогать политику». Присланное поле —
+			// full-replace, как и остальное тело (сессия 177).
+			Retention: retentionOrDefault(in.Retention, existing.Retention),
 			CreatedAt: existing.CreatedAt,
 		}
 		if err := d.Repos.UpdateRepo(r.Context(), updated); err != nil {

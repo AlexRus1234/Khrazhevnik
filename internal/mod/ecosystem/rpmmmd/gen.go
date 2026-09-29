@@ -118,6 +118,56 @@ func (g *Generator) ValidateObjectPath(p string) error {
 	return &domain.ValidationError{What: "путь rpm-md-репо", Value: p, Reason: "неизвестное расширение (ожидалось .rpm/.drpm/.src.rpm)"}
 }
 
+// ObjectFamily — port.FamilyResolver: семейство версий .rpm-объекта —
+// имя пакета из basename файла (пакеты лежат где угодно под корнем репо,
+// кроме repodata/, поэтому смотрим только последний сегмент пути).
+// Граница «имя-версия» — эвристика ROADMAP (задел, не полное решение):
+// сегменты через «-», версия — первый сегмент, начинающийся с цифры,
+// всё до него — семейство: htop-3.3.0-4.fc44.x86_64 → htop,
+// python3-pip-25.1.1-1.fc44.noarch → python3-pip. Обратная сторона —
+// ложное объединение (gcc-14-14.2.1 → gcc): принято, ложное объединение
+// консервативно. .src.rpm даёт то же семейство, что бинарный (имя
+// совпадает). repodata/ и подписи (.asc, RPM-GPG-KEY-*) — ok=false.
+func (g *Generator) ObjectFamily(p string) (string, bool) {
+	name := baseName(p)
+	switch {
+	case strings.HasSuffix(name, ".rpm"):
+		name = strings.TrimSuffix(name, ".rpm")
+	case strings.HasSuffix(name, ".drpm"):
+		name = strings.TrimSuffix(name, ".drpm")
+	default:
+		return "", false
+	}
+	return pkgFamily(name)
+}
+
+// baseName — последний сегмент пути. Не path.Base: разделитель ключей
+// Storage всегда «/» независимо от ОС.
+func baseName(p string) string {
+	if idx := strings.LastIndexByte(p, '/'); idx >= 0 {
+		return p[idx+1:]
+	}
+	return p
+}
+
+// pkgFamily — имя пакета из имени файла без расширения: часть до первого
+// сегмента, начинающегося с цифры (граница «имя-версия»), сегменты — по
+// «-». Пакет без границы версии (имя из одного сегмента) — ok=false.
+func pkgFamily(stem string) (string, bool) {
+	segs := strings.Split(stem, "-")
+	for i := 1; i < len(segs); i++ {
+		if segs[i] == "" || !isASCIIDigit(segs[i][0]) {
+			continue
+		}
+		return strings.Join(segs[:i], "-"), true
+	}
+	return "", false
+}
+
+// isASCIIDigit — цифра ASCII-диапазона: версия RPM/apk/pacman всегда
+// начинается с «0»–«9», unicode-цифры в именах пакетов не встречаются.
+func isASCIIDigit(b byte) bool { return b >= '0' && b <= '9' }
+
 // GenerateIndexes обходит .rpm, читает заголовки, собирает primary.xml.gz
 // и repomd.xml (+ repomd.xml.asc при Signer). Прогресс — обработанные
 // пакеты. Атомарность v1: запись ключей по одному после полной генерации

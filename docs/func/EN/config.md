@@ -79,6 +79,7 @@ not grow it indefinitely).
 | `driver`| `fs`    | `KHRZ_STORAGE__DRIVER` | `fs` \| `s3` |
 | `gc_interval` | `24h` | `KHRZ_STORAGE__GC_INTERVAL` | Period of the background sweeping cleanup of the storage (orphaned versions of mutable cache objects and `repo/<id>/` of deleted repos); `0` = disabled |
 | `gc_grace` | `168h` (7 days) | `KHRZ_STORAGE__GC_GRACE` | Minimum age of a cleanup candidate (ModTime older than `now−gc_grace`); strictly `> 0` — zero would delete fresh versions |
+| `access_flush_interval` | `30s` | `KHRZ_STORAGE__ACCESS_FLUSH_INTERVAL` | Period of the background batch merge of object accesses (`object_access`: the age of the last access is the criterion for retention deletion); `0` = tracking disabled (retention counts from the version upload date) |
 
 ### `[storage.fs]`
 
@@ -99,6 +100,20 @@ not grow it indefinitely).
 | `spool_dir`        | `/var/lib/khrazhevnik/spool` | `KHRZ_STORAGE__S3__SPOOL_DIR`         |
 
 For details on the drivers, see [storage-db.md](storage-db.md).
+
+## `[retention]`
+
+| Key        | Default | Env                        | Purpose               |
+|------------|---------|----------------------------|-----------------------|
+| `interval` | `24h`   | `KHRZ_RETENTION__INTERVAL` | Period of the recurring retention pass over personal repos with the policy enabled (deleting old versions and regenerating indexes); `0` = disabled — cleanup stays manual (API/GUI) |
+
+The retention policy is configured per repository (via API and GUI); this
+section only sets the period of the shared pass. The pass walks the
+repositories sequentially (one `Apply` → index regeneration at a time,
+with a cancellation check between repos): the TTL guard (`max_age_days`)
+ages on its own, so versions that were alive at the last upload become
+deletion candidates over time — without the pass nobody deletes them. A
+failure in one repository does not stop the pass over the others.
 
 ## `[database]`
 

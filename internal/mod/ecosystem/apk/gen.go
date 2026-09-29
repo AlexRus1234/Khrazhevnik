@@ -56,6 +56,20 @@ func init() {
 // Generator реализует port.RepoAdapter для apk-репо.
 type Generator struct {
 	signer port.Signer
+
+	// decompressLimit — потолок разжатого .apk (0 = прод-дефолт
+	// maxDecompressedApk). Поле только для тестов: прод-инстанс
+	// собирается реестром без параметров; уменьшенный кап не ослабляет
+	// контракт бомб-тестов — проверяется та же ветка limitedReader-отказа.
+	decompressLimit int64
+}
+
+// decompressCap возвращает эффективный лимит декомпрессии.
+func (g *Generator) decompressCap() int64 {
+	if g.decompressLimit > 0 {
+		return g.decompressLimit
+	}
+	return maxDecompressedApk
 }
 
 // SetSigner внедряет подписчик: после APKINDEX.tar.gz генератор эмитит
@@ -73,6 +87,49 @@ func (g *Generator) ValidateObjectPath(p string) error {
 	}
 	return &domain.ValidationError{What: "путь apk-репо", Value: p, Reason: "неизвестное расширение (ожидалось .apk)"}
 }
+
+// ObjectFamily — port.FamilyResolver: семейство версий apk-объекта —
+// имя пакета из basename файла: <имя>-<версия>-r<релиз>.apk. Граница
+// «имя-версия» — эвристика ROADMAP: версия — первый сегмент (после
+// деления по «-»), начинающийся с цифры, всё до него — семейство.
+// Реальные имена Alpine с дефисами и цифрами держатся именно так:
+// py3-pip-25.1.1-r0 → py3-pip, libnl3-3.11.0-r0 → libnl3,
+// ca-certificates-20250605-r0 → ca-certificates. Генерируемые
+// APKINDEX.tar.gz (+ .sig) и ключи (khrazhevnik.rsa.pub) — ok=false.
+func (g *Generator) ObjectFamily(p string) (string, bool) {
+	name := baseName(p)
+	if !strings.HasSuffix(name, ".apk") {
+		return "", false
+	}
+	return pkgFamily(strings.TrimSuffix(name, ".apk"))
+}
+
+// baseName — последний сегмент пути. Не path.Base: разделитель ключей
+// Storage всегда «/» независимо от ОС.
+func baseName(p string) string {
+	if idx := strings.LastIndexByte(p, '/'); idx >= 0 {
+		return p[idx+1:]
+	}
+	return p
+}
+
+// pkgFamily — имя пакета из имени файла без расширения: часть до первого
+// сегмента, начинающегося с цифры (граница «имя-версия»), сегменты — по
+// «-». Пакет без границы версии — ok=false.
+func pkgFamily(stem string) (string, bool) {
+	segs := strings.Split(stem, "-")
+	for i := 1; i < len(segs); i++ {
+		if segs[i] == "" || !isASCIIDigit(segs[i][0]) {
+			continue
+		}
+		return strings.Join(segs[:i], "-"), true
+	}
+	return "", false
+}
+
+// isASCIIDigit — цифра ASCII-диапазона: версия пакета всегда начинается
+// с «0»–«9», unicode-цифры в именах пакетов не встречаются.
+func isASCIIDigit(b byte) bool { return b >= '0' && b <= '9' }
 
 // GenerateIndexes обходит .apk, читает .PKGINFO, собирает APKINDEX.tar.gz
 // (+ .sig при Signer). Прогресс — обработанные пакеты.
@@ -102,7 +159,7 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err := appendIndexEntry(ctx, storage, key, prefix, &indexText); err != nil {
+		if err := appendIndexEntry(ctx, storage, key, prefix, &indexText, g.decompressCap()); err != nil {
 			return fmt.Errorf("apk.gen: %s: %w", key, err)
 		}
 		p.Update("pkginfo", repo.Name, int64(i+1), int64(len(apkKeys)))
@@ -163,7 +220,7 @@ func collectApks(ctx context.Context, storage port.Storage, prefix string) ([]st
 // appendIndexEntry читает .apk одним проходом (.PKGINFO + sha1 всего
 // файла) и дописывает запись в APKINDEX-текст (K:V-формат). F: — путь
 // .apk относительно корня репо (apk кладёт полный относительный путь).
-func appendIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix string, buf *bytes.Buffer) error {
+func appendIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix string, buf *bytes.Buffer, decompressLimit int64) error {
 	obj, err := storage.Get(ctx, apkKey)
 	if err != nil {
 		return err
@@ -172,7 +229,7 @@ func appendIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix 
 	h := sha1.New()
 	cr := &countReader{r: obj.Body}
 	tee := io.TeeReader(cr, h)
-	pi, err := readPkgInfoFromPackage(ctx, tee)
+	pi, err := readPkgInfoFromPackage(ctx, tee, decompressLimit)
 	if err != nil {
 		return err
 	}

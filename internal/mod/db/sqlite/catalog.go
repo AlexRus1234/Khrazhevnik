@@ -78,13 +78,13 @@ const (
 
 // Личные репозитории и права (чтение публичное — права только на запись).
 const (
-	sqlRepoInsert = `INSERT INTO repos (name, owner_id, ecosystem, quota_bytes, quota_files, created_at)
-		VALUES (?, ?, ?, ?, ?, ?) RETURNING id`
-	sqlRepoSelect = `SELECT id, name, owner_id, ecosystem, quota_bytes, quota_files, created_at FROM repos`
+	sqlRepoInsert = `INSERT INTO repos (name, owner_id, ecosystem, quota_bytes, quota_files, min_versions, max_age_days, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
+	sqlRepoSelect = `SELECT id, name, owner_id, ecosystem, quota_bytes, quota_files, min_versions, max_age_days, created_at FROM repos`
 	sqlRepoByID   = sqlRepoSelect + ` WHERE id = ?`
 	sqlRepoByName = sqlRepoSelect + ` WHERE name = ?`
 	sqlRepoAll    = sqlRepoSelect + ` ORDER BY id`
-	sqlRepoUpdate = `UPDATE repos SET name = ?, owner_id = ?, ecosystem = ?, quota_bytes = ?, quota_files = ? WHERE id = ?`
+	sqlRepoUpdate = `UPDATE repos SET name = ?, owner_id = ?, ecosystem = ?, quota_bytes = ?, quota_files = ?, min_versions = ?, max_age_days = ? WHERE id = ?`
 	sqlRepoDelete = `DELETE FROM repos WHERE id = ?`
 	sqlPermGrant  = `INSERT INTO repo_perms (repo_id, user_id, perm, created_at) VALUES (?, ?, 'write', ?)`
 	sqlPermRevoke = `DELETE FROM repo_perms WHERE repo_id = ? AND user_id = ?`
@@ -364,6 +364,7 @@ func (s *Store) CreateRepo(ctx context.Context, r domain.Repo) (domain.Repo, err
 		var id int64
 		err := s.db.QueryRowContext(ctx, sqlRepoInsert,
 			r.Name, r.OwnerID, r.Ecosystem, r.Quota.MaxBytes, r.Quota.MaxObjects,
+			r.Retention.MinVersions, r.Retention.MaxAgeDays,
 			dbtalk.Now(r.CreatedAt)).Scan(&id)
 		return id, err
 	})
@@ -424,7 +425,8 @@ func (s *Store) Repos(ctx context.Context) ([]domain.Repo, error) {
 func (s *Store) UpdateRepo(ctx context.Context, r domain.Repo) error {
 	res, err := call(ctx, s, func() (sql.Result, error) {
 		return s.db.ExecContext(ctx, sqlRepoUpdate,
-			r.Name, r.OwnerID, r.Ecosystem, r.Quota.MaxBytes, r.Quota.MaxObjects, r.ID)
+			r.Name, r.OwnerID, r.Ecosystem, r.Quota.MaxBytes, r.Quota.MaxObjects,
+			r.Retention.MinVersions, r.Retention.MaxAgeDays, r.ID)
 	})
 	if err != nil {
 		return mapWrite(err, "репозиторий", r.Name)
@@ -485,7 +487,8 @@ func scanRepo(row interface{ Scan(dest ...any) error }) (domain.Repo, error) {
 	var r domain.Repo
 	var createdAt int64
 	if err := row.Scan(&r.ID, &r.Name, &r.OwnerID, &r.Ecosystem,
-		&r.Quota.MaxBytes, &r.Quota.MaxObjects, &createdAt); err != nil {
+		&r.Quota.MaxBytes, &r.Quota.MaxObjects,
+		&r.Retention.MinVersions, &r.Retention.MaxAgeDays, &createdAt); err != nil {
 		return domain.Repo{}, err
 	}
 	r.CreatedAt = time.Unix(createdAt, 0).UTC()

@@ -136,17 +136,50 @@ number and reason.
 | GET    | `/api/v1/settings/upstream-proxy` | 200     | Current proxy: `{"value": v}` (`""` — not set, env fallback; `direct`; URL) |
 | PUT    | `/api/v1/settings/upstream-proxy` | 200/400 | Set the proxy: body `{"value": s}`; an invalid URL — 400 `validation_error`; audit `settings.update` (password masked) |
 
+## Directories (admin)
+
+| Method | Path                 | Code | Purpose                                   |
+|--------|----------------------|------|-------------------------------------------|
+| GET    | `/api/v1/ecosystems` | 200  | Available ecosystems: `{"ecosystems": ["apk", "apt", …]}` |
+
+The list is served by the backend, not by the SPA: its source is the
+adapter map the instance was built with (`Deps.Ecosystems`, which wire
+assembles from the registry). Only the ecosystems **enabled by the
+config** (`[ecosystem.<name>] enabled = true`) appear in the response —
+a disabled adapter is absent from the map, so “available” is an honest
+word rather than a list of “everything ever compiled in”. The order is
+lexicographic: the UI renders the names in it, without client-side
+sorting.
+
+The practical reason for such an endpoint: the ecosystem dropdown of the
+personal-repository creation form used to be hard-coded in the SPA and
+lagged behind the registry — ecosystems added on the backend (the
+rpm-md/pacman/apk wave) could not be picked in the web admin, even though
+they were created through the API and worked. Since the list comes from
+the registry, a new adapter shows up in the UI by itself.
+
+The request is admin-auth (like the other admin routes: 401 without a
+token, 403 for an identified non-admin session); it is a read and is not
+written to the audit log. A failed load shows an error in the form — a
+silently empty dropdown would look like “there are no ecosystems”.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://admin.example:30202/api/v1/ecosystems
+# {"ecosystems":["apk","apt","nix","pacman","rpm-md","xbps"]}
+```
+
 ## Personal repositories
 
-Creation/configuration — admin; upload/delete/reindex/listing — admin,
-the owner, or a `repo:<id>:write` token.
+Creation/configuration — admin; upload/delete/reindex/listing and
+retention pins — admin, the owner, or a `repo:<id>:write` token;
+retention preview and apply — admin only.
 
 | Method | Path                                  | Code             | Purpose                         |
 |--------|---------------------------------------|------------------|---------------------------------|
 | GET    | `/api/v1/repos`                       | 200              | List repositories               |
-| POST   | `/api/v1/repos`                       | 201/400/409      | `{name,ecosystem,owner_id,quota}` |
+| POST   | `/api/v1/repos`                       | 201/400/409      | `{name,ecosystem,owner_id,quota,retention}` |
 | GET    | `/api/v1/repos/{id}`                  | 200/404          | Repository data                 |
-| PATCH  | `/api/v1/repos/{id}`                  | 200/400/404/409  | Name/quota/owner (400 — unknown ecosystem, ecosystem change) |
+| PATCH  | `/api/v1/repos/{id}`                  | 200/400/404/409  | Name/quota/owner/retention policy (400 — unknown ecosystem, ecosystem change, invalid policy) |
 | DELETE | `/api/v1/repos/{id}`                  | 204/404          | Delete with permissions         |
 | GET    | `/api/v1/repos/{id}/perms`            | 200/404          | Write permissions               |
 | POST   | `/api/v1/repos/{id}/perms`            | 204/400/404      | Grant a permission (`{user_id}`) |
@@ -155,14 +188,74 @@ the owner, or a `repo:<id>:write` token.
 | PUT    | `/api/v1/repos/{id}/objects/*`        | 201/409/411/413  | Upload (streaming; `Content-Length` is required, without it — 411) |
 | DELETE | `/api/v1/repos/{id}/objects/*`        | 204/404          | Delete an object                |
 | POST   | `/api/v1/repos/{id}/reindex`          | 202/409/429      | Index generation background task |
+| GET    | `/api/v1/repos/{id}/retention/preview`| 200/404/503      | Retention forecast (dry run): candidates and protection counters |
+| POST   | `/api/v1/repos/{id}/retention/apply`  | 202/404/409/429/503 | Apply the policy as a task (kind=`retention`) |
+| GET    | `/api/v1/repos/{id}/retention/pins`   | 200/404/503      | Repository pins (full storage keys) |
+| PUT    | `/api/v1/repos/{id}/retention/pins/*` | 204/400/404/503  | Pin a version (path inside the repository) |
+| DELETE | `/api/v1/repos/{id}/retention/pins/*` | 204/400/404/503  | Unpin (404 — no such repository) |
 
 `quota` is `{max_bytes, max_objects}`; a zero field means no limit.
-Upload: overwriting an existing key → 409 `conflict` (the `force=true`
+`retention` is `{min_versions, max_age_days}`: the auto-cleanup policy for
+old family versions; `{0,0}` disables it, `max_age_days=0` with
+`min_versions≥2` means "keep-N only". 400 `validation_error`: negative
+values, `min_versions=1` together with a non-zero age (the last version
+could disappear) and `max_age_days` without `min_versions`. Upload:
+overwriting an existing key → 409 `conflict` (the `force=true`
 parameter — admin session only: a scoped token and the owner receive
 403 `admin_required`); exceeding the quota → 413 `quota_exceeded`;
 exceeding the object limit → 413 `too_large`; a `Content-Length`
 mismatch → abort and a clean `tmp/`. Path formats and generated indexes
 per ecosystem — in [personal-repos.md](personal-repos.md).
+
+### Personal-repository retention
+
+`GET .../retention/preview` — a dry run of the engine: the storage is not
+modified and indexes are not regenerated. The response lists the versions
+that passed the `min_versions` filter (the top-N freshest by upload date
+are always protected):
+
+```json
+{
+  "candidates": [
+    {"key": "repo/1/apt/pool/main/h/htop/htop_1.0_amd64.deb",
+     "family": "pool/main/h/htop", "size": 1024,
+     "mod_time": "2026-03-01T10:00:00Z", "last_access": "2026-03-01T10:00:00Z",
+     "protected_by": ""}
+  ],
+  "totals": {"dry_run": true, "duration_seconds": 0.01, "families": 1,
+             "objects_scanned": 5, "candidates": 2, "deleted": 0,
+             "failed_deletes": 0, "bytes_freed": 0, "protected_by_min": 3,
+             "protected_by_access": 0, "protected_by_pin": 0}
+}
+```
+
+`protected_by` is the first protection that fired: `""` — the version is
+deleted, `access` — the version was requested more recently than
+`max_age_days`, `pin` — pinned. Without an access row the age is counted
+from the upload date (bootstrap). A disabled policy yields
+`candidates: []`.
+
+`POST .../retention/apply` — the real pass plus (when anything was
+deleted) index regeneration by the ecosystem adapter, as a background
+task `kind=retention`, label `repo-<id>`; the response is
+`202 {"task_id": …}`, observed via `GET /api/v1/tasks/{id}`. An active
+task of the same repository — 409 `task_duplicate`; worker limit — 429
+`task_limit`; degradation without the engine — 503
+`retention_unavailable`. Audit — `repo.retention.apply`.
+
+Pins: `PUT .../retention/pins/<path inside the repository>` pins a
+version (the object must exist, otherwise 404 `not_found`; a `+` in the
+name may be sent as `%2b`); `DELETE` unpins it (unpinning a missing pin is
+also 204, idempotent). `GET` returns **full** storage keys — they are
+compared against the `key` column of the object listing. Audit —
+`repo.retention.pin` / `repo.retention.unpin`. A pin is removed together
+with the repository (FK CASCADE).
+
+Not every ecosystem is subject to the policy: version families are
+resolved by the adapter (`port.FamilyResolver`), and nix
+(content-addressed objects) has none — the forecast of such a repository
+answers 501 `unsupported` and the GUI panel is hidden. Objects outside
+families (indexes, signatures, keys) are never touched.
 
 ## Public serving (:29202, no auth)
 

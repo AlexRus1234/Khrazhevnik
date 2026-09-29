@@ -74,6 +74,7 @@ func newChecksumAdapter(t *testing.T, r domain.Remote) (*Adapter, domain.Remote)
 }
 
 func TestResolveRepodataChecksumsAfterEnumerate(t *testing.T) {
+	t.Parallel()
 	remote := domain.Remote{
 		Name: "fedora", Ecosystem: Name, BaseURL: "https://mirrors.example/fedora",
 		Mode: domain.ModeMirror, Enabled: true,
@@ -135,6 +136,7 @@ func TestResolveRepodataChecksumsAfterEnumerate(t *testing.T) {
 }
 
 func TestParseRepomdChecksumType(t *testing.T) {
+	t.Parallel()
 	// алгоритм живёт в атрибуте type элемента <checksum>.
 	els := 0
 	for el, err := range ParseRepomd(strings.NewReader(testRepomdChecksums)) {

@@ -90,10 +90,24 @@ type Adapter struct {
 	rules   []compiledRule
 	sums    *checksumIndex
 
+	// decompressLimit — потолок разжатого primary.xml (0 = прод-дефолт
+	// maxDecompressedRpmMd). Поле только для тестов: прод-инстанс
+	// собирается реестром без параметров; уменьшенный кап не ослабляет
+	// контракт бомб-тестов — проверяется та же ветка limitedReader-отказа.
+	decompressLimit int64
+
 	mu            sync.RWMutex
 	remoteCache   map[string]remoteEntry
 	cacheLoaded   time.Time
 	reloadTimeout time.Duration
+}
+
+// decompressCap возвращает эффективный лимит декомпрессии.
+func (a *Adapter) decompressCap() int64 {
+	if a.decompressLimit > 0 {
+		return a.decompressLimit
+	}
+	return maxDecompressedRpmMd
 }
 
 // remoteEntry — кеш одной записи RemoteStore по имени: remote и момент
@@ -225,7 +239,7 @@ func (a *Adapter) Enumerate(ctx context.Context, remote domain.Remote, meta port
 		return nil, fmt.Errorf("rpm-md: primary %s: %w", href, err)
 	}
 	defer body.Close()
-	r, err := unwrapPrimary(body, href)
+	r, err := unwrapPrimary(body, href, a.decompressCap())
 	if err != nil {
 		return nil, err
 	}
@@ -304,17 +318,20 @@ func unsupportedPrimaryErr(href string) error {
 // (Content-Type у репозиториев часто absent или «text/plain»):
 // .gz — gzip, .zst — zstd (Fedora 41+/Leap 16.0 отдают primary только
 // в zst, отдельного .gz-варианта в repomd нет), прочее — как есть.
-// Поток ограничен maxDecompressedRpmMd (паттерн apt/pacman/apk):
-// бомба вместо primary валит sync одного remote с
+// Поток ограничен limit (прод-дефолт maxDecompressedRpmMd, паттерн
+// apt/pacman/apk): бомба вместо primary валит sync одного remote с
 // ErrDecompressTooLarge, а не крутит декомпрессию вечно.
-func unwrapPrimary(body io.Reader, href string) (io.Reader, error) {
+func unwrapPrimary(body io.Reader, href string, limit int64) (io.Reader, error) {
+	if limit <= 0 {
+		limit = maxDecompressedRpmMd
+	}
 	switch {
 	case strings.HasSuffix(href, ".gz"):
 		gz, err := gzip.NewReader(body)
 		if err != nil {
 			return nil, fmt.Errorf("rpm-md: unpack primary.xml.gz: %w", err)
 		}
-		return &limitedReader{r: gz, limit: maxDecompressedRpmMd}, nil
+		return &limitedReader{r: gz, limit: limit}, nil
 	case strings.HasSuffix(href, ".zst"):
 		zr, err := zstd.NewReader(body)
 		if err != nil {
@@ -323,7 +340,7 @@ func unwrapPrimary(body io.Reader, href string) (io.Reader, error) {
 		// Close обязан дойти до декодера (worker-горутины гасятся
 		// только им) — io.Closer-обёртка, а не голый limitedReader.
 		return &limitedReadCloser{
-			limitedReader: &limitedReader{r: zr, limit: maxDecompressedRpmMd},
+			limitedReader: &limitedReader{r: zr, limit: limit},
 			closer:        zstdReadCloser{zr},
 		}, nil
 	default:

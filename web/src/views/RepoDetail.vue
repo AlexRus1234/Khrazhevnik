@@ -23,7 +23,15 @@ import { request, uploadObject } from '../api'
 import { errText } from '../errors'
 import { formatBytes, formatSpeed, formatTime } from '../format'
 import { t } from '../i18n'
-import type { Perm, Repo, RepoObject, TaskSnapshot, User } from '../types'
+import type {
+  Perm,
+  Repo,
+  RepoObject,
+  RetentionCandidate,
+  RetentionPreview,
+  TaskSnapshot,
+  User,
+} from '../types'
 
 const route = useRoute()
 const repoID = Number(route.params.id)
@@ -38,6 +46,10 @@ const usersError = ref('')
 async function loadRepo(): Promise<void> {
   try {
     repo.value = await request<Repo>('GET', `/repos/${repoID}`)
+    // Форма политики — из загруженного репо, затем пины: колонка-замок
+    // в таблице объектов (нужен ecosystem — его знает только репо).
+    seedRetention(repo.value)
+    void loadPins()
   } catch (e) {
     error.value = errText(e)
   }
@@ -183,7 +195,7 @@ const reindexTask = ref<TaskSnapshot | null>(null)
 const reindexError = ref('')
 let reindexTimer: number | undefined
 
-async function pollReindex(taskID: string): Promise<void> {
+async function pollReindex(taskID: string, after?: () => Promise<void>): Promise<void> {
   try {
     reindexTask.value = await request<TaskSnapshot>('GET', `/tasks/${taskID}`)
   } catch {
@@ -195,6 +207,9 @@ async function pollReindex(taskID: string): Promise<void> {
   if (reindexTask.value.state !== 'running') {
     stopReindexPoll()
     await loadObjects()
+    // Хвост после терминального состояния (сессия 173): применение
+    // ретеншна дочитывает пины и показывает итог прохода.
+    if (after) await after()
   }
 }
 
@@ -205,22 +220,196 @@ function stopReindexPoll(): void {
   }
 }
 
+// startReindexPoll — единственная точка поллинга снимка задачи: им
+// пользуются и reindex, и применение ретеншна (202 → task_id).
+function startReindexPoll(taskID: string, after?: () => Promise<void>): void {
+  if (reindexTimer !== undefined) window.clearInterval(reindexTimer)
+  reindexTimer = window.setInterval(() => {
+    void pollReindex(taskID, after)
+  }, 1000)
+  void pollReindex(taskID, after)
+}
+
 async function reindex(): Promise<void> {
   reindexError.value = ''
   reindexTask.value = null
   try {
     const out = await request<{ task_id: string }>('POST', `/repos/${repoID}/reindex`)
-    if (reindexTimer !== undefined) window.clearInterval(reindexTimer)
-    reindexTimer = window.setInterval(() => {
-      void pollReindex(out.task_id)
-    }, 1000)
-    void pollReindex(out.task_id)
+    startReindexPoll(out.task_id)
   } catch (e) {
     reindexError.value = errText(e)
   }
 }
 
 onUnmounted(stopReindexPoll)
+
+// --- Ретеншн (сессия 173) -------------------------------------------------
+// Политика репо, прогноз кандидатов (dry-run), применение (confirm →
+// фоновая задача → поллинг) и пины версий в таблице объектов.
+// nix — content-addressed: семейств нет, движок отдаёт UnsupportedError
+// (retention.go:281) — блок и колонку пина не показываем.
+const canRetention = computed(() => repo.value !== null && repo.value.ecosystem !== 'nix')
+
+const retentionEnabled = ref(false)
+const retentionMin = ref(2)
+const retentionMaxAge = ref(90)
+const retentionSaving = ref(false)
+const retentionSaved = ref(false)
+const retentionError = ref('')
+
+// Пустая политика {0,0} — выключена. Поля при выключенной политике
+// держат прошлые значения: включение чекбокса отправляет их, а не нули.
+function seedRetention(r: Repo): void {
+  const min = r.retention.min_versions
+  const age = r.retention.max_age_days
+  retentionEnabled.value = min > 0 || age > 0
+  if (retentionEnabled.value) {
+    retentionMin.value = min
+    retentionMaxAge.value = age
+  }
+  retentionSaved.value = false
+}
+
+async function saveRetention(): Promise<void> {
+  if (repo.value === null || retentionSaving.value) return
+  retentionError.value = ''
+  retentionSaved.value = false
+  const min = retentionEnabled.value ? Number(retentionMin.value) : 0
+  const age = retentionEnabled.value ? Number(retentionMaxAge.value) : 0
+  if (!Number.isInteger(min) || !Number.isInteger(age) || min < 0 || age < 0) {
+    retentionError.value = t('repo.retentionNumError')
+    return
+  }
+  // Зеркало серверной валидации (domain.ValidateRetention): возраст без
+  // минимума ≥2 удалил бы последнюю версию семейства (окно 404) — такой
+  // запрос не отправляем вовсе; прочие отказы сервера показываем как есть.
+  if (age > 0 && min < 2) {
+    retentionError.value = t('repo.retentionMinError')
+    return
+  }
+  retentionSaving.value = true
+  const r = repo.value
+  try {
+    // PATCH — full-replace: тело собираем из загруженного репо, меняя
+    // только политику (имя/экосистема/владелец/квота не трогаются).
+    await request<Repo>('PATCH', `/repos/${repoID}`, {
+      body: {
+        name: r.name,
+        ecosystem: r.ecosystem,
+        owner_id: r.owner_id,
+        quota: { max_bytes: r.quota.max_bytes, max_objects: r.quota.max_objects },
+        retention: { min_versions: min, max_age_days: age },
+      },
+    })
+    await loadRepo()
+    retentionSaved.value = true
+  } catch (e) {
+    retentionError.value = errText(e)
+  } finally {
+    retentionSaving.value = false
+  }
+}
+
+// Прогноз — синхронный dry-run отчёт движка; пустой список кандидатов
+// не ошибка: dim-строка «кандидатов нет».
+const candidates = ref<RetentionCandidate[]>([])
+const previewing = ref(false)
+const previewDone = ref(false)
+const previewError = ref('')
+
+async function previewRetention(): Promise<boolean> {
+  if (previewing.value) return false
+  previewing.value = true
+  previewError.value = ''
+  applyError.value = ''
+  applyDone.value = ''
+  try {
+    const out = await request<RetentionPreview>('GET', `/repos/${repoID}/retention/preview`)
+    candidates.value = out.candidates ?? []
+    previewDone.value = true
+    return true
+  } catch (e) {
+    previewError.value = errText(e)
+    return false
+  } finally {
+    previewing.value = false
+  }
+}
+
+// Применение необратимо: confirm с числами прогноза (прогноз делаем,
+// если его ещё не было — цифры удаляемого нужны до нажатия) и
+// существующий механизм поллинга задачи.
+const applying = ref(false)
+const applyError = ref('')
+const applyDone = ref('')
+
+async function applyRetention(): Promise<void> {
+  if (applying.value) return
+  applyError.value = ''
+  applyDone.value = ''
+  if (!previewDone.value && !(await previewRetention())) return
+  const bytes = candidates.value.reduce((sum, c) => sum + c.size, 0)
+  const n = candidates.value.length
+  if (!window.confirm(t('repo.retentionConfirm', { n: String(n), size: formatBytes(bytes) }))) return
+  applying.value = true
+  try {
+    const out = await request<{ task_id: string }>('POST', `/repos/${repoID}/retention/apply`)
+    startReindexPoll(out.task_id, async () => {
+      // Итог прохода — последняя строка лога задачи (счётчики движка);
+      // листинг уже перечитан поллером, пины могли осиротеть.
+      const logs = reindexTask.value !== null ? reindexTask.value.logs : []
+      applyDone.value = logs.length > 0 ? logs[logs.length - 1] : t('repo.retentionApplyDone')
+      await loadPins()
+    })
+  } catch (e) {
+    applyError.value = errText(e)
+  } finally {
+    applying.value = false
+  }
+}
+
+// Пины: замок в строке таблицы объектов. GET pins отдаёт полные
+// storage-ключи (сверяем с o.key), PUT/DELETE — путь ВНУТРИ репо:
+// хендлер сам приклеивает префикс repo/<id>/<eco>/ (handlers_retention.go
+// retentionPinKey), полный ключ дал бы двойной префикс и 404.
+const pins = ref<string[]>([])
+const pinError = ref('')
+
+function isPinned(key: string): boolean {
+  return pins.value.includes(key)
+}
+
+async function loadPins(): Promise<void> {
+  if (!canRetention.value) return
+  try {
+    pins.value = await request<string[]>('GET', `/repos/${repoID}/retention/pins`)
+  } catch (e) {
+    pinError.value = errText(e)
+  }
+}
+
+async function togglePin(key: string): Promise<void> {
+  pinError.value = ''
+  const path = relKey(key)
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/')
+  try {
+    await request(isPinned(key) ? 'DELETE' : 'PUT', `/repos/${repoID}/retention/pins/${path}`)
+    await loadPins()
+  } catch (e) {
+    pinError.value = errText(e)
+  }
+}
+
+// Причина защиты из строки прогноза: min/access/pin (движок отдаёт
+// access|pin; min оставлен на будущее — ключи есть в обоих словарях).
+function protectedLabel(by: string): string {
+  if (by === 'access') return t('repo.protectedByAccess')
+  if (by === 'pin') return t('repo.protectedByPin')
+  if (by === 'min') return t('repo.protectedByMin')
+  return by
+}
 
 function userName(id: number): string {
   const u = users.value.find((x) => x.id === id)
@@ -297,6 +486,66 @@ function userName(id: number): string {
       </form>
     </div>
 
+    <div v-if="repo && canRetention" class="panel">
+      <h2>{{ t('repo.retention') }}</h2>
+      <p class="dim">{{ t('repo.retentionPinned') }}</p>
+      <form class="row" @submit.prevent="saveRetention">
+        <label class="field check"
+          >{{ t('repo.retentionEnable') }}
+          <input v-model="retentionEnabled" type="checkbox" />
+        </label>
+        <label class="field"
+          >{{ t('repo.retentionMin') }}
+          <input v-model.number="retentionMin" type="number" min="0" :disabled="!retentionEnabled" />
+        </label>
+        <label class="field"
+          >{{ t('repo.retentionMaxAge') }}
+          <input v-model.number="retentionMaxAge" type="number" min="0" :disabled="!retentionEnabled" />
+        </label>
+        <button class="btn" type="submit" :disabled="retentionSaving">{{ t('repo.retentionSave') }}</button>
+      </form>
+      <p v-if="retentionError" class="error">{{ retentionError }}</p>
+      <p v-else-if="retentionSaved" class="ok">{{ t('repo.retentionSaved') }}</p>
+      <div class="row">
+        <button class="btn" type="button" :disabled="previewing" @click="previewRetention">
+          {{ t('repo.retentionPreview') }}
+        </button>
+        <button class="btn danger" type="button" :disabled="applying" @click="applyRetention">
+          {{ t('repo.retentionApply') }}
+        </button>
+      </div>
+      <p v-if="previewError" class="error">{{ previewError }}</p>
+      <p v-if="applyError" class="error">{{ applyError }}</p>
+      <p v-else-if="applyDone" class="ok">{{ applyDone }}</p>
+      <table v-if="candidates.length > 0">
+        <thead>
+          <tr>
+            <th>{{ t('repo.colPath') }}</th>
+            <th>{{ t('repo.colFamily') }}</th>
+            <th>{{ t('repo.colSize') }}</th>
+            <th>{{ t('repo.colModified') }}</th>
+            <th>{{ t('repo.colLastAccess') }}</th>
+            <th>{{ t('repo.colProtected') }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="c in candidates" :key="c.key">
+            <td class="mono" :title="c.key">{{ relKey(c.key).slice(0, 79) }}</td>
+            <td class="mono">{{ c.family }}</td>
+            <td>{{ formatBytes(c.size) }}</td>
+            <td class="dim">{{ formatTime(c.mod_time) }}</td>
+            <td class="dim">{{ formatTime(c.last_access) }}</td>
+            <td>
+              <span v-if="c.protected_by !== ''" class="badge">{{ protectedLabel(c.protected_by) }}</span>
+              <span v-else class="dim">—</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else-if="previewDone" class="dim">{{ t('repo.candidatesEmpty') }}</p>
+    </div>
+    <p v-else-if="repo" class="dim">{{ t('repo.retentionNotSupported') }}</p>
+
     <div class="panel">
       <h2>{{ t('repo.objects', { n: objects.length }) }}</h2>
       <table v-if="objects.length > 0">
@@ -305,6 +554,7 @@ function userName(id: number): string {
             <th>{{ t('repo.colPath') }}</th>
             <th>{{ t('repo.colSize') }}</th>
             <th>{{ t('repo.colModified') }}</th>
+            <th v-if="canRetention"></th>
             <th></th>
           </tr>
         </thead>
@@ -313,6 +563,16 @@ function userName(id: number): string {
             <td class="mono">{{ relKey(o.key) }}</td>
             <td>{{ formatBytes(o.size) }}</td>
             <td class="dim">{{ formatTime(o.mod_time) }}</td>
+            <td v-if="canRetention">
+              <button
+                class="btn small"
+                :title="isPinned(o.key) ? t('repo.unpin') : t('repo.pin')"
+                :aria-label="isPinned(o.key) ? t('repo.unpin') : t('repo.pin')"
+                @click="togglePin(o.key)"
+              >
+                {{ isPinned(o.key) ? '🔒' : '🔓' }}
+              </button>
+            </td>
             <td>
               <button class="btn danger small" @click="deleteObject(o.key)">{{ t('common.delete') }}</button>
             </td>
@@ -320,6 +580,7 @@ function userName(id: number): string {
         </tbody>
       </table>
       <p v-else class="dim">{{ t('repo.objectsEmpty') }}</p>
+      <p v-if="pinError" class="error">{{ pinError }}</p>
     </div>
 
     <div class="panel">

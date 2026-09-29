@@ -23,6 +23,7 @@ package port
 
 import (
 	"context"
+	"iter"
 	"time"
 
 	"khrazhevnik/internal/core/domain"
@@ -135,6 +136,43 @@ type StatsStore interface {
 	SaveStatsSnapshot(ctx context.Context, rows []domain.CacheStatsRow) error
 	StatsSnapshot(ctx context.Context) ([]domain.CacheStatsRow, error)
 	ResetStats(ctx context.Context) error
+}
+
+// AccessStore — учёт обращений к объектам (object_access): давность
+// обращения к конкретной версии — критерий удаления ретеншна и основа
+// будущего eviction. Запись батч-мёржем, не per-request (write-
+// амплификация; прецедент снапшот-модели сессии 95): движок копит
+// обращения в памяти, keeper (сессия 167) сбрасывает их пачками;
+// MergeAccess применяет пачку одной транзакцией — аккумулирует hits и
+// не откатывает last_access_at назад. Порт общий для личных репо и
+// кеш-прокси (scope записи).
+type AccessStore interface {
+	// MergeAccess — upsert-батч одной транзакцией: last_access_at =
+	// MAX(старое, новое), hits = старое + hits; пустой срез — no-op.
+	MergeAccess(ctx context.Context, rows []domain.ObjectAccess) error
+	// AccessByPrefix — чтение записей scope с префиксом key (курсор
+	// rows без OFFSET, как ForEachObjectMeta): ошибка в потоке —
+	// терминальная, обход прекращается. Пустая последовательность без
+	// ошибки означает «обращений нет», но никогда «не удалось прочесть».
+	AccessByPrefix(ctx context.Context, scope, prefix string) (iter.Seq2[domain.ObjectAccess, error], error)
+	// AccessEntry — точечный лукап; отсутствие — *domain.NotFoundError.
+	AccessEntry(ctx context.Context, scope, key string) (domain.ObjectAccess, error)
+}
+
+// PinStore — точечные исключения ретеншна: версия, закреплённая
+// пользователем, жива независимо от политики (третья защита, складывается
+// с топ-N и свежим обращением по ИЛИ — решение владельца 2026-09-25).
+// Строковая таблица repo_pins (не колонка объектного индекса): пины —
+// редкие ручные ключи хранилища, а не свойство каждого объекта.
+// SetPin идемпотентен в обе стороны: pinned=true на существующем пине и
+// pinned=false на отсутствующем — успех (повторная установка/снятие
+// идемпотентны, «ненайденного пина» не существует как ошибки).
+type PinStore interface {
+	// Pins — ключи хранилища, закреплённые в репозитории, по возрастанию
+	// ключа; пусто без ошибки — «пинов нет».
+	Pins(ctx context.Context, repoID int64) ([]string, error)
+	// SetPin ставит (pinned=true) или снимает (pinned=false) пин.
+	SetPin(ctx context.Context, repoID int64, key string, pinned bool) error
 }
 
 // SessionRevocationStore — персистентный отзыв JWT-сессий: logout

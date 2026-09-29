@@ -23,7 +23,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -93,6 +95,102 @@ func getPublicRange(t *testing.T, env *repoEnv, path, rangeHdr, ifRange string) 
 	return rec
 }
 
+// accessRecorderMock — локальный мок AccessRecorder со срезом записей
+// (сессия 168): тестам важны факт и параметры фиксации, БД не нужна.
+// Мьютекс — потому что реальный HTTP-стек вызывает хендлер в чужой
+// горутине (httptest-сервер), а читает тест из своей.
+type accessRecorderMock struct {
+	mu   sync.Mutex
+	recs [][2]string
+}
+
+func (m *accessRecorderMock) Record(scope, key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recs = append(m.recs, [2]string{scope, key})
+}
+
+func (m *accessRecorderMock) records() [][2]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([][2]string(nil), m.recs...)
+}
+
+// TestPublicRepoAccessRecording — точки фиксации обращений на публичном
+// роутере личного репо (сессия 168): успешная выдача объекта — запись
+// {repo, ключ единого namespace}; отсутствующий объект — записей нет
+// (404 не потребление: иначе сканер продлевает жизнь мусору); Range —
+// тоже выдача, точка фиксации одна на обе ветки; nil-рекордер
+// (выключенный трекинг/деградация) — раздача как прежде, паник нет.
+func TestPublicRepoAccessRecording(t *testing.T) {
+	t.Parallel()
+	clock := testutil.FixedClock(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC))
+	repos := testutil.NewFakeRepoStore()
+	repo, err := repos.CreateRepo(t.Context(), domain.Repo{Name: "alice", OwnerID: 2, Ecosystem: "apt", CreatedAt: clock.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage := testutil.NewFakeStorage(clock)
+	storedKey := port.RepoPrefix(repo) + "/pool/main/a/foo.deb"
+	w, err := storage.Put(t.Context(), storedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(w, rangeFixture); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &accessRecorderMock{}
+	h := BuildPublicRouter(Deps{Storage: storage, Repos: repos, AccessRecorder: rec})
+
+	// Полная выдача: 200 + запись ровно одна и с ключом хранения объекта.
+	if got := get(t, h, "/repo/alice/pool/main/a/foo.deb"); got.Code != http.StatusOK {
+		t.Fatalf("GET объекта = %d, хочу 200", got.Code)
+	}
+	want := [][2]string{{domain.AccessScopeRepo, storedKey}}
+	if got := rec.records(); !slices.Equal(got, want) {
+		t.Errorf("записи после полной выдачи = %v, хочу %v", got, want)
+	}
+
+	// Отсутствующий объект — 404 и НИ одной новой записи.
+	if got := get(t, h, "/repo/alice/pool/main/a/bar.deb"); got.Code != http.StatusNotFound {
+		t.Fatalf("GET отсутствующего объекта = %d, хочу 404", got.Code)
+	}
+	if got := rec.records(); !slices.Equal(got, want) {
+		t.Errorf("записи после 404 = %v, хочу прежние %v", got, want)
+	}
+
+	// Range — та же точка фиксации (ключ тот же).
+	req := httptest.NewRequest(http.MethodGet, "/repo/alice/pool/main/a/foo.deb", nil)
+	req.Header.Set("Range", "bytes=0-9")
+	recRange := httptest.NewRecorder()
+	h.ServeHTTP(recRange, req)
+	if recRange.Code != http.StatusPartialContent {
+		t.Fatalf("Range-ответ = %d, хочу 206", recRange.Code)
+	}
+	want = append(want, [2]string{domain.AccessScopeRepo, storedKey})
+	if got := rec.records(); !slices.Equal(got, want) {
+		t.Errorf("записи после Range = %v, хочу %v", got, want)
+	}
+
+	// nil-рекордер: обе ветки отдают прежние байты, трекинг выключен.
+	hNoRec := BuildPublicRouter(Deps{Storage: storage, Repos: repos})
+	got := get(t, hNoRec, "/repo/alice/pool/main/a/foo.deb")
+	if got.Code != http.StatusOK || got.Body.String() != rangeFixture {
+		t.Errorf("nil-рекордер: GET = %d, тело %q", got.Code, got.Body.String())
+	}
+	reqNoRec := httptest.NewRequest(http.MethodGet, "/repo/alice/pool/main/a/foo.deb", nil)
+	reqNoRec.Header.Set("Range", "bytes=0-9")
+	recNoRec := httptest.NewRecorder()
+	hNoRec.ServeHTTP(recNoRec, reqNoRec)
+	if recNoRec.Code != http.StatusPartialContent || recNoRec.Body.String() != rangeFixture[0:10] {
+		t.Errorf("nil-рекордер: Range = %d, тело %q", recNoRec.Code, recNoRec.Body.String())
+	}
+}
+
 // TestPublicRepoFileHTMLContentIsDownloadedNotRendered — ядро аудита
 // 2026-08-30 (stored-XSS): объект, тело которого начинается с
 // «<html», отдаётся с Content-Type application/octet-stream (тип по
@@ -100,6 +198,7 @@ func getPublicRange(t *testing.T, env *repoEnv, path, rangeHdr, ifRange string) 
 // как страницу домена зеркала. Тело при этом byte-exact: заголовки
 // ответа не переписывают сохранённые байты.
 func TestPublicRepoFileHTMLContentIsDownloadedNotRendered(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	evil := []byte("<html><script>alert(1)</script></html>")
@@ -126,6 +225,7 @@ func TestPublicRepoFileHTMLContentIsDownloadedNotRendered(t *testing.T) {
 // .json → application/json; известные пакетные расширения и всё
 // неизвестное → application/octet-stream (fail closed к скачиванию).
 func TestPublicRepoFileContentTypesByExtension(t *testing.T) {
+	t.Parallel()
 	for path, want := range map[string]string{
 		"pool/main/a/foo.deb":     "application/octet-stream",
 		"dists/stable/Release":    "application/octet-stream",
@@ -143,6 +243,7 @@ func TestPublicRepoFileContentTypesByExtension(t *testing.T) {
 // TestPublicRepoFileUnknownExtensionOctetStream — объект с
 // неизвестным расширением и HTML-подобным телом отдаётся бинарём.
 func TestPublicRepoFileUnknownExtensionOctetStream(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	uploadRepoObject(t, env, repoID, "pool/main/e/evil.html", []byte("<script>alert(1)</script>"))
@@ -160,6 +261,7 @@ func TestPublicRepoFileUnknownExtensionOctetStream(t *testing.T) {
 // :29202 (сессия 36, задача 3): repo-объекты, key.asc/nix-key.asc и
 // healthz — единый middleware публичного роутера.
 func TestPublicNoSniffOnEveryResponse(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnvWithNarSigner(t)
 	createRepoViaAPI(t, env, "alice", 2)
 
@@ -205,6 +307,7 @@ func TestPublicNoSniffOnEveryResponse(t *testing.T) {
 // реестра — про upload-гейт админ-API, публичная раздача смотрит
 // repo.Ecosystem.
 func TestPublicRepoCacheControlImmutable(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	rpmRepo, err := env.repos.CreateRepo(t.Context(), domain.Repo{Name: "fedora", OwnerID: 2, Ecosystem: "rpm-md", CreatedAt: env.clock.Now()})
 	if err != nil {
@@ -254,6 +357,7 @@ func TestPublicRepoCacheControlImmutable(t *testing.T) {
 // индекса). Теперь .db не иммутабелен ни при каком имени репо, а
 // реальный пакет .pkg.tar.zst — иммутабелен.
 func TestPublicRepoPacmanSuffixImmutable(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repo, err := env.repos.CreateRepo(t.Context(), domain.Repo{Name: "x.pkg.tar.y", OwnerID: 2, Ecosystem: "pacman", CreatedAt: env.clock.Now()})
 	if err != nil {
@@ -282,6 +386,7 @@ func TestPublicRepoPacmanSuffixImmutable(t *testing.T) {
 // сломаны», а не 502 «виноват upstream». Фейк-обёртка инжектит сбой в
 // boundary, errno носителя не имитируется.
 func TestPublicRepoCatalogUnavailable503(t *testing.T) {
+	t.Parallel()
 	repos := &failingRepoStore{RepoStore: testutil.NewFakeRepoStore(), err: errors.New("dial tcp 10.0.0.9:5432: connection refused")}
 	storage := testutil.NewFakeStorage(testutil.FixedClock(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)))
 	h := BuildPublicRouter(Deps{Storage: storage, Repos: repos, Signer: &fakeKeySigner{}, NarSigner: &fakeNarKeySigner{}})
@@ -312,6 +417,7 @@ func TestPublicRepoCatalogUnavailable503(t *testing.T) {
 // невозможен ни при каком upstream. nosniff стоит и здесь; ТЕЛО при
 // этом byte-exact — инвариант про байты, не про заголовок.
 func TestPublicProxyContentTypeAllowlistWithNoSniff(t *testing.T) {
+	t.Parallel()
 	const html = "<html><body>mirror index</body></html>"
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -339,6 +445,7 @@ func TestPublicProxyContentTypeAllowlistWithNoSniff(t *testing.T) {
 // отбрасывает сам net/http, httptest.Recorder записал бы запись
 // хендлера как «тело».
 func TestPublicHeadRoutes(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	uploadRepoObject(t, env, repoID, "pool/main/a/foo.deb", []byte("deb"))
@@ -385,6 +492,7 @@ func TestPublicHeadRoutes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			if tc.warm {
 				// прогрев: первый GET — MISS, HEAD после него — HIT;
 				// сверяем заголовки в одинаковом состоянии кеша
@@ -436,6 +544,7 @@ func (s *naiveStorage) Get(_ context.Context, key string) (port.Object, error) {
 // валидации на traversal-ключе даёт сырую ошибку (до фикса — 502
 // «proxy error», после — 400 invalid_key из validate.go).
 func TestPublicRepoTraversalRejectedAtWebLayer(t *testing.T) {
+	t.Parallel()
 	repos := testutil.NewFakeRepoStore()
 	_, err := repos.CreateRepo(t.Context(), domain.Repo{Name: "alice", OwnerID: 2, Ecosystem: "apt", CreatedAt: time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)})
 	if err != nil {
@@ -458,6 +567,7 @@ func TestPublicRepoTraversalRejectedAtWebLayer(t *testing.T) {
 // запрос с «%» отсекался whitelist'ом — 400 вместо объекта. Декод
 // wildcard'а сводит оба написания в один ключ.
 func TestPublicRepoFilePercentEscapedPlus(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	body := []byte("gxx-pkg-bytes")
@@ -481,6 +591,7 @@ func TestPublicRepoFilePercentEscapedPlus(t *testing.T) {
 // serveRanged, что прокси-кеш (волна Range-206): объект, залитый через
 // admin-API, bytes=0-9 → 206, тело == первые 10 байт.
 func TestRepoFileSingleRange(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	uploadRepoObject(t, env, repoID, "pool/main/a/foo.deb", []byte(rangeFixture))
@@ -507,6 +618,7 @@ func TestRepoFileSingleRange(t *testing.T) {
 // пересекается с объектом → 416 + Content-Range: bytes */N; мусорный
 // синтаксис — сервер MAY игнорировать → 200-полный (RFC 9110).
 func TestRepoFileRange416AndGarbage(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	uploadRepoObject(t, env, repoID, "pool/main/a/foo.deb", []byte(rangeFixture))
@@ -532,6 +644,7 @@ func TestRepoFileRange416AndGarbage(t *testing.T) {
 // части разбираются тем же тест-парсером, что suite прокси (сессия 112,
 // один пакет — переиспользование без дубля).
 func TestRepoFileMultipart(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	uploadRepoObject(t, env, repoID, "pool/main/a/foo.bin", []byte(rangeFixture))
@@ -562,6 +675,7 @@ func TestRepoFileMultipart(t *testing.T) {
 // «fs их не знает»), поэтому If-Range работает только датой: совпавшая
 // с Last-Modified → диапазон применяется (206), чужая → 200-полный.
 func TestRepoFileIfRangeLastModified(t *testing.T) {
+	t.Parallel()
 	env := newRepoEnv(t)
 	repoID := createRepoViaAPI(t, env, "alice", 2)
 	uploadRepoObject(t, env, repoID, "pool/main/a/foo.deb", []byte(rangeFixture))

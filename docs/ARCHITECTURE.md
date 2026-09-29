@@ -68,7 +68,8 @@ internal/core/
   domain/     модели + типизированные ошибки; только stdlib, без os/net
   config/     struct-конфиг: defaults → TOML → env KHRZ_* (+file://-секреты)
   dbtalk/     мини-шим SQL-диалектов каталога: Placeholder/Upsert/эпоха
-  engine/     usecase-логика: cache, mirror, publish, auth; без net/http
+  engine/     usecase-логика: cache, mirror, publish, auth, retention,
+              accesskeeper; без net/http
   registry/   compile-time реестр модулей
   web/        chi-роутеры, middleware, TaskRegistry, embed SPA; тонкая доставка;
               range.go:serveRanged — единая точка Range-семантики (200/206/416,
@@ -311,10 +312,52 @@ type UpstreamProxyStore interface {
   xbps-репо подписывает пакеты им же — функциональный аналог
   `xbps-rindex --add --sign --sign-pkg`.
 
+Инварианты ретеншна личных репо (волна «Ретеншн-политики», сессии 164–175):
+
+- политика per-repo (`repos.min_versions`/`max_age_days`, миграция 0011):
+  версия удаляется, только если она не входит в топ-`min_versions`
+  семейства по `ModTime` И к ней не обращались дольше `max_age_days` И
+  она не запинена — защиты складываются по ИЛИ; `max_age_days=0` при
+  `min_versions≥2` — «только keep-N»; `{0,0}` — политика выключена;
+- семейство версий резолвит адаптер (`port.FamilyResolver.ObjectFamily`
+  по пути внутри репо: apt — `pool/<component>/<l>/<имя-исходника>`,
+  rpm-md — имя до первого сегмента с цифры, pacman/apk/xbps — имя
+  пакета). Экосистема без резолвера (nix — content-addressed) отдаёт
+  `domain.UnsupportedError`: молчаливого no-op нет. Объекты вне семейств
+  (индексы, подписи, ключи) проход не трогает;
+- давность обращения — `object_access` (`port.AccessStore`, миграция
+  0012); таблица общая с кеш-прокси (`scope` ∈ {repo, cache}; кеш
+  пишет только HIT/STALE — задел eviction следующей волны). Запись
+  асинхронная: `engine/accesskeeper` копит обращения в памяти и мёржит
+  их батчем с периодом `storage.access_flush_interval` (30s; `0` —
+  трекинг выключен), время берётся у `port.Clock` и назад не
+  откатывается;
+- **инвариант «обращение продлевает жизнь версии»:** публичный GET
+  объекта репо фиксирует обращение до отдачи тела (обе ветки — полная и
+  Range), поэтому скачиваемая версия не стареет. Нет строки обращений —
+  давность считается от даты загрузки (`ModTime`, бутстрап);
+- пины — `repo_pins` (`port.PinStore`, миграция 0013): точечное
+  исключение по ключу хранилища, идемпотентны, удаление репо уносит
+  пины (CASCADE);
+- проход: `Apply` (движок `engine/retention`) — dry-run без мутаций,
+  удаления с потолком `deleteConcurrency=4`; `ApplyAndReindex`
+  перегенерирует индексы адаптером только при непустых удалениях, сбой
+  переиндексации удаления не откатывает. Периодический проход
+  (runner того же пакета, `retention.interval` 24h, `0` — выключено)
+  идёт по репо с включённой политикой последовательно; сбой одного репо
+  не стопает остальных; `Stop` без финального прохода — удаления в
+  момент останова сервера недопустимы;
+- метрики `khrazhevnik_retention_{runs,deleted_keys,deleted_bytes,
+  failed_deletes}_total`, гейдж `…_last_pass_timestamp`, гистограмма
+  `…_duration_seconds` (значения пишут хуки wire, не движок).
+
 ## 5. Namespace хранения
 
 - `cache/<eco>/<remote-id>/<путь-upstream>` — прокси/зеркало, byte-exact.
 - `repo/<repo-id>/<схема-экосистемы>/<путь>` — личные репо.
+- учёт обращений (`object_access`) и пины (`repo_pins`) адресуются теми
+  же ключами (`scope`+`key`), что и namespace: давность и пин привязаны
+  к конкретному объекту хранилища.
 - `tmp/<uuid>` — незавершённые загрузки (fs: локальный data-dir; s3:
   спул на локальный диск, затем одиночный PUT — атомарен).
 

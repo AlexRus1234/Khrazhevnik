@@ -151,6 +151,24 @@ func (g *Generator) ValidateObjectPath(p string) error {
 	return &domain.ValidationError{What: "путь apt-репо", Value: p, Reason: "неизвестное расширение (ожидалось .deb/.udeb/.ddeb/.dsc/.tar.*-src)"}
 }
 
+// ObjectFamily — port.FamilyResolver: семейство версий .deb-объекта —
+// каталог пула pool/<component>/<l>/<имя-исходника>/. У Debian в этом
+// каталоге лежат все бинарные пакеты одного исходника (libnl-core3 →
+// libnl-3-200, libnl-3-200-dbg, …), поэтому группировка по каталогу —
+// ровно то, что нужно ретеншну: версии одного пакета, как их видит apt.
+// Не-pool путь (dists/, by-hash, Release.gpg) — ok=false: индексы и
+// подписи ретеншн не трогает. Путь без файла-листа (pool/main/h/htop)
+// тоже ok=false — это каталог, а не объект.
+func (g *Generator) ObjectFamily(p string) (string, bool) {
+	parts := strings.Split(p, "/")
+	// pool/<component>/<l>/<имя-исходника>/<файл>
+	if len(parts) < 5 || parts[0] != "pool" ||
+		parts[1] == "" || parts[2] == "" || parts[3] == "" || parts[4] == "" {
+		return "", false
+	}
+	return parts[1] + "/" + parts[2] + "/" + parts[3], true
+}
+
 // GenerateIndexes обходит пул .deb, читает control из каждого, собирает
 // Packages (+.gz) и Release. Атомарность v1: запись ключей по одному
 // после полной генерации staging в памяти (окно рассинхрона ~секунды;

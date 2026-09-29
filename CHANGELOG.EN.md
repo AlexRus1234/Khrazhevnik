@@ -26,6 +26,87 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-09-29
+
+### Added
+
+- **DB (migrations 0011–0013):** the repository retention policy columns
+  `repos.min_versions`/`max_age_days`, the object-access table
+  `object_access(scope, key, last_access_at, hits)` — shared with the
+  cache proxy (future eviction reuses it) — and version pins
+  `repo_pins(repo_id, key, created_at)` with FK CASCADE on the
+  repository.
+- **Config:** `storage.access_flush_interval` (default `30s`, `0` —
+  access tracking off), `retention.interval` (default `24h`, `0` — the
+  periodic pass is off, cleanup stays manual).
+- **Engine:** access recording (the accesskeeper batch merge on the
+  public repository router and on cache HIT/STALE) and retention — a
+  candidate is a version OUTSIDE the family's top `min_versions` by
+  upload date, whose last access is older than
+  `now − max_age_days·24h` and which is not pinned; the protections
+  combine with OR (top-N / fresh access / pin), `max_age_days=0` means
+  “keep-N only”; dry-run forecast and application (delete + reindex), a
+  daily pass over the enabled repositories, metrics
+  `khrazhevnik_retention_*`; nix is the exception (content-addressed,
+  `UnsupportedError`).
+- **API:** personal-repository retention policies: the `retention` field
+  (`min_versions`, `max_age_days`) in `GET`/`POST`/`PATCH
+  /api/v1/repos`; cleanup forecast `GET
+  /api/v1/repos/{id}/retention/preview` (dry-run report: candidates with
+  their protection reason plus counters); application `POST
+  /api/v1/repos/{id}/retention/apply` (background task `kind=retention`,
+  409 while one is active); version pins `GET|PUT|DELETE
+  /api/v1/repos/{id}/retention/pins` (a pin keeps a version alive
+  regardless of the policy; audit `repo.retention.pin`/`unpin`).
+- **UI:** the “Retention” panel on a personal repository page — a policy
+  form (`min_versions`/`max_age_days`; disabling sends `{0,0}`), the
+  forecast (dry-run candidate table with the protection reason),
+  application behind a `confirm` (background task + polling) and version
+  pins (a lock in the object table row); for nix repositories the panel
+  is hidden — retention does not apply.
+- **Docs (session 175):** HISTORY (the wave section: commits, decisions,
+  API/config), ROADMAP (the plan collapsed into a “completed” status),
+  README and CHANGELOG.
+- **Admin API:** the build ecosystem directory `GET /api/v1/ecosystems`
+  (admin) → `{"ecosystems":[…]}`: the adapter registry keys, i.e. only
+  the ecosystems enabled by the config, in alphabetical order. The
+  personal-repository form takes its ecosystem dropdown from there
+  instead of the hard-coded list in the SPA.
+
+### Fixed
+
+- **UI:** the ecosystem dropdown of the personal-repository creation
+  form was missing `pacman`, `apk` and `rpm-md` — the hard-coded list
+  lagged behind the adapter registry, so repositories of those
+  ecosystems could only be created through the API. The list now comes
+  from the backend (`GET /api/v1/ecosystems`).
+
+- **API:** `PATCH /api/v1/repos/{id}` without the `retention` field no
+  longer resets the retention policy to `{0,0}`: an absent field means
+  “leave the policy alone” (the only such PATCH field — the rest are
+  full-replace), while a field that is present still replaces the whole
+  policy. `POST /api/v1/repos` without the field creates a repository
+  with the policy disabled, exactly as before.
+
+### Changed
+
+- **CI:** the push-to-verdict cycle is shorter. The tests of four hot
+  packages (`rpmmmd`, `apk`, `pacman`, `core/web`) are now parallelized
+  inside their packages (`t.Parallel()` — those packages accounted for
+  79% of the run's CPU time, while the tail was held by one or two hot
+  packages on a single core). The `Install Go toolchain` step now pulls
+  the Go toolchain tarball from the cache (Nora raw) with a pinned
+  version and sha256, and the distro-test leg's dependencies (`podman`,
+  `jq`, `nodejs`, `npm`, `openssl`) come through the Khrazhevnik cache
+  proxy — only the bootstrap downloads (`git`+`curl`), without which the
+  step-ca root cannot be fetched, still go outside.
+- **Tests:** decompression bombs (`rpm-md`, `apk`, `pacman`) and auth
+  logins no longer decompress/hash gigabytes: the parser decompression
+  limit is injected reduced in tests (the production default of 1 GiB
+  is unchanged, the ErrDecompressTooLarge contract is the same), and
+  bcrypt in config tests uses cost 4 (the minimum). The CI "Go tests"
+  step is ~10 minutes shorter; production behavior is untouched.
+
 ## [1.2.2] — 2026-09-25
 
 ### Added

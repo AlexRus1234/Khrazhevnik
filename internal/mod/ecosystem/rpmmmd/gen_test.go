@@ -146,6 +146,7 @@ func buildRPM(name, ver, rel, arch, summary string, size, buildtime int64, extra
 }
 
 func TestParseRPMHeaderGolden(t *testing.T) {
+	t.Parallel()
 	rpm := buildRPM("foo", "1.0", "1", "x86_64", "test package", 4096, 1724323200)
 	hdr, err := ParseRPMHeader(bytes.NewReader(rpm))
 	if err != nil {
@@ -181,6 +182,7 @@ func TestParseRPMHeaderGolden(t *testing.T) {
 }
 
 func TestParseRPMHeaderBadLeadMagic(t *testing.T) {
+	t.Parallel()
 	// первые 4 байта не 0xEDABEEODB → ErrInvalidRPM.
 	rpm := buildRPM("foo", "1.0", "1", "x86_64", "x", 1, 1)
 	rpm[0] = 0x00
@@ -191,6 +193,7 @@ func TestParseRPMHeaderBadLeadMagic(t *testing.T) {
 }
 
 func TestParseRPMHeaderBadHeaderMagic(t *testing.T) {
+	t.Parallel()
 	// верный lead, но sig header magic битый.
 	var lead [leadSize]byte
 	lead[0], lead[1], lead[2], lead[3] = 0xed, 0xab, 0xee, 0xdb
@@ -204,6 +207,7 @@ func TestParseRPMHeaderBadHeaderMagic(t *testing.T) {
 }
 
 func TestParseRPMHeaderTruncated(t *testing.T) {
+	t.Parallel()
 	// обрезанный поток посреди lead → ErrInvalidRPM.
 	rpm := buildRPM("foo", "1.0", "1", "x86_64", "x", 1, 1)
 	_, err := ParseRPMHeader(bytes.NewReader(rpm[:10]))
@@ -213,6 +217,7 @@ func TestParseRPMHeaderTruncated(t *testing.T) {
 }
 
 func TestParseRPMHeaderTruncatedMidMain(t *testing.T) {
+	t.Parallel()
 	// обрезан main data: lead + sig + main preamble, но data не дописан.
 	rpm := buildRPM("foo", "1.0", "1", "x86_64", "x", 1, 1)
 	// срезаем последние 4 байта (часть data) → io.ReadFull main data падает.
@@ -223,6 +228,7 @@ func TestParseRPMHeaderTruncatedMidMain(t *testing.T) {
 }
 
 func TestParseRPMHeaderMissingTags(t *testing.T) {
+	t.Parallel()
 	// main header без name → ErrInvalidRPM (нет обязательных тегов).
 	var lead [leadSize]byte
 	lead[0], lead[1], lead[2], lead[3] = 0xed, 0xab, 0xee, 0xdb
@@ -239,6 +245,7 @@ func TestParseRPMHeaderMissingTags(t *testing.T) {
 }
 
 func TestParseRPMHeaderSigHeaderPadding(t *testing.T) {
+	t.Parallel()
 	// sig header с data не кратным 8 → padding добивается до 8. Проверяем,
 	// что padding-логика читает main header верно. sig с одним строковым
 	// тегом "abc" → data=4 байта (с nul); sigPayload = 16(index)+4(data)=20,
@@ -268,6 +275,7 @@ func TestParseRPMHeaderSigHeaderPadding(t *testing.T) {
 }
 
 func TestGeneratorName(t *testing.T) {
+	t.Parallel()
 	g := &Generator{}
 	if g.Name() != Name {
 		t.Errorf("Name = %q, want %q", g.Name(), Name)
@@ -275,6 +283,7 @@ func TestGeneratorName(t *testing.T) {
 }
 
 func TestValidateObjectPath(t *testing.T) {
+	t.Parallel()
 	g := &Generator{}
 	cases := []struct {
 		path string
@@ -293,6 +302,43 @@ func TestValidateObjectPath(t *testing.T) {
 		got := err == nil
 		if got != c.want {
 			t.Errorf("ValidateObjectPath(%q) = %v, want ok=%v", c.path, err, c.want)
+		}
+	}
+}
+
+// port.FamilyResolver — compile-time контракт генератора.
+var _ port.FamilyResolver = (*Generator)(nil)
+
+// TestObjectFamily — port.FamilyResolver: семейство версий .rpm-объекта —
+// имя пакета из basename до сегмента-версии. Реальные имена (урок сессии 65).
+func TestObjectFamily(t *testing.T) {
+	t.Parallel()
+	g := &Generator{}
+	cases := []struct {
+		path   string
+		family string
+		ok     bool
+	}{
+		{"htop-3.3.0-4.fc44.x86_64.rpm", "htop", true},
+		{"libnl3-3.11.0-1.fc44.x86_64.rpm", "libnl3", true},
+		{"python3-pip-25.1.1-1.fc44.noarch.rpm", "python3-pip", true},
+		// .src.rpm — то же семейство, что бинарный: имя совпадает.
+		{"htop-3.3.0-4.fc44.src.rpm", "htop", true},
+		// Пакеты лежат где угодно под корнем репо — берём basename.
+		{"packages/x86_64/htop-3.3.0-4.fc44.x86_64.rpm", "htop", true},
+		// DeltaRPM — тот же разбор, что у .rpm.
+		{"bash-5.2.26-1.fc44.x86_64.drpm", "bash", true},
+		// Имя без границы версии (мусор) — вне семейств.
+		{"htop.rpm", "", false},
+		// Индексы, подписи и ключи — вне семейств.
+		{"repodata/primary.xml.gz", "", false},
+		{"repodata/repomd.xml.asc", "", false},
+		{"RPM-GPG-KEY-khrazhevnik", "", false},
+	}
+	for _, c := range cases {
+		family, ok := g.ObjectFamily(c.path)
+		if ok != c.ok || family != c.family {
+			t.Errorf("ObjectFamily(%q) = (%q, %v), want (%q, %v)", c.path, family, ok, c.family, c.ok)
 		}
 	}
 }
@@ -330,6 +376,7 @@ func readStorage(t *testing.T, storage *testutil.FakeStorage, key string) []byte
 }
 
 func TestGenerateIndexesSingleRpm(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -390,6 +437,7 @@ func TestGenerateIndexesSingleRpm(t *testing.T) {
 
 // roundtrip: список .rpm → primary.xml.gz → ParsePrimary → те же hrefs.
 func TestGenerateIndexesRoundtrip(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -427,6 +475,7 @@ func TestGenerateIndexesRoundtrip(t *testing.T) {
 }
 
 func TestGenerateIndexesEmptyRepo(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -446,6 +495,7 @@ func TestGenerateIndexesEmptyRepo(t *testing.T) {
 }
 
 func TestGenerateIndexesWrongEcosystem(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
@@ -458,6 +508,7 @@ func TestGenerateIndexesWrongEcosystem(t *testing.T) {
 }
 
 func TestGenerateIndexesContextCanceled(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -482,6 +533,7 @@ func (r *recordingProgress) Update(phase, current string, processed, total int64
 func (r *recordingProgress) Log(line string) { r.logs = append(r.logs, line) }
 
 func TestGenerateIndexesProgress(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -518,6 +570,7 @@ func (fakeSigner) SignDetached(_ context.Context, _ io.Reader) (io.Reader, error
 func (fakeSigner) PublicKey() ([]byte, error) { return []byte("pub-stub"), nil }
 
 func TestGenerateIndexesUnsignedNoAsc(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -532,6 +585,7 @@ func TestGenerateIndexesUnsignedNoAsc(t *testing.T) {
 }
 
 func TestGenerateIndexesSignedWritesAsc(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -566,6 +620,7 @@ func (failSigner) SignDetached(context.Context, io.Reader) (io.Reader, error) {
 func (failSigner) PublicKey() ([]byte, error) { return nil, nil }
 
 func TestGenerateIndexesSignedSignerErrorFails(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -581,6 +636,7 @@ func TestGenerateIndexesSignedSignerErrorFails(t *testing.T) {
 // прорывает атрибут primary.xml: кавычка экранирована, весь документ
 // валиден для стандартного XML-парсера.
 func TestGenerateIndexesAttrEscaping(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -618,6 +674,7 @@ func TestGenerateIndexesAttrEscaping(t *testing.T) {
 // фактических байт объекта, а не из Meta.Size хранилища: если метаданные
 // солгали, чексумма верна, а size — нет, и dnf падает на сверке.
 func TestGenerateIndexesHonestSize(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -663,6 +720,7 @@ func (l *lyingMetaStorage) Get(ctx context.Context, key string) (port.Object, er
 }
 
 func TestSetSigner(t *testing.T) {
+	t.Parallel()
 	g := &Generator{}
 	if g.signer != nil {
 		t.Fatal("новый Generator уже имеет signer")
@@ -696,6 +754,7 @@ func (f *failingListStorage) List(_ context.Context, _ string) iter.Seq2[port.Me
 // генерация падает, прежний repomd.xml остаётся байт-в-байт (fail-closed:
 // транзиентный сбой носителя не «опустошает» репо).
 func TestGenerateIndexesListingErrorKeepsOldIndexes(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -722,6 +781,7 @@ func TestGenerateIndexesListingErrorKeepsOldIndexes(t *testing.T) {
 // sanity: buildRPM даёт файл, чья sha256 отлична от нулевого массива
 // (защита от случайно-пустой фикстуры, что завалило бы checksum-тесты).
 func TestBuildRPMNonEmpty(t *testing.T) {
+	t.Parallel()
 	rpm := buildRPM("foo", "1.0", "1", "x86_64", "x", 1, 1)
 	if len(rpm) < leadSize+16 {
 		t.Fatalf("buildRPM слишком короткий: %d байт", len(rpm))
@@ -737,6 +797,7 @@ func TestBuildRPMNonEmpty(t *testing.T) {
 // requires/provides (STRING_ARRAY): без них primary.xml не сможет
 // передать dnf зависимости личного репо.
 func TestParseRPMHeaderDependencies(t *testing.T) {
+	t.Parallel()
 	rpm := buildRPM("foo", "1.0", "1", "x86_64", "test", 4096, 1724323200,
 		tagSpec{tag: tagSourceRPM, str: "foo-1.0-1.src.rpm"},
 		tagSpec{tag: tagRequireName, strs: []string{"libc.so.6", "libz.so.1"}, isArr: true},
@@ -762,6 +823,7 @@ func TestParseRPMHeaderDependencies(t *testing.T) {
 // TestParseRPMHeaderBadArrayTolerant — чужой тип или нулевой count у
 // тега-массива → nil (tolerant), парсер не валится.
 func TestParseRPMHeaderBadArrayTolerant(t *testing.T) {
+	t.Parallel()
 	rpm := buildRPM("foo", "1.0", "1", "x86_64", "test", 4096, 1724323200,
 		tagSpec{tag: tagRequireName, str: "not-an-array"}, // тип string, не массив
 		tagSpec{tag: tagProvideName, strs: []string{}, isArr: true},
@@ -784,6 +846,7 @@ func TestParseRPMHeaderBadArrayTolerant(t *testing.T) {
 // Инвариант: аллокация ≤ len(data) (каждая строка ≥1 байта
 // NUL-терминатора), парсер тихо собирает фактические строки.
 func TestParseRPMHeaderHugeArrayCountNoOOM(t *testing.T) {
+	t.Parallel()
 	rpm := buildRPM("foo", "1.0", "1", "x86_64", "test", 4096, 1724323200,
 		tagSpec{tag: tagRequireName, strs: []string{"libc.so.6", "libz.so.1"}, isArr: true},
 	)
@@ -814,6 +877,7 @@ func TestParseRPMHeaderHugeArrayCountNoOOM(t *testing.T) {
 // rpm:requires/rpm:provides (entry с name): `dnf install` резолвит
 // зависимости из личного репо.
 func TestGenerateIndexesDependencies(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -855,6 +919,7 @@ func TestGenerateIndexesDependencies(t *testing.T) {
 // TestGenerateIndexesNoDependenciesOmitsBlocks — без тегов зависимостей
 // блоки rpm:requires/rpm:provides/rpm:sourcerpm не эмитятся (не пустышки).
 func TestGenerateIndexesNoDependenciesOmitsBlocks(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}

@@ -173,9 +173,10 @@ func setOnceInt(p *int64, v string) {
 // .PKGINFO → ParsePkgInfo. r — сырые байты .pkg.tar.zst (генератор
 // tee'ит через SHA256, поэтому readPkgInfoFromPackage читает ровно
 // столько, сколько нужно для .PKGINFO, а остаток дочитывает вызывающий
-// для хеша — как apt/rpm генераторы).
-func readPkgInfoFromPackage(ctx context.Context, r io.Reader) (*PkgInfo, error) {
-	dr, err := decompressPkg(r)
+// для хеша — как apt/rpm генераторы). decompressLimit — потолок разжатого
+// потока (0 = maxDecompressed).
+func readPkgInfoFromPackage(ctx context.Context, r io.Reader, decompressLimit int64) (*PkgInfo, error) {
+	dr, err := decompressPkg(r, decompressLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -192,13 +193,16 @@ func readPkgInfoFromPackage(ctx context.Context, r io.Reader) (*PkgInfo, error) 
 // гигабайты tar-мусора до .PKGINFO) рвал reindex-задачу памятью.
 // Сентинел ограничителя — ErrDecompressTooLarge напрямую: errors.Is
 // работает через любые %w-обёртки tar-уровня без ручной трансляции.
-func decompressPkg(r io.Reader) (io.ReadCloser, error) {
+func decompressPkg(r io.Reader, decompressLimit int64) (io.ReadCloser, error) {
 	zr, err := zstd.NewReader(r)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrBadZstd, err)
 	}
+	if decompressLimit <= 0 {
+		decompressLimit = maxDecompressed
+	}
 	return &limitedReadCloser{
-		limitedReader: &limitedReader{r: zr, limit: maxDecompressed, sentinel: ErrDecompressTooLarge},
+		limitedReader: &limitedReader{r: zr, limit: decompressLimit, sentinel: ErrDecompressTooLarge},
 		closer:        zstdReadCloser{zr},
 	}, nil
 }

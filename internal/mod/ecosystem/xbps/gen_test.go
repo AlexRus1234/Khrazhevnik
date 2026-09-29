@@ -508,6 +508,41 @@ func TestValidateObjectPath(t *testing.T) {
 	}
 }
 
+// port.FamilyResolver — compile-time контракт генератора.
+var _ port.FamilyResolver = (*Generator)(nil)
+
+// TestObjectFamily — port.FamilyResolver: семейство версий xbps-объекта —
+// имя пакета из pkgver (SplitPkgver). Реальные имена Void (регистр значим).
+func TestObjectFamily(t *testing.T) {
+	g := &Generator{}
+	cases := []struct {
+		path   string
+		family string
+		ok     bool
+	}{
+		{"htop-3.3.0_2.x86_64.xbps", "htop", true},
+		{"libnl3-3.11.0_1.x86_64.xbps", "libnl3", true},
+		// Имя с дефисом и цифрой.
+		{"python3-pip-25.1.1_1.noarch.xbps", "python3-pip", true},
+		// Регистр имени сохраняем: Mustache в Void реален.
+		{"Mustache-4.1_1.x86_64.xbps", "Mustache", true},
+		// Дефис в архитектуре (musl) границу имени/версии не сдвигает.
+		{"htop-3.3.0_2.x86_64-musl.xbps", "htop", true},
+		// Индекс и подпись — вне семейств; мусорный pkgver — тоже.
+		{"x86_64-repodata", "", false},
+		{"htop-3.3.0_2.x86_64.xbps.sig2", "", false},
+		{"htop.x86_64.xbps", "", false},
+		// Неканоничное имя без арх-хвоста — вне семейств.
+		{"htop.xbps", "", false},
+	}
+	for _, c := range cases {
+		family, ok := g.ObjectFamily(c.path)
+		if ok != c.ok || family != c.family {
+			t.Errorf("ObjectFamily(%q) = (%q, %v), want (%q, %v)", c.path, family, ok, c.family, c.ok)
+		}
+	}
+}
+
 func TestGeneratorName(t *testing.T) {
 	if got := (&Generator{}).Name(); got != Name {
 		t.Errorf("Name = %q, want %q", got, Name)

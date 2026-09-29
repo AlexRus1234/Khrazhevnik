@@ -24,6 +24,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -40,8 +41,16 @@ import (
 
 // newProxyEnv — публичный роутер с живым движком кеша над
 // httptest-upstream. Возвращает и Metrics-экспортер (завёрнут в Deps)
-// для smoke-проверок exposition-текста.
+// для smoke-проверок exposition-текста. Фиксации обращений выключены
+// (nil-рекордер — деградация) — вариант с рекордером ниже.
 func newProxyEnv(t *testing.T, h http.HandlerFunc) (http.Handler, *testutil.ManualClock, *metrics.Cache, *metrics.Handler, *httptest.Server) {
+	t.Helper()
+	return newProxyEnvWith(t, h, nil)
+}
+
+// newProxyEnvWith — тот же стенд с инжектированным рекордером обращений
+// (сессия 168): тесты точек фиксации смотрят пары (scope, ключ).
+func newProxyEnvWith(t *testing.T, h http.HandlerFunc, recorder AccessRecorder) (http.Handler, *testutil.ManualClock, *metrics.Cache, *metrics.Handler, *httptest.Server) {
 	t.Helper()
 	up := httptest.NewServer(h)
 	t.Cleanup(up.Close)
@@ -55,7 +64,7 @@ func newProxyEnv(t *testing.T, h http.HandlerFunc) (http.Handler, *testutil.Manu
 		m,
 	)
 	eco := testutil.FakeEcosystem{NameOf: "t", Base: up.URL, MutableTTL: 40 * time.Second}
-	handler := BuildPublicRouter(Deps{Version: "test", Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}, Metrics: exporter})
+	handler := BuildPublicRouter(Deps{Version: "test", Cache: engine, Ecosystems: map[string]port.Ecosystem{"t": eco}, Metrics: exporter, AccessRecorder: recorder})
 	return handler, clock, m, exporter, up
 }
 
@@ -100,6 +109,7 @@ func (writeFailStorage) Put(context.Context, string) (port.Writer, error) {
 }
 
 func TestProxyUnknownEcosystem(t *testing.T) {
+	t.Parallel()
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 	if rec := get(t, h, "/nosuch/pkg/a.deb"); rec.Code != http.StatusNotFound {
 		t.Fatalf("неизвестная экосистема = %d, хочу 404", rec.Code)
@@ -107,6 +117,7 @@ func TestProxyUnknownEcosystem(t *testing.T) {
 }
 
 func TestProxyServesAndCaches(t *testing.T) {
+	t.Parallel()
 	h, _, m, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/deb")
 		w.Header().Set("ETag", `"e1"`)
@@ -151,6 +162,7 @@ func TestProxyServesAndCaches(t *testing.T) {
 // чтении. До фикса BytesFromUpstream/UpstreamErrors/NegativeHits/
 // BytesToClients писались только в корень — per-eco читать нули.
 func TestProxyStatsProjectionContract(t *testing.T) {
+	t.Parallel()
 	// set-able апстрим (хендлер статичен в newProxyEnv): MISS→HIT
 	// payload'а, затем 404-апстрим для negative-сценария — по образцу
 	// testUpstream.set (engine_test.go).
@@ -226,6 +238,7 @@ func TestProxyStatsProjectionContract(t *testing.T) {
 // 400 на валидном upstream-пути. Декод до ValidateKey: %2b-написание
 // даёт тот же объект кеша, что и сырое «+».
 func TestProxyPercentEscapedPlus(t *testing.T) {
+	t.Parallel()
 	hits := 0
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/pkg/a+bb.deb" {
@@ -289,6 +302,7 @@ func TestProxyPercentEscapedPlus(t *testing.T) {
 // ставились, единственный с ^ — нет). %5e-написание и сырое «^» — один
 // объект кеша.
 func TestProxyCaretRpmName(t *testing.T) {
+	t.Parallel()
 	hits := 0
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/pkg/a/aribb24-1.0.3^20160216git5e9be27-5.fc44.x86_64.rpm" {
@@ -328,6 +342,7 @@ func TestProxyCaretRpmName(t *testing.T) {
 // 46 пакетов). pacman/libfetch шлёт «:» сырым (легальный pchar);
 // %-написание %3A и сырое «:» — один объект кеша.
 func TestProxyEpochPkgName(t *testing.T) {
+	t.Parallel()
 	hits := 0
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/pkg/extra/os/x86_64/nftables-1:1.1.7-3-x86_64.pkg.tar.zst" {
@@ -362,7 +377,9 @@ func TestProxyEpochPkgName(t *testing.T) {
 }
 
 func TestProxyErrorCodes(t *testing.T) {
+	t.Parallel()
 	t.Run("404 upstream → 404 клиенту", func(t *testing.T) {
+		t.Parallel()
 		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(404) })
 		rec := get(t, h, "/t/pkg/none.deb")
 		if rec.Code != http.StatusNotFound {
@@ -373,12 +390,14 @@ func TestProxyErrorCodes(t *testing.T) {
 		}
 	})
 	t.Run("5xx без копии → 502 клиенту", func(t *testing.T) {
+		t.Parallel()
 		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(503) })
 		if rec := get(t, h, "/t/idx/down"); rec.Code != http.StatusBadGateway {
 			t.Fatalf("код = %d, хочу 502", rec.Code)
 		}
 	})
 	t.Run("too large → 502 клиенту", func(t *testing.T) {
+		t.Parallel()
 		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Length", "1000")
 			_, _ = io.WriteString(w, "x")
@@ -393,6 +412,7 @@ func TestProxyErrorCodes(t *testing.T) {
 		}
 	})
 	t.Run("storage unavailable → 503, не 502", func(t *testing.T) {
+		t.Parallel()
 		// Сбой нашего storage/каталога — не вина upstream: 503, как в
 		// auth-слое (аудит 2026-08-30, сессия 45). Маппинг проверяем
 		// напрямую: в live-прогоне источник ошибки — адаптер хранилища.
@@ -406,6 +426,7 @@ func TestProxyErrorCodes(t *testing.T) {
 		}
 	})
 	t.Run("сбой storage при отдаче → 503 сквозь движок", func(t *testing.T) {
+		t.Parallel()
 		// Полный путь (сессия 50): UnavailableError от адаптера проходит
 		// сквозь движок кеша без заворота и доходит до клиента как 503,
 		// а не падает в default-ветку 502.
@@ -420,6 +441,7 @@ func TestProxyErrorCodes(t *testing.T) {
 		}
 	})
 	t.Run("сбой носителя на write-пути (MISS-store) → 503", func(t *testing.T) {
+		t.Parallel()
 		// Полный путь записи (сессия 60): Put хранилища отказывает
 		// классифицированной недоступностью при качании MISS — клиент
 		// получает 503 «наш инстанс», а не 502 «виноват upstream».
@@ -442,7 +464,9 @@ func TestProxyErrorCodes(t *testing.T) {
 // upstream-типом проходят (контракт MISS↔HIT идентичности заголовков,
 // сессия 69). nosniff ставится middleware поверх всех ответов.
 func TestProxyContentTypeAllowlist(t *testing.T) {
+	t.Parallel()
 	t.Run("злой text/html на индексе → octet-stream", func(t *testing.T) {
+		t.Parallel()
 		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_, _ = io.WriteString(w, "<html><body>phishing</body></html>")
@@ -459,6 +483,7 @@ func TestProxyContentTypeAllowlist(t *testing.T) {
 		}
 	})
 	t.Run("deb-путь с честным типом → маппится, как заявлено", func(t *testing.T) {
+		t.Parallel()
 		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/vnd.debian.binary-package")
 			_, _ = io.WriteString(w, "deb-bytes")
@@ -469,6 +494,7 @@ func TestProxyContentTypeAllowlist(t *testing.T) {
 		}
 	})
 	t.Run("внестоловое расширение с честным типом проходит", func(t *testing.T) {
+		t.Parallel()
 		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/x-contract")
 			_, _ = io.WriteString(w, "x")
@@ -479,6 +505,7 @@ func TestProxyContentTypeAllowlist(t *testing.T) {
 		}
 	})
 	t.Run("злой text/xml с xml-stylesheet PI → octet-stream", func(t *testing.T) {
+		t.Parallel()
 		// XSLT-XSS (верификация Р6): честно объявленный text/xml с PI
 		// рендерится браузером как XSLT — тот же threat-model, что
 		// text/html, блокируется тем же блоклистом.
@@ -498,6 +525,7 @@ func TestProxyContentTypeAllowlist(t *testing.T) {
 		}
 	})
 	t.Run("честный text/xml на .xml-пути → тоже octet-stream", func(t *testing.T) {
+		t.Parallel()
 		// Единая точка защиты: renderable-блоклист гоняет тип в
 		// octet-stream независимо от расширения пути.
 		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -510,6 +538,7 @@ func TestProxyContentTypeAllowlist(t *testing.T) {
 		}
 	})
 	t.Run("пакетное расширение в верхнем регистре маппится", func(t *testing.T) {
+		t.Parallel()
 		// A.DEB — реальное имя пакета: честный тип по ToLower-таблице,
 		// а не upstream-тип злого сервера.
 		h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -524,6 +553,7 @@ func TestProxyContentTypeAllowlist(t *testing.T) {
 }
 
 func TestProxyStaleServedWithWarning(t *testing.T) {
+	t.Parallel()
 	requests := 0
 	h, clock, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		requests++
@@ -556,6 +586,82 @@ func TestProxyStaleServedWithWarning(t *testing.T) {
 	}
 }
 
+// TestProxyAccessRecordingOnCacheHits — точки фиксации обращений на
+// кеш-прокси (сессия 168). Потребление считают HIT и STALE: клиент
+// получил байты из кеша. MISS не считают — объекта в кеше ещё нет
+// (иначе сканер-перебор путей сам себе продлевает жизнь). Ключ —
+// ключ единого namespace хранения из меты объекта (Meta.Key), тот же
+// и на полной выдаче, и на Range (Range — тоже потребление).
+func TestProxyAccessRecordingOnCacheHits(t *testing.T) {
+	t.Parallel()
+	requests := 0
+	rec := &accessRecorderMock{}
+	h, clock, _, _, _ := newProxyEnvWith(t, func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		switch requests {
+		case 1: // immutable-пакет: прогрев кеша (MISS)
+			_, _ = io.WriteString(w, "payload")
+		case 2: // mutable-индекс: прогрев кеша (MISS)
+			_, _ = io.WriteString(w, "idx1")
+		default: // дальше upstream сломан: отдаётся протухшая копия
+			w.WriteHeader(500)
+		}
+	}, rec)
+
+	// MISS — ни одной записи.
+	if got := get(t, h, "/t/pkg/a.deb"); got.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("прогрев пакета: X-Cache = %q, хочу MISS", got.Header().Get("X-Cache"))
+	}
+	if got := rec.records(); len(got) != 0 {
+		t.Fatalf("записи после MISS = %v, хочу пусто", got)
+	}
+
+	// HIT — запись с ключом хранения объекта кеша.
+	if got := get(t, h, "/t/pkg/a.deb"); got.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("второй GET пакета: X-Cache = %q, хочу HIT", got.Header().Get("X-Cache"))
+	}
+	want := [][2]string{{domain.AccessScopeCache, "cache/t/pkg/a.deb"}}
+	if got := rec.records(); !slices.Equal(got, want) {
+		t.Errorf("записи после HIT = %v, хочу %v", got, want)
+	}
+
+	// Range по объекту в кеше — HIT и та же запись (ключ тот же).
+	req := httptest.NewRequest(http.MethodGet, "/t/pkg/a.deb", nil)
+	req.Header.Set("Range", "bytes=0-2")
+	recRange := httptest.NewRecorder()
+	h.ServeHTTP(recRange, req)
+	if recRange.Code != http.StatusPartialContent {
+		t.Fatalf("Range-ответ = %d, хочу 206", recRange.Code)
+	}
+	want = append(want, [2]string{domain.AccessScopeCache, "cache/t/pkg/a.deb"})
+	if got := rec.records(); !slices.Equal(got, want) {
+		t.Errorf("записи после Range-HIT = %v, хочу %v", got, want)
+	}
+
+	// STALE — протухшая копия отдана клиенту, поэтому тоже обращение.
+	if got := get(t, h, "/t/idx/idx"); got.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("прогрев индекса: X-Cache = %q, хочу MISS", got.Header().Get("X-Cache"))
+	}
+	if got := rec.records(); !slices.Equal(got, want) {
+		t.Errorf("записи после MISS индекса = %v, хочу прежние %v", got, want)
+	}
+	clock.Advance(41 * time.Second)
+	if got := get(t, h, "/t/idx/idx"); got.Header().Get("X-Cache") != "STALE" {
+		t.Fatalf("протухший индекс: X-Cache = %q, хочу STALE", got.Header().Get("X-Cache"))
+	}
+	// Mutable-объект лежит в хранилище под версионным ключом
+	// (cache/t/idx/idx-<суффикс>: движок пишет версии) — фиксируется
+	// именно он, ключ хранилища целиком, как его вернул движок;
+	// логический путь по нему восстанавливается префиксом.
+	got := rec.records()
+	if len(got) != 3 {
+		t.Fatalf("записи после STALE = %v, хочу 3 записи", got)
+	}
+	if last := got[2]; last[0] != domain.AccessScopeCache || !strings.HasPrefix(last[1], "cache/t/idx/idx") {
+		t.Errorf("запись STALE = %v, хочу {cache, cache/t/idx/idx…}", last)
+	}
+}
+
 // scrapeMetrics — exposition-текст /metrics из экспортера (smoke-проверка
 // наличия метрик по подстрокам, без декодирования формата).
 func scrapeMetrics(t *testing.T, h *metrics.Handler) string {
@@ -569,6 +675,7 @@ func scrapeMetrics(t *testing.T, h *metrics.Handler) string {
 // реальным трафиком с корректными (method, status) (аудит 2026-08-30:
 // Observe-методы звались только из тестов, гистограмма была пустой).
 func TestMetricsLatencyObserved(t *testing.T) {
+	t.Parallel()
 	h, _, _, exporter, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "payload")
 	})
@@ -586,6 +693,7 @@ func TestMetricsLatencyObserved(t *testing.T) {
 // TestMetricsObjectBytesObserved — object_bytes наполняется в точке
 // прокси-отдачи: размер скопированного тела + имя экосистемы.
 func TestMetricsObjectBytesObserved(t *testing.T) {
+	t.Parallel()
 	h, _, _, exporter, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "payload")
 	})
@@ -628,6 +736,7 @@ func getRangeIf(t *testing.T, h http.Handler, path, value, ifRange string) *http
 // прогретый кеш, Range: bytes=10-19 → 206, тело == fixture[10:20],
 // Content-Range/Content-Length/Accept-Ranges/X-Cache корректны.
 func TestProxySingleRange(t *testing.T) {
+	t.Parallel()
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, rangeFixture)
 	})
@@ -659,6 +768,7 @@ func TestProxySingleRange(t *testing.T) {
 // нормализуются парсером: bytes=-N, bytes=0-(size-1), bytes=(size-1)-
 // (size-1), open-ended.
 func TestProxyRangeSuffixAndEdge(t *testing.T) {
+	t.Parallel()
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, rangeFixture)
 	})
@@ -679,6 +789,7 @@ func TestProxyRangeSuffixAndEdge(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rec := getRange(t, h, "/t/pkg/a.deb", tc.header)
 			if rec.Code != http.StatusPartialContent {
 				t.Fatalf("%s = %d, хочу 206", tc.header, rec.Code)
@@ -729,6 +840,7 @@ func newRangeProxyEnv(t *testing.T, h http.HandlerFunc, st port.Storage) (http.H
 // TestProxyRange416 — ни один диапазон не пересекается: 416 +
 // Content-Range: bytes */N, тело не открывается.
 func TestProxyRange416(t *testing.T) {
+	t.Parallel()
 	cs := &rangeCountStorage{FakeStorage: testutil.NewFakeStorage(testutil.NewManualClock(time.Unix(0, 0)))}
 	h, _ := newRangeProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, rangeFixture)
@@ -756,6 +868,7 @@ func TestProxyRange416(t *testing.T) {
 // TestProxyGarbageRangeIgnored — синтаксический мусор Range игнорируется:
 // сервер MAY его не понимать, ответ — полный 200 (RFC 9110).
 func TestProxyGarbageRangeIgnored(t *testing.T) {
+	t.Parallel()
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, rangeFixture)
 	})
@@ -778,6 +891,7 @@ func TestProxyGarbageRangeIgnored(t *testing.T) {
 // полный объект ровно один раз (upstream), затем 206 из кеша; повтор —
 // HIT 206 с идентичными заголовками (контракт сессии 69 на 206).
 func TestProxyRangeMissFillsThenSlices(t *testing.T) {
+	t.Parallel()
 	fixture := strings.Repeat("Z", 300)
 	upstreamHits := 0
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -819,6 +933,7 @@ func TestProxyRangeMissFillsThenSlices(t *testing.T) {
 // TestProxyRangeMetric — 206-ответ инкрементит per-eco счётчик
 // khrazhevnik_cache_range_responses_total (сессия 111).
 func TestProxyRangeMetric(t *testing.T) {
+	t.Parallel()
 	h, _, _, exporter, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, rangeFixture)
 	})
@@ -835,6 +950,7 @@ func TestProxyRangeMetric(t *testing.T) {
 // TestProxyIfRangeETagMatch — If-Range с ETag первого ответа совпал:
 // диапазон применяется (206), тело — запрошенный срез (сессия 113).
 func TestProxyIfRangeETagMatch(t *testing.T) {
+	t.Parallel()
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("ETag", `"v1"`)
 		_, _ = io.WriteString(w, rangeFixture)
@@ -859,6 +975,7 @@ func TestProxyIfRangeETagMatch(t *testing.T) {
 // TestProxyIfRangeETagMismatch — красный до фикса: чужой ETag в If-Range
 // заставляет отдать полное тело 200, а не срез чужой версии.
 func TestProxyIfRangeETagMismatch(t *testing.T) {
+	t.Parallel()
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("ETag", `"v1"`)
 		_, _ = io.WriteString(w, rangeFixture)
@@ -878,6 +995,7 @@ func TestProxyIfRangeETagMismatch(t *testing.T) {
 // TestProxyIfRangeWeakNotMatched — слабый тег клиента (W/"x") не
 // валидатор для If-Range: наш сильный тег "x" он не матчит → 200.
 func TestProxyIfRangeWeakNotMatched(t *testing.T) {
+	t.Parallel()
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("ETag", `"v1"`)
 		_, _ = io.WriteString(w, rangeFixture)
@@ -898,6 +1016,7 @@ func TestProxyIfRangeWeakNotMatched(t *testing.T) {
 // TestProxyIfRangeDateForm — If-Range датой: равная Last-Modified
 // (секундная точность) → 206, сдвиг ±1с → 200-полный.
 func TestProxyIfRangeDateForm(t *testing.T) {
+	t.Parallel()
 	lastMod := time.Date(2026, 8, 20, 10, 30, 0, 0, time.UTC)
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Last-Modified", lastMod.Format(http.TimeFormat))
@@ -934,6 +1053,7 @@ func TestProxyIfRangeDateForm(t *testing.T) {
 // TestProxyIfRangeWithoutRange — If-Range без Range не активен:
 // обычный 200-полный, тело не режется.
 func TestProxyIfRangeWithoutRange(t *testing.T) {
+	t.Parallel()
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("ETag", `"v1"`)
 		_, _ = io.WriteString(w, rangeFixture)
@@ -1003,6 +1123,7 @@ func parseMultipartBody(t *testing.T, rec *httptest.ResponseRecorder) []multipar
 // multipart/byteranges, части byte-exact и с корректным Content-Range
 // каждой части.
 func TestProxyMultipartRange(t *testing.T) {
+	t.Parallel()
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/x-test")
 		_, _ = io.WriteString(w, rangeFixture)
@@ -1045,6 +1166,7 @@ func TestProxyMultipartRange(t *testing.T) {
 // заголовке (parseByteRanges сохраняет его, RFC 9110 сортировки не
 // требует): запрос в убывающем порядке → части в том же порядке.
 func TestProxyMultipartThreePartsOrder(t *testing.T) {
+	t.Parallel()
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, rangeFixture)
 	})
@@ -1069,6 +1191,7 @@ func TestProxyMultipartThreePartsOrder(t *testing.T) {
 // TestProxyMultipart256Green — ровно на капе: 256 однобайтных диапазонов
 // → 206, все части верны, объявленный Content-Length совпадает с телом.
 func TestProxyMultipart256Green(t *testing.T) {
+	t.Parallel()
 	const size = 300
 	fixture := strings.Repeat("0123456789", size/10)
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -1108,6 +1231,7 @@ func TestProxyMultipart256Green(t *testing.T) {
 // TestProxyMultipartCapOver — свыше капа (257) → честный 200-полный,
 // Content-Type не multipart.
 func TestProxyMultipartCapOver(t *testing.T) {
+	t.Parallel()
 	const size = 300
 	fixture := strings.Repeat("0123456789", size/10)
 	h, _, _, _, _ := newProxyEnv(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -1197,6 +1321,7 @@ func (w *limitWriter) Write(p []byte) (int, error) {
 // TestProxyMultipartClientAbort — обрыв клиента посреди multipart-тела
 // закрывает открытый ридер: счётчик открытых возвращается к нулю.
 func TestProxyMultipartClientAbort(t *testing.T) {
+	t.Parallel()
 	clock := testutil.NewManualClock(time.Unix(0, 0))
 	st := &countingStorage{FakeStorage: testutil.NewFakeStorage(clock)}
 	const key = "cache/t/remote/a.deb"

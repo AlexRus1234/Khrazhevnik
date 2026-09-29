@@ -62,6 +62,20 @@ func init() {
 // Generator реализует port.RepoAdapter для pacman-репо.
 type Generator struct {
 	signer port.Signer
+
+	// decompressLimit — потолок разжатого .pkg.tar.zst (0 = прод-дефолт
+	// maxDecompressed). Поле только для тестов: прод-инстанс собирается
+	// реестром без параметров; уменьшенный кап не ослабляет контракт
+	// бомб-тестов — проверяется та же ветка limitedReader-отказа.
+	decompressLimit int64
+}
+
+// decompressCap возвращает эффективный лимит декомпрессии.
+func (g *Generator) decompressCap() int64 {
+	if g.decompressLimit > 0 {
+		return g.decompressLimit
+	}
+	return maxDecompressed
 }
 
 // SetSigner внедряет подписчик: после .db генератор эмитит .db.sig
@@ -88,6 +102,49 @@ func (g *Generator) ValidateObjectPath(p string) error {
 	}
 	return &domain.ValidationError{What: "путь pacman-репо", Value: p, Reason: "неизвестное расширение (ожидалось .pkg.tar.zst)"}
 }
+
+// ObjectFamily — port.FamilyResolver: семейство версий pacman-объекта —
+// имя пакета из basename файла: <имя>-<версия>-<релиз>-<арх>.pkg.tar.zst.
+// Граница «имя-версия» — эвристика ROADMAP: версия — первый сегмент
+// (после деления по «-»), начинающийся с цифры, всё до него — семейство.
+// Реальные имена Arch с дефисами и цифрами держатся именно так:
+// python-pysocks-1.7.1-1-any → python-pysocks, gcc-libs-14.2.1-1-x86_64 →
+// gcc-libs. Генерируемые объекты (.db, .files, .db.sig) и legacy
+// .pkg.tar.xz/.gz (парсер их не умеет, на upload отвергаются) — ok=false.
+func (g *Generator) ObjectFamily(p string) (string, bool) {
+	name := baseName(p)
+	if !strings.HasSuffix(name, ".pkg.tar.zst") {
+		return "", false
+	}
+	return pkgFamily(strings.TrimSuffix(name, ".pkg.tar.zst"))
+}
+
+// baseName — последний сегмент пути. Не path.Base: разделитель ключей
+// Storage всегда «/» независимо от ОС.
+func baseName(p string) string {
+	if idx := strings.LastIndexByte(p, '/'); idx >= 0 {
+		return p[idx+1:]
+	}
+	return p
+}
+
+// pkgFamily — имя пакета из имени файла без расширения: часть до первого
+// сегмента, начинающегося с цифры (граница «имя-версия»), сегменты — по
+// «-». Пакет без границы версии — ok=false.
+func pkgFamily(stem string) (string, bool) {
+	segs := strings.Split(stem, "-")
+	for i := 1; i < len(segs); i++ {
+		if segs[i] == "" || !isASCIIDigit(segs[i][0]) {
+			continue
+		}
+		return strings.Join(segs[:i], "-"), true
+	}
+	return "", false
+}
+
+// isASCIIDigit — цифра ASCII-диапазона: версия пакета всегда начинается
+// с «0»–«9», unicode-цифры в именах пакетов не встречаются.
+func isASCIIDigit(b byte) bool { return b >= '0' && b <= '9' }
 
 // GenerateIndexes обходит .pkg.tar.*, читает .PKGINFO, собирает .db
 // (tar.zst) + .db.sig (при Signer). Прогресс — обработанные пакеты.
@@ -117,7 +174,7 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		de, err := buildDescEntry(ctx, storage, key)
+		de, err := buildDescEntry(ctx, storage, key, g.decompressCap())
 		if err != nil {
 			return fmt.Errorf("pacman.gen: %s: %w", key, err)
 		}
@@ -191,7 +248,7 @@ func collectPkgTar(ctx context.Context, storage port.Storage, prefix string) ([]
 // всего файла) и собирает desc-запись. %FILENAME% — basename .pkg.tar.*;
 // %CSIZE% — фактический размер файла (счётчик tee); %SHA256SUM% — sha256
 // файла; %ISIZE% — size из .PKGINFO. Каталог в .db: <pkgname>-<pkgver>-<arch>.
-func buildDescEntry(ctx context.Context, storage port.Storage, pkgKey string) (descEntry, error) {
+func buildDescEntry(ctx context.Context, storage port.Storage, pkgKey string, decompressLimit int64) (descEntry, error) {
 	obj, err := storage.Get(ctx, pkgKey)
 	if err != nil {
 		return descEntry{}, err
@@ -200,7 +257,7 @@ func buildDescEntry(ctx context.Context, storage port.Storage, pkgKey string) (d
 	h := sha256.New()
 	cr := &countReader{r: obj.Body}
 	tee := io.TeeReader(cr, h)
-	pi, err := readPkgInfoFromPackage(ctx, tee)
+	pi, err := readPkgInfoFromPackage(ctx, tee, decompressLimit)
 	if err != nil {
 		return descEntry{}, err
 	}

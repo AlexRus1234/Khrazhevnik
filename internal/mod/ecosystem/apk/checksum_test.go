@@ -34,6 +34,7 @@ import (
 
 // TestCsumFromIndex — формат apk-tools: «Q1» + base64 raw SHA1.
 func TestCsumFromIndex(t *testing.T) {
+	t.Parallel()
 	digest := sha1.Sum([]byte("alpine package bytes"))
 	csum := "Q1" + base64.StdEncoding.EncodeToString(digest[:])
 
@@ -65,6 +66,7 @@ func TestCsumFromIndex(t *testing.T) {
 }
 
 func TestResolveApkChecksumsAfterEnumerate(t *testing.T) {
+	t.Parallel()
 	digest := sha1.Sum([]byte("foo apk bytes"))
 	goodCsum := "Q1" + base64.StdEncoding.EncodeToString(digest[:])
 	indexText := []byte(

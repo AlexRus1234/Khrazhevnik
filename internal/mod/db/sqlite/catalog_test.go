@@ -86,6 +86,8 @@ func TestCatalogContract(t *testing.T) {
 			Audit:       st,
 			ObjIndex:    st,
 			Stats:       st,
+			Access:      st,
+			Pins:        st,
 			Settings:    st,
 			Revocations: st,
 			Close:       st.Close,
@@ -204,6 +206,66 @@ func TestMigration0009ProxyURLOnExistingRows(t *testing.T) {
 	}
 	if rs[0].Name != "old" || rs[0].ProxyURL != "" {
 		t.Fatalf("старый remote = %+v, хочу ProxyURL \"\"", rs[0])
+	}
+}
+
+// TestMigration0011RetentionOnExistingRows — сессия 165: подъём 0011 на
+// populated-БД (схема 0010): старые репо получают min_versions/max_age_days
+// 0 (DEFAULT) и читаются как выключенная политика; строки не теряются,
+// запись политики живёт на диске (второй Open — повторный goose.Up как
+// no-op, политика на месте).
+func TestMigration0011RetentionOnExistingRows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "retention.db")
+
+	// Схема до 0011: сырое соединение + goose UpTo(10), строки БЕЗ колонок
+	// ретеншна (как их писала сборка до миграции).
+	db, err := sql.Open("sqlite", buildDSN(path, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pre.UpTo(ctx, 10); err != nil {
+		t.Fatalf("схема 0010: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (username, password_hash, role, token_version, created_at)
+		VALUES ('old', 'h', 'admin', 1, 1785000000)`); err != nil {
+		t.Fatalf("старый владелец: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO repos (name, owner_id, ecosystem, quota_bytes, quota_files, created_at)
+		VALUES ('oldrepo', 1, 'apt', 1024, 7, 1785000000)`); err != nil {
+		t.Fatalf("старый репо: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Апгрейд: обычный Open поднимает 0011 (goose.Up идемпотентен).
+	st := openDSN(t, path)
+	rs, err := st.Repos(ctx)
+	if err != nil || len(rs) != 1 {
+		t.Fatalf("Repos после апгрейда = %+v, %v", rs, err)
+	}
+	if rs[0].Name != "oldrepo" || rs[0].Quota.MaxBytes != 1024 || rs[0].Quota.MaxObjects != 7 {
+		t.Fatalf("старый репо = %+v: соседние колонки не пережили апгрейд", rs[0])
+	}
+	if rs[0].Retention != (domain.Retention{}) {
+		t.Fatalf("старый репо = %+v: хочу выключенную политику (0/0)", rs[0].Retention)
+	}
+
+	// Запись политики и «рестарт» (второй Open на том же файле): goose.Up
+	// no-op, политика читается из БД, а не из памяти процесса.
+	rs[0].Retention = domain.Retention{MinVersions: 3, MaxAgeDays: 90}
+	if err := st.UpdateRepo(ctx, rs[0]); err != nil {
+		t.Fatal(err)
+	}
+	st2 := openDSN(t, path)
+	got, err := st2.Repo(ctx, rs[0].ID)
+	if err != nil || got.Retention != (domain.Retention{MinVersions: 3, MaxAgeDays: 90}) {
+		t.Fatalf("после переоткрытия: Retention = %+v, %v; хочу {3 90}", got.Retention, err)
 	}
 }
 

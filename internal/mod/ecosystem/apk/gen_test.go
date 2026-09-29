@@ -109,6 +109,7 @@ origin = apk-example
 `
 
 func TestParsePkgInfoGolden(t *testing.T) {
+	t.Parallel()
 	pi, err := ParsePkgInfo(strings.NewReader(pkginfoText))
 	if err != nil {
 		t.Fatalf("ParsePkgInfo: %v", err)
@@ -131,6 +132,7 @@ func TestParsePkgInfoGolden(t *testing.T) {
 }
 
 func TestParsePkgInfoMultiLicense(t *testing.T) {
+	t.Parallel()
 	pi, err := ParsePkgInfo(strings.NewReader("pkgname = foo\nlicense = MIT\nlicense = BSD\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -141,6 +143,7 @@ func TestParsePkgInfoMultiLicense(t *testing.T) {
 }
 
 func TestParsePkgInfoCommentsCRLF(t *testing.T) {
+	t.Parallel()
 	pi, err := ParsePkgInfo(strings.NewReader("# c\r\npkgname = foo\r\n\r\npkgver = 1.0-r0\r\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -151,6 +154,7 @@ func TestParsePkgInfoCommentsCRLF(t *testing.T) {
 }
 
 func TestParsePkgInfoUnknownKey(t *testing.T) {
+	t.Parallel()
 	pi, err := ParsePkgInfo(strings.NewReader("futurefield = x\npkgname = bar\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -161,6 +165,7 @@ func TestParsePkgInfoUnknownKey(t *testing.T) {
 }
 
 func TestParsePkgInfoTooLarge(t *testing.T) {
+	t.Parallel()
 	big := strings.Repeat("a", maxPkgInfoSize+1)
 	_, err := ParsePkgInfo(strings.NewReader(big))
 	if !errors.Is(err, ErrPkgInfoTooLarge) {
@@ -169,8 +174,9 @@ func TestParsePkgInfoTooLarge(t *testing.T) {
 }
 
 func TestReadPkgInfoFromPackageGzip(t *testing.T) {
+	t.Parallel()
 	apk := buildApkTarGz(t, pkginfoText)
-	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(apk))
+	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(apk), 0)
 	if err != nil {
 		t.Fatalf("readPkgInfoFromPackage gzip: %v", err)
 	}
@@ -180,8 +186,9 @@ func TestReadPkgInfoFromPackageGzip(t *testing.T) {
 }
 
 func TestReadPkgInfoFromPackageZstd(t *testing.T) {
+	t.Parallel()
 	apk := buildApkTarZst(t, pkginfoText)
-	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(apk))
+	pi, err := readPkgInfoFromPackage(context.Background(), bytes.NewReader(apk), 0)
 	if err != nil {
 		t.Fatalf("readPkgInfoFromPackage zstd: %v", err)
 	}
@@ -191,6 +198,7 @@ func TestReadPkgInfoFromPackageZstd(t *testing.T) {
 }
 
 func TestReadPkgInfoFromTarMissing(t *testing.T) {
+	t.Parallel()
 	var tarBuf bytes.Buffer
 	tw := tar.NewWriter(&tarBuf)
 	_ = tw.WriteHeader(&tar.Header{Name: "usr/bin/foo", Typeflag: tar.TypeReg, Mode: 0o755, Size: 0})
@@ -202,6 +210,7 @@ func TestReadPkgInfoFromTarMissing(t *testing.T) {
 }
 
 func TestGeneratorName(t *testing.T) {
+	t.Parallel()
 	g := &Generator{}
 	if g.Name() != Name {
 		t.Errorf("Name = %q, want %q", g.Name(), Name)
@@ -209,6 +218,7 @@ func TestGeneratorName(t *testing.T) {
 }
 
 func TestValidateObjectPath(t *testing.T) {
+	t.Parallel()
 	g := &Generator{}
 	cases := []struct {
 		path string
@@ -226,6 +236,42 @@ func TestValidateObjectPath(t *testing.T) {
 		got := err == nil
 		if got != c.want {
 			t.Errorf("ValidateObjectPath(%q) = %v, want ok=%v", c.path, err, c.want)
+		}
+	}
+}
+
+// port.FamilyResolver — compile-time контракт генератора.
+var _ port.FamilyResolver = (*Generator)(nil)
+
+// TestObjectFamily — port.FamilyResolver: семейство версий apk-объекта —
+// имя пакета из basename до сегмента-версии. Реальные имена Alpine.
+func TestObjectFamily(t *testing.T) {
+	t.Parallel()
+	g := &Generator{}
+	cases := []struct {
+		path   string
+		family string
+		ok     bool
+	}{
+		{"htop-3.3.0-r2.apk", "htop", true},
+		{"libnl3-3.11.0-r0.apk", "libnl3", true},
+		// Имя с дефисом: семейство — всё до сегмента-версии.
+		{"py3-pip-25.1.1-r0.apk", "py3-pip", true},
+		{"ca-certificates-20250605-r0.apk", "ca-certificates", true},
+		// Пакеты могут лежать в подкаталоге — берём basename.
+		{"x86_64/htop-3.3.0-r2.apk", "htop", true},
+		// Имя без границы версии (мусор) — вне семейств.
+		{"htop.apk", "", false},
+		// Индексы, подписи и ключи — вне семейств.
+		{"APKINDEX.tar.gz", "", false},
+		{"APKINDEX.tar.gz.sig", "", false},
+		{"khrazhevnik.rsa.pub", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		family, ok := g.ObjectFamily(c.path)
+		if ok != c.ok || family != c.family {
+			t.Errorf("ObjectFamily(%q) = (%q, %v), want (%q, %v)", c.path, family, ok, c.family, c.ok)
 		}
 	}
 }
@@ -263,6 +309,7 @@ func readStorage(t *testing.T, storage *testutil.FakeStorage, key string) []byte
 }
 
 func TestGenerateIndexesSingleApk(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -319,6 +366,7 @@ func extractAPKINDEXText(r io.Reader) (string, error) {
 
 // roundtrip: список .apk → APKINDEX.tar.gz → ParseAPKINDEX → те же F:.
 func TestGenerateIndexesRoundtrip(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -354,6 +402,7 @@ func TestGenerateIndexesRoundtrip(t *testing.T) {
 }
 
 func TestGenerateIndexesEmptyRepo(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -369,6 +418,7 @@ func TestGenerateIndexesEmptyRepo(t *testing.T) {
 }
 
 func TestGenerateIndexesWrongEcosystem(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: "apt"}
@@ -381,6 +431,7 @@ func TestGenerateIndexesWrongEcosystem(t *testing.T) {
 }
 
 func TestGenerateIndexesContextCanceled(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -405,6 +456,7 @@ func (r *recordingProgress) Update(phase, current string, processed, total int64
 func (r *recordingProgress) Log(line string) { r.logs = append(r.logs, line) }
 
 func TestGenerateIndexesProgress(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -440,6 +492,7 @@ func (fakeSigner) SignDetached(_ context.Context, _ io.Reader) (io.Reader, error
 func (fakeSigner) PublicKey() ([]byte, error) { return []byte("pub-stub"), nil }
 
 func TestGenerateIndexesUnsignedNoSig(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -454,6 +507,7 @@ func TestGenerateIndexesUnsignedNoSig(t *testing.T) {
 }
 
 func TestGenerateIndexesSignedWritesSig(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -488,6 +542,7 @@ func (failSigner) SignDetached(context.Context, io.Reader) (io.Reader, error) {
 func (failSigner) PublicKey() ([]byte, error) { return nil, nil }
 
 func TestGenerateIndexesSignedSignerErrorFails(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -500,6 +555,7 @@ func TestGenerateIndexesSignedSignerErrorFails(t *testing.T) {
 }
 
 func TestSetSigner(t *testing.T) {
+	t.Parallel()
 	g := &Generator{}
 	if g.signer != nil {
 		t.Fatal("новый Generator уже имеет signer")
@@ -533,6 +589,7 @@ func (f *failingListStorage) List(_ context.Context, _ string) iter.Seq2[port.Me
 // генерация падает, прежний APKINDEX остаётся байт-в-байт (fail-closed:
 // транзиентный сбой носителя не «опустошает» репо).
 func TestGenerateIndexesListingErrorKeepsOldIndexes(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -560,6 +617,7 @@ func TestGenerateIndexesListingErrorKeepsOldIndexes(t *testing.T) {
 // APKINDEX (D:/p:/i:, space-joined): без них `apk add` не резолвит
 // зависимости из личного репо.
 func TestGenerateIndexesDependencies(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -599,6 +657,7 @@ func TestGenerateIndexesDependencies(t *testing.T) {
 // install_if в .PKGINFO строки D:/p:/i: не эмитятся (пустые D: ломают
 // строгие парсеры клиентов).
 func TestGenerateIndexesNoDependenciesOmitsLines(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
@@ -693,8 +752,12 @@ func apkBombCompressed(t *testing.T, huge int64, gz bool) []byte {
 // ReadAll копил бы гигабайты разжатой бомбы в памяти самого теста
 // (OOM-килл на CI-runner'е с 8 ГБ, см. pacman-замер VmHWM 13 GiB).
 func TestDecompressApkBomb(t *testing.T) {
-	const huge = maxDecompressedApk + (1 << 20) // 1 GiB + 1 MiB
-	dr, err := decompressApk(bufio.NewReader(bytes.NewReader(apkBombGz(t, huge))))
+	t.Parallel()
+	// Кап уменьшен (4 MiB против прод-дефолта 1 GiB): та же ветка
+	// limitedReader-отказа, без гигабайтной декомпрессии под -race.
+	const cap = int64(4 << 20)
+	const huge = cap + (1 << 20)
+	dr, err := decompressApk(bufio.NewReader(bytes.NewReader(apkBombGz(t, huge))), cap)
 	if err != nil {
 		t.Fatalf("decompressApk: %v", err)
 	}
@@ -706,7 +769,7 @@ func TestDecompressApkBomb(t *testing.T) {
 	if _, err := io.Copy(io.Discard, dr); !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидали ErrDecompressTooLarge на чтении, получили %v", err)
 	}
-	if want := maxDecompressedApk + 8192; lr.n > want {
+	if want := cap + 8192; lr.n > want {
 		t.Errorf("разжато %d байт, хочу не более ~%d (кап + буфер)", lr.n, want)
 	}
 }
@@ -715,10 +778,14 @@ func TestDecompressApkBomb(t *testing.T) {
 // с ошибкой декомпресс-лимита, индексы не закоммичены (пишутся только
 // после успешного прохода всех .apk).
 func TestGenerateIndexesApkBomb(t *testing.T) {
+	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
-	bomb := apkBombGz(t, maxDecompressedApk+(1<<20))
+	// Кап 4 MiB инжектом (прод-дефолт 1 GiB): контракт тот же — задача
+	// failed с ErrDecompressTooLarge, индексы не закоммичены.
+	const cap = int64(4 << 20)
+	bomb := apkBombGz(t, cap+(1<<20))
 	key := port.RepoPrefix(repo) + "/x86_64/bomb-1.0-r0.apk"
 	w, err := storage.Put(context.Background(), key)
 	if err != nil {
@@ -731,7 +798,7 @@ func TestGenerateIndexesApkBomb(t *testing.T) {
 		t.Fatalf("w.Commit: %v", err)
 	}
 
-	err = (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil)
+	err = (&Generator{decompressLimit: cap}).GenerateIndexes(context.Background(), repo, storage, nil)
 	if !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
 	}
@@ -751,8 +818,12 @@ func TestGenerateIndexesApkBomb(t *testing.T) {
 // pacman-замер VmHWM). Плюс сквозной путь reindex: задача failed,
 // индексы не закоммичены.
 func TestGenerateIndexesZstdBomb(t *testing.T) {
-	const huge = 2 * maxDecompressedApk
-	dr, err := decompressApk(bufio.NewReader(bytes.NewReader(apkBombZst(t, huge))))
+	t.Parallel()
+	// Кап уменьшен (4 MiB против прод-дефолта 1 GiB): та же zstd-ветка
+	// limitedReader-отказа, бомба 2× капа — ассерты неизменны.
+	const cap = int64(4 << 20)
+	const huge = 2 * cap
+	dr, err := decompressApk(bufio.NewReader(bytes.NewReader(apkBombZst(t, huge))), cap)
 	if err != nil {
 		t.Fatalf("decompressApk: %v", err)
 	}
@@ -786,7 +857,7 @@ func TestGenerateIndexesZstdBomb(t *testing.T) {
 		t.Fatalf("w.Commit: %v", err)
 	}
 
-	err = (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil)
+	err = (&Generator{decompressLimit: cap}).GenerateIndexes(context.Background(), repo, storage, nil)
 	if !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
 	}
@@ -800,10 +871,11 @@ func TestGenerateIndexesZstdBomb(t *testing.T) {
 // только между пакетами (раунд 5). Честный пакет с отменённым контекстом
 // отказывается до первого tr.Next.
 func TestReadPkgInfoCancelDuringDecompress(t *testing.T) {
+	t.Parallel()
 	apk := buildApkTarGz(t, pkginfoText)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := readPkgInfoFromPackage(ctx, bytes.NewReader(apk))
+	_, err := readPkgInfoFromPackage(ctx, bytes.NewReader(apk), 0)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ожидали context.Canceled, получили %v", err)
 	}
@@ -840,6 +912,7 @@ func (g *gateReader) Read(p []byte) (int, error) {
 // члена был бы найден без ошибки; счётчик gate-ридера доказывает, что
 // члены после отмены не доставлялись.
 func TestReadPkgInfoCancelMidStream(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	for _, name := range []string{"usr/bin/a", "usr/bin/b", ".PKGINFO"} {

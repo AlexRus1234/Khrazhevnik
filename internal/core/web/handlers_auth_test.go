@@ -87,6 +87,7 @@ func responseMap(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 }
 
 func TestAuthHandlersEndToEnd(t *testing.T) {
+	t.Parallel()
 	a, _ := handlerAuth(t)
 	h := BuildAdminRouter(Deps{Auth: a, SetupToken: "setup"})
 	setup := `{"username":"admin","password":"password"}`
@@ -164,6 +165,7 @@ func TestAuthHandlersEndToEnd(t *testing.T) {
 // → 201 бессрочный; revoke сверяет {id} пути с владельцем токена —
 // чужой id → 404, свой → 204.
 func TestTokenTTLAndRevokePathContract(t *testing.T) {
+	t.Parallel()
 	a, _ := handlerAuth(t)
 	h := BuildAdminRouter(Deps{Auth: a, SetupToken: "setup"})
 	admin, err := a.CreateUser(t.Context(), "admin", "password", domain.RoleAdmin)
@@ -215,6 +217,7 @@ func TestTokenTTLAndRevokePathContract(t *testing.T) {
 // слабую учётку в bootstrap-окне создать нельзя (внешнее ревью
 // раунд 5).
 func TestSetupPasswordMinimumLength(t *testing.T) {
+	t.Parallel()
 	a, _ := handlerAuth(t)
 	h := BuildAdminRouter(Deps{Auth: a})
 	for _, tc := range []struct {
@@ -243,6 +246,7 @@ func TestSetupPasswordMinimumLength(t *testing.T) {
 // в таблице один пользователь (аудит 2026-08-27). RemoteAddr у каждой
 // горутины свой — тестируем атомарность, а не rate limiter.
 func TestSetupAtomicBootstrap(t *testing.T) {
+	t.Parallel()
 	a, _ := handlerAuth(t)
 	h := BuildAdminRouter(Deps{Auth: a})
 	setup := `{"username":"admin","password":"password"}`
@@ -302,6 +306,7 @@ func usersByID(t *testing.T, a *auth.Service, id int64) []domain.User {
 // дезинформировал бы мониторинг и brute-force-детекторы
 // (аудит 2026-08-27).
 func TestLoginCatalogFailureNotUnauthorized(t *testing.T) {
+	t.Parallel()
 	users := &failingUserStore{FakeUserStore: testutil.NewFakeUserStore(), err: errors.New("db down")}
 	a, err := auth.New(auth.Config{Users: users, Tokens: &handlerTokens{}, Revocations: testutil.NewFakeRevocations(), Clock: testutil.FixedClock(time.Unix(100, 0)), Rand: testutil.FixedRand("33333333-3333-4333-8333-333333333333"), JWTSecret: "secret", SessionTTL: time.Hour})
 	if err != nil {
@@ -354,6 +359,7 @@ func (f *failingRevocations) InsertRevocation(ctx context.Context, jti string, n
 // (rememberRevoked до return): повторный запрос с тем же JWT на ЭТОМ
 // инстансе уже 401. Контроль: исправный каталог — 204.
 func TestLogoutDBFailureUnavailable(t *testing.T) {
+	t.Parallel()
 	revocations := &failingRevocations{FakeRevocations: testutil.NewFakeRevocations()}
 	// Два UUID: у каждой IssueSession свой jti — контрольная сессия не
 	// наследует отзыв первой (FixedRand раздаёт список по кругу).
@@ -400,6 +406,7 @@ func TestLogoutDBFailureUnavailable(t *testing.T) {
 }
 
 func TestAuthBodyLimit(t *testing.T) {
+	t.Parallel()
 	huge := `{"username":"` + strings.Repeat("a", 2<<20) + `"}`
 	a, users := handlerAuth(t)
 	h := BuildAdminRouter(Deps{Auth: a})
@@ -429,6 +436,7 @@ func TestAuthBodyLimit(t *testing.T) {
 // 403, короткий новый — 400, без сессии — 401; все попытки аудируются
 // под настоящим именем user.password.change.
 func TestPasswordChangeSelf(t *testing.T) {
+	t.Parallel()
 	a, _ := handlerAuth(t)
 	auditLog := testutil.NewFakeAuditLog()
 	h := BuildAdminRouter(Deps{Auth: a, Audit: auditLog})
@@ -495,6 +503,7 @@ func TestPasswordChangeSelf(t *testing.T) {
 // (решение владельца): 11-я попытка с одного IP за минуту — 429 (брут
 // старого пароля за краденой сессией — та же поверхность, что login).
 func TestPasswordChangeRateLimit(t *testing.T) {
+	t.Parallel()
 	a, _ := handlerAuth(t)
 	h := BuildAdminRouter(Deps{Auth: a})
 	if _, err := a.CreateUser(t.Context(), "admin", "old-horse-1", domain.RoleAdmin); err != nil {
@@ -516,6 +525,7 @@ func TestPasswordChangeRateLimit(t *testing.T) {
 // смены пароля не регистрируются: 404, как logout (fail-closed, а не
 // молчаливая смена без проверки).
 func TestPasswordRoutesDegraded(t *testing.T) {
+	t.Parallel()
 	h := BuildAdminRouter(Deps{})
 	if w := callJSON(h, http.MethodPost, "/api/v1/auth/password", "10.4.0.1:1", `{}`, ""); w.Code != http.StatusNotFound {
 		t.Fatalf("self при Auth==nil = %d, хочу 404", w.Code)

@@ -108,6 +108,14 @@ func handleRepoFile(d Deps) http.HandlerFunc {
 			writeProxyError(w, err)
 			return
 		}
+		// Фиксация обращения (сессия 168): по факту НАЛИЧИЯ объекта, а не
+		// по факту дочитывания телом — обрыв клиента на середине выдачи
+		// всё равно обращение. Точка одна на обе ветки (ranged и полная):
+		// мета получена, тело ещё не отдано (до serveRanged/io.Copy).
+		// Холодный путь — один вызов Record (map+мьютекс, без БД).
+		if d.AccessRecorder != nil {
+			d.AccessRecorder.Record(domain.AccessScopeRepo, key)
+		}
 		// Аудит 2026-08-30 (stored-XSS): Content-Type строго по
 		// расширению, не по содержимому — upload валидирует только
 		// путь, а тело, начинающееся с «<html», без этого отдаётся

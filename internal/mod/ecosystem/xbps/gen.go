@@ -121,6 +121,35 @@ func (g *Generator) ValidateObjectPath(p string) error {
 	return nil
 }
 
+// ObjectFamily — port.FamilyResolver: семейство версий xbps-объекта —
+// имя пакета из pkgver. Разбор не дублируем: переиспользуем SplitPkgver
+// (сессия 133) — тот же разбор, что у Enumerate и генератора. Имя файла —
+// <pkgver>.<arch>.xbps, и арх-хвост срезается ДО разбора: SplitPkgver
+// строг к ревизии (`_N`) и на «x86_64»/«noarch» в хвосте вернул бы
+// ValidationError (ревизией оказалась бы часть «64» или «1.noarch»).
+// Лэйаут Void плоский (ValidateObjectPath отвергает каталоги), поэтому
+// путь и есть имя файла. Архитектура — последний точечный сегмент
+// (точек в именах архитектур Void нет), без него имя неканонично —
+// ok=false. Мусорный pkgver — тоже ok=false: версию ретеншн не тронет,
+// а падать на одном битом объекте не должен. Генерируемые
+// `<arch>-repodata` и `.sig2` — ok=false. Регистр имени сохраняем:
+// Mustache и Gifsicle в Void реальны.
+func (g *Generator) ObjectFamily(p string) (string, bool) {
+	if !strings.HasSuffix(p, pkgSuffix) {
+		return "", false
+	}
+	stem := strings.TrimSuffix(p, pkgSuffix)
+	dot := strings.LastIndexByte(stem, '.')
+	if dot <= 0 {
+		return "", false
+	}
+	pkgName, _, err := SplitPkgver(stem[:dot])
+	if err != nil {
+		return "", false
+	}
+	return pkgName, true
+}
+
 // pkgRecord — разобранный пакет: ключ storage, поля props.plist,
 // SHA-256 всего тела и его размер (последние два пишутся в индекс как
 // filename-sha256/filename-size).

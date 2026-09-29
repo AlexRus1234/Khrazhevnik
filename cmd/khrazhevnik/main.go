@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"khrazhevnik/internal/core/config"
+	"khrazhevnik/internal/core/engine/accesskeeper"
 	"khrazhevnik/internal/core/web"
 )
 
@@ -96,7 +97,7 @@ func run(ctx context.Context, configPath string) error {
 
 	srv := &web.Server{
 		PublicAddr:    cfg.Server.PublicListen,
-		PublicHandler: web.BuildPublicRouter(web.Deps{Log: log, Version: Version, Cache: app.Cache, Ecosystems: app.Ecosystems, Storage: app.Storage, Repos: app.Catalog.Repos, Signer: app.Signer, NarSigner: app.NarSigner, RsaSigner: app.RsaSigner, Metrics: app.Metrics, Rand: app.Rand}),
+		PublicHandler: web.BuildPublicRouter(web.Deps{Log: log, Version: Version, Cache: app.Cache, Ecosystems: app.Ecosystems, Storage: app.Storage, Repos: app.Catalog.Repos, AccessRecorder: accessRecorder(app.AccessKeeper), Signer: app.Signer, NarSigner: app.NarSigner, RsaSigner: app.RsaSigner, Metrics: app.Metrics, Rand: app.Rand}),
 		AdminAddr:     cfg.Server.AdminListen,
 		AdminHandler: web.BuildAdminRouter(web.Deps{
 			Log:              log,
@@ -116,6 +117,7 @@ func run(ctx context.Context, configPath string) error {
 			Mirror:           app.Mirror,
 			Publish:          app.Publish,
 			StorageGC:        app.Sweeper,
+			Retention:        app.RetentionAPI,
 			OnRemotesChanged: app.NotifyRemotesChanged,
 			MetricsHandler:   app.MetricsHandler,
 			Metrics:          app.Metrics,
@@ -142,6 +144,19 @@ func run(ctx context.Context, configPath string) error {
 		"database", cfg.Database.Driver,
 	)
 	return srv.Run(ctx)
+}
+
+// accessRecorder — срез фиксации обращений для публичного роутера
+// (сессия 168). Выключенный/отсутствующий keeper — это nil-УКАЗАТЕЛЬ:
+// присвоенный в интерфейс напрямую, он дал бы ненулевой интерфейс с
+// nil-получателем внутри, и проверка `d.AccessRecorder != nil` в web
+// пропустила бы вызов в никуда (паника на горячем пути раздачи).
+// Возвращаем честный nil-интерфейс — деградация без фиксаций.
+func accessRecorder(k *accesskeeper.Keeper) web.AccessRecorder {
+	if k == nil {
+		return nil
+	}
+	return k
 }
 
 // warnAdminListen — админ-API на не-loopback адресе (дефолт :30202 —

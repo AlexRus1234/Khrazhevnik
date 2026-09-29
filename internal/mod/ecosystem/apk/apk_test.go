@@ -36,6 +36,7 @@ func newTestAdapter(t *testing.T) *Adapter {
 }
 
 func TestNewValidatesDeps(t *testing.T) {
+	t.Parallel()
 	if _, err := New(nil, testutil.NewManualClock(time.Now())); err == nil {
 		t.Error("New(nil, clock) должен ошибаться")
 	}
@@ -45,12 +46,14 @@ func TestNewValidatesDeps(t *testing.T) {
 }
 
 func TestName(t *testing.T) {
+	t.Parallel()
 	if got := newTestAdapter(t).Name(); got != "apk" {
 		t.Errorf("Name() = %q, хочу apk", got)
 	}
 }
 
 func TestURLPrefix(t *testing.T) {
+	t.Parallel()
 	if got := newTestAdapter(t).URLPrefix(); got != "apk" {
 		t.Errorf("URLPrefix() = %q, хочу apk", got)
 	}
@@ -63,6 +66,7 @@ type classifyCase struct {
 }
 
 func TestClassifyTable(t *testing.T) {
+	t.Parallel()
 	a := newTestAdapter(t)
 	cases := []classifyCase{
 		// Immutable: .apk пакеты.
@@ -99,6 +103,7 @@ func TestClassifyTable(t *testing.T) {
 }
 
 func TestClassifyEmptyPath(t *testing.T) {
+	t.Parallel()
 	a := newTestAdapter(t)
 	_, err := a.Classify("")
 	var ve *domain.ValidationError
@@ -108,6 +113,7 @@ func TestClassifyEmptyPath(t *testing.T) {
 }
 
 func TestClassifyRulesCovered(t *testing.T) {
+	t.Parallel()
 	a := newTestAdapter(t)
 	covered := make(map[string]bool, len(a.rules))
 	for _, r := range a.rules {
@@ -157,6 +163,7 @@ func newResolveAdapter(t *testing.T, rs ...domain.Remote) *Adapter {
 }
 
 func TestResolveKnownRemote(t *testing.T) {
+	t.Parallel()
 	a := newResolveAdapter(t, domain.Remote{
 		ID: 7, Name: "alpine", Ecosystem: "apk",
 		BaseURL: "https://dl-cdn.alpinelinux.org/alpine", Enabled: true,
@@ -178,6 +185,7 @@ func TestResolveKnownRemote(t *testing.T) {
 }
 
 func TestResolveProxyURL(t *testing.T) {
+	t.Parallel()
 	// Tri-state семантика: "" в remote — «по глобальной настройке»,
 	// и он же должен честно прийти в Target пустым.
 	for _, tc := range []struct {
@@ -188,6 +196,7 @@ func TestResolveProxyURL(t *testing.T) {
 		{"без прокси", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			a := newResolveAdapter(t, domain.Remote{
 				ID: 7, Name: "alpine", Ecosystem: "apk",
 				BaseURL:  "https://dl-cdn.alpinelinux.org/alpine",
@@ -206,6 +215,7 @@ func TestResolveProxyURL(t *testing.T) {
 }
 
 func TestResolveRootPath(t *testing.T) {
+	t.Parallel()
 	a := newResolveAdapter(t, domain.Remote{
 		ID: 3, Name: "alpine", BaseURL: "https://dl-cdn.alpinelinux.org/alpine", Enabled: true,
 	})
@@ -219,6 +229,7 @@ func TestResolveRootPath(t *testing.T) {
 }
 
 func TestResolveUnknownRemote(t *testing.T) {
+	t.Parallel()
 	a := newResolveAdapter(t, domain.Remote{ID: 1, Name: "alpine", BaseURL: "https://x", Enabled: true})
 	if _, ok := a.Resolve("/apk/fedoris/x86_64/APKINDEX.tar.gz"); ok {
 		t.Error("Resolve неизвестного remote должен дать false")
@@ -226,6 +237,7 @@ func TestResolveUnknownRemote(t *testing.T) {
 }
 
 func TestResolveDisabledRemote(t *testing.T) {
+	t.Parallel()
 	a := newResolveAdapter(t, domain.Remote{ID: 1, Name: "alpine", BaseURL: "https://x", Enabled: false})
 	if _, ok := a.Resolve("/apk/alpine/APKINDEX.tar.gz"); ok {
 		t.Error("Resolve выключенного remote должен дать false")
@@ -233,6 +245,7 @@ func TestResolveDisabledRemote(t *testing.T) {
 }
 
 func TestResolveWrongEcosystemPrefix(t *testing.T) {
+	t.Parallel()
 	a := newResolveAdapter(t, domain.Remote{ID: 1, Name: "alpine", BaseURL: "https://x", Enabled: true})
 	for _, path := range []string{
 		"/apt/alpine/APKINDEX.tar.gz",
@@ -245,6 +258,7 @@ func TestResolveWrongEcosystemPrefix(t *testing.T) {
 }
 
 func TestResolveTraversalRemoteName(t *testing.T) {
+	t.Parallel()
 	a := newResolveAdapter(t, domain.Remote{ID: 1, Name: "alpine", BaseURL: "https://x", Enabled: true})
 	for _, path := range []string{
 		"/apk/../etc/passwd",
@@ -285,6 +299,7 @@ func (c *countingRemotes) Remotes(ctx context.Context) ([]domain.Remote, error) 
 }
 
 func TestLookupRemoteReloadBoundedByTimeout(t *testing.T) {
+	t.Parallel()
 	// Зависший каталог не держит hot-path дольше шапки: reload
 	// срывается по таймауту, отдаётся stale-кеш («старый кеш лучше
 	// пустого»).
@@ -318,6 +333,7 @@ func TestLookupRemoteReloadBoundedByTimeout(t *testing.T) {
 }
 
 func TestLookupRemoteReloadCounting(t *testing.T) {
+	t.Parallel()
 	// Свежий кеш (TTL не истёк) не обращается к RemoteStore вовсе;
 	// после истечения TTL — ровно один reload, подхватывающий новые
 	// записи.
@@ -351,6 +367,7 @@ func TestLookupRemoteReloadCounting(t *testing.T) {
 }
 
 func TestResolvePicksUpNewRemote(t *testing.T) {
+	t.Parallel()
 	store := testutil.NewFakeRemoteStore()
 	clock := testutil.NewManualClock(time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC))
 	a, err := New(store, clock)
@@ -394,6 +411,7 @@ func (e *errorRemoteStore) Remotes(ctx context.Context) ([]domain.Remote, error)
 }
 
 func TestResolveStaleCacheOnReloadError(t *testing.T) {
+	t.Parallel()
 	store := &errorRemoteStore{fakeRemotes: fakeRemotes{rs: []domain.Remote{
 		{ID: 5, Name: "alpine", Ecosystem: "apk", BaseURL: "https://dl-cdn.alpinelinux.org/alpine", Enabled: true},
 	}}}
@@ -413,6 +431,7 @@ func TestResolveStaleCacheOnReloadError(t *testing.T) {
 }
 
 func TestParseApkInclude(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		include []string
@@ -427,6 +446,7 @@ func TestParseApkInclude(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := parseApkInclude(tc.include)
 			if tc.wantErr {
 				if err == nil {
@@ -445,6 +465,7 @@ func TestParseApkInclude(t *testing.T) {
 }
 
 func TestParseApkIncludeValues(t *testing.T) {
+	t.Parallel()
 	archs, err := parseApkInclude([]string{"x86_64", "aarch64"})
 	if err != nil {
 		t.Fatal(err)
@@ -455,6 +476,7 @@ func TestParseApkIncludeValues(t *testing.T) {
 }
 
 func TestGlobToRegex(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		glob string
 		path string
@@ -483,6 +505,7 @@ func TestGlobToRegex(t *testing.T) {
 }
 
 func TestEnumerateApkSingleArch(t *testing.T) {
+	t.Parallel()
 	a := newTestAdapter(t)
 	indexText := mustReadTestdata(t, "APKINDEX.golden")
 	indexTarGz := newTarGz(t, tarEntries{
@@ -513,6 +536,7 @@ func TestEnumerateApkSingleArch(t *testing.T) {
 }
 
 func TestEnumerateApkMultipleArchs(t *testing.T) {
+	t.Parallel()
 	a := newTestAdapter(t)
 	indexText := mustReadTestdata(t, "APKINDEX.golden")
 	indexTarGz := newTarGz(t, tarEntries{
@@ -535,6 +559,7 @@ func TestEnumerateApkMultipleArchs(t *testing.T) {
 }
 
 func TestEnumerateApkFiltersEmptyFilepath(t *testing.T) {
+	t.Parallel()
 	// записи без F: (пустой FilePath) — Enumerate отфильтровывает.
 	a := newTestAdapter(t)
 	indexText := []byte("P:orphan\nV:1.0\n\nP:good\nF:good-1.0.apk\n\n")

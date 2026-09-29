@@ -12,10 +12,16 @@ import (
 	"khrazhevnik/internal/core/port"
 )
 
+// Статусы X-Cache дублируют константы engine/cache: web не тянет
+// внутренности движка ради имён. statusHit/statusStale нужны дважды —
+// в заголовке X-Cache и в фиксации обращений (сессия 168: потребление
+// считают только HIT/STALE, MISS — объект ещё не в кеше).
+const (
+	statusHit   = "HIT"
+	statusStale = "STALE"
+)
+
 func handleProxy(d Deps) http.HandlerFunc {
-	// Статусы X-Cache дублируют константы engine/cache: web не тянет
-	// внутренности движка ради имён.
-	const statusStale = "STALE"
 	// byPrefix — индекс экосистем по URL-префиксу (первый сегмент пути).
 	// Deps.Ecosystems хранятся по имени (apt, rpm-md); URL-префикс может
 	// отличаться (rpm-md → «rpm»). Индекс строится один раз при сборке
@@ -58,6 +64,9 @@ func handleProxy(d Deps) http.HandlerFunc {
 			} else {
 				w.Header().Set("X-Cache", status)
 			}
+			// Фиксация обращения ДО отдачи тела — как в repo_public:
+			// обращение случилось, даже если клиент оборвётся.
+			recordCacheAccess(d, status, obj.Meta.Key)
 			defer obj.Body.Close()
 			setProxyHeaders(w, path, obj.Meta)
 			// stallWriter: медленный читатель отвалится по write-deadline,
@@ -93,6 +102,9 @@ func handleProxy(d Deps) http.HandlerFunc {
 		} else {
 			w.Header().Set("X-Cache", status)
 		}
+		// Range — тоже потребление (решение волны): та же точка фиксации,
+		// ключ хранилища движок отдаёт в Meta.Key (им и открывается тело).
+		recordCacheAccess(d, status, meta.Key)
 		setProxyHeaders(w, path, meta)
 		serveRanged(w, r, meta,
 			func() (io.ReadCloser, error) { return d.Cache.OpenBody(r.Context(), meta.Key) },
@@ -112,6 +124,27 @@ func handleProxy(d Deps) http.HandlerFunc {
 			},
 		)
 	}
+}
+
+// recordCacheAccess — точка фиксации обращения к объекту кеша (сессия
+// 168). Потребление — факт выдачи из кеша: HIT и STALE (протухшая копия
+// отдана клиенту — тот же расход). MISS не фиксируется: объекта в кеше
+// ещё нет, фиксацию при записи добавит eviction-волна.
+//
+// Ключ — ключ единого namespace хранения из меты объекта (Meta.Key):
+// тот же формат (cache/<eco>/<путь>), по которому объект лежит в Storage
+// и по которому ретеншн резолвит семейства версий префиксным чтением —
+// новый формат не изобретаем. Пустой ключ (адаптер не заполнил) и
+// nil-рекордер (трекинг выключен, деградация без БД) — no-op: фиксации
+// нет, раздача не меняется.
+func recordCacheAccess(d Deps, status, key string) {
+	if d.AccessRecorder == nil || key == "" {
+		return
+	}
+	if status != statusHit && status != statusStale {
+		return
+	}
+	d.AccessRecorder.Record(domain.AccessScopeCache, key)
 }
 
 // setProxyHeaders — общие заголовки прокси-ответа из метаданных
