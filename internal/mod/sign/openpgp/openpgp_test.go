@@ -19,6 +19,8 @@ package openpgp
 import (
 	"bytes"
 	"context"
+	"crypto"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -109,6 +111,70 @@ func TestNew_ReloadSameFingerprint(t *testing.T) {
 	}
 	if s1.KeyID() != s2.KeyID() {
 		t.Errorf("keyid differs после reload")
+	}
+}
+
+// TestNew_SigningKeyIsEdDSALegacy — ключ инстанса в GnuPG-совместимом
+// формате: alg 22 (EdDSA legacy), а не alg 27 (RFC 9580) — иначе GnuPG и
+// pacman/gpgv подписи не разбирают.
+func TestNew_SigningKeyIsEdDSALegacy(t *testing.T) {
+	s := newSigner(t, nil)
+	if got := signingKeyAlgo(s.entity); got != packet.PubKeyAlgoEdDSA {
+		t.Errorf("алгоритм ключа подписи: %d, хочу PubKeyAlgoEdDSA (%d)", got, packet.PubKeyAlgoEdDSA)
+	}
+	// Тот же факт со стороны клиента: отдаваемый публичный ключ.
+	kr := keyring(t, s)
+	if got := kr[0].PrimaryKey.PubKeyAlgo; got != packet.PubKeyAlgoEdDSA {
+		t.Errorf("алгоритм публичного ключа: %d, хочу PubKeyAlgoEdDSA (%d)", got, packet.PubKeyAlgoEdDSA)
+	}
+}
+
+// TestNew_MigratesLegacyAlg27Key — старт на keys_dir с ключом прежнего
+// формата (alg 27): ключ заменяется на EdDSA legacy, повторный старт его
+// не меняет.
+func TestNew_MigratesLegacyAlg27Key(t *testing.T) {
+	dir := t.TempDir()
+	// Конфиг прежней версии — тот же, что был до сессии 182 (alg 27).
+	legacyCfg := &packet.Config{Algorithm: packet.PubKeyAlgoEd25519, DefaultHash: crypto.SHA256, DefaultCipher: packet.CipherAES256}
+	old, err := gp.NewEntity(uidName, "", uidEmail, legacyCfg)
+	if err != nil {
+		t.Fatalf("NewEntity (alg 27): %v", err)
+	}
+	if err := writeKeyFiles(dir, old, nil, legacyCfg); err != nil {
+		t.Fatalf("засев ключа alg 27: %v", err)
+	}
+	if got := signingKeyAlgo(old); got != packet.PubKeyAlgoEd25519 {
+		t.Fatalf("засеянный ключ: alg %d, хочу PubKeyAlgoEd25519 (%d)", got, packet.PubKeyAlgoEd25519)
+	}
+	oldFP := hex.EncodeToString(old.PrimaryKey.Fingerprint)
+
+	s, err := New(dir, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := signingKeyAlgo(s.entity); got != packet.PubKeyAlgoEdDSA {
+		t.Fatalf("после миграции алгоритм: %d, хочу PubKeyAlgoEdDSA (%d)", got, packet.PubKeyAlgoEdDSA)
+	}
+	if s.Fingerprint() == oldFP {
+		t.Error("ключ не заменён: fingerprint прежний")
+	}
+	// on-disk public.asc заменён вместе с ключом и совпадает с подписывающим.
+	pub, err := os.ReadFile(filepath.Join(dir, publicKeyFile))
+	if err != nil {
+		t.Fatalf("public.asc: %v", err)
+	}
+	kr, err := gp.ReadArmoredKeyRing(bytes.NewReader(pub))
+	if err != nil {
+		t.Fatalf("ReadArmoredKeyRing(public.asc): %v", err)
+	}
+	if got := hex.EncodeToString(kr[0].PrimaryKey.Fingerprint); got != s.Fingerprint() {
+		t.Errorf("public.asc: fingerprint %s, подписывает %s", got, s.Fingerprint())
+	}
+	// Повторный старт: миграция не повторяется (ключ стабилен).
+	if s2, err := New(dir, nil, nil); err != nil {
+		t.Fatalf("New #2: %v", err)
+	} else if s2.Fingerprint() != s.Fingerprint() {
+		t.Errorf("ключ изменился на повторном старте: %s", s2.Fingerprint())
 	}
 }
 

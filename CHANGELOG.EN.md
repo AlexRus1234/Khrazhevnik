@@ -35,6 +35,12 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   architecture already lives inside desc in `%ARCH%`. The layout is now
   `<name>-<version>/desc`, as in real Arch databases; `%FILENAME%`,
   `%ARCH%` and checksums are unchanged.
+- **Personal repos (apt/pacman/rpm-md):** the instance key was generated
+  as Ed25519 alg 27 (RFC 9580) — GnuPG, through which pacman/gpgv and apt
+  verify signatures, does not understand that format in a v4 packet, so
+  signatures were rejected. The key is now EdDSA legacy (alg 22), an
+  existing alg 27 key is replaced at startup — **clients need to
+  re-import `/key.asc`**.
 
 ## [1.3.0] — 2026-09-29
 
