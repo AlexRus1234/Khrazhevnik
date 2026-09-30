@@ -28,6 +28,10 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ### Fixed
 
+**Pacman compatibility wave (sessions 181–186):** live `pacman` against a
+personal repository failed twice — the `.db` entry layout and the format
+of the instance key that signs the database.
+
 - **Personal repos (pacman):** `.db` entries were generated with an arch
   suffix (`<name>-<version>-<arch>/desc`) — `pacman -Sy` on such a repo
   failed with "database is inconsistent: name/version mismatch": the entry
@@ -41,6 +45,11 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   signatures were rejected. The key is now EdDSA legacy (alg 22), an
   existing alg 27 key is replaced at startup — **clients need to
   re-import `/key.asc`**.
+- **Docs (session 184):** the `SigLevel = Required DatabaseOptional` canon
+  and the honest `Optional DatabaseNever` workaround (key not imported
+  yet); a note on the key regeneration at startup and re-importing
+  `key.asc` (func ru/en); the wave history in HISTORY, the gpg
+  verification case in TESTING.
 
 ## [1.3.0] — 2026-09-29
 

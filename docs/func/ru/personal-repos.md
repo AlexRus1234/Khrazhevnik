@@ -181,6 +181,11 @@ per-repo (поле `retention` в `POST`/`PATCH /api/v1/repos/{id}` или па�
   Server = http://<хражевник>:29202/repo/alice
   ```
   Ключ `GET /repo/alice/key.asc` импортируется через `pacman-key --add`.
+  Канон — проверка подписи `.db`; без импортированного ключа обход —
+  `SigLevel = Optional DatabaseNever` (подпись базы не проверяется —
+  рабочая, но НЕбезопасная конфигурация). Инстансы, созданные до
+  v1.3.1, перегенерируют ключ при старте (EdDSA legacy) — их клиентам
+  нужен повторный импорт `key.asc`.
 - **Публичный ключ:** `GET /repo/<name>/key.asc` (armored OpenPGP).
 
 ## apk (Alpine)

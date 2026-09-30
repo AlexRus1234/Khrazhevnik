@@ -67,6 +67,16 @@ SigLevel = Required DatabaseOptional
 Server = http://<Khrazhevnik>:29202/repo/<name>
 ```
 
+This is the canon: the `.db` signature is verified (with the instance key
+imported via `pacman-key --add`). If the key is not imported yet,
+`pacman -Sy` fails on verification; the workaround is
+`SigLevel = Optional DatabaseNever` (the database signature is not
+verified — a working, but NOT safe configuration).
+
+Instances created before v1.3.1 regenerate the instance key at startup
+(EdDSA legacy — GnuPG does not understand the former alg 27), so clients
+of such instances need to re-import `key.asc`.
+
 For details, see [personal-repos.md](../personal-repos.md).
 
 ## Object classification
