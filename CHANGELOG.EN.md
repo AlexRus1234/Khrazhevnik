@@ -26,6 +26,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-09-30
+
 ### Fixed
 
 **Pacman compatibility wave (sessions 181–186):** live `pacman` against a
