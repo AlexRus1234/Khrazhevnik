@@ -356,7 +356,8 @@ GnuPG-совместимость ключа инстанса; закреплён
   `gpg --verify` (тот же движок, что у apt и pacman-key/gpgv): cleartext
   `InRelease` и detached `Release.gpg` — тот же класс бинарной
   отсоединённой подписи, что `.db.sig` у pacman и `repomd.xml.asc` у
-  rpm-md; `gnupg2` ставится в шаг job'а `build-test`.
+  rpm-md; `gnupg2` есть в образе `fedora:44` job'а `build-test`
+  (строка шага установки — страховка от смены базового образа).
 
 ## Надёжность
 

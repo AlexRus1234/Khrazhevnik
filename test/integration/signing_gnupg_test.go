@@ -23,10 +23,12 @@
 // ПОЧЕМУ integration, а не юнит: в юнит-тестах подпись проверяет тот же
 // go-crypto, что её и создал — замкнутый круг (сессия 182). Честный
 // арбитр — реальный GnuPG: `gpg --verify` — тот же движок проверки, что у
-// apt и pacman-key/gpgv на клиентах. В юнит-среде образа gnupg нет,
-// поэтому тест живёт под тегом integration, а gnupg2 ставится шагом
-// «Install remaining system dependencies» job'а build-test
-// (.forgejo/workflows/build.yml).
+// apt и pacman-key/gpgv на клиентах. Под тегом integration тест живёт
+// потому, что арбитр-`gpg` гарантирован только в job'е build-test
+// (gnupg2 в образе fedora:44 — строка шага «Install remaining system
+// dependencies» держит его страховкой от смены базового образа,
+// .forgejo/workflows/build.yml); локальный прогон без `gpg` отсекает
+// capability-проба ниже.
 
 package integration
 
@@ -61,7 +63,7 @@ func TestGnupgVerifiesSignatures(t *testing.T) {
 		// Capability-проба, как отсутствие артефакта в binary_smoke:
 		// локальный прогон без gnupg — не отказ теста, верификация живёт
 		// в CI (gnupg2 в build-test), вердикт — CI.
-		t.Skipf("gpg не найден в PATH (%v): верификация подписи выполняется в CI (gnupg2 ставит build-test)", err)
+		t.Skipf("gpg не найден в PATH (%v): верификация подписи выполняется в CI (build-test; gnupg2 в образе fedora:44)", err)
 	}
 
 	// Ключ инстанса — тем же путём, что в wire (реестр + keys_dir под
