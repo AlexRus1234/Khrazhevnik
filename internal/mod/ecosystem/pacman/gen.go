@@ -272,7 +272,12 @@ func buildDescEntry(ctx context.Context, storage port.Storage, pkgKey string, de
 	if idx := strings.LastIndexByte(pkgKey, '/'); idx >= 0 {
 		filename = pkgKey[idx+1:]
 	}
-	dir := pi.Name + "-" + pi.Version + "-" + pi.Arch
+	// Каталог записи в .db — `<name>-<version>` без арх-суффикса: pacman
+	// сверяет имя каталога с %NAME%/%VERSION% из desc и падает с
+	// "name/version mismatch", если к ним приклеена архитектура. Архитектура
+	// пакета живёт внутри desc в %ARCH% (buildDescText) — суффикс был
+	// дублированием, а не носителем информации.
+	dir := pi.Name + "-" + pi.Version
 	// Размер — фактические байты через tee, не obj.Meta.Size: метаданные
 	// носителя могут солгать, и pacman упадёт на сверке размера.
 	desc := buildDescText(pi, filename, cr.n, sha)

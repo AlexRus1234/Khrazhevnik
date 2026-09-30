@@ -26,6 +26,33 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-09-30
+
+### Fixed
+
+**Pacman compatibility wave (sessions 181–186):** live `pacman` against a
+personal repository failed twice — the `.db` entry layout and the format
+of the instance key that signs the database.
+
+- **Personal repos (pacman):** `.db` entries were generated with an arch
+  suffix (`<name>-<version>-<arch>/desc`) — `pacman -Sy` on such a repo
+  failed with "database is inconsistent: name/version mismatch": the entry
+  directory is checked against `%NAME%`/`%VERSION%` from desc, and the
+  architecture already lives inside desc in `%ARCH%`. The layout is now
+  `<name>-<version>/desc`, as in real Arch databases; `%FILENAME%`,
+  `%ARCH%` and checksums are unchanged.
+- **Personal repos (apt/pacman/rpm-md):** the instance key was generated
+  as Ed25519 alg 27 (RFC 9580) — GnuPG, through which pacman/gpgv and apt
+  verify signatures, does not understand that format in a v4 packet, so
+  signatures were rejected. The key is now EdDSA legacy (alg 22), an
+  existing alg 27 key is replaced at startup — **clients need to
+  re-import `/key.asc`**.
+- **Docs (session 184):** the `SigLevel = Required DatabaseOptional` canon
+  and the honest `Optional DatabaseNever` workaround (key not imported
+  yet); a note on the key regeneration at startup and re-importing
+  `key.asc` (func ru/en); the wave history in HISTORY, the gpg
+  verification case in TESTING.
+
 ## [1.3.0] — 2026-09-29
 
 ### Added

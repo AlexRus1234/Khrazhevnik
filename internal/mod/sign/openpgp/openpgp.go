@@ -16,9 +16,11 @@
 
 // Пакет openpgp реализует port.Signer для apt-подобных личных репозиториев:
 // InRelease (cleartext) + Release.gpg (detached, бинарный) одним ключом
-// инстанса. Ключ ed25519 (OpenPGP, RFC 9580) генерируется на первом
-// старте в signing.keys_dir/private.asc (0600) + public.asc; при
-// повторных запусках — загружается. Опциональная passphrase защищает
+// инстанса. Ключ — EdDSA legacy (OpenPGP alg 22: Ed25519 в v4-пакете) —
+// генерируется на первом старте в signing.keys_dir/private.asc (0600) +
+// public.asc, при повторных запусках загружается, ключ прежнего формата
+// (alg 27, RFC 9580) заменяется автоматически (migrateLegacyKey).
+// Опциональная passphrase защищает
 // приватный ключ на диске (S2K, AES-256); неверная passphrase падает
 // на DecryptPrivateKeys — это и есть проверка при загрузке.
 //
@@ -38,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -61,17 +64,19 @@ const (
 	publicKeyFile  = "public.asc"
 )
 
-// signerConfig — параметры OpenPGP: ed25519 (подпись) + SHA256 (хеш
-// подписи). ed25519 выбирает и x25519 encryption-сабки автоматически
-// (NewEntity), но он не используется для подписи метаданных — лишний,
-// однако выкидывать его из ключа нельзя без ручной сборки пакетов;
-// оставляем как есть (apt игнорирует encryption-сабки при проверке
-// подписи Release). clock (если не nil) становится источником меток
-// времени подписей (packet.Config.Now) — правило «время только через
-// port.Clock»; иначе go-crypto берёт time.Now (тесты без часов).
+// signerConfig — параметры OpenPGP: EdDSA legacy (alg 22 — Ed25519 в
+// v4-обёртке; не deprecated — такое же alg 22 GnuPG сам генерирует для
+// ed25519-ключей) + SHA256 (хеш подписи). ПОЧЕМУ не PubKeyAlgoEd25519
+// (alg 27, RFC 9580): GnuPG в v4-ключах alg 27 не разбирает и отвергает
+// подпись «Недопустимый алгоритм шифрования с открытым ключом», а
+// pacman/gpgv проверяют .db.sig именно через GnuPG. Encryption-сабка (ECDH)
+// для подписи метаданных не используется, но без ручной сборки пакетов из
+// ключа не выкидывается (apt/pacman сабки при проверке Release игнорируют).
+// clock (если не nil) — источник меток времени подписей
+// (packet.Config.Now); иначе go-crypto берёт time.Now (тесты без часов).
 func signerConfig(clock port.Clock) *packet.Config {
 	cfg := &packet.Config{
-		Algorithm:     packet.PubKeyAlgoEd25519,
+		Algorithm:     packet.PubKeyAlgoEdDSA,
 		DefaultHash:   crypto.SHA256,
 		DefaultCipher: packet.CipherAES256,
 	}
@@ -148,6 +153,17 @@ func New(keysDir string, passphrase []byte, clock port.Clock) (*Signer, error) {
 			}
 		}
 	}
+	// Миграция ключа инстанса (сессия 182): формат прежней версии —
+	// alg 27 (RFC 9580) — GnuPG не разбирает, заменяем на EdDSA legacy.
+	// Иной алгоритм не трогаем; барьера-предупреждения нет — один
+	// тестовый инстанс, цена перегенерации нулевая (владелец, 2026-09-30).
+	if signingKeyAlgo(entity) == packet.PubKeyAlgoEd25519 {
+		entity, err = migrateLegacyKey(keysDir, passphrase, cfg)
+		if err != nil {
+			return nil, err
+		}
+		slog.Default().Warn("openpgp: ключ alg 27 (RFC 9580) заменён на EdDSA legacy — GnuPG-совместимость (см. сессию 182)")
+	}
 	// armorPublicKey пишет в bytes.Buffer — ошибиться не может, поэтому
 	// без error-возврата; защитные ветки armorWrite покрыты прямым тестом
 	// с failing-writer.
@@ -219,6 +235,32 @@ func generateEntity(cfg *packet.Config) (*gp.Entity, error) {
 	return gp.NewEntity(uidName, "", uidEmail, cfg)
 }
 
+// signingKeyAlgo — алгоритм ключа, которым инстанс подписывает: первая
+// signing-capable сабка (flag Sign), иначе primary (NewEntity кладёт
+// primary-signing + encryption-сабку, подписывает именно primary).
+func signingKeyAlgo(e *gp.Entity) packet.PublicKeyAlgorithm {
+	for _, sk := range e.Subkeys {
+		if sk.PrivateKey != nil && sk.Sig != nil && sk.Sig.FlagsValid && sk.Sig.FlagSign {
+			return sk.PrivateKey.PubKeyAlgo
+		}
+	}
+	return e.PrivateKey.PubKeyAlgo
+}
+
+// migrateLegacyKey заменяет ключ инстанса формата alg 27 на EdDSA legacy:
+// новый ключ и атомарная (rename поверх) перезапись private.asc +
+// public.asc — O_EXCL неприменим, файлы уже есть.
+func migrateLegacyKey(keysDir string, passphrase []byte, cfg *packet.Config) (*gp.Entity, error) {
+	entity, err := generateEntity(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("openpgp: генерация ключа миграции: %w", err)
+	}
+	if err := writeKeyFilesWith(keysDir, entity, passphrase, cfg, false); err != nil {
+		return nil, err
+	}
+	return entity, nil
+}
+
 // privateKeysEncrypted сообщает, есть ли зашифрованные приватные
 // компоненты (primary или сабки). Без early-return: проверяем все,
 // чтобы сабки-ветка была покрываема (EncryptPrivateKeys шифрует и
@@ -269,6 +311,12 @@ func (e *keygenRaceError) Unwrap() error { return e.err }
 // ключ для подписи. Селф-сигнатуры от NewEntity уже валидны, reSign
 // не нужен.
 func writeKeyFiles(keysDir string, entity *gp.Entity, passphrase []byte, cfg *packet.Config) error {
+	return writeKeyFilesWith(keysDir, entity, passphrase, cfg, true)
+}
+
+// writeKeyFilesWith — тело writeKeyFiles: exclusive=true — первый keygen
+// (O_EXCL, один победитель в гонке), false — миграция (rename поверх).
+func writeKeyFilesWith(keysDir string, entity *gp.Entity, passphrase []byte, cfg *packet.Config, exclusive bool) error {
 	if len(passphrase) > 0 {
 		if err := entity.EncryptPrivateKeys(passphrase, cfg); err != nil {
 			return fmt.Errorf("openpgp: шифрование приватного ключа: %w", err)
@@ -277,9 +325,9 @@ func writeKeyFiles(keysDir string, entity *gp.Entity, passphrase []byte, cfg *pa
 	privPath := filepath.Join(keysDir, privateKeyFile)
 	err := writeArmored(privPath, gp.PrivateKeyType, func(w io.Writer) error {
 		return entity.SerializePrivateWithoutSigning(w, cfg)
-	}, true)
+	}, exclusive)
 	if err != nil {
-		if errors.Is(err, os.ErrExist) {
+		if exclusive && errors.Is(err, os.ErrExist) {
 			// Гонка первого старта: другой процесс успел создать
 			// private.asc — его ключ канонический, наш выкидываем.
 			// Маркер вместо голого ErrExist: New различает эту гонку
