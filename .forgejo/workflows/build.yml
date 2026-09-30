@@ -210,11 +210,19 @@ jobs:
         # npm — для сборки Vue-SPA (cd web && npm ci && npm run build,
         # шаг ниже): до сессии 18.1 фронтенда не было, npm был не нужен.
         # jq — для парсинга JSON в publish-шагах ниже.
+        # gnupg2 (gpg) — арбитр GnuPG-совместимости подписей:
+        # integration-тест TestGnupgVerifiesSignatures проверяет подписи
+        # Хражевника именно `gpg --verify` (тот же движок, что у apt и
+        # pacman-key). В fedora:44 gnupg2 уже есть (факт лога прогона
+        # idx=353: «Package "gnupg2-2.4.9-16.fc44.x86_64" is already
+        # installed») — строка в списке оставлена страховкой от смены
+        # базового образа, а не как единственный источник пакета.
         run: |
           dnf install -y --setopt=install_weak_deps=False \
             bash tar \
             nodejs npm \
             jq \
+            gnupg2 \
             gcc
 
       - name: Probe service DNS (availability gate)

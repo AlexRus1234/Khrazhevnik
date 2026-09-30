@@ -346,6 +346,19 @@ Unit-only цифра (~67% на момент внедрения) была зан
 - e2e (Playwright, `run_e2e_tests`): политика в панели «Ретеншн»,
   прогноз, пин/анпин и клиентская валидация (`min=1` с возрастом).
 
+## Pacman-совместимость (волна «Pacman-совместимость», сессии 181–186)
+
+Живой `pacman` против личного репо — раскладка записей `.db` и
+GnuPG-совместимость ключа инстанса; закреплён кейс:
+
+- integration `signing_gnupg_test.go` (build-tag, 183):
+  `TestGnupgVerifiesSignatures` — подписи инстанса проверяются живым
+  `gpg --verify` (тот же движок, что у apt и pacman-key/gpgv): cleartext
+  `InRelease` и detached `Release.gpg` — тот же класс бинарной
+  отсоединённой подписи, что `.db.sig` у pacman и `repomd.xml.asc` у
+  rpm-md; `gnupg2` есть в образе `fedora:44` job'а `build-test`
+  (строка шага установки — страховка от смены базового образа).
+
 ## Надёжность
 
 Graceful shutdown каскадом; идемпотентные миграции; resume sync-задач

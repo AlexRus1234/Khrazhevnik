@@ -179,7 +179,7 @@ applied by a daily background pass or manually from the GUI/API.
   Legacy `.pkg.tar.xz`/`.gz` are not accepted (400): there is no xz/
   gz decoder in the dependency whitelist — repack as zst.
 - **Indexes (reindex):** `<repo.Name>.db` (tar.zst with
-  `<name>-<ver>-<arch>/desc` entries) + `<repo.Name>.db.sig`
+  `<name>-<ver>/desc` entries) + `<repo.Name>.db.sig`
   (detached, with the instance OpenPGP key).
 - **Client:** `/etc/pacman.conf`:
   ```ini
@@ -188,6 +188,11 @@ applied by a daily background pass or manually from the GUI/API.
   Server = http://<Khrazhevnik>:29202/repo/alice
   ```
   The key `GET /repo/alice/key.asc` is imported via `pacman-key --add`.
+  This is the canon: the `.db` signature is verified; if the key is not
+  imported, the workaround is `SigLevel = Optional DatabaseNever` (the
+  database signature is not verified — a working, but NOT safe
+  configuration). Instances created before v1.3.1 regenerate the key at
+  startup (EdDSA legacy) — their clients need to re-import `key.asc`.
 - **Public key:** `GET /repo/<name>/key.asc` (armored OpenPGP).
 
 ## apk (Alpine)
