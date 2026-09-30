@@ -172,7 +172,7 @@ per-repo (поле `retention` в `POST`/`PATCH /api/v1/repos/{id}` или па�
   `.pkg.tar.xz`/`.gz` не принимаются (400): нет xz/gz-декодера в
   whitelist зависимостей — переупакуйте в zst.
 - **Индексы (reindex):** `<repo.Name>.db` (tar.zst с
-  `<name>-<ver>-<arch>/desc`-записями) + `<repo.Name>.db.sig` (detached,
+  `<name>-<ver>/desc`-записями) + `<repo.Name>.db.sig` (detached,
   ключом инстанса OpenPGP).
 - **Клиент:** `/etc/pacman.conf`:
   ```ini

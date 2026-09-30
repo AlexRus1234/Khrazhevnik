@@ -26,6 +26,16 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Personal repos (pacman):** `.db` entries were generated with an arch
+  suffix (`<name>-<version>-<arch>/desc`) — `pacman -Sy` on such a repo
+  failed with "database is inconsistent: name/version mismatch": the entry
+  directory is checked against `%NAME%`/`%VERSION%` from desc, and the
+  architecture already lives inside desc in `%ARCH%`. The layout is now
+  `<name>-<version>/desc`, as in real Arch databases; `%FILENAME%`,
+  `%ARCH%` and checksums are unchanged.
+
 ## [1.3.0] — 2026-09-29
 
 ### Added

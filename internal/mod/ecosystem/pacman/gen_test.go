@@ -371,7 +371,7 @@ func TestGenerateIndexesSinglePkg(t *testing.T) {
 	if err != nil {
 		t.Fatalf("zstd.NewReader: %v", err)
 	}
-	desc, err := findDescInTar(zr, "pacman-example-1.0-1-x86_64/desc")
+	desc, err := findDescInTar(zr, "pacman-example-1.0-1/desc")
 	if err != nil {
 		t.Fatalf("findDescInTar: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestGenerateIndexesRoundtrip(t *testing.T) {
 	// для sha-проверки desc распаковываем zstd → tar (findDescInTar на
 	// разжатом tar-потоке).
 	zr2, _ := zstd.NewReader(bytes.NewReader(db))
-	desc, err := findDescInTar(zr2, "foo-1.0-1-x86_64/desc")
+	desc, err := findDescInTar(zr2, "foo-1.0-1/desc")
 	if err != nil {
 		t.Fatalf("findDesc foo: %v", err)
 	}
@@ -687,7 +687,7 @@ func TestGenerateIndexesDependencies(t *testing.T) {
 
 	// Распаковываем .db (zstd → tar) и читаем desc.
 	dbBytes := readStorage(t, storage, "repo/1/pacman/alice.db")
-	desc, err := extractDescFromDB(dbBytes, "foo-1.0-1-x86_64")
+	desc, err := extractDescFromDB(dbBytes, "foo-1.0-1")
 	if err != nil {
 		t.Fatalf("extractDescFromDB: %v", err)
 	}
@@ -716,7 +716,7 @@ func TestGenerateIndexesNoDependenciesOmitsFields(t *testing.T) {
 		t.Fatalf("GenerateIndexes: %v", err)
 	}
 	dbBytes := readStorage(t, storage, "repo/1/pacman/alice.db")
-	desc, err := extractDescFromDB(dbBytes, "pacman-example-1.0-1-x86_64")
+	desc, err := extractDescFromDB(dbBytes, "pacman-example-1.0-1")
 	if err != nil {
 		t.Fatalf("extractDescFromDB: %v", err)
 	}

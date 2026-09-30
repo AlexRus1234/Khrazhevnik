@@ -35,6 +35,15 @@ major.
 
 ## [Unreleased]
 
+### Исправлено
+
+- **Личные репо (pacman):** записи `.db` генерировались с арх-суффиксом
+  (`<name>-<version>-<arch>/desc`) — `pacman -Sy` на таком репо падал с
+  «database is inconsistent: name/version mismatch»: имя каталога
+  сверяется с `%NAME%`/`%VERSION%` из desc, а архитектура и так лежит
+  внутри desc в `%ARCH%`. Раскладка стала `<name>-<version>/desc`, как в
+  настоящих БД Arch; `%FILENAME%`, `%ARCH%` и чексуммы не изменились.
+
 ## [1.3.0] — 2026-09-29
 
 ### Добавлено
