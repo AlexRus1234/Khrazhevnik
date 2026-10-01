@@ -26,6 +26,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-10-01
+
 ### Added
 
 - **Mirror (xbps):** the legacy `.sig` signature is pulled from upstream
