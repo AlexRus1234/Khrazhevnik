@@ -217,6 +217,10 @@ func TestGeneratorName(t *testing.T) {
 	}
 }
 
+// TestValidateObjectPath — пакет обязан лежать в каталоге своей
+// архитектуры (сессия 192): клиент строит URL как
+// <repo>/<A: записи>/<basename(F:)>, из корня репо и из вложенного
+// каталога пакет недоступен.
 func TestValidateObjectPath(t *testing.T) {
 	t.Parallel()
 	g := &Generator{}
@@ -225,9 +229,13 @@ func TestValidateObjectPath(t *testing.T) {
 		want bool
 	}{
 		{"x86_64/apk-example-1.0-r0.apk", true},
-		{"apk-example-1.0-r0.apk", true},
+		{"aarch64/htop-3.3.0-r2.apk", true},
+		{"noarch/ca-certificates-20250605-r0.apk", true},
+		{"apk-example-1.0-r0.apk", false},
+		{"x86_64/sub/apk-example-1.0-r0.apk", false},
 		{"apkindex.tar.gz", false},
 		{"apkindex.tar.gz.sig", false},
+		{"x86_64/apkindex.tar.gz", false},
 		{"foo.txt", false},
 		{"", false},
 	}
@@ -321,7 +329,7 @@ func TestGenerateIndexesSingleApk(t *testing.T) {
 	}
 
 	// APKINDEX.tar.gz: gzip+tar с файлом APKINDEX. Разжимаем gzip → tar.
-	idxGz := readStorage(t, storage, "repo/1/apk/apkindex.tar.gz")
+	idxGz := readStorage(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz")
 	gz, err := gzip.NewReader(bytes.NewReader(idxGz))
 	if err != nil {
 		t.Fatalf("gzip.NewReader: %v", err)
@@ -373,14 +381,14 @@ func TestGenerateIndexesRoundtrip(t *testing.T) {
 	putApk(t, storage, repo, "x86_64/apk-example-1.0-r0.apk",
 		"pkgname = apk-example\npkgver = 1.0-r0\narch = x86_64\n")
 	putApk(t, storage, repo, "x86_64/second-pkg-2.0-r1.apk",
-		"pkgname = second-pkg\npkgver = 2.0-r1\narch = any\n")
+		"pkgname = second-pkg\npkgver = 2.0-r1\narch = x86_64\n")
 
 	g := &Generator{}
 	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
 		t.Fatalf("GenerateIndexes: %v", err)
 	}
 
-	idxGz := readStorage(t, storage, "repo/1/apk/apkindex.tar.gz")
+	idxGz := readStorage(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz")
 	// ParseAPKINDEX сам разжимает gzip; передаём сырые байты.
 	entries, err := collectIndex(ParseAPKINDEX(bytes.NewReader(idxGz)))
 	if err != nil {
@@ -401,6 +409,9 @@ func TestGenerateIndexesRoundtrip(t *testing.T) {
 	}
 }
 
+// TestGenerateIndexesEmptyRepo — пакетов нет, архитектур взять неоткуда:
+// генератор не пишет ни одного индекса (в прежней схеме здесь появлялся
+// «пустой» индекс в корне репо).
 func TestGenerateIndexesEmptyRepo(t *testing.T) {
 	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
@@ -410,10 +421,11 @@ func TestGenerateIndexesEmptyRepo(t *testing.T) {
 	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
 		t.Fatalf("GenerateIndexes пустой репо: %v", err)
 	}
-	idxGz := readStorage(t, storage, "repo/1/apk/apkindex.tar.gz")
-	entries, _ := collectIndex(ParseAPKINDEX(bytes.NewReader(idxGz)))
-	if len(entries) != 0 {
-		t.Errorf("пустой репо дал %d записей, хочу 0", len(entries))
+	for meta, err := range storage.List(context.Background(), "repo/1/apk/") {
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		t.Errorf("пустой репо записал объект %q", meta.Key)
 	}
 }
 
@@ -501,7 +513,7 @@ func TestGenerateIndexesUnsignedNoSig(t *testing.T) {
 	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
 		t.Fatalf("GenerateIndexes: %v", err)
 	}
-	if _, err := storage.Get(context.Background(), "repo/1/apk/apkindex.tar.gz.sig"); err == nil {
+	if _, err := storage.Get(context.Background(), "repo/1/apk/x86_64/apkindex.tar.gz.sig"); err == nil {
 		t.Error("без Signer создан apkindex.tar.gz.sig")
 	}
 }
@@ -517,7 +529,7 @@ func TestGenerateIndexesSignedWritesSig(t *testing.T) {
 	if err := g.GenerateIndexes(context.Background(), repo, storage, rec); err != nil {
 		t.Fatalf("GenerateIndexes: %v", err)
 	}
-	sig := readStorage(t, storage, "repo/1/apk/apkindex.tar.gz.sig")
+	sig := readStorage(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz.sig")
 	if string(sig) != "detached-stub" {
 		t.Errorf("apkindex.tar.gz.sig = %q, хочу detached-stub", sig)
 	}
@@ -599,7 +611,7 @@ func TestGenerateIndexesListingErrorKeepsOldIndexes(t *testing.T) {
 	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
 		t.Fatalf("первая генерация: %v", err)
 	}
-	const indexKey = "repo/1/apk/apkindex.tar.gz"
+	const indexKey = "repo/1/apk/x86_64/apkindex.tar.gz"
 	before := readStorage(t, storage, indexKey)
 
 	broken := &failingListStorage{FakeStorage: storage, err: errListFail}
@@ -633,7 +645,7 @@ func TestGenerateIndexesDependencies(t *testing.T) {
 		t.Fatalf("GenerateIndexes: %v", err)
 	}
 
-	idxGz := readStorage(t, storage, "repo/1/apk/apkindex.tar.gz")
+	idxGz := readStorage(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz")
 	gz, err := gzip.NewReader(bytes.NewReader(idxGz))
 	if err != nil {
 		t.Fatalf("gzip.NewReader: %v", err)
@@ -667,7 +679,7 @@ func TestGenerateIndexesNoDependenciesOmitsLines(t *testing.T) {
 	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
 		t.Fatalf("GenerateIndexes: %v", err)
 	}
-	idxGz := readStorage(t, storage, "repo/1/apk/apkindex.tar.gz")
+	idxGz := readStorage(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz")
 	gz, err := gzip.NewReader(bytes.NewReader(idxGz))
 	if err != nil {
 		t.Fatalf("gzip.NewReader: %v", err)
@@ -802,7 +814,7 @@ func TestGenerateIndexesApkBomb(t *testing.T) {
 	if !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
 	}
-	if _, err := storage.Get(context.Background(), "repo/1/apk/apkindex.tar.gz"); err == nil {
+	if _, err := storage.Get(context.Background(), "repo/1/apk/x86_64/apkindex.tar.gz"); err == nil {
 		t.Error("индекс не должен быть закоммичен")
 	}
 }
@@ -861,7 +873,7 @@ func TestGenerateIndexesZstdBomb(t *testing.T) {
 	if !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
 	}
-	if _, err := storage.Get(context.Background(), "repo/1/apk/apkindex.tar.gz"); err == nil {
+	if _, err := storage.Get(context.Background(), "repo/1/apk/x86_64/apkindex.tar.gz"); err == nil {
 		t.Error("индекс не должен быть закоммичен")
 	}
 }
@@ -942,5 +954,104 @@ func TestReadPkgInfoCancelMidStream(t *testing.T) {
 	}
 	if g.served > 512 {
 		t.Errorf("доставлено %d байт — члены после первого не должны читаться", g.served)
+	}
+}
+
+// indexPaths — отсортированные пути F: индекса по ключу storage
+// (roundtrip через ParseAPKINDEX).
+func indexPaths(t *testing.T, storage *testutil.FakeStorage, key string) []string {
+	t.Helper()
+	entries, err := collectIndex(ParseAPKINDEX(bytes.NewReader(readStorage(t, storage, key))))
+	if err != nil {
+		t.Fatalf("ParseAPKINDEX %s: %v", key, err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.FilePath)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// TestGenerateIndexesPerArch — раскладка по архитектурам (сессия 192):
+// индекс на архитектуру в <prefix>/<arch>/apkindex.tar.gz, в корне репо
+// индекса больше нет (прежняя схема — источник 404 живого клиента).
+func TestGenerateIndexesPerArch(t *testing.T) {
+	t.Parallel()
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	putApk(t, storage, repo, "x86_64/foo-1.0-r0.apk", "pkgname = foo\npkgver = 1.0-r0\narch = x86_64\n")
+	putApk(t, storage, repo, "aarch64/bar-2.0-r1.apk", "pkgname = bar\npkgver = 2.0-r1\narch = aarch64\n")
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+
+	if got := indexPaths(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz"); !slices.Equal(got, []string{"x86_64/foo-1.0-r0.apk"}) {
+		t.Errorf("индекс x86_64 = %v, хочу [x86_64/foo-1.0-r0.apk]", got)
+	}
+	if got := indexPaths(t, storage, "repo/1/apk/aarch64/apkindex.tar.gz"); !slices.Equal(got, []string{"aarch64/bar-2.0-r1.apk"}) {
+		t.Errorf("индекс aarch64 = %v, хочу [aarch64/bar-2.0-r1.apk]", got)
+	}
+	if _, err := storage.Get(context.Background(), "repo/1/apk/apkindex.tar.gz"); err == nil {
+		t.Error("индекс в корне репо всё ещё пишется")
+	}
+}
+
+// TestGenerateIndexesNoarchInEveryArchIndex — noarch-запись нужна в КАЖДОМ
+// arch-индексе: клиент читает индекс только своей архитектуры, а файл
+// noarch-пакета тянет из <repo>/noarch/ (факт пробы сессии 192).
+func TestGenerateIndexesNoarchInEveryArchIndex(t *testing.T) {
+	t.Parallel()
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	putApk(t, storage, repo, "x86_64/foo-1.0-r0.apk", "pkgname = foo\npkgver = 1.0-r0\narch = x86_64\n")
+	putApk(t, storage, repo, "aarch64/bar-2.0-r1.apk", "pkgname = bar\npkgver = 2.0-r1\narch = aarch64\n")
+	putApk(t, storage, repo, "noarch/data-3.0-r0.apk", "pkgname = data\npkgver = 3.0-r0\narch = noarch\n")
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	if got := indexPaths(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz"); !slices.Equal(got, []string{"noarch/data-3.0-r0.apk", "x86_64/foo-1.0-r0.apk"}) {
+		t.Errorf("индекс x86_64 = %v, хочу свою запись + noarch", got)
+	}
+	if got := indexPaths(t, storage, "repo/1/apk/aarch64/apkindex.tar.gz"); !slices.Equal(got, []string{"aarch64/bar-2.0-r1.apk", "noarch/data-3.0-r0.apk"}) {
+		t.Errorf("индекс aarch64 = %v, хочу свою запись + noarch", got)
+	}
+	if got := indexPaths(t, storage, "repo/1/apk/noarch/apkindex.tar.gz"); !slices.Equal(got, []string{"noarch/data-3.0-r0.apk"}) {
+		t.Errorf("индекс noarch = %v, хочу только noarch-запись", got)
+	}
+}
+
+// TestGenerateIndexesSkipsApkOutsideItsArchDir — пакет в каталоге чужой
+// архитектуры (или в корне репо) клиенту недоступен: URL пакета клиент
+// собирает как <repo>/<A: .PKGINFO>/<basename(F:)>, поэтому запись в
+// индекс не попадает, а факт уходит в лог.
+func TestGenerateIndexesSkipsApkOutsideItsArchDir(t *testing.T) {
+	t.Parallel()
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	putApk(t, storage, repo, "x86_64/foo-1.0-r0.apk", "pkgname = foo\npkgver = 1.0-r0\narch = x86_64\n")
+	putApk(t, storage, repo, "x86_64/foreign-1.0-r0.apk", "pkgname = foreign\npkgver = 1.0-r0\narch = aarch64\n")
+	putApk(t, storage, repo, "rooted-1.0-r0.apk", "pkgname = rooted\npkgver = 1.0-r0\narch = x86_64\n")
+
+	rec := &recordingProgress{}
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, rec); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	if got := indexPaths(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz"); !slices.Equal(got, []string{"x86_64/foo-1.0-r0.apk"}) {
+		t.Errorf("индекс x86_64 = %v, хочу только пакет в каталоге своей архитектуры", got)
+	}
+	if _, err := storage.Get(context.Background(), "repo/1/apk/aarch64/apkindex.tar.gz"); err == nil {
+		t.Error("индекс aarch64 создан из пакета в чужом каталоге")
+	}
+	if !slices.ContainsFunc(rec.logs, func(s string) bool { return strings.Contains(s, "пропущен") }) {
+		t.Errorf("нет лога о пропуске: %v", rec.logs)
 	}
 }

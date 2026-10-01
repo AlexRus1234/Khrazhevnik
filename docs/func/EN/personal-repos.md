@@ -201,16 +201,20 @@ applied by a daily background pass or manually from the GUI/API.
 
 ## apk (Alpine)
 
-- **Upload:** `.apk` anywhere under the repository root;
-  `APKINDEX.tar.gz` is generated; uploading it is forbidden.
-- **Indexes (reindex):** `APKINDEX.tar.gz` (gzip+tar with an
-  `APKINDEX` file in "K:V" format — C/P/V/A/F/...) +
-  `APKINDEX.tar.gz.sig` (detached, with the instance OpenPGP key).
+- **Upload:** `.apk` into the directory of its architecture —
+  `<arch>/<file>.apk` (`arch` from `.PKGINFO`); `arch = noarch` goes into
+  `noarch/`. Any other path (including the repository root) — 400.
+- **Indexes (reindex):** one per architecture —
+  `<arch>/APKINDEX.tar.gz` (gzip+tar with the `APKINDEX` file in `K:V`
+  format — C/P/V/A/F/...) + `<arch>/APKINDEX.tar.gz.sig` (detached, with
+  the instance OpenPGP key); `noarch` entries are included in the index of
+  every architecture. No index is generated at the repository root.
 - **Client:** `/etc/apk/repositories`:
   ```
   http://<Khrazhevnik>:29202/repo/alice
   ```
-  The key `GET /repo/alice/key.asc` is copied into `/etc/apk/keys/`.
+  The client appends its architecture itself. The key
+  `GET /repo/alice/key.asc` is copied into `/etc/apk/keys/`.
 - **Public key:** `GET /repo/<name>/key.asc` (armored OpenPGP).
 
 ## nix (binary cache)

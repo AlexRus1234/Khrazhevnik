@@ -194,16 +194,20 @@ per-repo (поле `retention` в `POST`/`PATCH /api/v1/repos/{id}` или па�
 
 ## apk (Alpine)
 
-- **Upload:** `.apk` где угодно под корнем репо; `APKINDEX.tar.gz` —
-  генерируется, upload туда запрещён.
-- **Индексы (reindex):** `APKINDEX.tar.gz` (gzip+tar с файлом `APKINDEX`
-  в формате «K:V» — C/P/V/A/F/...) + `APKINDEX.tar.gz.sig` (detached,
-  ключом инстанса OpenPGP).
+- **Upload:** `.apk` в каталог своей архитектуры — `<arch>/<файл>.apk`
+  (`arch` из `.PKGINFO`); `arch = noarch` — в каталог `noarch/`. Прочие
+  пути (в том числе корень репо) — 400.
+- **Индексы (reindex):** по одному на архитектуру —
+  `<arch>/APKINDEX.tar.gz` (gzip+tar с файлом `APKINDEX` в формате
+  «K:V» — C/P/V/A/F/...) + `<arch>/APKINDEX.tar.gz.sig` (detached, ключом
+  инстанса OpenPGP); `noarch`-записи входят в индекс каждой архитектуры.
+  Индекс в корне репо не генерируется.
 - **Клиент:** `/etc/apk/repositories`:
   ```
   http://<хражевник>:29202/repo/alice
   ```
-  Ключ `GET /repo/alice/key.asc` копируется в `/etc/apk/keys/`.
+  Архитектуру клиент подставляет сам. Ключ `GET /repo/alice/key.asc`
+  копируется в `/etc/apk/keys/`.
 - **Публичный ключ:** `GET /repo/<name>/key.asc` (armored OpenPGP).
 
 ## nix (binary cache)

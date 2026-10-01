@@ -15,16 +15,33 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 // Генератор apk-индексов личного репозитория (port.RepoAdapter): обходит
-// repo/<id>/apk/**/*.apk, читает .PKGINFO каждого (pkginfo.go) и считает
-// sha1, собирает APKINDEX.tar.gz (gzip+tar с файлом APKINDEX в формате
-// «K:V») + APKINDEX.tar.gz.sig (подпись Signer'ом из сессии 15).
+// repo/<id>/apk/<arch>/<файл>.apk, читает .PKGINFO каждого (pkginfo.go) и
+// считает sha1, собирает по одному APKINDEX.tar.gz на архитектуру
+// (gzip+tar с файлом APKINDEX в формате «K:V») + APKINDEX.tar.gz.sig
+// (подпись Signer'ом из сессии 15).
+//
+// Раскладка — по URL-контракту apk-tools (живая проба сессии 192, скрипты
+// и логи — в постамбуле): клиент запрашивает индекс строго по
+// <repo-url>/<своя-арх>/APKINDEX.tar.gz (плоского режима нет ни в 2.14.6,
+// ни в 3.0.7), а пакет — по <repo-url>/<A-записи>/<basename(F:)>, причём
+// каталог из поля F: игнорируется целиком: путь каталога берётся из arch
+// записи (= architecture .PKGINFO), имя файла — из basename(F:). Поэтому
+// пакет обязан лежать в каталоге своей архитектуры (ValidateObjectPath),
+// .PKGINFO-архитектура пакета = каталог = каталог индекса.
+// Пакеты arch=noarch попадают в КАЖДЫЙ arch-индекс: клиент читает только
+// индекс своей архитектуры, а файл тянет из <repo>/noarch/ — без инъекции
+// такой пакет клиенту не виден (факт пробы: запись A:noarch в x86_64-индексе
+// принята, запрос ушёл за /noarch/<файл>).
+//
 // Атомарность v1 — перезапись ключей после полной генерации staging в
 // памяти (окно рассинхрона ~секунды; полный atomic-swap — сессия 17).
 //
-// Ключи в storage — lowercase (domain.ValidateKey): apkindex.tar.gz,
-// apkindex.tar.gz.sig. apk fetch'ит APKINDEX.tar.gz (имя — каноническое
-// uppercase в URL, но публичный роутер :29202 лоуэркейсит запрос перед
-// lookup'ом, поэтому storage-ключ lowercase).
+// Ключи в storage — lowercase (domain.ValidateKey): <arch>/apkindex.tar.gz,
+// <arch>/apkindex.tar.gz.sig. apk fetch'ит APKINDEX.tar.gz (имя —
+// каноническое uppercase в URL, но публичный роутер :29202 лоуэркейсит
+// запрос перед lookup'ом, поэтому storage-ключ lowercase). Старый индекс в
+// корне репо больше не пишется; уже лежащий — не удаляется (чистка — вне
+// скоупа, см. docs/func/ru/ecosystems/apk.md).
 
 package apk
 
@@ -79,13 +96,39 @@ func (g *Generator) SetSigner(s port.Signer) { g.signer = s }
 // Name — имя экосистемы, совпадает с Adapter.Name.
 func (g *Generator) Name() string { return Name }
 
-// ValidateObjectPath принимает .apk где угодно под корнем репо;
-// APKINDEX.tar.gz — генерируется, клиенту туда соваться нельзя.
+// ValidateObjectPath принимает только <архитектура>/<файл>.apk: каталог
+// обязан быть один и совпадать с architecture .PKGINFO пакета (проверить
+// это по пути нельзя — генератор пропускает несоответствия с логом).
+// Клиент apk строит URL пакета как <repo-url>/<A:>/<basename(F:)>, поэтому
+// пакет вне каталога своей архитектуры (в корне репо или с лишним уровнем
+// вложенности) клиенту недоступен. APKINDEX.tar.gz — генерируется, клиенту
+// туда соваться нельзя.
 func (g *Generator) ValidateObjectPath(p string) error {
-	if strings.HasSuffix(p, ".apk") {
-		return nil
+	if !strings.HasSuffix(p, ".apk") {
+		return &domain.ValidationError{What: "путь apk-репо", Value: p, Reason: "неизвестное расширение (ожидалось .apk)"}
 	}
-	return &domain.ValidationError{What: "путь apk-репо", Value: p, Reason: "неизвестное расширение (ожидалось .apk)"}
+	dir, file, ok := splitArchDir(p)
+	if !ok || dir == "" || file == "" {
+		return &domain.ValidationError{What: "путь apk-репо", Value: p, Reason: "пакет кладётся в каталог своей архитектуры: <arch>/<файл>.apk"}
+	}
+	return nil
+}
+
+// splitArchDir делит путь пакета на каталог архитектуры и имя файла:
+// ровно один сегмент каталога («x86_64/foo-1.0-r0.apk»). ok=false — путь
+// без каталога («foo.apk» в корне репо) или с вложенностью глубже одного
+// уровня («a/b/foo.apk»): оба клиенту недоступны, каталог он не угадает
+// (в URL идёт arch записи, а имя — basename файла).
+func splitArchDir(p string) (dir, file string, ok bool) {
+	idx := strings.LastIndexByte(p, '/')
+	if idx < 0 {
+		return "", p, false
+	}
+	dir, file = p[:idx], p[idx+1:]
+	if strings.Contains(dir, "/") {
+		return dir, file, false
+	}
+	return dir, file, true
 }
 
 // ObjectFamily — port.FamilyResolver: семейство версий apk-объекта —
@@ -131,10 +174,16 @@ func pkgFamily(stem string) (string, bool) {
 // с «0»–«9», unicode-цифры в именах пакетов не встречаются.
 func isASCIIDigit(b byte) bool { return b >= '0' && b <= '9' }
 
-// GenerateIndexes обходит .apk, читает .PKGINFO, собирает APKINDEX.tar.gz
-// (+ .sig при Signer). Прогресс — обработанные пакеты.
+// archNoarch — значение architecture .PKGINFO у пакетов, не привязанных к
+// архитектуре. Файл такого пакета клиент любой архитектуры тянет из
+// <repo>/noarch/, а запись обязана лежать в КАЖДОМ arch-индексе: клиент
+// читает индекс только своей архитектуры (проба сессии 192).
+const archNoarch = "noarch"
+
+// GenerateIndexes обходит .apk, читает .PKGINFO, собирает по APKINDEX.tar.gz
+// на архитектуру (+ .sig при Signer). Прогресс — обработанные пакеты.
 //
-//nolint:gocyclo // enumerate → pkginfo → write → sign — линейная
+//nolint:gocyclo // enumerate → pkginfo → group → write → sign — линейная
 func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, storage port.Storage, p port.RepoProgress) error {
 	if p == nil {
 		p = noopRepoProgress{}
@@ -152,50 +201,81 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 	}
 	p.Log(fmt.Sprintf("apk.gen: найдено %d .apk в %s", len(apkKeys), prefix))
 
-	// Фаза 2: чтение .PKGINFO + sha1 каждого .apk, сборка APKINDEX-текста.
+	// Фаза 2: чтение .PKGINFO + sha1 каждого .apk, группировка записей по
+	// architecture из .PKGINFO. Каталог пакета обязан совпасть с ней:
+	// ValidateObjectPath держит только форму пути (значение архитектуры по
+	// пути не узнать), а пакет в чужом каталоге клиенту недоступен — в
+	// индекс он не пишется, факт идёт в лог.
 	p.Update("pkginfo", repo.Name, 0, int64(len(apkKeys)))
-	var indexText bytes.Buffer
+	groups := make(map[string]*bytes.Buffer)
+	var archs []string
+	skipped := 0
 	for i, key := range apkKeys {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err := appendIndexEntry(ctx, storage, key, prefix, &indexText, g.decompressCap()); err != nil {
+		entry, err := readIndexEntry(ctx, storage, key, prefix, g.decompressCap())
+		if err != nil {
 			return fmt.Errorf("apk.gen: %s: %w", key, err)
+		}
+		if entry.arch == "" || entry.dir != entry.arch {
+			skipped++
+			p.Log(fmt.Sprintf("apk.gen: пропущен %s: каталог %q ≠ architecture %q (.PKGINFO)", key, entry.dir, entry.arch))
+		} else {
+			buf, ok := groups[entry.arch]
+			if !ok {
+				buf = &bytes.Buffer{}
+				groups[entry.arch] = buf
+				archs = append(archs, entry.arch)
+			}
+			buf.Write(entry.text)
 		}
 		p.Update("pkginfo", repo.Name, int64(i+1), int64(len(apkKeys)))
 	}
+	// Детерминизм: обход map в Go рандомный, порядок записи индексов — по
+	// алфавиту архитектур.
+	sort.Strings(archs)
+	if skipped > 0 {
+		p.Log(fmt.Sprintf("apk.gen: пропущено пакетов вне каталога своей архитектуры: %d", skipped))
+	}
 
-	// Фаза 3: APKINDEX.tar.gz (gzip+tar с файлом «APKINDEX») + запись
-	// (+ опц. .sig). Ключи — lowercase.
-	p.Update("write", repo.Name, 0, 2)
-	indexGz, err := buildAPKINDEXTarGz(indexText.Bytes())
-	if err != nil {
-		return fmt.Errorf("apk.gen: сборка APKINDEX.tar.gz: %w", err)
-	}
-	indexKey := prefix + "/apkindex.tar.gz"
-	if err := writeAtomic(ctx, storage, indexKey, indexGz); err != nil {
-		return fmt.Errorf("apk.gen: APKINDEX.tar.gz: %w", err)
-	}
-	p.Update("write", repo.Name, 1, 2)
-
-	if g.signer != nil {
-		p.Update("sign", repo.Name, 0, 1)
-		sigR, err := g.signer.SignDetached(ctx, bytes.NewReader(indexGz))
+	// Фаза 3: APKINDEX.tar.gz на архитектуру (+ опц. .sig). Ключи — lowercase.
+	p.Update("write", repo.Name, 0, int64(len(archs)))
+	noarch := groups[archNoarch]
+	for i, arch := range archs {
+		var text bytes.Buffer
+		text.Write(groups[arch].Bytes())
+		if arch != archNoarch && noarch != nil {
+			// noarch-запись — в каждый arch-индекс: клиент читает только
+			// индекс своей архитектуры, а файл тянет из <repo>/noarch/.
+			text.Write(noarch.Bytes())
+		}
+		indexGz, err := buildAPKINDEXTarGz(text.Bytes())
 		if err != nil {
-			return fmt.Errorf("apk.gen: APKINDEX.tar.gz.sig: %w", err)
+			return fmt.Errorf("apk.gen: сборка APKINDEX.tar.gz (%s): %w", arch, err)
 		}
-		sig, err := io.ReadAll(sigR)
-		if err != nil {
-			return fmt.Errorf("apk.gen: APKINDEX.tar.gz.sig: чтение: %w", err)
+		indexKey := prefix + "/" + arch + "/apkindex.tar.gz"
+		if err := writeAtomic(ctx, storage, indexKey, indexGz); err != nil {
+			return fmt.Errorf("apk.gen: APKINDEX.tar.gz (%s): %w", arch, err)
 		}
-		if err := writeAtomic(ctx, storage, indexKey+".sig", sig); err != nil {
-			return fmt.Errorf("apk.gen: APKINDEX.tar.gz.sig: %w", err)
+		if g.signer != nil {
+			p.Update("sign", repo.Name, int64(i), int64(len(archs)))
+			sigR, err := g.signer.SignDetached(ctx, bytes.NewReader(indexGz))
+			if err != nil {
+				return fmt.Errorf("apk.gen: APKINDEX.tar.gz.sig (%s): %w", arch, err)
+			}
+			sig, err := io.ReadAll(sigR)
+			if err != nil {
+				return fmt.Errorf("apk.gen: APKINDEX.tar.gz.sig (%s): чтение: %w", arch, err)
+			}
+			if err := writeAtomic(ctx, storage, indexKey+".sig", sig); err != nil {
+				return fmt.Errorf("apk.gen: APKINDEX.tar.gz.sig (%s): %w", arch, err)
+			}
+			p.Update("sign", repo.Name, int64(i+1), int64(len(archs)))
 		}
-		p.Update("sign", repo.Name, 1, 1)
-		p.Log("apk.gen: APKINDEX подписан")
+		p.Update("write", repo.Name, int64(i+1), int64(len(archs)))
 	}
-	p.Update("write", repo.Name, 2, 2)
-	p.Log("apk.gen: индексы записаны")
+	p.Log(fmt.Sprintf("apk.gen: индексы записаны (%d архитектур)", len(archs)))
 	return nil
 }
 
@@ -217,13 +297,23 @@ func collectApks(ctx context.Context, storage port.Storage, prefix string) ([]st
 	return out, nil
 }
 
-// appendIndexEntry читает .apk одним проходом (.PKGINFO + sha1 всего
-// файла) и дописывает запись в APKINDEX-текст (K:V-формат). F: — путь
-// .apk относительно корня репо (apk кладёт полный относительный путь).
-func appendIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix string, buf *bytes.Buffer, decompressLimit int64) error {
+// indexEntry — одна запись индекса: архитектура пакета (.PKGINFO; она же
+// его каталог и каталог индекса), каталог фактического ключа и готовый
+// K:V-текст записи.
+type indexEntry struct {
+	arch string
+	dir  string
+	text []byte
+}
+
+// readIndexEntry читает .apk одним проходом (.PKGINFO + sha1 всего файла)
+// и рендерит запись APKINDEX (K:V-формат). F: — путь .apk от корня репо
+// (каталог + имя файла): клиент берёт из поля только basename, но поле
+// обязано совпадать с фактическим путём выдачи, иначе индекс лжёт.
+func readIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix string, decompressLimit int64) (indexEntry, error) {
 	obj, err := storage.Get(ctx, apkKey)
 	if err != nil {
-		return err
+		return indexEntry{}, err
 	}
 	defer obj.Body.Close()
 	h := sha1.New()
@@ -231,19 +321,21 @@ func appendIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix 
 	tee := io.TeeReader(cr, h)
 	pi, err := readPkgInfoFromPackage(ctx, tee, decompressLimit)
 	if err != nil {
-		return err
+		return indexEntry{}, err
 	}
 	// Докачиваем остаток .apk через tee, чтобы sha1 был посчитан по
 	// всему файлу: readPkgInfoFromPackage остановился после .PKGINFO.
 	if _, err := io.Copy(io.Discard, tee); err != nil {
-		return fmt.Errorf("apk.apk: дочтение .apk: %w", err)
+		return indexEntry{}, fmt.Errorf("apk.apk: дочтение .apk: %w", err)
 	}
 	checksum := "Q1" + base64.StdEncoding.EncodeToString(h.Sum(nil))
 	filepath := strings.TrimPrefix(apkKey, prefix+"/")
+	dir, _, _ := splitArchDir(filepath)
 	// Размер — фактические байты через tee, не obj.Meta.Size: метаданные
 	// носителя могут солгать, и apk упадёт на сверке размера.
-	writeAPKINDEXEntry(buf, pi, checksum, filepath, cr.n)
-	return nil
+	var buf bytes.Buffer
+	writeAPKINDEXEntry(&buf, pi, checksum, filepath, cr.n)
+	return indexEntry{arch: pi.Arch, dir: dir, text: buf.Bytes()}, nil
 }
 
 // countReader считает прочитанные байты: источник размера индексных

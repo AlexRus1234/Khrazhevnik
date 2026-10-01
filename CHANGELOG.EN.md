@@ -35,6 +35,23 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ### Fixed
 
+- **Personal repos (apk):** `apk update` against a personal repository did
+  not work — the client requests the index strictly at
+  `<repo-url>/<arch>/APKINDEX.tar.gz`, while the generator wrote it to the
+  repository root: 404, `2 unavailable`, `UPDATE_EXIT=2`. The layout now
+  follows the apk-tools URL contract (live probe 2026-10-01, alpine:3.21
+  apk-tools 2.14.6 and alpine:edge 3.0.7): the client takes the package
+  directory from the entry's `A:` field (i.e. from `.PKGINFO` `arch`) and
+  the file name from `basename(F:)`, ignoring the directory inside `F:`
+  itself; the `noarch/` directory index is never requested by the client.
+  A package therefore goes into the directory of its architecture
+  (`<arch>/<file>.apk`, any other path — 400), the index is written per
+  architecture (`<arch>/apkindex.tar.gz` + `.sig`), and `noarch` packages
+  are listed in every arch index (the client fetches the file from
+  `/noarch/`). Packages outside their architecture directory are not
+  indexed; the fact goes to the reindex log. The root index is no longer
+  generated; a previously written one is not deleted. `apk update
+  --allow-untrusted` from a personal repo — `exit 0` on a live client.
 - **Personal repos (xbps):** `xbps-install` from a personal repo failed
   downloading the signature — `ERROR: [trans] failed to download
   '<pkgver>' signature … Not Found`, `INSTALL_EXIT=16`. A client with

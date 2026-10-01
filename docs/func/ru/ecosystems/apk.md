@@ -43,17 +43,33 @@ http://<хражевник>:29202/apk/alpine/v3.21/community
 
 ## Личное репо
 
-Upload `.apk` где угодно под корнем репо; `APKINDEX.tar.gz` —
-генерируется, upload туда запрещён. Reindex создаёт
-`APKINDEX.tar.gz` (gzip+tar с файлом `APKINDEX` в формате «K:V») +
-detached-подпись `APKINDEX.tar.gz.sig` ключом инстанса. Клиент:
+Пакет кладётся в каталог своей архитектуры: `<архитектура>/<файл>.apk`
+(`arch` из `.PKGINFO`); пакет `arch = noarch` — в каталог `noarch/`. Иные
+пути (в том числе корень репо) — `400 validation_error`. Reindex пишет по
+индексу на архитектуру — `<архитектура>/APKINDEX.tar.gz` (gzip+tar с
+файлом `APKINDEX` в формате «K:V»; поле `F:` — фактический путь пакета от
+корня репо) и detached-подпись `<архитектура>/APKINDEX.tar.gz.sig` ключом
+инстанса. `noarch`-записи входят в индекс КАЖДОЙ архитектуры (клиент
+читает индекс только своей и файл тянет из `/noarch/`). Индекс в корне
+репо не генерируется (ранее записанный не удаляется — чистится руками).
+Клиент:
 
 ```sh
 curl -sO http://<хражевник>:29202/repo/<name>/key.asc
 cp key.asc /etc/apk/keys/<name>.pem    # apk принимает ключи в /etc/apk/keys
 echo 'http://<хражевник>:29202/repo/<name>' >> /etc/apk/repositories
-apk update && apk add <пакет>
+apk update --allow-untrusted && apk add --allow-untrusted <пакет>
 ```
+
+Архитектуру в строке `/etc/apk/repositories` указывать не нужно — клиент
+подставляет свою сам и запрашивает `<repo-url>/<арх>/APKINDEX.tar.gz`.
+`--allow-untrusted` нужен, пока подпись индекса не принимается клиентом
+(`UNTRUSTED signature` — отложенный вопрос подписи личных apk-репо).
+Установку пакета из личного репо клиент пока отвергает на сверке
+контрольной суммы (`BAD signature` в apk-tools 2.x /
+`v2 package integrity error` в 3.x: генератор пишет `C:` как sha1 всего
+файла, а apk-tools считает этим полем sha1 control-секции) — известный
+дефект индекса, не раскладки.
 
 Подробности — [personal-repos.md](../personal-repos.md).
 

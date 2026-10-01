@@ -44,18 +44,36 @@ http://<Khrazhevnik>:29202/apk/alpine/v3.21/community
 
 ## Personal repository
 
-Upload `.apk` anywhere under the repository root; `APKINDEX.tar.gz` is
-generated, and uploading it is forbidden. Reindex creates
-`APKINDEX.tar.gz` (gzip+tar with the `APKINDEX` file in `K:V` format)
-plus the detached signature `APKINDEX.tar.gz.sig` with the instance
-key. Client:
+A package goes into the directory of its architecture:
+`<architecture>/<file>.apk` (`arch` from `.PKGINFO`); an `arch = noarch`
+package goes into `noarch/`. Any other path (including the repository root)
+— `400 validation_error`. Reindex writes one index per architecture —
+`<architecture>/APKINDEX.tar.gz` (gzip+tar with the `APKINDEX` file in
+`K:V` format; the `F:` field is the actual package path from the repository
+root) and the detached signature
+`<architecture>/APKINDEX.tar.gz.sig` with the instance key. `noarch`
+entries are included in the index of EVERY architecture (a client reads
+only its own index and fetches the file from `/noarch/`). No index is
+generated at the repository root (a previously written one is not deleted —
+remove it by hand). Client:
 
 ```sh
 curl -sO http://<Khrazhevnik>:29202/repo/<name>/key.asc
 cp key.asc /etc/apk/keys/<name>.pem    # apk accepts keys in /etc/apk/keys
 echo 'http://<Khrazhevnik>:29202/repo/<name>' >> /etc/apk/repositories
-apk update && apk add <package>
+apk update --allow-untrusted && apk add --allow-untrusted <package>
 ```
+
+There is no need to put the architecture into the
+`/etc/apk/repositories` line — the client appends its own and requests
+`<repo-url>/<arch>/APKINDEX.tar.gz`. `--allow-untrusted` is needed while
+the index signature is not accepted by the client (`UNTRUSTED signature` —
+a deferred personal apk repository signing question). Installing a package
+from a personal repository is still rejected by the client on the checksum
+check (`BAD signature` in apk-tools 2.x / `v2 package integrity error` in
+3.x: the generator writes `C:` as the sha1 of the whole file, while
+apk-tools treats that field as the sha1 of the control section) — a known
+index defect, not a layout one.
 
 For details, see [personal-repos.md](../personal-repos.md).
 
