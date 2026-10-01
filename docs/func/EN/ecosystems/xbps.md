@@ -25,6 +25,18 @@ name+version — an immutable cache kept forever; `<arch>-repodata` is
 revalidated with a short TTL. Upstream metadata is served byte-for-byte —
 `.sig2` signatures are valid.
 
+## Package format
+
+`.xbps` is a tar archive compressed as a whole: zstd (the `xbps-create`
+default since 0.59), gzip, or raw tar. Inside are `./props.plist` (the
+package fields), `./files.plist`, and the payload files. An ar container
+(`!<arch>`) does not exist in `.xbps` — ar parsing is not supported; xz is
+an honest error (`ErrUnsupportedCompression`), left to a separate
+micro-session modelled on 103. Only `./props.plist` is read (the name must
+carry the canonical `./` prefix), the payload is never pulled into memory,
+and a personal repository's reindex is built from its fields;
+decompression is capped at 1 GiB and the `props.plist` body at 1 MiB.
+
 ## Remote
 
 ```sh

@@ -14,16 +14,25 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// .xbps-пакет Void Linux — ar-архив, возможно сжатый целиком: zstd
-// (сигнатура 28 B5 2F FD), gzip (1F 8B) или raw ar (магия !<arch>\n).
-// xz НЕ поддержан (ErrUnsupportedCompression) — встретится в живом
-// upstream, разбор xz — отдельная микросессия по образцу 103.
+// .xbps-пакет Void Linux — tar-архив, сжатый целиком: zstd (сигнатура
+// 28 B5 2F FD), gzip (1F 8B) или raw tar. xz НЕ поддержан
+// (ErrUnsupportedCompression) — встретится в живом upstream, разбор xz —
+// отдельная микросессия по образцу 103.
 //
-// Члены ar классические (короткие имена, libarchive-формат xbps-create):
-// ./props.plist, ./files.plist, payload-файлы. GNU-длинные имена (// и
-// /N) в .xbps не бывают — ErrBadAr. Читаем ровно props.plist (индекс
-// личного репо 141 строится из его полей); files.plist и payload —
-// skip стримингом, payload в память не поднимается.
+// Члены tar канонические (префикс «./», libarchive-формат xbps-create):
+// ./props.plist, ./files.plist, payload-файлы. Читаем ровно
+// ./props.plist (индекс личного репо 141 строится из его полей);
+// files.plist и payload скипаются стримингом (tar.Reader.Next сам
+// дочитывает пропущенный член в io.Discard) — payload в память не
+// поднимается. Имя без канонического префикса — не наш член: так
+// отсекается чужой контейнер с членом «props.plist».
+//
+// Живой факт 2026-10-01: Mustache-4.1_1.x86_64.xbps с
+// repo-default.voidlinux.org — zstd(tar) с записями ./props.plist,
+// ./files.plist и payload. Формата «zstd(raw ar)» у Void не существует
+// (by design xbps-create всегда пакует tar) — прежняя ar-ветка 137
+// разбирала несуществующий в природе формат, и reindex любого реального
+// пакета падал ErrPropsMissing.
 //
 // Инварианты защиты от adversarial-ввода: декомпресс ≤ 1 GiB (zip-bomb
 // guard, limitedReader parse.go); props.plist ≤ 1 MiB (ErrBadPlist из
@@ -34,6 +43,7 @@
 package xbps
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"encoding/xml"
@@ -51,12 +61,10 @@ const (
 	// байта, запас кратный; превышение — ErrBadPlist.
 	maxPropsSize = int64(1 << 20) // 1 MiB
 
-	// arMagic / arHeaderSize — классический (System V/BSD) ar.
-	arMagic      = "!<arch>\n"
-	arHeaderSize = 60
-
-	// propsName — имя члена с метаданными пакета.
-	propsName = "props.plist"
+	// propsName — имя члена tar с метаданными пакета. Канонический
+	// префикс «./» пишет сам xbps-create (libarchive); имя без префикса
+	// принадлежит чужому контейнеру и нашим членом не считается.
+	propsName = "./props.plist"
 )
 
 // xzPrefix — первые 4 байта xz-потока (FD 37 7A 58). xz не разбираем:
@@ -65,7 +73,7 @@ const xzPrefix = "\xfd7zX"
 
 // Ошибки контейнера .xbps — типизированные, сравнение через errors.Is.
 var (
-	ErrBadAr                  = errors.New("xbps: некорректный ar-архив пакета")
+	ErrBadPackage             = errors.New("xbps: некорректный контейнер пакета")
 	ErrUnsupportedCompression = errors.New("xbps: неподдерживаемая компрессия пакета")
 	ErrPropsMissing           = errors.New("xbps: в пакете отсутствует props.plist")
 )
@@ -87,12 +95,12 @@ type Props struct {
 	Provides        []string
 }
 
-// OpenPackage детектит компрессию .xbps, обходит ar и отдаёт поля
-// props.plist. Мусор — типизированные ошибки (errors.Is), паник нет.
-// Тело пакета не буферизуется: payload скипается стримингом.
+// OpenPackage детектит компрессию .xbps, обходит tar-записи и отдаёт
+// поля props.plist. Мусор — типизированные ошибки (errors.Is), паник
+// нет. Тело пакета не буферизуется: payload скипается стримингом.
 func OpenPackage(r io.Reader) (Props, error) {
 	if r == nil {
-		return Props{}, fmt.Errorf("%w: nil-источник", ErrBadAr)
+		return Props{}, fmt.Errorf("%w: nil-источник", ErrBadPackage)
 	}
 	head := make([]byte, len(zstdMagic))
 	n, _ := io.ReadFull(r, head)
@@ -108,13 +116,13 @@ func OpenPackage(r io.Reader) (Props, error) {
 	case n == len(zstdMagic) && string(head) == zstdMagic:
 		zr, err := zstd.NewReader(src)
 		if err != nil {
-			return Props{}, fmt.Errorf("%w: zstd: %w", ErrBadAr, err)
+			return Props{}, fmt.Errorf("%w: zstd: %w", ErrBadPackage, err)
 		}
 		dec, closeFn = zr.IOReadCloser(), zr.Close
 	case n >= 2 && head[0] == 0x1f && head[1] == 0x8b:
 		gz, err := gzip.NewReader(src)
 		if err != nil {
-			return Props{}, fmt.Errorf("%w: gzip: %w", ErrBadAr, err)
+			return Props{}, fmt.Errorf("%w: gzip: %w", ErrBadPackage, err)
 		}
 		dec, closeFn = gz, func() { _ = gz.Close() }
 	case n == len(xzPrefix) && string(head) == xzPrefix:
@@ -125,114 +133,43 @@ func OpenPackage(r io.Reader) (Props, error) {
 	defer closeFn()
 
 	limited := &limitedReader{r: dec, limit: maxDecompressed, sentinel: ErrDecompressTooLarge}
-	return parsePkgAr(limited)
+	return parsePkgTar(limited)
 }
 
-// parsePkgAr обходит члены ar, отдавая props.plist парсеру plist, а
-// остальные тела скипая. Отсутствие props.plist — ErrPropsMissing.
-func parsePkgAr(r io.Reader) (Props, error) {
-	var magic [len(arMagic)]byte
-	if _, err := io.ReadFull(r, magic[:]); err != nil {
-		return Props{}, arReadErr(err)
-	}
-	if string(magic[:]) != arMagic {
-		return Props{}, fmt.Errorf("%w: сигнатура %q", ErrBadAr, magic[:])
-	}
+// parsePkgTar обходит tar-записи, отдавая тело ./props.plist парсеру
+// plist, а остальные члены скипая. Отсутствие props.plist — ErrPropsMissing.
+func parsePkgTar(r io.Reader) (Props, error) {
+	tr := tar.NewReader(r)
 	for {
-		hdr, ok, err := readArMemberHeader(r)
+		hdr, err := tr.Next()
 		if err != nil {
-			return Props{}, err
-		}
-		if !ok {
-			return Props{}, ErrPropsMissing
-		}
-		if hdr.name == propsName {
-			if hdr.size > maxPropsSize {
-				return Props{}, fmt.Errorf("%w: props.plist %d байт превышает %d", ErrBadPlist, hdr.size, maxPropsSize)
+			if errors.Is(err, io.EOF) {
+				return Props{}, ErrPropsMissing
 			}
-			return parsePropsDict(io.LimitReader(r, hdr.size), maxPropsSize)
+			// Next дочитывает пропущенный член: усечённое тело даёт
+			// ErrUnexpectedEOF → ErrBadPackage, а не тихий успех.
+			return Props{}, pkgReadErr(err)
 		}
-		// CopyN, а не Copy(LimitReader): усечённый член обязан дать
-		// ErrUnexpectedEOF → ErrBadAr, а не тихий успех.
-		if _, err := io.CopyN(io.Discard, r, hdr.size); err != nil {
-			return Props{}, arReadErr(err)
+		// Только регулярный файл с каноническим именем члена: payload
+		// и files.plist дочитываются tar.Reader'ом в io.Discard.
+		if hdr.Typeflag != tar.TypeReg || hdr.Name != propsName {
+			continue
 		}
-		if hdr.size%2 != 0 {
-			if _, err := io.CopyN(io.Discard, r, 1); err != nil {
-				return Props{}, arReadErr(err)
-			}
+		if hdr.Size > maxPropsSize {
+			return Props{}, fmt.Errorf("%w: props.plist %d байт превышает %d", ErrBadPlist, hdr.Size, maxPropsSize)
 		}
+		return parsePropsDict(io.LimitReader(tr, hdr.Size), maxPropsSize)
 	}
 }
 
-// arMember — разобранный заголовок члена ar.
-type arMember struct {
-	name string
-	size int64
-}
-
-// readArMemberHeader читает 60-байтный заголовок члена. ok=false —
-// чистый конец архива (больше членов нет), это не ошибка.
-func readArMemberHeader(r io.Reader) (arMember, bool, error) {
-	var raw [arHeaderSize]byte
-	n, err := io.ReadFull(r, raw[:])
-	if errors.Is(err, io.EOF) && n == 0 {
-		return arMember{}, false, nil
-	}
-	if err != nil {
-		return arMember{}, false, arReadErr(err)
-	}
-	if raw[58] != '`' || raw[59] != '\n' {
-		return arMember{}, false, fmt.Errorf("%w: маркер конца заголовка члена", ErrBadAr)
-	}
-	name := normalizeArMemberName(string(raw[0:16]))
-	if name == "" {
-		return arMember{}, false, fmt.Errorf("%w: пустое имя члена", ErrBadAr)
-	}
-	if isGNULongName(name) {
-		return arMember{}, false, fmt.Errorf("%w: GNU-длинное имя %q", ErrBadAr, name)
-	}
-	sizeStr := strings.TrimSpace(string(raw[48:58]))
-	size, perr := strconv.ParseInt(sizeStr, 10, 64)
-	if perr != nil || size < 0 {
-		return arMember{}, false, fmt.Errorf("%w: размер члена %q", ErrBadAr, sizeStr)
-	}
-	return arMember{name: name, size: size}, true, nil
-}
-
-// normalizeArMemberName приводит имя члена к канону: хвостовые пробелы
-// поля из 16 байт и ведущее «./» (libarchive) снимаются. Так
-// «./props.plist» и «props.plist» — одно имя.
-func normalizeArMemberName(raw string) string {
-	name := strings.TrimRight(raw, " ")
-	return strings.TrimPrefix(name, "./")
-}
-
-// isGNULongName распознаёт GNU-таблицу длинных имён «//» и ссылки «/N».
-// В .xbps имена короткие, такие члены — признак чужого формата.
-func isGNULongName(name string) bool {
-	if name == "//" {
-		return true
-	}
-	if len(name) < 2 || name[0] != '/' {
-		return false
-	}
-	for i := 1; i < len(name); i++ {
-		if name[i] < '0' || name[i] > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// arReadErr оборачивает низкоуровневую ошибку чтения в ErrBadAr,
+// pkgReadErr оборачивает низкоуровневую ошибку чтения в ErrBadPackage,
 // сохраняя доменный ErrDecompressTooLarge как есть (единый на ветку,
 // образец tarReadErr parse.go).
-func arReadErr(err error) error {
+func pkgReadErr(err error) error {
 	if errors.Is(err, ErrDecompressTooLarge) {
 		return ErrDecompressTooLarge
 	}
-	return fmt.Errorf("%w: %w", ErrBadAr, err)
+	return fmt.Errorf("%w: %w", ErrBadPackage, err)
 }
 
 // parsePropsDict разбирает props.plist — плоский proplib-словарь

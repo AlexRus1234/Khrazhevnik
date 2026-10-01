@@ -61,6 +61,20 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `xbps_cmpver`/dewey); older versions stay in storage and are protected
   by retention/pins. The invariant is documented in
   `docs/func/EN/ecosystems/xbps.md`.
+- **Personal repos (xbps):** reindex COULD NOT succeed on any real Void
+  package — `.xbps` was parsed as an `ar` archive that is not there:
+  `xbps-create` packs a tar (zstd by default since 0.59, gzip, or raw)
+  holding `./props.plist`, `./files.plist`, and the payload, so
+  `OpenPackage` on a live `Mustache-4.1_1.x86_64.xbps` answered "invalid
+  ar archive: signature `./props.`" (`ErrPropsMissing`) and a live client
+  could not populate a personal xbps repo at all. Parsing moved to
+  `archive/tar`: only the `./props.plist` entry is read (the canonical
+  `xbps-create` prefix), the payload is skipped streamingly, and the
+  1 GiB decompression / 1 MiB `props.plist` caps are kept; `ErrBadAr` is
+  renamed to `ErrBadPackage` ("invalid package container" semantics).
+  Tests, fuzzing, and fixtures moved to a real `.xbps` (upstream bytes in
+  `testdata/` pinned by sha256). Hard limits are unchanged: xz is still
+  `ErrUnsupportedCompression`.
 
 ## [1.3.1] — 2026-09-30
 

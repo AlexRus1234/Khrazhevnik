@@ -98,7 +98,7 @@ func (s *testRsaSigner) PublicKeyPEM() ([]byte, error) {
 // возвращает байты файла (для сверки sha256/размера).
 func putXbps(t *testing.T, storage *testutil.FakeStorage, repo domain.Repo, name, propsXML string) []byte {
 	t.Helper()
-	raw := buildArPkg(t, arMemberSpec{"./props.plist", []byte(propsXML)})
+	raw := buildTarPkg(t, tarMember{"./props.plist", []byte(propsXML)})
 	body := compressPackage(t, "zstd", raw)
 	key := port.RepoPrefix(repo) + "/" + name
 	w, err := storage.Put(context.Background(), key)
@@ -524,7 +524,7 @@ func TestGenerateIndexesFilenameMismatch(t *testing.T) {
 	}
 }
 
-// TestGenerateIndexesBadPackage — битый .xbps (не ar) валит задачу.
+// TestGenerateIndexesBadPackage — битый .xbps (не tar) валит задачу.
 func TestGenerateIndexesBadPackage(t *testing.T) {
 	storage, repo := newRepo(t)
 	key := "repo/1/xbps/foo-1.0_1.x86_64.xbps"
@@ -539,8 +539,8 @@ func TestGenerateIndexesBadPackage(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 	err = (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil)
-	if !errors.Is(err, ErrBadAr) {
-		t.Fatalf("ошибка %v, хочу ErrBadAr", err)
+	if !errors.Is(err, ErrBadPackage) {
+		t.Fatalf("ошибка %v, хочу ErrBadPackage", err)
 	}
 }
 

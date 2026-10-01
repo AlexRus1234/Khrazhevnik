@@ -67,6 +67,21 @@ major.
   (`internal/mod/ecosystem/xbps/vercmp.go`, порт клиентского
   `xbps_cmpver`/dewey); старые версии остаются в storage и защищаются
   retention/пинами. Инвариант — в `docs/func/ru/ecosystems/xbps.md`.
+- **Личные репо (xbps):** reindex НЕ МОГ пройти ни на одном реальном
+  пакете Void — `.xbps` разбирался как `ar`-архив, которого там нет:
+  `xbps-create` пакует tar (zstd по умолчанию с 0.59, gzip или raw) с
+  записями `./props.plist`, `./files.plist` и payload, поэтому
+  `OpenPackage` на живом `Mustache-4.1_1.x86_64.xbps` отвечал
+  «некорректный ar-архив: сигнатура `./props.`» (`ErrPropsMissing`), и
+  живой клиент физически не мог наполнить личное xbps-репо. Разбор
+  переведён на `archive/tar`: читается ровно запись `./props.plist`
+  (канонический префикс `xbps-create`), payload скипается стримингом, а
+  капы 1 GiB на декомпресс и 1 MiB на `props.plist` сохранены;
+  `ErrBadAr` переименован в `ErrBadPackage` (семантика «некорректный
+  контейнер»). Тесты, фаззинг и фикстуры переведены на настоящий `.xbps`
+  (байты upstream в `testdata/` закреплены sha256). Непреодолимые
+  ограничения не менялись: xz — по-прежнему
+  `ErrUnsupportedCompression`.
 
 ## [1.3.1] — 2026-09-30
 

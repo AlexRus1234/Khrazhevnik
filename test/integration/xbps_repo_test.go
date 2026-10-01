@@ -30,6 +30,7 @@
 package integration
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto"
@@ -220,26 +221,31 @@ func xbpsPropsXML(name, pkgver, arch string) string {
 		"</dict>\n</plist>\n"
 }
 
-// buildXbpsIntegration собирает .xbps: классический ar (`!<arch>\n` +
-// 60-байтный заголовок члена) с одним props.plist, сжатый целиком в
-// zstd — ветка OpenPackage, которую использует генератор. Дубль
+// buildXbpsIntegration собирает .xbps: tar-запись ./props.plist (формат
+// xbps-create — канонический префикс «./»), сжатый целиком в zstd —
+// ветка OpenPackage, которую использует генератор. Дубль
 // pkgparse-хелпера легален: тесты интеграции самодостаточны.
 func buildXbpsIntegration(t *testing.T, propsXML string) []byte {
 	t.Helper()
 	body := []byte(propsXML)
-	var ar bytes.Buffer
-	ar.WriteString("!<arch>\n")
-	fmt.Fprintf(&ar, "%-16s%-12d%-6d%-6d%-8o%-10d`\n", "props.plist", 0, 0, 0, 0o100644, len(body))
-	ar.Write(body)
-	if len(body)%2 != 0 {
-		ar.WriteByte('\n')
+	var raw bytes.Buffer
+	tw := tar.NewWriter(&raw)
+	hdr := tar.Header{Name: "./props.plist", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}
+	if err := tw.WriteHeader(&hdr); err != nil {
+		t.Fatalf("tar WriteHeader: %v", err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatalf("tar write: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
 	}
 	var out bytes.Buffer
 	zw, err := zstd.NewWriter(&out, zstd.WithEncoderLevel(zstd.SpeedFastest))
 	if err != nil {
 		t.Fatalf("zstd.NewWriter: %v", err)
 	}
-	if _, err := zw.Write(ar.Bytes()); err != nil {
+	if _, err := zw.Write(raw.Bytes()); err != nil {
 		t.Fatalf("zstd write: %v", err)
 	}
 	if err := zw.Close(); err != nil {

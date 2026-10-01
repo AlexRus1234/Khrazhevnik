@@ -17,12 +17,16 @@
 package xbps
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -82,36 +86,65 @@ var mustacheProps = Props{
 	Provides:        []string{"Mustache-4.1_1"},
 }
 
-// arMemberSpec — член ar для сборки тестового пакета.
-type arMemberSpec struct {
+// tarMember — член tar для сборки тестового пакета: имя пишется как у
+// xbps-create (канонический префикс «./»).
+type tarMember struct {
 	name string
 	body []byte
 }
 
-// buildArPkg собирает raw ar (классические 60-байтные заголовки,
-// нечётное тело выравнивается `\n`).
-func buildArPkg(t *testing.T, members ...arMemberSpec) []byte {
+// writeTarPkg собирает tar-пакет (формат .xbps) в w.
+func writeTarPkg(w io.Writer, members []tarMember) error {
+	tw := tar.NewWriter(w)
+	for _, m := range members {
+		hdr := tar.Header{Name: m.name, Mode: 0o644, Size: int64(len(m.body)), Typeflag: tar.TypeReg}
+		if err := tw.WriteHeader(&hdr); err != nil {
+			return err
+		}
+		if _, err := tw.Write(m.body); err != nil {
+			return err
+		}
+	}
+	return tw.Close()
+}
+
+// buildTarPkg — writeTarPkg для тестов.
+func buildTarPkg(t *testing.T, members ...tarMember) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	buf.WriteString(arMagic)
-	for _, m := range members {
-		if len(m.name) > 16 {
-			t.Fatalf("имя члена %q длиннее 16 байт", m.name)
-		}
-		hdr := bytes.Repeat([]byte{' '}, arHeaderSize)
-		copy(hdr[0:16], m.name)
-		copy(hdr[48:58], fmt.Sprintf("%-10d", len(m.body)))
-		hdr[58], hdr[59] = '`', '\n'
-		buf.Write(hdr)
-		buf.Write(m.body)
-		if len(m.body)%2 != 0 {
-			buf.WriteByte('\n')
-		}
+	if err := writeTarPkg(&buf, members); err != nil {
+		t.Fatalf("writeTarPkg: %v", err)
 	}
 	return buf.Bytes()
 }
 
-// compressPackage оборачивает raw ar в выбранную компрессию.
+// tarHeaderRaw — 512-байтный ustar-заголовок члена с декларированным
+// размером и корректной контрольной суммой, БЕЗ тела. Нужен там, где
+// тело материализовать нельзя (кап 1 MiB, бомба > 1 GiB): контракт —
+// реакция на размер из заголовка, а не на содержимое.
+func tarHeaderRaw(name string, size int64) []byte {
+	hdr := make([]byte, 512)
+	copy(hdr[0:100], name)
+	copy(hdr[100:108], "0000644\x00")
+	copy(hdr[108:116], "0000000\x00")
+	copy(hdr[116:124], "0000000\x00")
+	copy(hdr[124:136], fmt.Sprintf("%011s", strconv.FormatInt(size, 8)))
+	copy(hdr[136:148], "00000000000\x00")
+	for i := 148; i < 156; i++ {
+		hdr[i] = ' ' // контрольная сумма считается по пробелам в поле
+	}
+	hdr[156] = '0' // typeflag: регулярный файл
+	copy(hdr[257:263], "ustar\x00")
+	copy(hdr[263:265], "00")
+	var sum int64
+	for _, b := range hdr {
+		sum += int64(b)
+	}
+	copy(hdr[148:156], fmt.Sprintf("%06s\x00 ", strconv.FormatInt(sum, 8)))
+	return hdr
+}
+
+// compressPackage оборачивает raw tar в выбранную компрессию.
 func compressPackage(t *testing.T, kind string, raw []byte) []byte {
 	t.Helper()
 	switch kind {
@@ -147,10 +180,10 @@ func compressPackage(t *testing.T, kind string, raw []byte) []byte {
 }
 
 func TestOpenPackageMustache(t *testing.T) {
-	raw := buildArPkg(t,
-		arMemberSpec{"./props.plist", []byte(mustachePropsXML)},
-		arMemberSpec{"./files.plist", []byte("<plist><dict></dict></plist>")},
-		arMemberSpec{"payload/bin", []byte("MZ")},
+	raw := buildTarPkg(t,
+		tarMember{"./props.plist", []byte(mustachePropsXML)},
+		tarMember{"./files.plist", []byte("<plist><dict></dict></plist>")},
+		tarMember{"payload/bin", []byte("MZ")},
 	)
 	for _, kind := range []string{"raw", "zstd", "gzip"} {
 		t.Run(kind, func(t *testing.T) {
@@ -165,21 +198,26 @@ func TestOpenPackageMustache(t *testing.T) {
 	}
 }
 
-// TestOpenPackagePropsNameForms: «props.plist» и «./props.plist» —
-// одно имя (libarchive пишет с префиксом, GNU-стиль — без).
-func TestOpenPackagePropsNameForms(t *testing.T) {
-	for _, name := range []string{"props.plist", "./props.plist"} {
-		t.Run(name, func(t *testing.T) {
-			raw := buildArPkg(t, arMemberSpec{name, []byte(mustachePropsXML)})
-			got, err := OpenPackage(bytes.NewReader(raw))
-			if err != nil {
-				t.Fatalf("OpenPackage: %v", err)
-			}
-			if !reflect.DeepEqual(got, mustacheProps) {
-				t.Errorf("props = %+v,\nхочу %+v", got, mustacheProps)
-			}
-		})
-	}
+// TestOpenPackagePropsNamePrefix: наш член — ровно «./props.plist»
+// (канонический префикс xbps-create). Имя без префикса — чужой член:
+// пропускается, пакета с метаданными в архиве нет.
+func TestOpenPackagePropsNamePrefix(t *testing.T) {
+	t.Run("./props.plist", func(t *testing.T) {
+		raw := buildTarPkg(t, tarMember{"./props.plist", []byte(mustachePropsXML)})
+		got, err := OpenPackage(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("OpenPackage: %v", err)
+		}
+		if !reflect.DeepEqual(got, mustacheProps) {
+			t.Errorf("props = %+v,\nхочу %+v", got, mustacheProps)
+		}
+	})
+	t.Run("props.plist", func(t *testing.T) {
+		raw := buildTarPkg(t, tarMember{"props.plist", []byte(mustachePropsXML)})
+		if _, err := OpenPackage(bytes.NewReader(raw)); !errors.Is(err, ErrPropsMissing) {
+			t.Fatalf("ошибка %v, хочу ErrPropsMissing", err)
+		}
+	})
 }
 
 // countingReader считает прочитанные байты: проверка skip'а payload.
@@ -198,9 +236,9 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // скипается стримингом, файл дочитывается, счётчик ≤ капа.
 func TestOpenPackageSkipsPayloadBeforeProps(t *testing.T) {
 	payload := bytes.Repeat([]byte{0xAB}, 3<<20)
-	raw := buildArPkg(t,
-		arMemberSpec{"./files.plist", payload},
-		arMemberSpec{"./props.plist", []byte(mustachePropsXML)},
+	raw := buildTarPkg(t,
+		tarMember{"./files.plist", payload},
+		tarMember{"./props.plist", []byte(mustachePropsXML)},
 	)
 	cr := &countingReader{r: bytes.NewReader(raw)}
 	got, err := OpenPackage(cr)
@@ -210,9 +248,9 @@ func TestOpenPackageSkipsPayloadBeforeProps(t *testing.T) {
 	if !reflect.DeepEqual(got, mustacheProps) {
 		t.Errorf("props = %+v,\nхочу %+v", got, mustacheProps)
 	}
-	// 8 (магия) + 60 (заголовок) + тело payload — минимум, который
-	// обязан быть прочитан, чтобы дойти до props.plist.
-	minRead := int64(len(arMagic) + arHeaderSize + len(payload))
+	// 512 (блок заголовка tar) + тело пропущенного payload — минимум,
+	// который обязан быть прочитан, чтобы дойти до props.plist.
+	minRead := int64(512 + len(payload))
 	if cr.n < minRead {
 		t.Errorf("прочитано %d байт, payload не дочитан (нужно ≥ %d)", cr.n, minRead)
 	}
@@ -225,9 +263,9 @@ func TestOpenPackageSkipsPayloadBeforeProps(t *testing.T) {
 // парсер отдаёт метаданные сразу.
 func TestOpenPackageStopsAtProps(t *testing.T) {
 	payload := bytes.Repeat([]byte{0xCD}, 4<<20)
-	raw := buildArPkg(t,
-		arMemberSpec{"./props.plist", []byte(mustachePropsXML)},
-		arMemberSpec{"payload", payload},
+	raw := buildTarPkg(t,
+		tarMember{"./props.plist", []byte(mustachePropsXML)},
+		tarMember{"./payload", payload},
 	)
 	cr := &countingReader{r: bytes.NewReader(raw)}
 	if _, err := OpenPackage(cr); err != nil {
@@ -245,48 +283,55 @@ func TestOpenPackageUnsupportedCompression(t *testing.T) {
 	}
 }
 
-func TestOpenPackageBadAr(t *testing.T) {
-	badSize := buildArPkg(t, arMemberSpec{"./props.plist", []byte(mustachePropsXML)})
-	copy(badSize[len(arMagic)+48:len(arMagic)+58], []byte("12x       ")) //nolint:gocritic // фиксированная длина поля
-
-	negativeSize := buildArPkg(t, arMemberSpec{"./props.plist", []byte(mustachePropsXML)})
-	copy(negativeSize[len(arMagic)+48:len(arMagic)+58], []byte("-5        ")) //nolint:gocritic // фиксированная длина поля
+func TestOpenPackageBadPackage(t *testing.T) {
+	// Мусор в теле пропущенного члена: tar.Next дочитывает его и
+	// падает ErrUnexpectedEOF — не тихий успех.
+	truncatedMember := buildTarPkg(t,
+		tarMember{"./files.plist", bytes.Repeat([]byte{'y'}, 4096)},
+		tarMember{"./props.plist", []byte(mustachePropsXML)},
+	)[:1024]
 
 	cases := map[string][]byte{
-		"не ar вовсе":     []byte("this is definitely not an archive"),
-		"обрыв заголовка": append([]byte(arMagic), []byte("short")...),
-		"битый размер":    badSize,
-		"отрицательный":   negativeSize,
+		"не tar вовсе":           []byte("this is definitely not an archive"),
+		"обрыв заголовка":        buildTarPkg(t, tarMember{"./payload", []byte("x")})[:300],
+		"усечённое тело члена":   truncatedMember,
+		"мусор после zstd-магии": append([]byte(zstdMagic), []byte("garbage after magic")...),
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := OpenPackage(bytes.NewReader(raw)); !errors.Is(err, ErrBadAr) {
-				t.Fatalf("ошибка %v, хочу ErrBadAr", err)
+			if _, err := OpenPackage(bytes.NewReader(raw)); !errors.Is(err, ErrBadPackage) {
+				t.Fatalf("ошибка %v, хочу ErrBadPackage", err)
 			}
 		})
 	}
 }
 
 func TestOpenPackageNoProps(t *testing.T) {
-	raw := buildArPkg(t,
-		arMemberSpec{"./files.plist", []byte("<plist><dict></dict></plist>")},
-	)
-	if _, err := OpenPackage(bytes.NewReader(raw)); !errors.Is(err, ErrPropsMissing) {
-		t.Fatalf("ошибка %v, хочу ErrPropsMissing", err)
+	cases := map[string][]byte{
+		"только files.plist": buildTarPkg(t, tarMember{"./files.plist", []byte("<plist><dict></dict></plist>")}),
+		"пустой поток":       {},
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := OpenPackage(bytes.NewReader(raw)); !errors.Is(err, ErrPropsMissing) {
+				t.Fatalf("ошибка %v, хочу ErrPropsMissing", err)
+			}
+		})
 	}
 }
 
 func TestOpenPackagePropsTooLarge(t *testing.T) {
-	body := bytes.Repeat([]byte{'x'}, int(maxPropsSize)+1)
-	raw := buildArPkg(t, arMemberSpec{"./props.plist", body})
+	// Размер взят из заголовка (тело не материализуем): контракт — кап
+	// на декларированный размер props.plist.
+	raw := tarHeaderRaw("./props.plist", maxPropsSize+1)
 	if _, err := OpenPackage(bytes.NewReader(raw)); !errors.Is(err, ErrBadPlist) {
 		t.Fatalf("ошибка %v, хочу ErrBadPlist", err)
 	}
 }
 
 func TestOpenPackageNil(t *testing.T) {
-	if _, err := OpenPackage(nil); !errors.Is(err, ErrBadAr) {
-		t.Fatalf("nil-источник: ошибка %v, хочу ErrBadAr", err)
+	if _, err := OpenPackage(nil); !errors.Is(err, ErrBadPackage) {
+		t.Fatalf("nil-источник: ошибка %v, хочу ErrBadPackage", err)
 	}
 }
 
@@ -321,20 +366,78 @@ func zstdCompressReader(t *testing.T, r io.Reader) []byte {
 // TestOpenPackageDecompressBomb: распакованное тело больше 1 GiB —
 // кап срабатывает на skip'е гигантского члена, чтение стримингом.
 func TestOpenPackageDecompressBomb(t *testing.T) {
-	var hdr [arHeaderSize]byte
-	for i := range hdr {
-		hdr[i] = ' '
-	}
-	copy(hdr[0:16], "./payload")
-	copy(hdr[48:58], fmt.Sprintf("%-10d", maxDecompressed+(1<<20)))
-	hdr[58], hdr[59] = '`', '\n'
-	preamble := append([]byte(arMagic), hdr[:]...)
-
+	// Тело члена — 1 GiB+1 MiB нулей: размер объявлен заголовком, тело
+	// стримится zeroReader'ом (в памяти не материализуется).
 	total := maxDecompressed + (1 << 20)
+	preamble := tarHeaderRaw("./payload", total)
 	zeros := io.LimitReader(zeroReader{}, total-int64(len(preamble)))
 	raw := zstdCompressReader(t, io.MultiReader(bytes.NewReader(preamble), zeros))
 
 	if _, err := OpenPackage(bytes.NewReader(raw)); !errors.Is(err, ErrDecompressTooLarge) {
 		t.Fatalf("ошибка %v, хочу ErrDecompressTooLarge", err)
+	}
+}
+
+// TestOpenPackageMinimalGzip: минимальный пакет (testdata, gzip+tar,
+// единственный член ./props.plist без payload) — gzip-ветка на живом
+// tar-контейнере, а не на синтетике в памяти.
+func TestOpenPackageMinimalGzip(t *testing.T) {
+	data, err := os.ReadFile("testdata/minimal-pkg.tar.gz")
+	if err != nil {
+		t.Fatalf("testdata: %v", err)
+	}
+	want := Props{
+		PkgName:       "mini",
+		PkgVer:        "mini-1.0_1",
+		Version:       "1.0_1",
+		Architecture:  "x86_64",
+		ShortDesc:     "Minimal test package",
+		InstalledSize: 7,
+	}
+	got, err := OpenPackage(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("OpenPackage(минимальный пакет): %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("props = %+v,\nхочу %+v", got, want)
+	}
+}
+
+// mustacheRealDigest — sha256 живого пакета Void (байты с
+// repo-default.voidlinux.org/current): фикстура закреплена, чтобы
+// подмена testdata не прошла молча.
+const mustacheRealDigest = "feb1fdb3345eea4acc508f02dcf9d649673e97cee62c085e938f684226370879"
+
+// mustacheRealProps — поля props.plist реального
+// Mustache-4.1_1.x86_64.xbps: массивов run_depends/provides у пакета нет
+// (nil), maintainer с энтити `&lt;` — xml-декодер раскодирует сам.
+var mustacheRealProps = Props{
+	PkgName:         "Mustache",
+	PkgVer:          "Mustache-4.1_1",
+	Version:         "4.1_1",
+	Architecture:    "x86_64",
+	ShortDesc:       "Mustache text templates for modern C++",
+	Homepage:        "https://github.com/kainjow/Mustache",
+	License:         "BSL-1.0",
+	Maintainer:      "John <johnz@posteo.net>",
+	InstalledSize:   41173,
+	SourceRevisions: "Mustache:d29642fc07",
+}
+
+// TestOpenPackageRealMustache — контракт на живом пакете Void.
+func TestOpenPackageRealMustache(t *testing.T) {
+	data, err := os.ReadFile("testdata/Mustache-4.1_1.x86_64.xbps")
+	if err != nil {
+		t.Fatalf("testdata: %v", err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(data)); got != mustacheRealDigest {
+		t.Fatalf("sha256 фикстуры %s, хочу %s", got, mustacheRealDigest)
+	}
+	got, err := OpenPackage(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("OpenPackage(живой Mustache): %v", err)
+	}
+	if !reflect.DeepEqual(got, mustacheRealProps) {
+		t.Errorf("props = %+v,\nхочу %+v", got, mustacheRealProps)
 	}
 }
