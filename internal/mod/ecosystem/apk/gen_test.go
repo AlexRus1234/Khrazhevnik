@@ -22,11 +22,16 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1053,5 +1058,278 @@ func TestGenerateIndexesSkipsApkOutsideItsArchDir(t *testing.T) {
 	}
 	if !slices.ContainsFunc(rec.logs, func(s string) bool { return strings.Contains(s, "пропущен") }) {
 		t.Errorf("нет лога о пропуске: %v", rec.logs)
+	}
+}
+
+// gzBytes — gzip-обёртка блоба (каждый член .apk — самостоятельный gzip-поток).
+func gzBytes(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	gz := gzip.NewWriter(&out)
+	if _, err := gz.Write(raw); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return out.Bytes()
+}
+
+// apkTarEntry — сегмент непрерывного tar-потока .apk: заголовок + содержимое
+// с выравниванием до 512 байт (без завершающих нулевых блоков — их несёт
+// только последняя секция).
+func apkTarEntry(t *testing.T, name, content string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(content)),
+	}); err != nil {
+		t.Fatalf("tar header %s: %v", name, err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Fatalf("tar write %s: %v", name, err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close %s: %v", name, err)
+	}
+	raw := buf.Bytes()
+	// tar.Writer закрывает архив двумя нулевыми блоками (1024); сегменту
+	// непрерывного потока они не нужны — остаток уже выровнен до 512.
+	return raw[:len(raw)-1024]
+}
+
+// apkGzMember собирает gzip-член .apk с завершённым tar-архивом из одного
+// файла (неподписанный пакет, член без .PKGINFO).
+func apkGzMember(t *testing.T, name, content string) []byte {
+	t.Helper()
+	var tarBuf bytes.Buffer
+	tw := tar.NewWriter(&tarBuf)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(content)),
+	}); err != nil {
+		t.Fatalf("tar header %s: %v", name, err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Fatalf("tar write %s: %v", name, err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	return gzBytes(t, tarBuf.Bytes())
+}
+
+// signedApk собирает подписанный .apk по живому образцу (факт пробы:
+// tree-2.2.1-r0 — три gzip-члена 665/572/29079 байт): ОДИН непрерывный
+// tar-поток (сигнатура, control, данные), разрезанный на gzip-члены по
+// границам секций, tar внутри членов не терминирован. Возвращает байты .apk
+// и СЖАТЫЕ байты control-члена — эталон C: тест считает по ним, независимо
+// от обхода генератора.
+func signedApk(t *testing.T, pkginfo string) (apk, controlMember []byte) {
+	t.Helper()
+	sig := gzBytes(t, apkTarEntry(t, "./.SIGN.RSA.alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub", "signature-bytes"))
+	control := gzBytes(t, apkTarEntry(t, "./.PKGINFO", pkginfo))
+	// Хвост tar-архива: запись данных + два нулевых блока.
+	data := append(apkTarEntry(t, "./usr/bin/foo", "payload-bytes"), make([]byte, 1024)...)
+	out := make([]byte, 0, len(sig)+len(control)+len(data))
+	out = append(out, sig...)
+	out = append(out, control...)
+	out = append(out, gzBytes(t, data)...)
+	return out, control
+}
+
+// putApkBytes складывает готовые .apk-байты в FakeStorage.
+func putApkBytes(t *testing.T, storage *testutil.FakeStorage, repo domain.Repo, name string, apk []byte) string {
+	t.Helper()
+	key := port.RepoPrefix(repo) + "/" + name
+	w, err := storage.Put(context.Background(), key)
+	if err != nil {
+		t.Fatalf("storage.Put %s: %v", key, err)
+	}
+	if _, err := w.Write(apk); err != nil {
+		t.Fatalf("w.Write %s: %v", key, err)
+	}
+	if err := w.Commit(context.Background()); err != nil {
+		t.Fatalf("w.Commit %s: %v", key, err)
+	}
+	return key
+}
+
+// indexTextOf разжимает APKINDEX.tar.gz из storage и возвращает текст
+// APKINDEX (K:V-записи).
+func indexTextOf(t *testing.T, storage *testutil.FakeStorage, key string) string {
+	t.Helper()
+	gz, err := gzip.NewReader(bytes.NewReader(readStorage(t, storage, key)))
+	if err != nil {
+		t.Fatalf("gzip.NewReader %s: %v", key, err)
+	}
+	defer func() { _ = gz.Close() }()
+	text, err := extractAPKINDEXText(gz)
+	if err != nil {
+		t.Fatalf("extractAPKINDEXText %s: %v", key, err)
+	}
+	return text
+}
+
+// recordField вынимает поле записи APKINDEX пакета pkg (field с двоеточием,
+// например «C:»).
+func recordField(t *testing.T, text, pkg, field string) string {
+	t.Helper()
+	for _, block := range strings.Split(text, "\n\n") {
+		if !strings.Contains("\n"+block+"\n", "\nP:"+pkg+"\n") {
+			continue
+		}
+		for _, line := range strings.Split(block, "\n") {
+			if strings.HasPrefix(line, field) {
+				return line[len(field):]
+			}
+		}
+		t.Fatalf("у записи %q нет поля %q:\n%s", pkg, field, block)
+	}
+	t.Fatalf("запись %q не найдена в APKINDEX:\n%s", pkg, text)
+	return ""
+}
+
+// q1sha1 — эталон чексуммы apk v2 по сжатым байтам секции.
+func q1sha1(b []byte) string {
+	sum := sha1.Sum(b)
+	return "Q1" + base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// TestGenerateIndexesChecksumControlSection — C: записи = Q1+base64(sha1
+// СЖАТЫХ байт control-члена), а не хеш всего .apk (сессия 193). Эталон
+// теста — вручную собранный control-член, посчитанный независимо от
+// генератора. Красный до фикса: прежний C: совпадал с sha1 всего файла и
+// клиент падал на сверке (BAD signature / v2 package integrity error).
+func TestGenerateIndexesChecksumControlSection(t *testing.T) {
+	t.Parallel()
+	pkginfo := "pkgname = apk-example\npkgver = 1.0-r0\narch = x86_64\n"
+	signed, signedControl := signedApk(t, pkginfo)
+	unsigned := apkGzMember(t, "./.PKGINFO", pkginfo)
+
+	cases := []struct {
+		name    string
+		apk     []byte
+		control []byte
+	}{
+		{"подписанный (три члена)", signed, signedControl},
+		{"неподписанный (один член)", unsigned, unsigned},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+			storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+			repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+			putApkBytes(t, storage, repo, "x86_64/apk-example-1.0-r0.apk", tc.apk)
+
+			g := &Generator{}
+			if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+				t.Fatalf("GenerateIndexes: %v", err)
+			}
+			text := indexTextOf(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz")
+
+			want := q1sha1(tc.control)
+			got := recordField(t, text, "apk-example", "C:")
+			if got != want {
+				t.Errorf("C: = %q, хочу %q (sha1 сжатых байт control-члена)", got, want)
+			}
+			if whole := q1sha1(tc.apk); len(tc.control) != len(tc.apk) && got == whole {
+				t.Errorf("C: = %q — это хеш ВСЕГО файла, прежняя неверная семантика", got)
+			}
+			if s := recordField(t, text, "apk-example", "S:"); s != strconv.Itoa(len(tc.apk)) {
+				t.Errorf("S: = %q, хочу %d (размер всего файла)", s, len(tc.apk))
+			}
+		})
+	}
+}
+
+// TestGenerateIndexesRealAlpineChecksum — живой эталон: реальный подписанный
+// пакет Alpine (tree-2.2.1-r0, dl-cdn v3.21) лежит в testdata; C: записи
+// обязан дословно совпасть с C: апстримного APKINDEX v3.21 (значение
+// вшито фактом пробы сессии 193), S: — с размером файла.
+func TestGenerateIndexesRealAlpineChecksum(t *testing.T) {
+	t.Parallel()
+	const (
+		upstreamC = "Q1wy4tW58wERw5iTHp/49JdZLr914="
+		fileSize  = 30316
+	)
+	apkBytes, err := os.ReadFile(filepath.Clean("testdata/tree-2.2.1-r0.apk"))
+	if err != nil {
+		t.Fatalf("чтение фикстуры: %v", err)
+	}
+	if len(apkBytes) != fileSize {
+		t.Fatalf("фикстура %d байт, ждал %d", len(apkBytes), fileSize)
+	}
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	putApkBytes(t, storage, repo, "x86_64/tree-2.2.1-r0.apk", apkBytes)
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	text := indexTextOf(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz")
+	if got := recordField(t, text, "tree", "C:"); got != upstreamC {
+		t.Errorf("C: = %q, хочу апстримное %q", got, upstreamC)
+	}
+	if s := recordField(t, text, "tree", "S:"); s != strconv.Itoa(fileSize) {
+		t.Errorf("S: = %q, хочу %d", s, fileSize)
+	}
+}
+
+// TestReadGzipControlSectionSharedBudget — бюджет декомпрессии общий на
+// проход, а не на член: две «бомбы» по 700 KiB при капе 1 MiB обязаны
+// упереться в лимит (иначе кап умножался бы на число членов, и многочленный
+// .apk раздувал бы декомпрессию неограниченно).
+func TestReadGzipControlSectionSharedBudget(t *testing.T) {
+	t.Parallel()
+	const cap = int64(1 << 20)
+	const member = 700 << 10
+	file := append(apkBombGz(t, member), apkBombGz(t, member)...)
+
+	br := &apkByteReader{src: bytes.NewReader(file), h: sha1.New()}
+	if _, err := br.readAhead(4); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("readAhead: %v", err)
+	}
+	if _, _, err := readGzipControlSection(context.Background(), br, cap); !errors.Is(err, ErrDecompressTooLarge) {
+		t.Fatalf("ожидали ErrDecompressTooLarge, получили %v", err)
+	}
+}
+
+// TestReadGzipControlSectionMalformed — битые раскладки не проходят молча:
+// обрезанный control-член, мусор вместо tar в члене, пакет без .PKGINFO —
+// всё ErrBadApk (и не декомпресс-лимит).
+func TestReadGzipControlSectionMalformed(t *testing.T) {
+	t.Parallel()
+	pkginfo := "pkgname = apk-example\npkgver = 1.0-r0\narch = x86_64\n"
+	_, control := signedApk(t, pkginfo)
+	sig := apkGzMember(t, "./.SIGN.RSA.foo.rsa.pub", "signature-bytes")
+	truncated := append(append([]byte{}, sig...), control[:len(control)/2]...)
+
+	cases := []struct {
+		name string
+		apk  []byte
+	}{
+		{"обрезанный control-член", truncated},
+		{"мусор вместо tar в члене", gzBytes(t, []byte("not a tar archive at all"))},
+		{"пакет без .PKGINFO", apkGzMember(t, "./usr/bin/foo", "payload-bytes")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			br := &apkByteReader{src: bytes.NewReader(tc.apk), h: sha1.New()}
+			if _, err := br.readAhead(4); err != nil && !errors.Is(err, io.EOF) {
+				t.Fatalf("readAhead: %v", err)
+			}
+			_, _, err := readGzipControlSection(context.Background(), br, 0)
+			if !errors.Is(err, ErrBadApk) {
+				t.Errorf("ожидали ErrBadApk, получили %v", err)
+			}
+			if errors.Is(err, ErrDecompressTooLarge) {
+				t.Errorf("лимит декомпрессии не должен срабатывать на этом вводе: %v", err)
+			}
+		})
 	}
 }

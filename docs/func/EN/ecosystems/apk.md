@@ -68,12 +68,15 @@ There is no need to put the architecture into the
 `/etc/apk/repositories` line — the client appends its own and requests
 `<repo-url>/<arch>/APKINDEX.tar.gz`. `--allow-untrusted` is needed while
 the index signature is not accepted by the client (`UNTRUSTED signature` —
-a deferred personal apk repository signing question). Installing a package
-from a personal repository is still rejected by the client on the checksum
-check (`BAD signature` in apk-tools 2.x / `v2 package integrity error` in
-3.x: the generator writes `C:` as the sha1 of the whole file, while
-apk-tools treats that field as the sha1 of the control section) — a known
-index defect, not a layout one.
+a deferred personal apk repository signing question). The entry's `C:`
+field is `Q1` + base64 of the sha1 over the COMPRESSED bytes of the `.apk`
+control section (the gzip member carrying `./.PKGINFO`), exactly as
+apk-tools computes it: anything else is rejected by the client on the
+checksum (`BAD signature` in 2.x / `v2 package integrity error` in 3.x).
+The invariant is verified live on a real Alpine package
+(`tree-2.2.1-r0` from v3.21: `C:` matched the upstream APKINDEX) and by
+`apk add` in alpine:3.21 and alpine:edge. `S:` is the size of the whole
+file.
 
 For details, see [personal-repos.md](../personal-repos.md).
 

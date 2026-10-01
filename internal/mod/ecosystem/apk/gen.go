@@ -16,9 +16,9 @@
 
 // Генератор apk-индексов личного репозитория (port.RepoAdapter): обходит
 // repo/<id>/apk/<arch>/<файл>.apk, читает .PKGINFO каждого (pkginfo.go) и
-// считает sha1, собирает по одному APKINDEX.tar.gz на архитектуру
-// (gzip+tar с файлом APKINDEX в формате «K:V») + APKINDEX.tar.gz.sig
-// (подпись Signer'ом из сессии 15).
+// считает sha1 control-секции (поле C: — формат apk v2), собирает по одному
+// APKINDEX.tar.gz на архитектуру (gzip+tar с файлом APKINDEX в формате
+// «K:V») + APKINDEX.tar.gz.sig (подпись Signer'ом из сессии 15).
 //
 // Раскладка — по URL-контракту apk-tools (живая проба сессии 192, скрипты
 // и логи — в постамбуле): клиент запрашивает индекс строго по
@@ -52,6 +52,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -306,9 +307,9 @@ type indexEntry struct {
 	text []byte
 }
 
-// readIndexEntry читает .apk одним проходом (.PKGINFO + sha1 всего файла)
-// и рендерит запись APKINDEX (K:V-формат). F: — путь .apk от корня репо
-// (каталог + имя файла): клиент берёт из поля только basename, но поле
+// readIndexEntry читает .apk одним проходом (.PKGINFO + чексумма control-
+// секции) и рендерит запись APKINDEX (K:V-формат). F: — путь .apk от корня
+// репо (каталог + имя файла): клиент берёт из поля только basename, но поле
 // обязано совпадать с фактическим путём выдачи, иначе индекс лжёт.
 func readIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix string, decompressLimit int64) (indexEntry, error) {
 	obj, err := storage.Get(ctx, apkKey)
@@ -316,45 +317,55 @@ func readIndexEntry(ctx context.Context, storage port.Storage, apkKey, prefix st
 		return indexEntry{}, err
 	}
 	defer obj.Body.Close()
-	h := sha1.New()
-	cr := &countReader{r: obj.Body}
-	tee := io.TeeReader(cr, h)
-	pi, err := readPkgInfoFromPackage(ctx, tee, decompressLimit)
+	br := &apkByteReader{src: obj.Body, h: sha1.New()}
+	// Сигнатура формата — до распаковки, но без сдвига позиции: границы
+	// gzip-членов обязаны совпасть с байтовыми.
+	sig, err := br.readAhead(4)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return indexEntry{}, fmt.Errorf("apk.apk: чтение сигнатуры: %w", err)
+	}
+	var (
+		pi  *PkgInfo
+		sum []byte
+	)
+	if isGzipMagic(sig) {
+		// apk v2: C: — sha1 СЖАТЫХ байт control-члена (см. readGzipControlSection).
+		pi, sum, err = readGzipControlSection(ctx, br, decompressLimit)
+	} else {
+		// zstd/raw-tar: control-секции как gzip-членов нет, C: остаётся
+		// sha1 всего файла (семантика apk v3 — отдельный вопрос, вне 193):
+		// хеш уже считает apkByteReader с первого байта.
+		pi, err = readPkgInfoFromPackage(ctx, br, decompressLimit)
+	}
 	if err != nil {
 		return indexEntry{}, err
 	}
-	// Докачиваем остаток .apk через tee, чтобы sha1 был посчитан по
-	// всему файлу: readPkgInfoFromPackage остановился после .PKGINFO.
-	if _, err := io.Copy(io.Discard, tee); err != nil {
+	// Остаток файла (члены после control-секции) читается только под счётчик
+	// размера: S: обязан быть размером ВСЕГО .apk, а декомпрессия членов
+	// данных не нужна.
+	if _, err := io.Copy(io.Discard, br); err != nil {
 		return indexEntry{}, fmt.Errorf("apk.apk: дочтение .apk: %w", err)
 	}
-	checksum := "Q1" + base64.StdEncoding.EncodeToString(h.Sum(nil))
+	if sum == nil {
+		sum = br.sum()
+	}
+	checksum := "Q1" + base64.StdEncoding.EncodeToString(sum)
 	filepath := strings.TrimPrefix(apkKey, prefix+"/")
 	dir, _, _ := splitArchDir(filepath)
-	// Размер — фактические байты через tee, не obj.Meta.Size: метаданные
-	// носителя могут солгать, и apk упадёт на сверке размера.
+	// Размер — фактические байты файла (apkByteReader.n), не obj.Meta.Size:
+	// метаданные носителя могут солгать, и apk упадёт на сверке размера.
 	var buf bytes.Buffer
-	writeAPKINDEXEntry(&buf, pi, checksum, filepath, cr.n)
+	writeAPKINDEXEntry(&buf, pi, checksum, filepath, br.n)
 	return indexEntry{arch: pi.Arch, dir: dir, text: buf.Bytes()}, nil
-}
-
-// countReader считает прочитанные байты: источник размера индексных
-// записей (фактическое тело объекта, не метаданные хранилища).
-type countReader struct {
-	r io.Reader
-	n int64
-}
-
-func (c *countReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += int64(n)
-	return n, err
 }
 
 // writeAPKINDEXEntry пишет одну запись в APKINDEX-текст: K:V-строки,
 // разделитель записей — пустая строка. Поля — подмножество, нужное apk
-// update и roundtrip-парсеру ParseAPKINDEX (F:/P:/V:). C — sha1-чекcумма
-// .apk (Q1 = sha1, apk v2 convention); S — размер файла; I — установлен.
+// update и roundtrip-парсеру ParseAPKINDEX (F:/P:/V:). C — sha1 СЖАТЫХ
+// байт control-секции .apk («Q1» = sha1, apk v2 convention): apk-tools
+// сверяет по ней целостность пакета на стороне клиента, поэтому хеш всего
+// файла здесь не годится (BAD signature / v2 package integrity error).
+// S — размер файла; I — установлен.
 // D:/p:/i: — зависимости (depends/provides/install_if, space-joined,
 // как их пишет apk-tools): без них `apk add` не может резолвить
 // зависимости пакета из личного репо.

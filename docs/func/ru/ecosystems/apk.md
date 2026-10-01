@@ -65,11 +65,13 @@ apk update --allow-untrusted && apk add --allow-untrusted <пакет>
 подставляет свою сам и запрашивает `<repo-url>/<арх>/APKINDEX.tar.gz`.
 `--allow-untrusted` нужен, пока подпись индекса не принимается клиентом
 (`UNTRUSTED signature` — отложенный вопрос подписи личных apk-репо).
-Установку пакета из личного репо клиент пока отвергает на сверке
-контрольной суммы (`BAD signature` в apk-tools 2.x /
-`v2 package integrity error` в 3.x: генератор пишет `C:` как sha1 всего
-файла, а apk-tools считает этим полем sha1 control-секции) — известный
-дефект индекса, не раскладки.
+Поле `C:` записи — `Q1` + base64 от sha1 СЖАТЫХ байт control-секции `.apk`
+(gzip-члена с `./.PKGINFO`), ровно как считает apk-tools: генерировать
+иначе нельзя — клиент отвергает пакет на сверке (`BAD signature` в 2.x /
+`v2 package integrity error` в 3.x). Инвариант проверен живьём на реальном
+пакете Alpine (`tree-2.2.1-r0` из v3.21: `C:` совпал с апстримным
+APKINDEX) и установкой `apk add` в alpine:3.21 и alpine:edge. `S:` —
+размер всего файла.
 
 Подробности — [personal-repos.md](../personal-repos.md).
 

@@ -31,8 +31,10 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"crypto/sha1"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"strconv"
 	"strings"
@@ -168,6 +170,9 @@ func setOnceInt(p *int64, v string) {
 // .PKGINFO → ParsePkgInfo. r — сырые байты .apk (генератор tee'ит через
 // sha1, поэтому читает ровно столько, сколько нужно для .PKGINFO, а
 // остаток дочитывает вызывающий для хеша — как apt/pacman/rpm генераторы).
+//
+// Путь apk v2 (gzip-члены) сюда не ходит: там нужна и граница control-
+// секции (sha1 сжатого члена, поля C:) — см. readGzipControlSection.
 func readPkgInfoFromPackage(ctx context.Context, r io.Reader, decompressLimit int64) (*PkgInfo, error) {
 	br := bufio.NewReader(r)
 	dr, err := decompressApk(br, decompressLimit)
@@ -176,6 +181,175 @@ func readPkgInfoFromPackage(ctx context.Context, r io.Reader, decompressLimit in
 	}
 	defer dr.Close()
 	return readPkgInfoFromTar(ctx, dr)
+}
+
+// apkByteReader — точный байтовый источник .apk: io.Reader + io.ByteReader.
+// ByteReader обязателен: gzip.Reader тогда берёт его напрямую (без
+// внутреннего bufio) и не читает вперёд — flate тянет байты через ReadByte
+// либо io.ReadFull ровно известной длины (см. compress/flate/inflate.go).
+// Поэтому «байты, отданные в текущем члене» = «сжатые байты этого члена» —
+// источник sha1 для поля C: (живая сверка: tree-2.2.1-r0,
+// Q1+base64(sha1 control-члена) совпал с C: апстримного APKINDEX v3.21,
+// постамбула сессии 193).
+type apkByteReader struct {
+	src io.Reader
+	h   hash.Hash // хеш текущего gzip-члена (nil — не считаем)
+	buf []byte    // отложенная сигнатура: уходит первой, в src читается раз
+	n   int64     // всего байт, взятых из src (S: — размер всего .apk)
+}
+
+func (r *apkByteReader) Read(p []byte) (int, error) {
+	if len(r.buf) > 0 {
+		n := copy(p, r.buf)
+		r.buf = r.buf[n:]
+		return n, nil
+	}
+	n, err := r.src.Read(p)
+	if n > 0 {
+		if r.h != nil {
+			_, _ = r.h.Write(p[:n])
+		}
+		r.n += int64(n)
+	}
+	return n, err
+}
+
+func (r *apkByteReader) ReadByte() (byte, error) {
+	if len(r.buf) > 0 {
+		b := r.buf[0]
+		r.buf = r.buf[1:]
+		return b, nil
+	}
+	return r.readRawByte()
+}
+
+// readRawByte — байт из источника: считается в n и уходит в хеш члена.
+func (r *apkByteReader) readRawByte() (byte, error) {
+	var b [1]byte
+	if _, err := io.ReadFull(r.src, b[:]); err != nil {
+		return 0, err
+	}
+	if r.h != nil {
+		_, _ = r.h.Write(b[:])
+	}
+	r.n++
+	return b[0], nil
+}
+
+// readAhead читает ровно n байт источника и запоминает их: уйдут первыми
+// при последующих Read/ReadByte. Нужно, чтобы рассмотреть сигнатуру
+// формата до gzip.NewReader и при этом не сдвинуть позицию (границы
+// gzip-членов обязаны совпасть с байтовыми). Короткий источник — что
+// успели, то и вернём.
+func (r *apkByteReader) readAhead(n int) ([]byte, error) {
+	head := make([]byte, n)
+	for i := range head {
+		b, err := r.readRawByte()
+		if err != nil {
+			r.buf = append(r.buf, head[:i]...)
+			return head[:i], err
+		}
+		head[i] = b
+	}
+	r.buf = append(r.buf, head...)
+	return head, nil
+}
+
+// hashTo переключает хеш (nil — байты дальше не хешируются): на границе
+// gzip-членов — новый sha1, после control-секции — выключение.
+func (r *apkByteReader) hashTo(h hash.Hash) { r.h = h }
+
+// sum — дайджест байт, прошедших с последнего hashTo. Копия: дальнейшие
+// записи в источнике хеш не портят.
+func (r *apkByteReader) sum() []byte {
+	if r.h == nil {
+		return nil
+	}
+	return r.h.Sum(nil)
+}
+
+// isGzipMagic — сигнатура gzip-потока (apk v2: многочленная раскладка
+// сигнатура/control/данные).
+func isGzipMagic(b []byte) bool { return len(b) >= 2 && b[0] == 0x1f && b[1] == 0x8b }
+
+// readGzipControlSection обходит gzip-члены .apk (apk v2) и возвращает
+// .PKGINFO control-секции вместе с sha1 её СЖАТЫХ байт — ровно то, что
+// apk-tools кладёт в поле C: индекса. Control-секция — первый член, внутри
+// которого есть ./.PKGINFO: у подписанного пакета это второй член (первый —
+// ./.SIGN.RSA…), у неподписанного — первый.
+//
+// Бюджет декомпрессии общий на проход: лимит снимается с остатка, поэтому
+// многочленная бомба не обходит кап умножением на число членов. Границы
+// членов — байтовые (apkByteReader), хеш — по сжатым байтам текущего члена;
+// трейлер члена дочитывается обязательно, иначе хеш и позиция разъедутся.
+func readGzipControlSection(ctx context.Context, r *apkByteReader, decompressLimit int64) (*PkgInfo, []byte, error) {
+	if decompressLimit <= 0 {
+		decompressLimit = maxDecompressedApk
+	}
+	remaining := decompressLimit
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, fmt.Errorf("apk.pkg: отмена reindex: %w", err)
+		}
+		gz, err := gzip.NewReader(r)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, nil, fmt.Errorf("%w: .PKGINFO не найден", ErrBadApk)
+			}
+			return nil, nil, fmt.Errorf("%w: gzip: %w", ErrBadApk, err)
+		}
+		gz.Multistream(false)
+		lim := &limitedReader{r: gz, limit: remaining, sentinel: ErrDecompressTooLarge}
+		pi, found, err := scanTarMember(ctx, lim)
+		if err == nil {
+			// Досасываем член до конца: трейлер gzip + хвост tar-потока.
+			_, err = io.Copy(io.Discard, lim)
+		}
+		_ = gz.Close()
+		if err != nil {
+			if errors.Is(err, ErrDecompressTooLarge) {
+				return nil, nil, err
+			}
+			return nil, nil, fmt.Errorf("%w: чтение gzip-члена: %w", ErrBadApk, err)
+		}
+		remaining -= lim.n
+		if found {
+			sum := r.sum()
+			r.hashTo(nil) // дальше — только счётчик размера (S:)
+			return pi, sum, nil
+		}
+		r.hashTo(sha1.New()) // следующий член — свой хеш
+	}
+}
+
+// scanTarMember ищет ./.PKGINFO в tar-потоке одного члена .apk.
+// found=false — члена с .PKGINFO нет (член сигнатуры или данных).
+func scanTarMember(ctx context.Context, r io.Reader) (*PkgInfo, bool, error) {
+	tr := tar.NewReader(r)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, false, fmt.Errorf("apk.pkg: отмена reindex: %w", err)
+		}
+		hdr, err := tr.Next()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, false, nil
+			}
+			return nil, false, fmt.Errorf("%w: чтение tar: %w", ErrBadApk, err)
+		}
+		base := hdr.Name
+		if idx := strings.LastIndexByte(base, '/'); idx >= 0 {
+			base = base[idx+1:]
+		}
+		if base != ".PKGINFO" {
+			continue
+		}
+		pi, err := ParsePkgInfo(tr)
+		if err != nil {
+			return nil, false, err
+		}
+		return pi, true, nil
+	}
 }
 
 // decompressApk распознаёт формат по сигнатуре: gzip (1f 8b) или zstd

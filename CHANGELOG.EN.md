@@ -35,6 +35,21 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ### Fixed
 
+- **Personal repos (apk):** the APKINDEX entry's `C:` field was computed
+  over the WHOLE `.apk`, while apk-tools reads it as the sha1 of the
+  COMPRESSED bytes of the control section (`Q1` + base64, the gzip member
+  carrying `./.PKGINFO`) — installing a package from a personal repository
+  failed on the checksum: `BAD signature` (apk-tools 2.14.6) /
+  `v2 package integrity error` (3.0.7). The generator now walks the `.apk`
+  gzip members byte-exactly (`gzip.Multistream(false)` over an exact byte
+  reader: `flate` only pulls bytes via `ReadByte`/`ReadFull` of a known
+  length and never reads ahead), hashes the compressed bytes of the control
+  member and writes `Q1` + base64; `S:` stays the size of the whole file and
+  the decompression cap is shared across members (a multi-member bomb cannot
+  bypass it). Live check (2026-10-01): `C:` of a real `tree-2.2.1-r0` from
+  alpine v3.21 matched the upstream APKINDEX verbatim, and `apk add` from a
+  personal repository in alpine:3.21 and alpine:edge — `exit 0` (the package
+  installs and runs).
 - **Personal repos (apk):** `apk update` against a personal repository did
   not work — the client requests the index strictly at
   `<repo-url>/<arch>/APKINDEX.tar.gz`, while the generator wrote it to the
