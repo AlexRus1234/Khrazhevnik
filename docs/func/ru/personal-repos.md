@@ -172,7 +172,11 @@ per-repo (поле `retention` в `POST`/`PATCH /api/v1/repos/{id}` или па�
   `.pkg.tar.xz`/`.gz` не принимаются (400): нет xz/gz-декодера в
   whitelist зависимостей — переупакуйте в zst.
 - **Индексы (reindex):** `<repo.Name>.db` (tar.zst с
-  `<name>-<ver>/desc`-записями) + `<repo.Name>.db.sig` (detached,
+  `<name>-<ver>/desc`-записями; в `.db` не более одной записи на имя
+  пакета — из нескольких версий в индекс попадает новейшая по
+  `epoch:ver-rel` (семантика `alpm_pkg_vercmp`), старые остаются в
+  storage и защищаются retention/пинами; `repo-add` upstream ведёт себя
+  так же) + `<repo.Name>.db.sig` (detached,
   ключом инстанса OpenPGP).
 - **Клиент:** `/etc/pacman.conf`:
   ```ini

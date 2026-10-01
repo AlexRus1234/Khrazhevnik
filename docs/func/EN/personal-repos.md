@@ -179,7 +179,11 @@ applied by a daily background pass or manually from the GUI/API.
   Legacy `.pkg.tar.xz`/`.gz` are not accepted (400): there is no xz/
   gz decoder in the dependency whitelist — repack as zst.
 - **Indexes (reindex):** `<repo.Name>.db` (tar.zst with
-  `<name>-<ver>/desc` entries) + `<repo.Name>.db.sig`
+  `<name>-<ver>/desc` entries; the `.db` holds at most one entry per
+  package name — of several versions the newest by `epoch:ver-rel`
+  (semantics of `alpm_pkg_vercmp`) goes into the index, the older ones
+  stay in storage and are protected by retention/pins; upstream
+  `repo-add` behaves the same way) + `<repo.Name>.db.sig`
   (detached, with the instance OpenPGP key).
 - **Client:** `/etc/pacman.conf`:
   ```ini

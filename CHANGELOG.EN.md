@@ -37,6 +37,17 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   carries the in-repo path (`pool/…`), as on upload; the API contract is
   unchanged. The regression is covered by an e2e case (deleting an object
   with the button) in `web/e2e/smoke.spec.ts`.
+- **Personal repos (pacman):** `<repo>.db` got one entry per
+  `.pkg.tar.zst`, so two versions of the same package in storage broke
+  `pacman -S` for every client: libalpm reuses the `alpm_pkg` of the
+  first entry (the second overwrites `%FILENAME%`/checksums while
+  `%VERSION%` stays from the first), and the file-to-index check fails
+  with "database is inconsistent: version mismatch on package …". The
+  index now holds at most one entry per package name — the newest by
+  `epoch:ver-rel` (semantics of `alpm_pkg_vercmp`, comparator
+  `internal/mod/ecosystem/pacman/vercmp.go`); older versions stay in
+  storage and are protected by retention/pins. The invariant is
+  documented in `docs/func/EN/personal-repos.md`.
 
 ## [1.3.1] — 2026-09-30
 

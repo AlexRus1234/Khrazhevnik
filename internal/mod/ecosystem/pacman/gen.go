@@ -181,6 +181,12 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 		descs = append(descs, de)
 		p.Update("pkginfo", repo.Name, int64(i+1), int64(len(pkgKeys)))
 	}
+	// Фаза 2.5: дедуп по имени пакета — в .db не более одной записи на
+	// %NAME% (детали и «почему» — в dedupeDescs). Storage не чистится:
+	// несколько версий одного пакета — штатное состояние (retention/пины).
+	before := len(descs)
+	descs = dedupeDescs(descs, p)
+	p.Log(fmt.Sprintf("pacman.gen: дедуп по имени: отброшено %d из %d записей", before-len(descs), before))
 	// Лексический порядок desc-записей в .db (как repo-add).
 	sort.Slice(descs, func(i, j int) bool { return descs[i].dir < descs[j].dir })
 
@@ -217,11 +223,51 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 	return nil
 }
 
-// descEntry — одна desc-запись для .db: путь в tar (<name>-<ver>-<arch>)
-// и содержимое desc-файла (%FIELD%\nvalue\n...).
+// descEntry — одна desc-запись для .db: каталог в tar (<name>-<version>,
+// без арх-суффикса — сессия 181), текст desc-файла и ключ дедупа —
+// %NAME%/%VERSION% из .PKGINFO. По каталогу группировать нельзя: в нём
+// склеены имя и версия, а разделитель «-» встречается в обоих (см.
+// ObjectFamily).
 type descEntry struct {
-	dir  string
-	desc string
+	dir     string
+	desc    string
+	name    string
+	version string
+}
+
+// dedupeDescs оставляет по одной записи на имя пакета: из нескольких
+// версий в .db попадает новейшая по alpm_pkg_vercmp (ComparePkgVer),
+// прочие отбрасываются — но остаются в storage (retention/пины).
+//
+// Почему: клиент (libalpm, be_sync.c load_pkg_for_entry) переиспользует
+// alpm_pkg первой записи с тем же %NAME% — вторая запись переписывает
+// %FILENAME%/чексуммы, а %VERSION% остаётся от первой, и pacman падает
+// «database is inconsistent: version mismatch on package …»: пакет не
+// ставится ни `-S`, ни `-Sy`. Эталон upstream (`repo-add`) ведёт себя так
+// же — запись замещается по имени пакета.
+//
+// Иммутабельность: входной срез не правится, собирается новый. Порядок
+// записей (и, значит, лог) детерминирован: вход отсортирован по ключам
+// storage (collectPkgTar), выбор — функцией сравнения, а не map.
+func dedupeDescs(descs []descEntry, p port.RepoProgress) []descEntry {
+	out := make([]descEntry, 0, len(descs))
+	byName := make(map[string]int, len(descs))
+	for _, de := range descs {
+		idx, seen := byName[de.name]
+		if !seen {
+			byName[de.name] = len(out)
+			out = append(out, de)
+			continue
+		}
+		kept := out[idx]
+		if ComparePkgVer(de.version, kept.version) > 0 {
+			out[idx] = de
+			p.Log(fmt.Sprintf("pacman.gen: дедуп: %s: %s → %s", de.name, kept.version, de.version))
+			continue
+		}
+		p.Log(fmt.Sprintf("pacman.gen: дедуп: %s: отброшена %s (в индексе %s)", de.name, de.version, kept.version))
+	}
+	return out
 }
 
 // collectPkgTar возвращает лексически отсортированный список
@@ -281,7 +327,7 @@ func buildDescEntry(ctx context.Context, storage port.Storage, pkgKey string, de
 	// Размер — фактические байты через tee, не obj.Meta.Size: метаданные
 	// носителя могут солгать, и pacman упадёт на сверке размера.
 	desc := buildDescText(pi, filename, cr.n, sha)
-	return descEntry{dir: dir, desc: desc}, nil
+	return descEntry{dir: dir, desc: desc, name: pi.Name, version: pi.Version}, nil
 }
 
 // countReader считает прочитанные байты: источник размера индексных

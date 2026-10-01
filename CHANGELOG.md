@@ -45,6 +45,17 @@ major.
   404 `not_found`. В URL теперь уходит путь внутри репо (`pool/…`) — как
   при загрузке; контракт API не менялся. Регрессия закрыта e2e-кейсом
   (удаление объекта кнопкой) в `web/e2e/smoke.spec.ts`.
+- **Личные репо (pacman):** в `<repo>.db` попадала запись на КАЖДЫЙ
+  `.pkg.tar.zst`, поэтому две версии одного пакета в storage ломали
+  `pacman -S` для всех клиентов: libalpm переиспользует `alpm_pkg`
+  первой записи (вторая переписывает `%FILENAME%`/чексуммы, а
+  `%VERSION%` остаётся от первой), и сверка файла с индексом даёт
+  «database is inconsistent: version mismatch on package …». Теперь в
+  индекс уходит не более одной записи на имя пакета — новейшая по
+  `epoch:ver-rel` (семантика `alpm_pkg_vercmp`, компаратор
+  `internal/mod/ecosystem/pacman/vercmp.go`); старые версии остаются в
+  storage и защищаются retention/пинами. Инвариант — в
+  `docs/func/ru/personal-repos.md`.
 
 ## [1.3.1] — 2026-09-30
 
