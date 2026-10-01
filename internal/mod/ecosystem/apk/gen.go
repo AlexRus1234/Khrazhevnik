@@ -18,7 +18,19 @@
 // repo/<id>/apk/<arch>/<файл>.apk, читает .PKGINFO каждого (pkginfo.go) и
 // считает sha1 control-секции (поле C: — формат apk v2), собирает по одному
 // APKINDEX.tar.gz на архитектуру (gzip+tar с файлом APKINDEX в формате
-// «K:V») + APKINDEX.tar.gz.sig (подпись Signer'ом из сессии 15).
+// «K:V») + подпись индекса ключом инстанса (сессия 195).
+//
+// Подпись индекса — НЕ отдельный файл, а tar-член `.SIGN.RSA.<keyid>` в
+// ПЕРВОМ gzip-члене APKINDEX.tar.gz (формат apk v2: doc/apk-v2.5.scd
+// «THE SIGNATURES», таблица типов «RSA» → SHA-1 в v2 src/package.c и v3
+// src/extract_v2.c). apk-tools инициализирует дайджест на границе gzip-
+// членов сразу после сигнатурной секции, поэтому подпись считается по
+// СЖАТЫМ байтам второго члена (живая сверка на апстримном индексе
+// Alpine: sha1 файла от границы членов = дайджест внутри апстримного
+// .sig — постамбула сессии 195). Отдельного `<arch>/APKINDEX.tar.gz.sig`
+// генератор больше не пишет: apk его не запрашивает вовсе, а прежнее
+// содержимое (armored OpenPGP от port.Signer) клиент отвергал
+// («UNTRUSTED signature» — находка сессий 184/193).
 //
 // Раскладка — по URL-контракту apk-tools (живая проба сессии 192, скрипты
 // и логи — в постамбуле): клиент запрашивает индекс строго по
@@ -36,12 +48,13 @@
 // Атомарность v1 — перезапись ключей после полной генерации staging в
 // памяти (окно рассинхрона ~секунды; полный atomic-swap — сессия 17).
 //
-// Ключи в storage — lowercase (domain.ValidateKey): <arch>/apkindex.tar.gz,
-// <arch>/apkindex.tar.gz.sig. apk fetch'ит APKINDEX.tar.gz (имя —
-// каноническое uppercase в URL, но публичный роутер :29202 лоуэркейсит
-// запрос перед lookup'ом, поэтому storage-ключ lowercase). Старый индекс в
-// корне репо больше не пишется; уже лежащий — не удаляется (чистка — вне
-// скоупа, см. docs/func/ru/ecosystems/apk.md).
+// Ключи в storage — lowercase (domain.ValidateKey): <arch>/apkindex.tar.gz
+// (подпись — внутри файла, отдельного ключа нет). apk fetch'ит
+// APKINDEX.tar.gz (имя — каноническое uppercase в URL, но публичный
+// роутер :29202 лоуэркейсит запрос перед lookup'ом, поэтому storage-ключ
+// lowercase). Старый индекс в корне репо больше не пишется; уже
+// лежащий — не удаляется (чистка — вне скоупа, см.
+// docs/func/ru/ecosystems/apk.md).
 
 package apk
 
@@ -65,15 +78,26 @@ import (
 
 func init() {
 	// Регистрация repo-адаптера в compile-time реестре: имя совпадает
-	// с именем экосистемы (apk). Signer внедряется через SetSigner.
+	// с именем экосистемы (apk). RsaSigner внедряется через
+	// SetRsaSigner (port.RsaSignerInjector).
 	registry.RegisterRepoAdapter(Name, func() (port.RepoAdapter, error) {
 		return &Generator{}, nil
 	})
 }
 
+// apkKeyID — имя публичного ключа инстанса на стороне клиента. apk
+// сопоставляет tar-член `.SIGN.RSA.<keyid>` индекса с ФАЙЛОМ
+// /etc/apk/keys/<keyid> (v2 src/package.c: openat(keys_fd, name);
+// v3 src/extract_v2.c: apk_trust_key_by_name) — имя обязано совпасть
+// байт-в-байт, иначе ключ не находится и клиент отвечает «UNTRUSTED
+// signature». Файл — SPKI-PEM (`PUBLIC KEY`; читается
+// PEM_read_bio_PUBKEY в v2 и apk_pkey-загрузчиком в v3), отдаётся
+// ручкой GET /repo/<name>/apk-key.
+const apkKeyID = "khrazhevnik.rsa.pub"
+
 // Generator реализует port.RepoAdapter для apk-репо.
 type Generator struct {
-	signer port.Signer
+	rsa port.RsaSigner
 
 	// decompressLimit — потолок разжатого .apk (0 = прод-дефолт
 	// maxDecompressedApk). Поле только для тестов: прод-инстанс
@@ -90,9 +114,11 @@ func (g *Generator) decompressCap() int64 {
 	return maxDecompressedApk
 }
 
-// SetSigner внедряет подписчик: после APKINDEX.tar.gz генератор эмитит
-// APKINDEX.tar.gz.sig (detached). nil — репо не подписывается.
-func (g *Generator) SetSigner(s port.Signer) { g.signer = s }
+// SetRsaSigner внедряет подписчик индекса (port.RsaSignerInjector): при
+// генерации APKINDEX.tar.gz получает tar-член `.SIGN.RSA.<apkKeyID>` —
+// RSA PKCS#1 v1.5 с SHA-1-DigestInfo поверх sha1 сжатого тела индекса.
+// nil — репо не подписывается (индекс отдаётся одним gzip-членом).
+func (g *Generator) SetRsaSigner(s port.RsaSigner) { g.rsa = s }
 
 // Name — имя экосистемы, совпадает с Adapter.Name.
 func (g *Generator) Name() string { return Name }
@@ -251,33 +277,52 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 			// индекс своей архитектуры, а файл тянет из <repo>/noarch/.
 			text.Write(noarch.Bytes())
 		}
-		indexGz, err := buildAPKINDEXTarGz(text.Bytes())
+		indexGz, err := g.buildIndex(ctx, text.Bytes())
 		if err != nil {
 			return fmt.Errorf("apk.gen: сборка APKINDEX.tar.gz (%s): %w", arch, err)
+		}
+		if g.rsa != nil {
+			// Фаза «sign» — до записи: подпись уже в indexGz (tar-член
+			// .SIGN.RSA.<keyid> первого gzip-члена), отдельного файла нет.
+			p.Update("sign", repo.Name, int64(i+1), int64(len(archs)))
 		}
 		indexKey := prefix + "/" + arch + "/apkindex.tar.gz"
 		if err := writeAtomic(ctx, storage, indexKey, indexGz); err != nil {
 			return fmt.Errorf("apk.gen: APKINDEX.tar.gz (%s): %w", arch, err)
 		}
-		if g.signer != nil {
-			p.Update("sign", repo.Name, int64(i), int64(len(archs)))
-			sigR, err := g.signer.SignDetached(ctx, bytes.NewReader(indexGz))
-			if err != nil {
-				return fmt.Errorf("apk.gen: APKINDEX.tar.gz.sig (%s): %w", arch, err)
-			}
-			sig, err := io.ReadAll(sigR)
-			if err != nil {
-				return fmt.Errorf("apk.gen: APKINDEX.tar.gz.sig (%s): чтение: %w", arch, err)
-			}
-			if err := writeAtomic(ctx, storage, indexKey+".sig", sig); err != nil {
-				return fmt.Errorf("apk.gen: APKINDEX.tar.gz.sig (%s): %w", arch, err)
-			}
-			p.Update("sign", repo.Name, int64(i+1), int64(len(archs)))
-		}
 		p.Update("write", repo.Name, int64(i+1), int64(len(archs)))
 	}
 	p.Log(fmt.Sprintf("apk.gen: индексы записаны (%d архитектур)", len(archs)))
 	return nil
+}
+
+// buildIndex собирает APKINDEX.tar.gz архитектуры. Без подписчика — один
+// gzip-член с tar{APKINDEX}. С подписчиком — два gzip-члена: первый
+// содержит ровно один tar-член `.SIGN.RSA.<apkKeyID>` (подпись), второй —
+// tar{APKINDEX} с концевыми нулевыми блоками. Разделение обязательно:
+// apk-tools инициализирует дайджест подписи на ГРАНИЦЕ gzip-членов после
+// сигнатурной секции и считает его по сжатым байтам второго члена
+// (apk_sign_ctx_mpart_cb), поэтому подпись накрывает тело индекса как
+// файл, а не как разжатый tar. Порядок операций безопасен: тело не
+// зависит от байт подписи (она лежит целиком в первом члене).
+func (g *Generator) buildIndex(ctx context.Context, indexText []byte) ([]byte, error) {
+	body, err := buildAPKINDEXTarGz(indexText)
+	if err != nil {
+		return nil, err
+	}
+	if g.rsa == nil {
+		return body, nil
+	}
+	digest := sha1.Sum(body)
+	sig, err := g.rsa.SignSHA1DigestInfo(ctx, digest[:])
+	if err != nil {
+		return nil, fmt.Errorf("подпись индекса: %w", err)
+	}
+	head, err := buildSignatureTarGz(sig)
+	if err != nil {
+		return nil, err
+	}
+	return append(head, body...), nil
 }
 
 // collectApks возвращает лексически отсортированный список .apk под
@@ -412,24 +457,78 @@ func writeAPKINDEXEntry(buf *bytes.Buffer, pi *PkgInfo, checksum, filepath strin
 }
 
 // buildAPKINDEXTarGz собирает tar с одним файлом «APKINDEX» (содержимое —
-// indexText), затем gzip-сжимает. Возвращает байты APKINDEX.tar.gz.
+// indexText) + концевыми нулевыми блоками архива, затем gzip-сжимает.
+// Возвращает байты APKINDEX.tar.gz. Это ВТОРОЙ (телесный) gzip-член
+// подписанного индекса: байт-в-байт тот же, что и у неподписанного
+// (сигнатурная секция лежит отдельным членом перед ним).
 func buildAPKINDEXTarGz(indexText []byte) ([]byte, error) {
-	var tarBuf bytes.Buffer
-	tw := tar.NewWriter(&tarBuf)
+	raw, err := tarEntryBytes("APKINDEX", indexText)
+	if err != nil {
+		return nil, err
+	}
+	// Концевые нулевые блоки архива — в теле, не в сигнатурном члене.
+	return gzipBytes(append(raw, make([]byte, 1024)...))
+}
+
+// buildSignatureTarGz собирает ПЕРВЫЙ gzip-член подписанного индекса —
+// tar ровно с одним членом `.SIGN.RSA.<apkKeyID>` (сырые байты
+// RSA-подписи) и БЕЗ концевых нулевых блоков: архив продолжается телом во
+// втором члене. Имя члена — протокол apk v2: `.SIGN.<алгоритм>.<keyid>`
+// (алгоритм RSA = SHA-1), keyid — имя файла ключа в /etc/apk/keys.
+func buildSignatureTarGz(sig []byte) ([]byte, error) {
+	raw, err := tarEntryBytes(".SIGN.RSA."+apkKeyID, sig)
+	if err != nil {
+		return nil, err
+	}
+	return gzipBytes(raw)
+}
+
+// tarEntryBytes — блоки tar для одного обычного файла name БЕЗ концевых
+// нулевых блоков. tar.Writer.Close всегда дописывает два нулевых блока
+// (EOF архива) — здесь они срезаются: в подписанном APKINDEX.tar.gz архив
+// ОДИН и непрерывный через границу gzip-членов, поэтому EOF обязан
+// оказаться в последнем члене. Иначе парсер apk, дойдя до нулевого
+// блока, решает, что архив кончился, и индекс остаётся пустым (находка
+// живой пробы сессии 195: тело терялось ровно на этом).
+func tarEntryBytes(name string, content []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
 	if err := tw.WriteHeader(&tar.Header{
-		Name: "APKINDEX", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(indexText)),
+		Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(content)),
 	}); err != nil {
 		return nil, fmt.Errorf("apk.apkindex: tar header: %w", err)
 	}
-	if _, err := tw.Write(indexText); err != nil {
+	if _, err := tw.Write(content); err != nil {
 		return nil, fmt.Errorf("apk.apkindex: tar write: %w", err)
 	}
 	if err := tw.Close(); err != nil {
 		return nil, fmt.Errorf("apk.apkindex: tar close: %w", err)
 	}
+	raw := buf.Bytes()
+	off := int64(tarHeaderSize) + paddedTarSize(int64(len(content)))
+	if int64(len(raw)) != off+2*tarHeaderSize {
+		return nil, fmt.Errorf("apk.apkindex: неожиданный размер tar-члена: %d, хочу %d",
+			len(raw), off+2*tarHeaderSize)
+	}
+	return raw[:off], nil
+}
+
+// tarHeaderSize — размер tar-блока.
+const tarHeaderSize = 512
+
+// paddedTarSize — размер содержимого члена, выровненный по блокам tar.
+func paddedTarSize(n int64) int64 {
+	if n == 0 {
+		return 0
+	}
+	return (n + tarHeaderSize - 1) / tarHeaderSize * tarHeaderSize
+}
+
+// gzipBytes — gzip поверх байтов (детерминированно: заголовок без mtime).
+func gzipBytes(raw []byte) ([]byte, error) {
 	var gzBuf bytes.Buffer
 	gz := gzip.NewWriter(&gzBuf)
-	if _, err := gz.Write(tarBuf.Bytes()); err != nil {
+	if _, err := gz.Write(raw); err != nil {
 		return nil, fmt.Errorf("apk.apkindex: gzip write: %w", err)
 	}
 	if err := gz.Close(); err != nil {

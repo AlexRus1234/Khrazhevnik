@@ -207,22 +207,29 @@ applied by a daily background pass or manually from the GUI/API.
   `noarch/`. Any other path (including the repository root) — 400.
 - **Indexes (reindex):** one per architecture —
   `<arch>/APKINDEX.tar.gz` (gzip+tar with the `APKINDEX` file in `K:V`
-  format — C/P/V/A/F/...) + `<arch>/APKINDEX.tar.gz.sig` (detached, with
-  the instance OpenPGP key); `noarch` entries are included in the index of
-  every architecture. No index is generated at the repository root.
+  format — C/P/V/A/F/...) signed INSIDE the file: the first gzip member is
+  a tar with the single member `.SIGN.RSA.khrazhevnik.rsa.pub` (RSA
+  PKCS#1 v1.5 over the SHA-1 DigestInfo of the sha1 of the COMPRESSED
+  bytes of the body member), and the archive is a single continuous tar
+  across the member boundary; there is no separate `.sig` — apk never
+  requests one (the Alpine CDN answers 404 for it too); `noarch` entries
+  are included in the index of every architecture. No index is generated
+  at the repository root.
 - **Client:** `/etc/apk/repositories`:
   ```
   http://<Khrazhevnik>:29202/repo/alice
   ```
   The client appends its architecture itself. The key
-  `GET /repo/alice/key.asc` is copied into `/etc/apk/keys/`. Installs go
-  with `--allow-untrusted`: the index signature (`APKINDEX.tar.gz.sig`) is
-  not accepted by the client (`UNTRUSTED signature` — a deferred personal
-  apk repository signing question, session 184), and importing the key does
-  not change that — without the flag `apk update` and `apk add` against a
-  personal repository are impossible (exit 2/1 and `no such package`; live
-  probes 192/193, alpine:3.21 and alpine:edge).
-- **Public key:** `GET /repo/<name>/key.asc` (armored OpenPGP).
+  `GET /repo/alice/apk-key` (SPKI-PEM) is copied to
+  `/etc/apk/keys/khrazhevnik.rsa.pub` — the file name must match the
+  `<keyid>` from the member name `.SIGN.RSA.<keyid>`. Installs go WITHOUT
+  `--allow-untrusted`: the client verifies the index signature and installs
+  the package normally (`apk update`, `apk add`, `apk fetch` — exit 0;
+  live probe 195, alpine:3.21 apk-tools 2.14.6 and alpine:edge 3.0.7). A
+  key with a wrong format or name is ignored by apk and yields exactly
+  `UNTRUSTED signature` (the same probe's negative control).
+- **Public key:** `GET /repo/<name>/apk-key` (SPKI-PEM; the same instance
+  key as `GET /repo/<name>/xbps-key`).
 
 ## nix (binary cache)
 

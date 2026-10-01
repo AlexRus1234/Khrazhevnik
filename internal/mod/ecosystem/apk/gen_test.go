@@ -22,12 +22,18 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha1"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
+	"math/big"
 	"os"
 	"path/filepath"
 	"slices"
@@ -497,17 +503,158 @@ func TestGenerateIndexesProgress(t *testing.T) {
 	}
 }
 
-// fakeSigner — port.Signer с детерминированным маркером.
-type fakeSigner struct{}
-
-func (fakeSigner) Sign(_ context.Context, _ io.Reader) (io.Reader, error) {
-	return bytes.NewReader([]byte("cleartext-stub")), nil
+// testRsaSigner — port.RsaSigner поверх настоящего маленького ключа
+// (1024 бита): контракт подписи индекса проверяется настоящей
+// верификацией, а не маркером. mod/sign/rsasha256 тест не тянет
+// (mod→mod запрещён depguard'ом), поэтому повторяет контракт сам —
+// прецедент xbps gen_test.
+type testRsaSigner struct {
+	priv   *rsa.PrivateKey
+	pubPEM []byte
 }
-func (fakeSigner) SignDetached(_ context.Context, _ io.Reader) (io.Reader, error) {
-	return bytes.NewReader([]byte("detached-stub")), nil
-}
-func (fakeSigner) PublicKey() ([]byte, error) { return []byte("pub-stub"), nil }
 
+func newTestRsaSigner(t *testing.T) *testRsaSigner {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey: %v", err)
+	}
+	return &testRsaSigner{
+		priv:   priv,
+		pubPEM: pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}),
+	}
+}
+
+// SignSHA1DigestInfo — подпись индекса apk (сессия 195): sha1 в
+// SHA-1-DigestInfo, PKCS#1 v1.5. Остальные методы интерфейса —
+// заглушки: apk их не зовёт.
+func (s *testRsaSigner) SignSHA1DigestInfo(_ context.Context, digest []byte) ([]byte, error) {
+	if len(digest) != sha1.Size {
+		return nil, fmt.Errorf("дайджест длиной %d, хочу %d", len(digest), sha1.Size)
+	}
+	return rsa.SignPKCS1v15(nil, s.priv, crypto.SHA1, digest)
+}
+
+func (s *testRsaSigner) SignSHA256(context.Context, []byte) ([]byte, error) {
+	return nil, errors.New("apk: SignSHA256 не используется")
+}
+
+func (s *testRsaSigner) SignSHA256SHA1DigestInfo(context.Context, []byte) ([]byte, error) {
+	return nil, errors.New("apk: SignSHA256SHA1DigestInfo не используется")
+}
+
+func (s *testRsaSigner) PublicKeyPEM() ([]byte, error) {
+	out := make([]byte, len(s.pubPEM))
+	copy(out, s.pubPEM)
+	return out, nil
+}
+
+// apkSHA1DigestInfoPrefix — ожидаемая обёртка DigestInfo для SHA-1
+// (OID 1.3.14.3.2.26, октет-строка 20 байт): SEQ 0x21 = algid 11 +
+// заголовок октета 2 + дайджест. Байты сняты с живой подписи ИНДЕКСА
+// Alpine (`openssl pkeyutl -verifyrecover` по .SIGN.RSA индекса
+// edge/main/x86_64 — постамбула 195), а не выведены из stdlib: тест
+// обязан падать, если формат разъедется.
+var apkSHA1DigestInfoPrefix = []byte{0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14}
+
+// splitGzipMembers делит APKINDEX.tar.gz на gzip-члены ровно по границам
+// байтов (apkByteReader — io.ByteReader, gzip.Reader не читает вперёд).
+func splitGzipMembers(t *testing.T, data []byte) [][]byte {
+	t.Helper()
+	br := &apkByteReader{src: bytes.NewReader(data)}
+	var out [][]byte
+	rest := int64(len(data))
+	for rest > 0 {
+		start := br.n
+		zr, err := gzip.NewReader(br)
+		if err != nil {
+			t.Fatalf("gzip.NewReader (член %d): %v", len(out), err)
+		}
+		zr.Multistream(false)
+		if _, err := io.Copy(io.Discard, zr); err != nil {
+			t.Fatalf("чтение члена %d: %v", len(out), err)
+		}
+		if err := zr.Close(); err != nil {
+			t.Fatalf("закрытие члена %d: %v", len(out), err)
+		}
+		out = append(out, data[start:br.n])
+		rest = int64(len(data)) - br.n
+	}
+	return out
+}
+
+// tarFiles возвращает имя → содержимое обычных файлов члена.
+func tarFiles(t *testing.T, gzMember []byte) map[string][]byte {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(gzMember))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+	out := map[string][]byte{}
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return out
+		}
+		if err != nil {
+			t.Fatalf("tar.Next: %v", err)
+		}
+		b, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("tar.ReadAll %s: %v", hdr.Name, err)
+		}
+		out[hdr.Name] = b
+	}
+}
+
+// tarFileNames возвращает имена обычных файлов непрерывного tar-потока.
+func tarFileNames(t *testing.T, rawTar []byte) []string {
+	t.Helper()
+	tr := tar.NewReader(bytes.NewReader(rawTar))
+	var out []string
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return out
+		}
+		if err != nil {
+			t.Fatalf("tar.Next: %v", err)
+		}
+		out = append(out, hdr.Name)
+	}
+}
+
+// verifyRecover повторяет openssl pkeyutl -verifyrecover (сырая
+// RSA-операция публичным ключом) без openssl-вызовов: sig^e mod n даёт
+// EM = 0x01 | 0xFF…FF | 0x00 | DigestInfo (PKCS#1 v1.5), возвращаем
+// ровно DigestInfo — паддинг проверяется по ходу, его порча тоже
+// означает несовпадение.
+func verifyRecover(t *testing.T, pub *rsa.PublicKey, sig []byte) []byte {
+	t.Helper()
+	m := new(big.Int).SetBytes(sig)
+	m.Exp(m, big.NewInt(int64(pub.E)), pub.N)
+	em := m.Bytes()
+	idx := bytes.IndexByte(em, 0x00)
+	if len(em) == 0 || em[0] != 0x01 || idx < 8 {
+		t.Fatalf("EM не PKCS#1 v1.5: %x", em)
+	}
+	for _, b := range em[1:idx] {
+		if b != 0xff {
+			t.Fatalf("EM не PKCS#1 v1.5 (PS не 0xFF): %x", em)
+		}
+	}
+	return em[idx+1:]
+}
+
+// TestGenerateIndexesUnsignedNoSig — без подписчика индекс отдаётся
+// одним gzip-членом с единственным tar-членом APKINDEX: ни
+// сигнатурной секции внутри, ни отдельного .sig-объекта.
 func TestGenerateIndexesUnsignedNoSig(t *testing.T) {
 	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
@@ -519,25 +666,91 @@ func TestGenerateIndexesUnsignedNoSig(t *testing.T) {
 		t.Fatalf("GenerateIndexes: %v", err)
 	}
 	if _, err := storage.Get(context.Background(), "repo/1/apk/x86_64/apkindex.tar.gz.sig"); err == nil {
-		t.Error("без Signer создан apkindex.tar.gz.sig")
+		t.Error("создан detached apkindex.tar.gz.sig (apk его не запрашивает)")
+	}
+	idx := readStorage(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz")
+	members := splitGzipMembers(t, idx)
+	if len(members) != 1 {
+		t.Fatalf("неподписанный индекс = %d gzip-членов, want 1", len(members))
+	}
+	entries := tarFiles(t, members[0])
+	if _, ok := entries["APKINDEX"]; !ok {
+		t.Errorf("нет tar-члена APKINDEX: %v", entries)
+	}
+	for name := range entries {
+		if strings.HasPrefix(name, ".SIGN.") {
+			t.Errorf("неподписанный индекс содержит сигнатурную секцию: %q", name)
+		}
 	}
 }
 
-func TestGenerateIndexesSignedWritesSig(t *testing.T) {
+// TestGenerateIndexesSignedIndexSignature — контракт формата подписи
+// индекса apk (сессия 195), байтовая сверка без openssl:
+//  1. индекс — ровно два gzip-члена, первый tar содержит единственный
+//     член `.SIGN.RSA.khrazhevnik.rsa.pub` (имя = keyid файла
+//     /etc/apk/keys на клиенте);
+//  2. verifyrecover публичным ключом даёт ровно SHA-1-DigestInfo +
+//     sha1 СЖАТЫХ байт второго члена (тело индекса «как файл»);
+//  3. тело остаётся обычным APKINDEX.tar.gz (разжимается в tar с
+//     файлом APKINDEX) — подпись не ломает тело;
+//  4. отдельного .sig-объекта генератор не пишет.
+func TestGenerateIndexesSignedIndexSignature(t *testing.T) {
 	t.Parallel()
 	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
 	putApk(t, storage, repo, "x86_64/foo.apk", pkginfoText)
-	g := &Generator{signer: fakeSigner{}}
+	rsaSigner := newTestRsaSigner(t)
+	g := &Generator{rsa: rsaSigner}
 	rec := &recordingProgress{}
 	if err := g.GenerateIndexes(context.Background(), repo, storage, rec); err != nil {
 		t.Fatalf("GenerateIndexes: %v", err)
 	}
-	sig := readStorage(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz.sig")
-	if string(sig) != "detached-stub" {
-		t.Errorf("apkindex.tar.gz.sig = %q, хочу detached-stub", sig)
+
+	idx := readStorage(t, storage, "repo/1/apk/x86_64/apkindex.tar.gz")
+	members := splitGzipMembers(t, idx)
+	if len(members) != 2 {
+		t.Fatalf("подписанный индекс = %d gzip-членов, want 2", len(members))
 	}
+	sigEntries := tarFiles(t, members[0])
+	wantName := ".SIGN.RSA." + apkKeyID
+	sig, ok := sigEntries[wantName]
+	if !ok || len(sigEntries) != 1 {
+		t.Fatalf("первый член = %v, want единственный %q", keysOf(sigEntries), wantName)
+	}
+	if len(sig) != rsaSigner.priv.Size() {
+		t.Errorf("длина подписи = %d, want %d (модуль ключа)", len(sig), rsaSigner.priv.Size())
+	}
+
+	// 2. verifyrecover: DigestInfo = SHA-1-обёртка + sha1(body).
+	want := append(append([]byte{}, apkSHA1DigestInfoPrefix...), sha1Sum(members[1])...)
+	if got := verifyRecover(t, &rsaSigner.priv.PublicKey, sig); !bytes.Equal(got, want) {
+		t.Errorf("verifyrecover = %x, want %x", got, want)
+	}
+
+	// 3. Тело — обычный APKINDEX.tar.gz.
+	text, err := extractAPKINDEXText(bytes.NewReader(mustGunzip(t, members[1])))
+	if err != nil {
+		t.Fatalf("тело индекса не разбирается: %v", err)
+	}
+	if !strings.Contains(text, "P:apk-example\n") {
+		t.Errorf("в теле индекса нет записи пакета: %q", text)
+	}
+
+	// 3б. Склейка членов — ОДИН непрерывный tar: сигнатурная секция
+	// продолжается телом. Концевые нулевые блоки в первом члене сломали бы
+	// это (парсер apk/gnu tar останавливается на сигнатуре, индекс пуст),
+	// поэтому проверяется не только состав члена, но и непрерывность.
+	names := tarFileNames(t, mustGunzip(t, idx))
+	if want := []string{".SIGN.RSA." + apkKeyID, "APKINDEX"}; !slices.Equal(names, want) {
+		t.Errorf("tar через границу членов = %v, want %v", names, want)
+	}
+
+	// 4. Отдельного detached .sig нет.
+	if _, err := storage.Get(context.Background(), "repo/1/apk/x86_64/apkindex.tar.gz.sig"); err == nil {
+		t.Error("создан detached apkindex.tar.gz.sig (apk его не запрашивает)")
+	}
+
 	phases := map[string]bool{}
 	for _, u := range rec.updates {
 		phases[strings.SplitN(u, "/", 2)[0]] = true
@@ -547,16 +760,71 @@ func TestGenerateIndexesSignedWritesSig(t *testing.T) {
 	}
 }
 
+// TestGenerateIndexesSignedTamperedBodyFailsVerification — страховка
+// контракта: подпись накрывает именно тело индекса, поэтому порча
+// байта тела ломает сверку (иначе тест 2 доказывал бы не то).
+func TestGenerateIndexesSignedTamperedBodyFailsVerification(t *testing.T) {
+	t.Parallel()
+	signer := newTestRsaSigner(t)
+	body, err := buildAPKINDEXTarGz([]byte("P:foo\nV:1.0-r0\n\n"))
+	if err != nil {
+		t.Fatalf("buildAPKINDEXTarGz: %v", err)
+	}
+	sig, err := signer.SignSHA1DigestInfo(context.Background(), sha1Sum(body))
+	if err != nil {
+		t.Fatalf("SignSHA1DigestInfo: %v", err)
+	}
+	tampered := append([]byte{}, body...)
+	tampered[len(tampered)/2] ^= 0xff
+	got := verifyRecover(t, &signer.priv.PublicKey, sig)
+	want := append(append([]byte{}, apkSHA1DigestInfoPrefix...), sha1Sum(tampered)...)
+	if bytes.Equal(got, want) {
+		t.Error("подпись сошлась на испорченном теле — подписывается не тело")
+	}
+}
+
+func keysOf(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func sha1Sum(b []byte) []byte {
+	sum := sha1.Sum(b)
+	return sum[:]
+}
+
+func mustGunzip(t *testing.T, b []byte) []byte {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	defer zr.Close()
+	out, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("gunzip: %v", err)
+	}
+	return out
+}
+
 // errSignFail — синтетическая ошибка подписчика.
 var errSignFail = errors.New("synthetic signer failure")
 
-type failSigner struct{}
+// failRsaSigner — подписчик, падающий на подписи индекса.
+type failRsaSigner struct{ err error }
 
-func (failSigner) Sign(context.Context, io.Reader) (io.Reader, error) { return nil, errSignFail }
-func (failSigner) SignDetached(context.Context, io.Reader) (io.Reader, error) {
-	return nil, errSignFail
+func (f failRsaSigner) SignSHA1DigestInfo(context.Context, []byte) ([]byte, error) {
+	return nil, f.err
 }
-func (failSigner) PublicKey() ([]byte, error) { return nil, nil }
+func (failRsaSigner) SignSHA256(context.Context, []byte) ([]byte, error) { return nil, nil }
+func (failRsaSigner) SignSHA256SHA1DigestInfo(context.Context, []byte) ([]byte, error) {
+	return nil, nil
+}
+func (failRsaSigner) PublicKeyPEM() ([]byte, error) { return nil, nil }
 
 func TestGenerateIndexesSignedSignerErrorFails(t *testing.T) {
 	t.Parallel()
@@ -564,23 +832,26 @@ func TestGenerateIndexesSignedSignerErrorFails(t *testing.T) {
 	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
 	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
 	putApk(t, storage, repo, "x86_64/foo.apk", pkginfoText)
-	g := &Generator{signer: failSigner{}}
+	g := &Generator{rsa: failRsaSigner{err: errSignFail}}
 	err := g.GenerateIndexes(context.Background(), repo, storage, nil)
 	if !errors.Is(err, errSignFail) {
 		t.Fatalf("ожидали errSignFail, got %v", err)
 	}
+	// Индекс не записан: подпись нужна в том же файле, что и тело.
+	if _, err := storage.Get(context.Background(), "repo/1/apk/x86_64/apkindex.tar.gz"); err == nil {
+		t.Error("индекс записан несмотря на сбой подписи")
+	}
 }
 
-func TestSetSigner(t *testing.T) {
+func TestSetRsaSigner(t *testing.T) {
 	t.Parallel()
 	g := &Generator{}
-	if g.signer != nil {
-		t.Fatal("новый Generator уже имеет signer")
+	if g.rsa != nil {
+		t.Fatal("новый Generator уже имеет rsa-подписчик")
 	}
-	s := fakeSigner{}
-	g.SetSigner(s)
-	if g.signer == nil {
-		t.Error("SetSigner не сохранил signer")
+	g.SetRsaSigner(newTestRsaSigner(t))
+	if g.rsa == nil {
+		t.Error("SetRsaSigner не сохранил подписчик")
 	}
 }
 

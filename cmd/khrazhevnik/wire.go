@@ -111,8 +111,9 @@ type App struct {
 	// деградированном режиме: nix narinfo не переподписываются (отдаются
 	// как есть, подписи upstream валидны, если клиент им доверяет).
 	NarSigner port.NarSigner
-	// RsaSigner — xbps .sig2-подписчик (rsasha256, сессия 139). nil в
-	// деградированном режиме: xbps-пакеты личных репо не подписываются.
+	// RsaSigner — xbps .sig2/.sig- и apk-подписчик индекса (rsasha256,
+	// сессии 139/195). nil в деградированном режиме: xbps-пакеты и
+	// apk-индексы личных репо не подписываются.
 	RsaSigner port.RsaSigner
 	// StatsKeeper — фоновый флаш per-eco счётчиков статистики в
 	// cache_stats (сессия 96); nil при stats_flush_interval=0 или
@@ -411,17 +412,18 @@ func wireRetention(cfg config.Config, storage port.Storage, catalog registry.Cat
 
 // wireRepoAdapters собирает RepoAdapter'ы из compile-time реестра по
 // именам известных экосистем. В M3 зарегистрированы apt (сессия 14),
-// rpm-md/pacman/apk/nix (сессия 16); прочие возвращают ошибку при
+// rpm-md/pacman/nix (сессия 16); прочие возвращают ошибку при
 // lookup (registry.RepoAdapter) и пропускаются. signer (если не nil)
 // внедряется в адаптеры, реализующие port.SignerInjector (v1 — apt:
-// InRelease + Release.gpg; rpm-md/pacman/apk: detached индекс-sig);
+// InRelease + Release.gpg; rpm-md/pacman: detached индекс-sig);
 // clock внедряется в адаптеры с метками времени в индексах
 // (port.ClockInjector — apt Release/rpm-md repomd, сессия 24).
 // narSigner (если не nil) внедряется в адаптеры, реализующие
 // port.NarSignerInjector (v1 — nix: переподпись narinfo); rsaSigner
-// (если не nil) — в адаптеры с port.RsaSignerInjector (v1 — xbps:
-// .sig2-подпись пакетов). Возвращает карту name → RepoAdapter для
-// движка publish.
+// (если не nil) — в адаптеры с port.RsaSignerInjector (xbps:
+// .sig2/.sig-подпись пакетов; apk: подпись индекса, сессия 195 —
+// apk ушёл с port.Signer, прежняя detached .sig была несовместима с
+// клиентом). Возвращает карту name → RepoAdapter для движка publish.
 func wireRepoAdapters(signer port.Signer, narSigner port.NarSigner, rsaSigner port.RsaSigner, clock port.Clock) map[string]port.RepoAdapter {
 	out := map[string]port.RepoAdapter{}
 	for _, name := range registry.Ecosystems() {
@@ -506,30 +508,32 @@ func wireNarSigner(cfg config.Config, log *slog.Logger) (port.NarSigner, error) 
 	return signer, nil
 }
 
-// wireRsaSigner собирает xbps .sig2-подписчик из compile-time реестра
-// (rsasha256, сессия 139). Отсутствие регистрации — не фатально:
-// логируем и возвращаем nil (xbps-репо не подписываются). Битый
-// ключевой материал (domain.KeyMaterialError) фатален — старт падает
-// (прецедент wireNarSigner/wireSigner): смена/регенерация xbps-ключа
-// молча инвалидировала бы все ранее подписанные .sig2. Ключ
+// wireRsaSigner собирает xbps .sig2/.sig- и apk-подписчик из compile-time
+// реестра (rsasha256, сессии 139/195). Отсутствие регистрации — не
+// фатально: логируем и возвращаем nil (xbps-пакеты и apk-индексы личных
+// репо не подписываются). Битый ключевой материал
+// (domain.KeyMaterialError) фатален — старт падает (прецедент
+// wireNarSigner/wireSigner): смена/регенерация ключа молча
+// инвалидировала бы все ранее подписанные .sig2 и apk-индексы (клиент
+// apk нашёл бы ключ по keyid, но подпись не сошлась). Ключ
 // генерируется на первом старте в cfg.Signing.KeysDir (файл
 // xbps-rsa.key, 0600), грузится на повторных.
 func wireRsaSigner(cfg config.Config, log *slog.Logger) (port.RsaSigner, error) {
 	factory, err := registry.RsaSigner("rsasha256")
 	if err != nil {
-		log.Error("xbps signing: модуль rsasha256 не слинкован — xbps-репо не подписываются", "err", err)
+		log.Error("RSA signing (xbps/apk): модуль rsasha256 не слинкован — xbps-пакеты и apk-индексы не подписываются", "err", err)
 		return nil, nil
 	}
 	signer, err := factory(cfg.Signing)
 	if err != nil {
 		var km *domain.KeyMaterialError
 		if errors.As(err, &km) {
-			return nil, fmt.Errorf("xbps signing: %w", err)
+			return nil, fmt.Errorf("RSA signing (xbps/apk): %w", err)
 		}
-		log.Error("xbps signing: инициализация подписчика не удалась — xbps-репо не подписываются", "err", err, "keys_dir", cfg.Signing.KeysDir)
+		log.Error("RSA signing (xbps/apk): инициализация подписчика не удалась — xbps-пакеты и apk-индексы не подписываются", "err", err, "keys_dir", cfg.Signing.KeysDir)
 		return nil, nil
 	}
-	log.Info("xbps signing: xbps-rsa-ключ готов", "keys_dir", cfg.Signing.KeysDir)
+	log.Info("RSA signing (xbps/apk): xbps-rsa-ключ готов", "keys_dir", cfg.Signing.KeysDir)
 	return signer, nil
 }
 

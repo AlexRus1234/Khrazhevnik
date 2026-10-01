@@ -91,11 +91,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       (тот же формат репо; ключ через `rpm --import`).
 - [ ] pacman: `pacman -Sy && pacman -S` из личного репо с
       `pacman-key --add key.asc`; `SigLevel = Required DatabaseOptional`.
-- [ ] apk: `apk update --allow-untrusted && apk add --allow-untrusted` из
-      личного репо с ключом в `/etc/apk/keys/`; подпись индекса
-      (`APKINDEX.tar.gz.sig`) клиентом не принимается (`UNTRUSTED
-      signature`, отложено с сессии 184) — без флага установка
-      невозможна.
+- [ ] apk: `apk update && apk add` из личного репо БЕЗ
+      `--allow-untrusted`; ключ `GET /repo/<name>/apk-key` кладётся в
+      `/etc/apk/keys/khrazhevnik.rsa.pub` (имя = keyid из подписи
+      индекса) — подпись индекса клиентом принимается (сессия 195).
 - [ ] nix: `nix-shell -p <pkg>` с `--substituters http://<хражевник>:29202/repo/<name>`
       и `trusted-public-keys = khrazhevnik:<pubkey>` (переподписанные
       narinfo валидируются ключом инстанса; `<pubkey>` —

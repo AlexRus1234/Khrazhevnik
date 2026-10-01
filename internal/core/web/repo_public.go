@@ -291,13 +291,16 @@ func handleRepoNixKey(d Deps) http.HandlerFunc {
 	}
 }
 
-// handleRepoXbpsKey отдаёт публичный RSA-ключ инстанса (SPKI-PEM,
-// сессия 139) для xbps-клиентов: GET /repo/<name>/xbps-key —
-// точка сверки fingerprint при TOFU-импорте ключа из index-meta.
+// handleRepoRSAKey отдаёт публичный RSA-ключ инстанса (SPKI-PEM, сессия
+// 139) двух потребителям: GET /repo/<name>/xbps-key — точка сверки
+// fingerprint при TOFU-импорте ключа xbps из index-meta; GET
+// /repo/<name>/apk-key (сессия 195) — тот же файл для /etc/apk/keys
+// (apk читает ключ PEM_read_bio_PUBKEY и находит его по имени файла,
+// совпадающему с keyid из tar-члена .SIGN.RSA.<keyid> индекса).
 // Ключ один на все репо (v1 KISS), но URL привязан к имени репо:
 // lookup RepoByName → 404 для несуществующих имён. Content-Type
 // text/plain: браузеру человек прочтёт PEM-блок.
-func handleRepoXbpsKey(d Deps) http.HandlerFunc {
+func handleRepoRSAKey(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := chi.URLParam(r, "name")
 		if name == "" {

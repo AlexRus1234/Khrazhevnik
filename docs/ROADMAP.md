@@ -54,10 +54,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 - История клиентских транзакций in-memory — рестарт очищает;
   счётчик кешированных пакетов не убывает — immutable-объекты не
   удаляются до eviction («Дашборд-v2»).
-- Личные apk-репо: установка идёт с `--allow-untrusted` — подпись
-  индекса (`APKINDEX.tar.gz.sig`) клиентом не принимается
-  (`UNTRUSTED signature`); вопрос отложен с сессии 184, обход и его
-  причины — в [func/ru/ecosystems/apk.md](func/ru/ecosystems/apk.md).
+- Личные apk-репо: `.apk` v3 (zstd/raw tar) — генератор пишет `C:` как
+  sha1 всего файла, семантика `C:` у apk-tools 3.x для такой раскладки не
+  проверена (находка сессии 193); подпись индекса закрыта сессией 195 —
+  `apk update`/`apk add` из личного репо идут БЕЗ `--allow-untrusted`.
 
 ## Направления пост-v1
 

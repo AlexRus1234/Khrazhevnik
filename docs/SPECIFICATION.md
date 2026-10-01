@@ -343,6 +343,7 @@ per-repo `signed=false` — не-цели (KISS). Деградация подп�
 | GET   | `/repo/{name}/key.asc`        | —    | 200/404 | Armored публичный ключ инстанса (для `signed-by` в `sources.list`) |
 | GET   | `/repo/{name}/nix-key.asc`    | —    | 200/404 | Публичный nix-ключ, одна строка `name:pubkey-b64` (для `trusted-public-keys`; см. [ecosystems/nix.md](func/ru/ecosystems/nix.md)) |
 | GET   | `/repo/{name}/xbps-key`       | —    | 200/404 | Публичный RSA-ключ инстанса для xbps (SPKI-PEM `PUBLIC KEY`) — сверка fingerprint при TOFU-импорте клиентом; регистрируется только при живом `port.RsaSigner` (сессии 142/139) |
+| GET   | `/repo/{name}/apk-key`        | —    | 200/404 | Тот же публичный RSA-ключ инстанса для apk — кладётся в `/etc/apk/keys/khrazhevnik.rsa.pub` (имя = keyid подписи индекса); регистрируется только при живом `port.RsaSigner` (сессия 195) |
 
 404 — репо с таким именем не существует **или** подписчик не
 инициализирован: роут `/key.asc` регистрируется только при успешной
@@ -622,14 +623,20 @@ stale_served,negative_hits,upstream_errors}_total`,
   `/apk/<remote-name>/<остальной-путь>`; `StorageKey` =
   `cache/apk/<remote-id>/<upstream-path>`. Классификация: `*.apk` —
   immutable (content-addressed по имени+версии); `APKINDEX.tar.gz` и
-  `APKINDEX.json` (задел для v3) и их `.sig` — mutable{TTL 5m}; публичные
+  `APKINDEX.json` (задел для v3) — mutable{TTL 5m}; публичные
   ключи `keys/*` — mutable{TTL 1h}; прочее — conservative mutable{TTL 1m}.
   Streaming-парсер `APKINDEX.tar.gz` (gzip+tar → текст «K:V») —
   `mod/ecosystem/apk/parse.go`, декомпресс-лимит 1GiB (zip-bomb guard);
   переиспользуется зеркалом (сессия 11) для Enumerate: `APKINDEX` →
   записи → поле `F:` (путь к .apk). `Remote.Include` — список архитектур
   (например, `["x86_64", "aarch64"]`); пустой — ошибка (apk не имеет
-  корневого индекса архитектур).
+  корневого индекса архитектур). Личные apk-репо (сессии 192/193/195):
+  раскладка по архитектурам, индекс `<arch>/APKINDEX.tar.gz` подписан
+  ВНУТРИ файла форматом apk — первым gzip-членом tar с `.SIGN.RSA.<keyid>`
+  (RSA PKCS#1 v1.5 над SHA-1-DigestInfo от sha1 СЖАТЫХ байт телесного
+  члена, `port.RsaSigner.SignSHA1DigestInfo`), архив непрерывен через
+  границу членов; клиент берёт ключ ручкой `GET /repo/<name>/apk-key`
+  (SPKI-PEM) и ставит пакеты без `--allow-untrusted`.
 - **nix** (сессия 13) — кеш-прокси nix binary cache (narinfo + nar.xz).
   Путь `/nix/<remote-name>/<остальной-путь>`; `StorageKey` =
   `cache/nix/<remote-id>/<upstream-path>`. Контент адресован — идеальный

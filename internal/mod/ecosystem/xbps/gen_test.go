@@ -22,6 +22,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -101,6 +102,16 @@ func (s *testRsaSigner) SignSHA256SHA1DigestInfo(_ context.Context, digest []byt
 	}
 	digestInfo := append([]byte(testSHA1DigestInfoPrefix), digest...)
 	return s.priv.Sign(nil, digestInfo, crypto.Hash(0))
+}
+
+// SignSHA1DigestInfo — контракт apk-подписи индекса (сессия 195):
+// 20-байтовый sha1 в SHA-1-DigestInfo. В xbps-репо не используется,
+// но интерфейс обязан сходиться.
+func (s *testRsaSigner) SignSHA1DigestInfo(_ context.Context, digest []byte) ([]byte, error) {
+	if len(digest) != sha1.Size {
+		return nil, fmt.Errorf("дайджест длиной %d, хочу %d", len(digest), sha1.Size)
+	}
+	return rsa.SignPKCS1v15(nil, s.priv, crypto.SHA1, digest)
 }
 
 func (s *testRsaSigner) PublicKeyPEM() ([]byte, error) {

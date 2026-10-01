@@ -200,21 +200,26 @@ per-repo (поле `retention` в `POST`/`PATCH /api/v1/repos/{id}` или па�
   пути (в том числе корень репо) — 400.
 - **Индексы (reindex):** по одному на архитектуру —
   `<arch>/APKINDEX.tar.gz` (gzip+tar с файлом `APKINDEX` в формате
-  «K:V» — C/P/V/A/F/...) + `<arch>/APKINDEX.tar.gz.sig` (detached, ключом
-  инстанса OpenPGP); `noarch`-записи входят в индекс каждой архитектуры.
-  Индекс в корне репо не генерируется.
+  «K:V» — C/P/V/A/F/...) с подписью ВНУТРИ файла: первым gzip-членом tar
+  с единственным членом `.SIGN.RSA.khrazhevnik.rsa.pub` (RSA PKCS#1 v1.5
+  над SHA-1-DigestInfo от sha1 СЖАТЫХ байт телесного члена), архив один
+  и непрерывный через границу членов; отдельного `.sig` нет — apk его не
+  запрашивает (на CDN Alpine он тоже 404); `noarch`-записи входят в
+  индекс каждой архитектуры. Индекс в корне репо не генерируется.
 - **Клиент:** `/etc/apk/repositories`:
   ```
   http://<хражевник>:29202/repo/alice
   ```
-  Архитектуру клиент подставляет сам. Ключ `GET /repo/alice/key.asc`
-  копируется в `/etc/apk/keys/`. Установка идёт с `--allow-untrusted`:
-  подпись индекса (`APKINDEX.tar.gz.sig`) клиентом не принимается
-  (`UNTRUSTED signature` — отложенный вопрос подписи личных apk-репо,
-  сессия 184), и импорт ключа этого не меняет — без флага `apk update` и
-  `apk add` из личного репо невозможны (exit 2/1 и
-  `no such package`; живые пробы 192/193, alpine:3.21 и alpine:edge).
-- **Публичный ключ:** `GET /repo/<name>/key.asc` (armored OpenPGP).
+  Архитектуру клиент подставляет сам. Ключ `GET /repo/alice/apk-key`
+  (SPKI-PEM) копируется в `/etc/apk/keys/khrazhevnik.rsa.pub` — имя файла
+  обязано совпадать с `<keyid>` из имени члена `.SIGN.RSA.<keyid>`.
+  Установка идёт БЕЗ `--allow-untrusted`: клиент проверяет подпись
+  индекса и ставит пакет как обычно (`apk update`, `apk add`, `apk fetch`
+  — exit 0; живая проба 195, alpine:3.21 apk-tools 2.14.6 и alpine:edge
+  3.0.7). Ключ с неверным форматом или именем apk игнорирует и даёт ровно
+  `UNTRUSTED signature` (негативный контроль той же пробы).
+- **Публичный ключ:** `GET /repo/<name>/apk-key` (SPKI-PEM; тот же ключ
+  инстанса, что `GET /repo/<name>/xbps-key`).
 
 ## nix (binary cache)
 

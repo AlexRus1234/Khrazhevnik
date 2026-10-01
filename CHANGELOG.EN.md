@@ -35,6 +35,29 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ### Fixed
 
+- **Personal repos (apk):** the index signature was not accepted by the
+  client — `apk update` against a personal repository without
+  `--allow-untrusted` printed
+  `WARNING: updating and opening <repo>: UNTRUSTED signature` (exit 2 in
+  apk-tools 2.14.6 / 1 in 3.0.7), so the flag was mandatory. Cause: the
+  generator wrote a detached `APKINDEX.tar.gz.sig` signed with the armored
+  OpenPGP key, and apk-tools never requests such a file at all (on the
+  Alpine CDN `APKINDEX.tar.gz.sig` is a 404: the signature sits as the
+  first tar member INSIDE `APKINDEX.tar.gz`). The generator now signs the
+  index in the apk format: the first gzip member is a tar with the single
+  member `.SIGN.RSA.khrazhevnik.rsa.pub` (RSA PKCS#1 v1.5 over the SHA-1
+  DigestInfo of the sha1 of the COMPRESSED bytes of the second, body member
+  — byte-for-byte as in the Alpine reference, checked with
+  `openssl pkeyutl -verifyrecover` on the edge/main/x86_64 index), the
+  second is the index itself; the trailing zero blocks of tar stay in the
+  body only — the archive must be ONE continuous tar, otherwise the parser
+  sees just the signature and the index is empty. The client key is served
+  by the new `GET /repo/<name>/apk-key` endpoint (SPKI-PEM, the same value
+  as `xbps-key`); the file goes into `/etc/apk/keys/` under a name equal to
+  the keyid from the member name. Live probe (2026-10-01, alpine:3.21
+  apk-tools 2.14.6 and alpine:edge 3.0.7): `apk update`, `apk add tree`,
+  `apk fetch` — exit 0 WITHOUT the flag; the same client without the
+  imported key yields exactly `UNTRUSTED signature` (negative control).
 - **Personal repos (apk):** the APKINDEX entry's `C:` field was computed
   over the WHOLE `.apk`, while apk-tools reads it as the sha1 of the
   COMPRESSED bytes of the control section (`Q1` + base64, the gzip member

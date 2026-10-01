@@ -20,7 +20,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 URL-префикс — `apk`. Пакеты content-addressed по имени+версии —
 immutable-кеш навсегда; `APKINDEX.tar.gz` ревалидируется коротким TTL.
-Метаданные upstream отдаются побайтово — подписи `.sig` валидны.
+Метаданные upstream отдаются побайтово — подписи upstream валидны.
 
 ## Remote
 
@@ -48,29 +48,48 @@ http://<хражевник>:29202/apk/alpine/v3.21/community
 пути (в том числе корень репо) — `400 validation_error`. Reindex пишет по
 индексу на архитектуру — `<архитектура>/APKINDEX.tar.gz` (gzip+tar с
 файлом `APKINDEX` в формате «K:V»; поле `F:` — фактический путь пакета от
-корня репо) и detached-подпись `<архитектура>/APKINDEX.tar.gz.sig` ключом
-инстанса. `noarch`-записи входят в индекс КАЖДОЙ архитектуры (клиент
+корня репо). `noarch`-записи входят в индекс КАЖДОЙ архитектуры (клиент
 читает индекс только своей и файл тянет из `/noarch/`). Индекс в корне
 репо не генерируется (ранее записанный не удаляется — чистится руками).
-Клиент (живая проба 192/193 — alpine:3.21 apk-tools 2.14.6 и alpine:edge
-3.0.7):
+
+Индекс подписывается ключом инстанса ВНУТРИ файла — ровно как у Alpine:
+первым gzip-членом идёт tar с единственным членом
+`.SIGN.RSA.khrazhevnik.rsa.pub` (сырые байты подписи RSA PKCS#1 v1.5
+над SHA-1-DigestInfo от sha1 СЖАТЫХ байт второго, телесного члена
+`APKINDEX.tar.gz`), второй член — сам индекс. Архив при этом ОДИН и
+непрерывный через границу членов (концевые нулевые блоки tar — только в
+теле), поэтому и наш парсер, и apk видят оба члена. Отдельного
+`APKINDEX.tar.gz.sig` больше нет: apk его не запрашивает — на CDN Alpine
+он тоже отдаёт 404, подпись там всегда лежит первым членом внутри
+`APKINDEX.tar.gz`. Формат сверен побайтово эталоном Alpine
+(`openssl pkeyutl -verifyrecover` по члену `.SIGN.RSA.…` индекса
+edge/main/x86_64: DigestInfo = OID `sha1`
+(`3021300906052b0e03021a05000414`) + 20 байт дайджеста; дайджест совпал с
+sha1 СЖАТОГО хвоста от границы первого члена и НЕ совпал с sha1
+разжатого tar). `--allow-untrusted` не нужен: клиент проверяет подпись и
+ставит пакет как обычно (живая проба 195 — alpine:3.21 apk-tools 2.14.6 и
+alpine:edge 3.0.7, `apk update`/`apk add`/`apk fetch` — exit 0 без флага).
+
+Ключ клиенту — `GET /repo/<name>/apk-key` (SPKI-PEM, тот же ключ инстанса,
+что и `xbps-key`). Имя файла в `/etc/apk/keys/` обязано совпадать с
+`<keyid>` из имени tar-члена (`.SIGN.<алгоритм>.<keyid>` — apk считает
+keyid именно именем файла): у нас это `khrazhevnik.rsa.pub`. Ошибка в
+формате или имени файла не диагностируется иначе, чем ровно
+`WARNING: updating and opening <repo>: UNTRUSTED signature`. Клиент (живая
+проба 195):
 
 ```sh
-curl -sO http://<хражевник>:29202/repo/<name>/key.asc
-cp key.asc /etc/apk/keys/<name>.pem    # apk принимает ключи в /etc/apk/keys
+curl -sO http://<хражевник>:29202/repo/<name>/apk-key
+cp apk-key /etc/apk/keys/khrazhevnik.rsa.pub   # имя = keyid из .SIGN.RSA.<keyid>
 echo 'http://<хражевник>:29202/repo/<name>' >> /etc/apk/repositories
-apk update --allow-untrusted           # exit 0
-apk add --allow-untrusted <пакет>      # exit 0 — пакет ставится и запускается
+apk update                            # exit 0
+apk add <пакет>                       # exit 0 — пакет ставится и запускается
 ```
 
 Архитектуру в строке `/etc/apk/repositories` указывать не нужно — клиент
 подставляет свою сам и запрашивает `<repo-url>/<арх>/APKINDEX.tar.gz`.
-`--allow-untrusted` обязателен: подпись индекса (`APKINDEX.tar.gz.sig`)
-клиентом не принимается (`UNTRUSTED signature` — отложенный вопрос подписи
-личных apk-репо, сессия 184), и импорт `key.asc` этого не меняет. Без
-флага установка невозможна: `apk update` — exit 2 (2.14.6) / 1 (3.0.7),
-`apk add` — `unable to select packages: no such package` (репо недоступно).
-Поле `C:` записи — `Q1` + base64 от sha1 СЖАТЫХ байт control-секции `.apk`
+Граница: правило верно для индексов, которые пишет reindex; апстримные
+индексы кеш-прокси отдаёт побайтово со своими подписями. Поле `C:` записи — `Q1` + base64 от sha1 СЖАТЫХ байт control-секции `.apk`
 (gzip-члена с `./.PKGINFO`), ровно как считает apk-tools: генерировать
 иначе нельзя — клиент отвергает пакет на сверке (`BAD signature` в 2.x /
 `v2 package integrity error` в 3.x). Инвариант проверен живьём на реальном
@@ -88,6 +107,6 @@ APKINDEX) и установкой `apk add` в alpine:3.21 и alpine:edge. `S:` 
 | Путь upstream                        | Класс    | TTL      |
 |--------------------------------------|----------|----------|
 | `*.apk`                              | immutable| навсегда |
-| `APKINDEX.tar.gz`, `APKINDEX.json` (+`.sig`) | mutable | 5m |
+| `APKINDEX.tar.gz`, `APKINDEX.json`     | mutable | 5m |
 | `keys/*` (публичные ключи)           | mutable  | 1h       |
 | прочее                               | mutable  | 1m       |

@@ -44,6 +44,27 @@ major.
 
 ### Исправлено
 
+- **Личные репо (apk):** подпись индекса не принималась клиентом —
+  `apk update` из личного репо без `--allow-untrusted` давал
+  `WARNING: updating and opening <repo>: UNTRUSTED signature` (exit 2 в
+  apk-tools 2.14.6 / 1 в 3.0.7), то есть флаг был обязателен. Причина:
+  генератор писал detached-подпись `APKINDEX.tar.gz.sig` armored-ключом
+  OpenPGP, а apk-tools такой файл не запрашивает вовсе (на CDN Alpine
+  `APKINDEX.tar.gz.sig` — 404: подпись там лежит первым tar-членом ВНУТРИ
+  `APKINDEX.tar.gz`). Генератор подписывает индекс форматом apk: первым
+  gzip-членом идёт tar с единственным членом
+  `.SIGN.RSA.khrazhevnik.rsa.pub` (RSA PKCS#1 v1.5 над SHA-1-DigestInfo от
+  sha1 СЖАТЫХ байт второго, телесного члена — байт-в-байт как в эталоне
+  Alpine, сверено `openssl pkeyutl -verifyrecover` по индексу
+  edge/main/x86_64), вторым — сам индекс; концевые нулевые блоки tar
+  остаются только в теле — архив обязан быть ОДНИМ непрерывным, иначе
+  парсер видит лишь сигнатуру и индекс пуст. Ключ клиенту отдаёт новая
+  ручка `GET /repo/<name>/apk-key` (SPKI-PEM, то же значение, что
+  `xbps-key`), файл кладётся в `/etc/apk/keys/` под именем, равным keyid
+  из имени члена. Живая проба (2026-10-01, alpine:3.21 apk-tools 2.14.6 и
+  alpine:edge 3.0.7): `apk update`, `apk add tree`, `apk fetch` — exit 0
+  БЕЗ флага; тот же клиент без импортированного ключа даёт ровно
+  `UNTRUSTED signature` (негативный контроль).
 - **Личные репо (apk):** поле `C:` записи APKINDEX считалось по ВСЕМУ
   `.apk`, тогда как apk-tools понимает под ним sha1 СЖАТЫХ байт
   control-секции (`Q1` + base64, gzip-член с `./.PKGINFO`) — установка
