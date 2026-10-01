@@ -73,7 +73,17 @@ is forbidden. Reindex creates `<arch>-repodata` (zstd level 9 + pax-tar:
 every arch group, and a `.sig2` is emitted for each package with the
 instance key; the public key is embedded in `index-meta.plist`
 (base64 PEM). A package whose props entry does not match its filename
-fails the reindex task with an honest error. Client:
+fails the reindex task with an honest error.
+
+`<arch>-repodata` holds at most one entry per `PkgName`: of several
+versions of one package the newest stays in `index.plist` (version order
+follows the client, `xbps_cmpver`: revision `_N` is compared after the
+version, `alpha`/`beta`/`pre`/`rc`/`pl` are modifiers, `~` is a skipped
+byte), the others stay in storage and are protected by retention/pins —
+upstream `xbps-rindex` behaves the same way. Otherwise the client
+(proplib) silently keeps the last dictionary entry with that key, and the
+winner is decided by the lexical order of storage keys rather than by
+version order. Client:
 
 ```sh
 # TOFU key import: on first access xbps-install asks for the

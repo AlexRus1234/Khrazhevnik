@@ -48,6 +48,19 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   `internal/mod/ecosystem/pacman/vercmp.go`); older versions stay in
   storage and are protected by retention/pins. The invariant is
   documented in `docs/func/EN/personal-repos.md`.
+- **Personal repos (xbps):** `<arch>-repodata` got one entry per `.xbps` —
+  two identical `<key>PkgName</key>` keys in one `index.plist`
+  dictionary (an invalid plist), and the winning version was decided by
+  the lexical order of storage keys rather than by version order: a live
+  `xbps-query`/`xbps-install` run against a repo holding
+  `lxc-loc-7.0.10_1` and `lxc-loc-7.0.9_1` showed the OLDER `7.0.9_1`
+  (the client silently keeps the last dictionary entry with that key).
+  The index now holds at most one entry per `PkgName` — the newest by the
+  xbps version comparator
+  (`internal/mod/ecosystem/xbps/vercmp.go`, a port of the client's
+  `xbps_cmpver`/dewey); older versions stay in storage and are protected
+  by retention/pins. The invariant is documented in
+  `docs/func/EN/ecosystems/xbps.md`.
 
 ## [1.3.1] — 2026-09-30
 

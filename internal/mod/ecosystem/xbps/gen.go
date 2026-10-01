@@ -203,8 +203,17 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 		return err
 	}
 
+	// Фаза 2.5: дедуп по имени пакета — в index.plist не более одной записи
+	// на PkgName (детали и «почему» — в dedupeRecords). Storage не чистится:
+	// несколько версий одного пакета — штатное состояние (retention/пины),
+	// поэтому фаза 4 подписывает ВСЕ найденные пакеты, а не только те, что
+	// остались в индексе: файл лежит в storage, и подпись к нему нужна.
+	before := len(records)
+	indexRecords := dedupeRecords(records, p)
+	p.Log(fmt.Sprintf("xbps.gen: дедуп по имени: отброшено %d из %d записей", before-len(indexRecords), before))
+
 	// Фаза 3: per-arch repodata.
-	groups := groupByArch(records)
+	groups := groupByArch(indexRecords)
 	archs := sortedArchs(groups)
 	p.Update("index", repo.Name, 0, int64(len(archs)))
 	for i, arch := range archs {
@@ -308,6 +317,45 @@ func readPackage(ctx context.Context, storage port.Storage, key string) (pkgReco
 		}
 	}
 	return pkgRecord{key: key, props: props, digest: h.Sum(nil), size: counter.n}, nil
+}
+
+// dedupeRecords оставляет по одной записи на PkgName: из нескольких версий
+// в index.plist попадает новейшая по CompareXbpsVer, прочие отбрасываются —
+// но остаются в storage (retention/пины) и подписываются как обычно.
+//
+// Почему: index.plist — словарь pkgname → поля, и клиент (proplib/libxbps)
+// вставляет записи по ключу: вторая запись с тем же именем молча перекрывает
+// первую, а какую именно версию он в итоге видит — решает порядок ключей в
+// XML, то есть лексический порядок ключей storage, а не порядок версий.
+// Живая проба 2026-10-01: репо с `lxc-loc-7.0.9_1` и `lxc-loc-7.0.10_1`
+// клиент показал как `7.0.9_1` (`xbps-query -R`), то есть СТАРУЮ версию, и
+// транзакция пошла ставить именно её. Эталон upstream (`xbps-rindex`,
+// bin/xbps-rindex/index-add.c) сравнивает версии через xbps_cmpver и держит
+// в индексе ровно одну запись на имя — повторяем его порядок.
+//
+// Иммутабельность: входной срез не правится, собирается новый. Порядок
+// записей (и, значит, лог) детерминирован: вход отсортирован по ключам
+// storage (collectPackages), выбор — функцией сравнения, а не map.
+func dedupeRecords(records []pkgRecord, p port.RepoProgress) []pkgRecord {
+	out := make([]pkgRecord, 0, len(records))
+	byName := make(map[string]int, len(records))
+	for _, rec := range records {
+		name := rec.props.PkgName
+		idx, seen := byName[name]
+		if !seen {
+			byName[name] = len(out)
+			out = append(out, rec)
+			continue
+		}
+		kept := out[idx]
+		if CompareXbpsVer(rec.props.PkgVer, kept.props.PkgVer) > 0 {
+			out[idx] = rec
+			p.Log(fmt.Sprintf("xbps.gen: дедуп: %s: %s → %s", name, kept.props.PkgVer, rec.props.PkgVer))
+			continue
+		}
+		p.Log(fmt.Sprintf("xbps.gen: дедуп: %s: отброшена %s (в индексе %s)", name, rec.props.PkgVer, kept.props.PkgVer))
+	}
+	return out
 }
 
 // groupByArch раскладывает пакеты по нативным архитектурам; noarch

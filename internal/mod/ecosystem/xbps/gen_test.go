@@ -354,6 +354,160 @@ func TestGenerateIndexesIdempotent(t *testing.T) {
 	}
 }
 
+// TestDedupeRecordsKeepsNewest — прямой контракт дедупа: на имя остаётся одна
+// запись (новейшая по CompareXbpsVer), входной срез не мутируется, выбор не
+// зависит от расположения записей, а отброшенная попадает в лог.
+func TestDedupeRecordsKeepsNewest(t *testing.T) {
+	t.Parallel()
+	rec := func(pkgname, pkgver string) pkgRecord {
+		return pkgRecord{key: pkgver + ".x86_64.xbps", props: Props{PkgName: pkgname, PkgVer: pkgver}}
+	}
+	cases := []struct {
+		name    string
+		in      []pkgRecord
+		want    string // что остаётся в прямом порядке входа
+		wantRev string // что остаётся в обратном порядке
+		dropped int
+	}{
+		{
+			name:    "новейшая в середине",
+			in:      []pkgRecord{rec("foo", "foo-1.0_1"), rec("foo", "foo-1.0_10"), rec("foo", "foo-1.0_2")},
+			want:    "foo-1.0_10",
+			wantRev: "foo-1.0_10",
+			dropped: 2,
+		},
+		{
+			// Проба 188: лексический порядок ключей storage против порядка
+			// версий — новейшая идёт первой, значит старая должна быть
+			// отброшена, а не перезаписана.
+			name:    "лексический порядок против версий",
+			in:      []pkgRecord{rec("lxc-loc", "lxc-loc-7.0.10_1"), rec("lxc-loc", "lxc-loc-7.0.9_1")},
+			want:    "lxc-loc-7.0.10_1",
+			wantRev: "lxc-loc-7.0.10_1",
+			dropped: 1,
+		},
+		{
+			// Эквивалентные версии (1.0 == 1.0.0 по dewey): остаётся первая
+			// по входу — так же ведёт себя reindex (детерминизм важнее).
+			name:    "эквивалентные версии",
+			in:      []pkgRecord{rec("foo", "foo-1.0"), rec("foo", "foo-1.0.0")},
+			want:    "foo-1.0",
+			wantRev: "foo-1.0.0",
+			dropped: 1,
+		},
+		{
+			name:    "одна запись",
+			in:      []pkgRecord{rec("foo", "foo-1.0_1")},
+			want:    "foo-1.0_1",
+			wantRev: "foo-1.0_1",
+			dropped: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			in := append([]pkgRecord(nil), tc.in...)
+			p := &recordingProgress{}
+			got := dedupeRecords(in, p)
+			if len(got) != 1 {
+				t.Fatalf("записей %d, хочу 1", len(got))
+			}
+			if got[0].props.PkgVer != tc.want {
+				t.Errorf("осталась %q, хочу %q", got[0].props.PkgVer, tc.want)
+			}
+			if len(p.logs) != tc.dropped {
+				t.Errorf("строк лога %d, хочу %d: %v", len(p.logs), tc.dropped, p.logs)
+			}
+			if len(in) != len(tc.in) {
+				t.Fatalf("входной срез изменён: %d записей вместо %d", len(in), len(tc.in))
+			}
+			for i := range tc.in {
+				if in[i].key != tc.in[i].key {
+					t.Fatalf("входной срез изменён: [%d] = %q, был %q", i, in[i].key, tc.in[i].key)
+				}
+			}
+			rev := make([]pkgRecord, 0, len(tc.in))
+			for i := len(tc.in) - 1; i >= 0; i-- {
+				rev = append(rev, tc.in[i])
+			}
+			gotRev := dedupeRecords(rev, &recordingProgress{})
+			if len(gotRev) != 1 {
+				t.Fatalf("обратный вход: записей %d, хочу 1", len(gotRev))
+			}
+			if gotRev[0].props.PkgVer != tc.wantRev {
+				t.Errorf("обратный вход: осталась %q, хочу %q", gotRev[0].props.PkgVer, tc.wantRev)
+			}
+		})
+	}
+}
+
+// TestGenerateIndexesDedupByName — проба 188 в миниатюре, критерий приёмки
+// сессии: два `.xbps` одного PkgName в storage → в index.plist (roundtrip
+// «генератор → ParseIndexPlist») ровно ОДНА запись на имя, и это новейшая
+// версия; отброшенная остаётся в storage и подписана.
+//
+// Версии взяты из живой пробы: лексический порядок ключей storage
+// (`lxc-loc-7.0.10_1.x86_64.xbps` < `lxc-loc-7.0.9_1.x86_64.xbps`)
+// противоречит порядку версий, и живой клиент без дедупа показывал СТАРУЮ
+// `7.0.9_1`. Вторая пара проверяет обратный ход: новейшая запись приходит
+// последней, дедуп обязан её ЗАМЕНИТЬ.
+func TestGenerateIndexesDedupByName(t *testing.T) {
+	storage, repo := newRepo(t)
+	oldLxc := putXbps(t, storage, repo, "lxc-loc-7.0.9_1.x86_64.xbps", miniProps("lxc-loc", "lxc-loc-7.0.9_1", "x86_64"))
+	newLxc := putXbps(t, storage, repo, "lxc-loc-7.0.10_1.x86_64.xbps", miniProps("lxc-loc", "lxc-loc-7.0.10_1", "x86_64"))
+	putXbps(t, storage, repo, "foo-1.0_1.aarch64.xbps", miniProps("foo", "foo-1.0_1", "aarch64"))
+	newFoo := putXbps(t, storage, repo, "foo-1.0_2.aarch64.xbps", miniProps("foo", "foo-1.0_2", "aarch64"))
+
+	rec := &recordingProgress{}
+	g := &Generator{}
+	g.SetRsaSigner(newTestRsaSigner(t))
+	if err := g.GenerateIndexes(context.Background(), repo, storage, rec); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+
+	// x86_64: только lxc-loc, только новейшая версия.
+	x86 := readIndex(t, storage, "repo/1/xbps/x86_64-repodata")
+	if len(x86) != 1 {
+		t.Fatalf("x86_64: записей %d, хочу 1 (%v)", len(x86), x86)
+	}
+	if x86[0].PkgName != "lxc-loc" || x86[0].PkgVer != "lxc-loc-7.0.10_1" {
+		t.Errorf("x86_64: осталась %q/%q, хочу lxc-loc-7.0.10_1", x86[0].PkgName, x86[0].PkgVer)
+	}
+	if want := fmt.Sprintf("%x", sha256.Sum256(newLxc)); x86[0].FilenameSHA256 != want {
+		t.Errorf("filename-sha256 = %q, хочу дайджест новейшего пакета %q", x86[0].FilenameSHA256, want)
+	}
+	if x86[0].FilenameSize != int64(len(newLxc)) {
+		t.Errorf("filename-size = %d, хочу %d", x86[0].FilenameSize, len(newLxc))
+	}
+
+	// aarch64 — своя пара версий, дедуп по имени, а не по архитектуре.
+	aarch := readIndex(t, storage, "repo/1/xbps/aarch64-repodata")
+	if len(aarch) != 1 || aarch[0].PkgVer != "foo-1.0_2" {
+		t.Fatalf("aarch64: %v, хочу одну запись foo-1.0_2", aarch)
+	}
+	if want := fmt.Sprintf("%x", sha256.Sum256(newFoo)); aarch[0].FilenameSHA256 != want {
+		t.Errorf("aarch64: filename-sha256 = %q, хочу %q", aarch[0].FilenameSHA256, want)
+	}
+
+	// Storage не чистится: старая версия и её .sig2 на месте.
+	if got := readKey(t, storage, "repo/1/xbps/lxc-loc-7.0.9_1.x86_64.xbps"); !bytes.Equal(got, oldLxc) {
+		t.Error("старый пакет изменён или удалён из storage")
+	}
+	readKey(t, storage, "repo/1/xbps/lxc-loc-7.0.9_1.x86_64.xbps.sig2")
+
+	// Лог: и отброс, и замена, и итог фазы.
+	logs := strings.Join(rec.logs, "\n")
+	for _, want := range []string{
+		"дедуп по имени: отброшено 2 из 4 записей",
+		"дедуп: lxc-loc: отброшена lxc-loc-7.0.9_1 (в индексе lxc-loc-7.0.10_1)",
+		"дедуп: foo: foo-1.0_1 → foo-1.0_2",
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("в логе нет %q:\n%s", want, logs)
+		}
+	}
+}
+
 // TestGenerateIndexesFilenameMismatch — имя файла ≠ pkgver.arch.xbps:
 // честная ValidationError задачи с именем файла.
 func TestGenerateIndexesFilenameMismatch(t *testing.T) {

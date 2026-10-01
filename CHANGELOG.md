@@ -56,6 +56,17 @@ major.
   `internal/mod/ecosystem/pacman/vercmp.go`); старые версии остаются в
   storage и защищаются retention/пинами. Инвариант — в
   `docs/func/ru/personal-repos.md`.
+- **Личные репо (xbps):** в `<arch>-repodata` попадала запись на КАЖДЫЙ
+  `.xbps` — два одинаковых ключа `<key>PkgName</key>` в одном словаре
+  `index.plist` (невалидный plist), а какая версия победит, решал
+  лексический порядок ключей storage, а не порядок версий: живая проба
+  `xbps-query`/`xbps-install` на репо с `lxc-loc-7.0.10_1` и
+  `lxc-loc-7.0.9_1` показала СТАРУЮ `7.0.9_1` (клиент молча оставляет
+  последнюю запись словаря с этим ключом). Теперь в индекс уходит не
+  более одной записи на `PkgName` — новейшая по компаратору xbps-версий
+  (`internal/mod/ecosystem/xbps/vercmp.go`, порт клиентского
+  `xbps_cmpver`/dewey); старые версии остаются в storage и защищаются
+  retention/пинами. Инвариант — в `docs/func/ru/ecosystems/xbps.md`.
 
 ## [1.3.1] — 2026-09-30
 
