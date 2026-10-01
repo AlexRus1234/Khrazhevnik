@@ -1212,6 +1212,9 @@ type fakeRsaKeySigner struct{}
 func (fakeRsaKeySigner) SignSHA256(context.Context, []byte) ([]byte, error) {
 	return nil, errors.New("not used in /xbps-key")
 }
+func (fakeRsaKeySigner) SignSHA256SHA1DigestInfo(context.Context, []byte) ([]byte, error) {
+	return nil, errors.New("not used in /xbps-key")
+}
 func (fakeRsaKeySigner) PublicKeyPEM() ([]byte, error) {
 	return []byte("-----BEGIN PUBLIC KEY-----\nfake\n-----END PUBLIC KEY-----\n"), nil
 }

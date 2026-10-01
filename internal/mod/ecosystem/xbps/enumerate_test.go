@@ -146,6 +146,9 @@ func TestEnumerateXbpsSingleArch(t *testing.T) {
 		"/0ad-0.27.1_6.x86_64.xbps.sig2",
 		"/libstdc++-14.2.1_1~rc1.x86_64.xbps.sig2",
 		"/python3-pip-24.2_1.noarch.xbps.sig2",
+		"/0ad-0.27.1_6.x86_64.xbps.sig",
+		"/libstdc++-14.2.1_1~rc1.x86_64.xbps.sig",
+		"/python3-pip-24.2_1.noarch.xbps.sig",
 	}
 	assertPathSet(t, got, want)
 }
@@ -163,6 +166,9 @@ func TestEnumerateXbpsMultiArchNoarchDedup(t *testing.T) {
 	if n := countPath(got, "/python3-pip-24.2_1.noarch.xbps.sig2"); n != 1 {
 		t.Errorf("noarch .sig2 встречается %d раз, хочу 1", n)
 	}
+	if n := countPath(got, "/python3-pip-24.2_1.noarch.xbps.sig"); n != 1 {
+		t.Errorf("noarch .sig встречается %d раз, хочу 1", n)
+	}
 	for _, p := range []string{
 		"/0ad-0.27.1_6.x86_64.xbps",
 		"/Mustache-4.1_1.aarch64.xbps",
@@ -173,6 +179,9 @@ func TestEnumerateXbpsMultiArchNoarchDedup(t *testing.T) {
 	}
 }
 
+// TestEnumerateXbpsPackageSigPairs — у каждого пакета в выдаче ровно две
+// подписи (`.sig2` штатная и легаси `.sig`), и каждая подпись указывает
+// на пакет, который тоже есть в выдаче.
 func TestEnumerateXbpsPackageSigPairs(t *testing.T) {
 	a := newResolveAdapter(t, enumRemote("x86_64"))
 	got, err := a.Enumerate(context.Background(), enumRemote("x86_64"), enumMeta(t))
@@ -184,7 +193,10 @@ func TestEnumerateXbpsPackageSigPairs(t *testing.T) {
 		set[p] = struct{}{}
 	}
 	for p := range set {
-		base, ok := strings.CutSuffix(p, ".sig2")
+		base, ok := strings.CutSuffix(p, sig2Suffix)
+		if !ok {
+			base, ok = strings.CutSuffix(p, sigSuffix)
+		}
 		switch {
 		case ok:
 			if !strings.HasSuffix(base, ".xbps") {
@@ -194,11 +206,13 @@ func TestEnumerateXbpsPackageSigPairs(t *testing.T) {
 				t.Errorf("подпись %q без пакета %q", p, base)
 			}
 		case strings.HasSuffix(p, ".xbps"):
-			if _, ok := set[p+".sig2"]; !ok {
-				t.Errorf("пакет %q без подписи %q", p, p+".sig2")
+			for _, suffix := range []string{sig2Suffix, sigSuffix} {
+				if _, ok := set[p+suffix]; !ok {
+					t.Errorf("пакет %q без подписи %q", p, p+suffix)
+				}
 			}
 		default:
-			t.Errorf("путь %q не пакет и не .sig2", p)
+			t.Errorf("путь %q не пакет и не подпись", p)
 		}
 	}
 }
@@ -242,11 +256,12 @@ func TestResolveXbpsChecksumsAfterEnumerate(t *testing.T) {
 		t.Fatalf("Checksum = %+v, хочу sha256 %s", target.Checksum, wantHex)
 	}
 
-	// битый/отсутствующий sha256 и `.sig2` — чексуммы нет (деградация).
+	// битый/отсутствующий sha256 и подписи — чексуммы нет (деградация).
 	for _, p := range []string{
 		"/xbps/void/libstdc++-14.2.1_1~rc1.x86_64.xbps",
 		"/xbps/void/python3-pip-24.2_1.noarch.xbps",
 		"/xbps/void/0ad-0.27.1_6.x86_64.xbps.sig2",
+		"/xbps/void/0ad-0.27.1_6.x86_64.xbps.sig",
 	} {
 		target, ok = a.Resolve(p)
 		if !ok {

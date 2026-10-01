@@ -25,6 +25,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"math/big"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -114,6 +115,88 @@ func TestSignSHA256_DigestLength(t *testing.T) {
 	}
 	for _, n := range []int{0, 1, 31, 33, 64} {
 		if _, err := s.SignSHA256(context.Background(), make([]byte, n)); err == nil {
+			t.Errorf("дайджест длиной %d принят", n)
+		}
+	}
+}
+
+// voidLegacyDigestInfoPrefix — SHA-1-DigestInfo легаси-подписи `.sig`,
+// байты сняты с живой подписи Void (находки 2026-10-01, приложение А):
+// `openssl pkeyutl -verifyrecover` даёт `302d300906052b0e03021a05000420` +
+// 32 байта sha256(пакета). Литерал в тесте намеренно: константа пакета в
+// сверке была бы тавтологией, а живой образец ловит и чужую OID, и
+// неверные длины DigestInfo.
+const voidLegacyDigestInfoPrefix = "\x30\x2d\x30\x09\x06\x05\x2b\x0e\x03\x02\x1a\x05\x00\x04\x20"
+
+// recoverPKCS1 снимает PKCS#1 v1.5 padding с сырой подписи публичным
+// ключом: EM = 0x00 || 0x01 || 0xFF…FF || 0x00 || T → T. Это
+// `openssl pkeyutl -verifyrecover` без openssl.
+func recoverPKCS1(t *testing.T, pub *rsa.PublicKey, sig []byte) []byte {
+	t.Helper()
+	if len(sig) != pub.Size() {
+		t.Fatalf("подпись %d байт, хочу %d (модуль ключа)", len(sig), pub.Size())
+	}
+	em := make([]byte, pub.Size())
+	new(big.Int).Exp(new(big.Int).SetBytes(sig), big.NewInt(int64(pub.E)), pub.N).FillBytes(em)
+	if em[0] != 0x00 || em[1] != 0x01 {
+		t.Fatalf("EM без PKCS#1 v1.5-заголовка: % x", em[:2])
+	}
+	i := 2
+	for i < len(em) && em[i] == 0xff {
+		i++
+	}
+	if i < 10 || i >= len(em) || em[i] != 0x00 {
+		t.Fatalf("EM без разделителя 0x00: % x", em)
+	}
+	return em[i+1:]
+}
+
+// TestSignSHA256SHA1DigestInfo_VerifyRecover — контракт легаси-подписи:
+// расшифрованная публичным ключом подпись = SHA-1-DigestInfo + переданный
+// SHA-256-дайджест, и это ДРУГИЕ байты, чем у `.sig2`.
+func TestSignSHA256SHA1DigestInfo_VerifyRecover(t *testing.T) {
+	s, err := LoadOrGenerate(t.TempDir(), 1024)
+	if err != nil {
+		t.Fatalf("LoadOrGenerate: %v", err)
+	}
+	digest := sha256.Sum256([]byte("Mustache-4.1_1.x86_64.xbps"))
+	pub := parsePublicPEM(t, mustPEM(t, s))
+
+	sig, err := s.SignSHA256SHA1DigestInfo(context.Background(), digest[:])
+	if err != nil {
+		t.Fatalf("SignSHA256SHA1DigestInfo: %v", err)
+	}
+	if len(sig) != 128 {
+		t.Fatalf("подпись = %d байт, хочу 128 (модуль 1024)", len(sig))
+	}
+	want := append([]byte(voidLegacyDigestInfoPrefix), digest[:]...)
+	if got := recoverPKCS1(t, pub, sig); !bytes.Equal(got, want) {
+		t.Errorf("verifyrecover = % x\nхочу           % x", got, want)
+	}
+	// `.sig` — не `.sig2`: обёртка другая, байты обязаны отличаться.
+	sig2, err := s.SignSHA256(context.Background(), digest[:])
+	if err != nil {
+		t.Fatalf("SignSHA256: %v", err)
+	}
+	if bytes.Equal(sig, sig2) {
+		t.Error("`.sig` совпал с `.sig2` — DigestInfo не добавлен")
+	}
+	// Следствие формата (не ошибка): SHA-256-верификация на `.sig` падает —
+	// ровно поэтому живой xbps и не проверяет `.sig` как sha256-подпись.
+	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], sig); err == nil {
+		t.Error("`.sig` прошёл sha256-верификацию: обёртка не SHA-1-DigestInfo")
+	}
+}
+
+func TestSignSHA256SHA1DigestInfo_DigestLength(t *testing.T) {
+	s, err := LoadOrGenerate(t.TempDir(), 1024)
+	if err != nil {
+		t.Fatalf("LoadOrGenerate: %v", err)
+	}
+	// 20 — длина SHA-1-дайджеста: для контракта она тоже неверна, тело
+	// DigestInfo всегда SHA-256 (32 байта).
+	for _, n := range []int{0, 1, 20, 31, 33, 64} {
+		if _, err := s.SignSHA256SHA1DigestInfo(context.Background(), make([]byte, n)); err == nil {
 			t.Errorf("дайджест длиной %d принят", n)
 		}
 	}
@@ -277,6 +360,7 @@ func TestLoadOrGenerate_ParallelSameKey(t *testing.T) {
 func TestSignerImplementsRsaSigner(t *testing.T) {
 	var _ interface {
 		SignSHA256(ctx context.Context, digest []byte) ([]byte, error)
+		SignSHA256SHA1DigestInfo(ctx context.Context, digest []byte) ([]byte, error)
 		PublicKeyPEM() ([]byte, error)
 	} = (*Signer)(nil)
 }

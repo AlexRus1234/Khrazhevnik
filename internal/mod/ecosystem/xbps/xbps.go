@@ -160,10 +160,10 @@ func (a *Adapter) Resolve(ecosystemPath string) (port.Target, bool) {
 }
 
 // Classify делит объекты xbps по изменчивости. Пакеты (.xbps) — immutable
-// (content-addressed по имени с версией); их подписи (.xbps.sig2) и
-// legacy-подписи (.sig, индексом не покрыты) — immutable; <arch>-repodata
-// (метаданные репозитория, файл в корне) — mutable{TTL 5m}; прочее —
-// conservative mutable{TTL 1m}. Пустой путь — ошибка валидации.
+// (content-addressed по имени с версией); их подписи (.xbps.sig2 и legacy
+// .xbps.sig — обе раздаются зеркалом наравне с пакетами) — immutable;
+// <arch>-repodata (метаданные репозитория, файл в корне) — mutable{TTL 5m};
+// прочее — conservative mutable{TTL 1m}. Пустой путь — ошибка валидации.
 func (a *Adapter) Classify(upstreamPath string) (domain.Class, error) {
 	if upstreamPath == "" {
 		return domain.Class{}, &domain.ValidationError{What: "путь upstream", Value: upstreamPath, Reason: "пустой"}
@@ -178,7 +178,7 @@ func (a *Adapter) Classify(upstreamPath string) (domain.Class, error) {
 }
 
 // Enumerate — в enumerate.go: разбор `<arch>-repodata` и перечисление
-// пакетов с их `.sig2` по include-архитектурам (сессия 135).
+// пакетов с их `.sig2`/`.sig` по include-архитектурам (сессии 135/191).
 
 // lookupRemote возвращает Remote по имени из кеша; при истечении TTL
 // перечитывает весь список remotes (KISS: remotes обычно единицы).
@@ -280,8 +280,8 @@ func classifyRules() []rawRule {
 		// до repodata-правила, хотя расширения не пересекаются.
 		{"**/*.xbps", "", immutable},
 		{"**/*.xbps.sig2", "", immutable},
-		// legacy-подписи Void (.sig рядом с .sig2) индексом не покрыты,
-		// но если объект запросят напрямую — он также immutable.
+		// legacy-подписи Void (.sig рядом с .sig2) — зеркало забирает и
+		// их (Enumerate), клиент просит именно `.sig`.
 		{"**/*.sig", "", immutable},
 		// Mutable{TTL 5m}: <arch>-repodata — индекс репозитория, плоский
 		// файл в корне. regex, а не glob: нужно ровно «имя без слэшей»,

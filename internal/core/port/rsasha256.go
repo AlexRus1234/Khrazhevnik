@@ -17,10 +17,13 @@
 // Порт xbps-подписи (RSA PKCS#1 v1.5 поверх SHA-256). Живёт ВНЕ
 // port.Signer (тот заточен под OpenPGP/cleartext apt: InRelease +
 // Release.gpg) — у xbps своя модель: для каждого пакета отдаётся
-// detached-файл <pkg>.sig2 (сырые байты RSA-подписи), а публичный ключ
-// встраивается в index-meta.plist. Реализация — mod/sign/rsasha256
-// (сессия 139); инъекция в xbps RepoAdapter — через RsaSignerInjector
-// (как NarSignerInjector для nix). wire (cmd) type-assert'ит адаптер к
+// detached-файл <pkg>.sig2 (сырые байты RSA-подписи; штатная подпись
+// xbps-rindex) и <pkg>.sig (легаси-подпись Void — та же подпись, но с
+// SHA-1-DigestInfo вокруг SHA-256-дайджеста; её требует живой клиент с
+// signature-type: rsa), а публичный ключ встраивается в
+// index-meta.plist. Реализация — mod/sign/rsasha256 (сессия 139);
+// инъекция в xbps RepoAdapter — через RsaSignerInjector (как
+// NarSignerInjector для nix). wire (cmd) type-assert'ит адаптер к
 // RsaSignerInjector и внедряет; nil = xbps-репо не подписываются.
 
 package port
@@ -30,11 +33,17 @@ import "context"
 // RsaSigner — источник RSA-подписи xbps. SignSHA256 принимает ровно
 // 32-байтовый дайджест SHA-256 содержимого (нарушение длины — ошибка,
 // не паника) и возвращает сырые байты подписи PKCS#1 v1.5 (512 для
-// ключа 4096) — формат .sig2 (verifysig.c xbps-rindex). PublicKeyPEM
+// ключа 4096) — формат .sig2 (verifysig.c xbps-rindex).
+// SignSHA256SHA1DigestInfo принимает тот же дайджест, но оборачивает его
+// в SHA-1-DigestInfo (OID 1.3.14.3.2.26) — формат легаси-подписи `.sig`,
+// которую запрашивает живой клиент void при signature-type: rsa
+// (проверено живой подписью Void: openssl pkeyutl -verifyrecover даёт
+// DigestInfo SHA-1, последние 32 байта — sha256 пакета). PublicKeyPEM
 // отдаёт публичный ключ в SPKI-PEM (`PUBLIC KEY`) для index-meta.plist
 // и ручки раздачи (сессия 142).
 type RsaSigner interface {
 	SignSHA256(ctx context.Context, digest []byte) ([]byte, error)
+	SignSHA256SHA1DigestInfo(ctx context.Context, digest []byte) ([]byte, error)
 	PublicKeyPEM() ([]byte, error)
 }
 

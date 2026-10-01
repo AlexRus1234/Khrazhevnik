@@ -26,8 +26,30 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Mirror (xbps):** the legacy `.sig` signature is pulled from upstream
+  alongside `.sig2` (Enumerate): every Void package has both, and a live
+  client requests `.sig` — without it a synced mirror serves a package that
+  cannot be installed.
+
 ### Fixed
 
+- **Personal repos (xbps):** `xbps-install` from a personal repo failed
+  downloading the signature — `ERROR: [trans] failed to download
+  '<pkgver>' signature … Not Found`, `INSTALL_EXIT=16`. A client with
+  `signature-type: rsa` asks for `<pkgver>.<arch>.xbps.sig`, while the
+  generator emitted only `.sig2`, and the client has no fallback. Reindex
+  now writes BOTH signatures for every package: `.sig2` (RSA PKCS#1
+  v1.5/SHA-256, the `xbps-rindex` format) and the legacy `.sig` — the same
+  RSA signature with a SHA-1 DigestInfo (OID `1.3.14.3.2.26`) wrapped
+  around the package's SHA-256 digest. The `port.RsaSigner` port gained a
+  second method `SignSHA256SHA1DigestInfo` (zero-hash PKCS#1 v1.5 over a
+  hand-built DigestInfo); the byte contract is pinned to a live Void
+  signature (`openssl pkeyutl -verifyrecover` → `30 2d 30 09 06 05 2b 0e 03
+  02 1a 05 00 04 20` + `sha256(package)`). `openssl dgst -sha256 -verify`
+  on `.sig` legitimately fails with `bad signature`: that is not a format
+  error.
 - **Personal repos (web UI):** the "Delete" button next to a package did
   nothing. The SPA sent the full storage key from the listing
   (`repo/<id>/<eco>/…`) to `DELETE /repos/{id}/objects/*`, while the

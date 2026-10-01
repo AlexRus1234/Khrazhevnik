@@ -35,8 +35,29 @@ major.
 
 ## [Unreleased]
 
+### Добавлено
+
+- **Зеркало (xbps):** легаси-подпись `.sig` забирается у upstream наравне
+  с `.sig2` (Enumerate): у каждого пакета Void лежат обе, и живой клиент
+  просит именно `.sig` — без неё синхронизированное зеркало отдаёт
+  пакет, который нельзя поставить.
+
 ### Исправлено
 
+- **Личные репо (xbps):** `xbps-install` из личного репо падал на
+  скачивании подписи — `ERROR: [trans] failed to download '<pkgver>'
+  signature … Not Found`, `INSTALL_EXIT=16`. Клиент с
+  `signature-type: rsa` просит `<pkgver>.<arch>.xbps.sig`, а генератор
+  эмитил только `.sig2` и фолбэка у клиента нет. Теперь reindex пишет
+  ОБЕ подписи на каждый пакет: `.sig2` (RSA PKCS#1 v1.5/SHA-256, формат
+  `xbps-rindex`) и легаси `.sig` — та же RSA-подпись, но с
+  SHA-1-DigestInfo (OID `1.3.14.3.2.26`) вокруг SHA-256-дайджеста
+  пакета. Порт `port.RsaSigner` получил второй метод
+  `SignSHA256SHA1DigestInfo` (нулевой hash PKCS#1 v1.5 поверх вручную
+  собранного DigestInfo); байтовый контракт закреплён на живой подписи
+  Void (`openssl pkeyutl -verifyrecover` → `30 2d 30 09 06 05 2b 0e 03 02
+  1a 05 00 04 20` + `sha256(пакет)`). `openssl dgst -sha256 -verify` на
+  `.sig` законно падает `bad signature` — это не ошибка формата.
 - **Личные репо (веб-UI):** кнопка «Удалить» напротив пакета ничего не
   удаляла. SPA отправляла в `DELETE /repos/{id}/objects/*` полный
   storage-ключ из листинга (`repo/<id>/<eco>/…`), а движок publish
