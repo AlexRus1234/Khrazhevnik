@@ -52,26 +52,34 @@ http://<хражевник>:29202/apk/alpine/v3.21/community
 инстанса. `noarch`-записи входят в индекс КАЖДОЙ архитектуры (клиент
 читает индекс только своей и файл тянет из `/noarch/`). Индекс в корне
 репо не генерируется (ранее записанный не удаляется — чистится руками).
-Клиент:
+Клиент (живая проба 192/193 — alpine:3.21 apk-tools 2.14.6 и alpine:edge
+3.0.7):
 
 ```sh
 curl -sO http://<хражевник>:29202/repo/<name>/key.asc
 cp key.asc /etc/apk/keys/<name>.pem    # apk принимает ключи в /etc/apk/keys
 echo 'http://<хражевник>:29202/repo/<name>' >> /etc/apk/repositories
-apk update --allow-untrusted && apk add --allow-untrusted <пакет>
+apk update --allow-untrusted           # exit 0
+apk add --allow-untrusted <пакет>      # exit 0 — пакет ставится и запускается
 ```
 
 Архитектуру в строке `/etc/apk/repositories` указывать не нужно — клиент
 подставляет свою сам и запрашивает `<repo-url>/<арх>/APKINDEX.tar.gz`.
-`--allow-untrusted` нужен, пока подпись индекса не принимается клиентом
-(`UNTRUSTED signature` — отложенный вопрос подписи личных apk-репо).
+`--allow-untrusted` обязателен: подпись индекса (`APKINDEX.tar.gz.sig`)
+клиентом не принимается (`UNTRUSTED signature` — отложенный вопрос подписи
+личных apk-репо, сессия 184), и импорт `key.asc` этого не меняет. Без
+флага установка невозможна: `apk update` — exit 2 (2.14.6) / 1 (3.0.7),
+`apk add` — `unable to select packages: no such package` (репо недоступно).
 Поле `C:` записи — `Q1` + base64 от sha1 СЖАТЫХ байт control-секции `.apk`
 (gzip-члена с `./.PKGINFO`), ровно как считает apk-tools: генерировать
 иначе нельзя — клиент отвергает пакет на сверке (`BAD signature` в 2.x /
 `v2 package integrity error` в 3.x). Инвариант проверен живьём на реальном
 пакете Alpine (`tree-2.2.1-r0` из v3.21: `C:` совпал с апстримным
 APKINDEX) и установкой `apk add` в alpine:3.21 и alpine:edge. `S:` —
-размер всего файла.
+размер всего файла. Граница: правило проверено на gzip-пакетах v2; для
+`.apk` v3 (zstd/raw tar) генератор по-прежнему пишет sha1 ВСЕГО файла —
+семантика `C:` у apk-tools 3.x для такой раскладки не проверена (находка
+сессии 193, отдельная микросессия).
 
 Подробности — [personal-repos.md](../personal-repos.md).
 

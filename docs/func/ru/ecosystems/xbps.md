@@ -103,16 +103,22 @@ Upload `.xbps` где угодно под корнем репо (имена —
 retention/пинами — так же ведёт себя upstream `xbps-rindex`. Иначе
 клиент (proplib) молча оставляет последнюю запись словаря с этим ключом,
 и какая версия победит, решает лексический порядок ключей storage, а не
-порядок версий. Клиент:
+порядок версий. Клиент (живая проба 191 — void-контейнер, XBPS 0.59.1):
 
 ```sh
-# TOFU-импорт ключа: xbps-install при первом обращении спросит
-# fingerprint — сверьте его с PEM из xbps-key до подтверждения.
+# TOFU-импорт ключа: при первом sync клиент спрашивает «Do you want to
+# import this public key? [Y/n]» и печатает fingerprint — сверьте его с
+# PEM из xbps-key до подтверждения.
 curl -s http://<хражевник>:29202/repo/<name>/xbps-key
 echo 'repository=http://<хражевник>:29202/repo/<name>' \
   > /etc/xbps.d/00-repository-main.conf
-xbps-install -S <пакет>
+xbps-install -S            # sync + TOFU-импорт ключа (exit 0)
+xbps-install -y <пакет>    # качает .sig и пакет, ставит пакет (exit 0)
 ```
+
+Живой клиент запрашивает ровно два объекта — `<pkgver>.<arch>.xbps.sig` и
+сам пакет (фолбэка на `.sig2` он не делает), поэтому в репо обязаны лежать
+обе подписи.
 
 Публичный ключ инстанса отдаётся `GET /repo/<name>/xbps-key` (PEM) —
 точка сверки fingerprint при TOFU-импорте; без живого подписчика

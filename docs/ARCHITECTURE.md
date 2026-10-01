@@ -304,10 +304,12 @@ type UpstreamProxyStore interface {
   golden-тест на дифф). Публичный narinfo-ключ — `GET /repo/<name>/nix-key.asc`
   (формат `name:pubkey-b64`) на :29202. xbps — `port.RsaSigner` +
   `port.RsaSignerInjector` (`mod/sign/rsasha256`, RSA-4096, PKCS#1
-  v1.5/SHA-256): на каждый `.xbps` эмитится detached `.sig2`, публичный
+  v1.5/SHA-256): на каждый `.xbps` эмитятся detached `.sig2` и легаси
+  `.sig` (SHA-1-DigestInfo вокруг SHA-256 пакета — формат, который
+  запрашивает живой клиент), публичный
   ключ встраивается в `index-meta.plist` (base64-PEM) — клиент
   импортирует его по TOFU с проверкой fingerprint против
-  `GET /repo/<name>/xbps-key`; без подписчика — repodata без `.sig2`.
+  `GET /repo/<name>/xbps-key`; без подписчика — repodata без подписей.
   Ключ инстанса один (`xbps-rsa.key`) на все репо; генератор личных
   xbps-репо подписывает пакеты им же — функциональный аналог
   `xbps-rindex --add --sign --sign-pkg`.

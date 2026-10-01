@@ -460,16 +460,21 @@ swap — сессия 17 с s3). Полный swap с подписью — се�
 Генерация xbps-индексов (`mod/ecosystem/xbps/gen.go`, реализует
 `port.RepoAdapter`, сессия 141 — аналог `xbps-rindex --add --sign
 --sign-pkg`): плоские `.xbps` в `repo/<id>/xbps/` → для каждого читается
-`props.plist` (ar-парсер сессии 137); выход — `<arch>-repodata`
+`props.plist` (tar-парсер: разбор ar сессии 137 удалён в 190); выход —
+`<arch>-repodata`
 (zstd level 9 + pax-tar: `index.plist` / `index-meta.plist` /
-`stage.plist`), noarch-пакеты входят в каждую arch-группу. Детерминизм
+`stage.plist`), noarch-пакеты входят в каждую arch-группу, в `index.plist`
+— не более одной записи на `PkgName` (новейшая по `xbps_cmpver`, сессия
+188). Детерминизм
 reindex (writer сессии 140: записи по `pkgname`, поля по алфавиту) —
 байт-в-байт повтор при неизменном входе. Подпись: `.sig2` на каждый
-пакет (RSA PKCS#1 v1.5/SHA-256, `port.RsaSigner` сессии 139), публичный
+пакет (RSA PKCS#1 v1.5/SHA-256, `port.RsaSigner` сессии 139) и легаси
+`.sig` — та же RSA-подпись с SHA-1-DigestInfo вокруг SHA-256-дайджеста
+пакета (сессия 191, формат живого Void); публичный
 ключ base64-PEM в `index-meta.plist` (TOFU-импорт клиентом) и ручка
 `GET /repo/<name>/xbps-key` (PEM, сессия 142). Без живого `RsaSigner`
 репо деградирует: `<arch>-repodata` генерируется, `index-meta.plist`
-пуст, `.sig2` не эмитятся. Кривое имя файла пакета (props не совпадают)
+пуст, подписи не эмитятся. Кривое имя файла пакета (props не совпадают)
 или битый пакет — честная ошибка reindex-задачи; репо из одних noarch
 (нет нативной arch-группы) repodata не даёт.
 
@@ -659,24 +664,27 @@ stale_served,negative_hits,upstream_errors}_total`,
   `Gifsicle`), лоуэркейс дал бы коллизии. Лэйаут плоский: в корне
   репозитория лежат `<arch>-repodata` (zstd ≤ level 9 → pax-tar из
   `index.plist`/`index-meta.plist`/`stage.plist`) и `<pkgver>.<arch>.xbps`
-  с подписью `.sig2` (RSA-4096 PKCS#1 v1.5/SHA-256, формат xbps).
+  с подписью `.sig2` (RSA-4096 PKCS#1 v1.5/SHA-256, формат xbps) и
+  легаси `.sig` (тот же дайджест под SHA-1-DigestInfo — его просит
+  живой клиент, сессия 191).
   Классификация: `*.xbps` — immutable (content-addressed по имени с
   версией); `*.xbps.sig2` и legacy `*.sig` — immutable; `<arch>-repodata`
   (плоский файл в корне, `^[^/]+-repodata$`) — mutable{TTL 5m}; прочее —
   conservative mutable{TTL 1m}. Streaming-парсер контейнера repodata
   (zstd+tar, `index.plist` потоком XML-plist, капы 1GiB/64KiB/1MiB) —
-  `mod/ecosystem/xbps/parse.go`/`index.go`; парсер ar-пакетов `.xbps`
-  (только `props.plist`) — `mod/ecosystem/xbps/pkgparse.go`; фаззинг
+  `mod/ecosystem/xbps/parse.go`/`index.go`; парсер tar-пакетов `.xbps`
+  (только `./props.plist`; разбор ar удалён в 190) — `mod/ecosystem/xbps/pkgparse.go`; фаззинг
   `FuzzParseRepoData`/`FuzzOpenPackage`. `Remote.Include` — список
   архитектур (`x86_64`, `aarch64`, …), покрывающий индексные группы
   `<arch>-repodata`; пустой — ошибка (xbps не имеет корневого индекса
   архитектур). `Enumerate` (сессия 135) строит пути пакетов
-  `Filename()` и добавляет `.sig2`; SHA256 из поля `filename-sha256`
+  `Filename()` и добавляет `.sig2` и легаси `.sig` (сессия 191 — набор
+  как у живого Void); SHA256 из поля `filename-sha256`
   наполняет таблицу чексумм (`Target.Checksum`). Инвариант прокси:
   repodata и пакеты отдаются побайтово, подписи upstream остаются
-  валидными; в личных репо reindex переподписывает `.sig2` ключом
+  валидными; в личных репо reindex переподписывает `.sig2`/`.sig` ключом
   инстанса, публичный ключ — ручка `GET /repo/<name>/xbps-key`.
-  Деградация без `RsaSigner` — repodata без `.sig2` (репо работает,
+  Деградация без `RsaSigner` — repodata без подписей (репо работает,
   клиент импортирует ключ при появлении).
 
 URL-префикс (`port.Ecosystem.URLPrefix()`) чаще совпадает с именем, но

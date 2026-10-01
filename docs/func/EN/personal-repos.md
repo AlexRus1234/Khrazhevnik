@@ -24,9 +24,10 @@ or a `repo:<id>:write` scoped token) and `POST /api/v1/repos/{id}/reindex`
 (an index generation background task). Reads are public:
 `GET /repo/<name>/*` on port :29202.
 
-Ecosystems supported in v1: apt, rpm-md, pacman, apk, nix. Each has
-its own index generator (`mod/ecosystem/*/gen.go`, sessions 14/16) and
-optional metadata signing with the instance key (session 15/16).
+Ecosystems supported in v1: apt, rpm-md, pacman, apk, nix, xbps (the list of
+available ones is served by `GET /api/v1/ecosystems`). Each has its own index
+generator (`mod/ecosystem/*/gen.go`, sessions 14/16) and an optional
+metadata signature with the instance key (session 15/16).
 Client configuration per ecosystem — in [ecosystems/](ecosystems/);
 this page covers the general publishing flow. Repositories can also be
 managed from the [web admin UI](ui.md).
@@ -214,7 +215,13 @@ applied by a daily background pass or manually from the GUI/API.
   http://<Khrazhevnik>:29202/repo/alice
   ```
   The client appends its architecture itself. The key
-  `GET /repo/alice/key.asc` is copied into `/etc/apk/keys/`.
+  `GET /repo/alice/key.asc` is copied into `/etc/apk/keys/`. Installs go
+  with `--allow-untrusted`: the index signature (`APKINDEX.tar.gz.sig`) is
+  not accepted by the client (`UNTRUSTED signature` — a deferred personal
+  apk repository signing question, session 184), and importing the key does
+  not change that — without the flag `apk update` and `apk add` against a
+  personal repository are impossible (exit 2/1 and `no such package`; live
+  probes 192/193, alpine:3.21 and alpine:edge).
 - **Public key:** `GET /repo/<name>/key.asc` (armored OpenPGP).
 
 ## nix (binary cache)

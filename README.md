@@ -142,9 +142,10 @@ read-only rootfs) под rootless podman quadlet.
   `by-hash/SHA256/*`, `Release`)
 - Подпись ключом инстанса (OpenPGP ed25519): `InRelease` (cleartext) и
   `Release.gpg` (detached); для nix — переподпись narinfo (заменяется
-  только поле `Sig`, остальное байт-точно); для xbps — RSA-подпись
-  `.sig2` на каждый пакет (PKCS#1 v1.5/SHA-256); при недоступном
-  подписчике репо работают без подписи
+  только поле `Sig`, остальное байт-точно); для xbps — RSA-подписи
+  `.sig2` и `.sig` на каждый пакет (PKCS#1 v1.5/SHA-256; `.sig` — тот же
+  дайджест под SHA-1-DigestInfo, формат живого клиента Void); при
+  недоступном подписчике репо работают без подписи
 - Публичные ключи — `GET /repo/<name>/key.asc` (OpenPGP),
   `nix-key.asc` (nix), `xbps-key` (PEM RSA) на публичном порту
 - Ретеншн-политики: авто-очистка старых версий по per-repo политике

@@ -61,14 +61,19 @@ remove it by hand). Client:
 curl -sO http://<Khrazhevnik>:29202/repo/<name>/key.asc
 cp key.asc /etc/apk/keys/<name>.pem    # apk accepts keys in /etc/apk/keys
 echo 'http://<Khrazhevnik>:29202/repo/<name>' >> /etc/apk/repositories
-apk update --allow-untrusted && apk add --allow-untrusted <package>
+apk update --allow-untrusted           # exit 0
+apk add --allow-untrusted <package>    # exit 0 — the package installs and runs
 ```
 
 There is no need to put the architecture into the
 `/etc/apk/repositories` line — the client appends its own and requests
-`<repo-url>/<arch>/APKINDEX.tar.gz`. `--allow-untrusted` is needed while
-the index signature is not accepted by the client (`UNTRUSTED signature` —
-a deferred personal apk repository signing question). The entry's `C:`
+`<repo-url>/<arch>/APKINDEX.tar.gz`. `--allow-untrusted` is mandatory: the
+index signature (`APKINDEX.tar.gz.sig`) is not accepted by the client
+(`UNTRUSTED signature` — a deferred personal apk repository signing
+question, session 184), and importing `key.asc` does not change that.
+Without the flag an install is impossible: `apk update` — exit 2 (2.14.6) /
+1 (3.0.7), `apk add` — `unable to select packages: no such package` (the
+repository counts as unavailable). The entry's `C:`
 field is `Q1` + base64 of the sha1 over the COMPRESSED bytes of the `.apk`
 control section (the gzip member carrying `./.PKGINFO`), exactly as
 apk-tools computes it: anything else is rejected by the client on the
@@ -76,7 +81,10 @@ checksum (`BAD signature` in 2.x / `v2 package integrity error` in 3.x).
 The invariant is verified live on a real Alpine package
 (`tree-2.2.1-r0` from v3.21: `C:` matched the upstream APKINDEX) and by
 `apk add` in alpine:3.21 and alpine:edge. `S:` is the size of the whole
-file.
+file. Boundary: the rule is verified for gzip v2 packages; for `.apk` v3
+(zstd/raw tar) the generator still writes the sha1 of the WHOLE file — the
+`C:` semantics of apk-tools 3.x for that layout are unverified (finding of
+session 193, a separate micro-session).
 
 For details, see [personal-repos.md](../personal-repos.md).
 

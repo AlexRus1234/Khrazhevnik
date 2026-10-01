@@ -108,16 +108,22 @@ byte), the others stay in storage and are protected by retention/pins —
 upstream `xbps-rindex` behaves the same way. Otherwise the client
 (proplib) silently keeps the last dictionary entry with that key, and the
 winner is decided by the lexical order of storage keys rather than by
-version order. Client:
+version order. Client (live probe 191 — void container, XBPS 0.59.1):
 
 ```sh
-# TOFU key import: on first access xbps-install asks for the
-# fingerprint — verify it against the PEM from xbps-key before confirming.
+# TOFU key import: on the first sync the client asks "Do you want to
+# import this public key? [Y/n]" and prints the fingerprint — verify it
+# against the PEM from xbps-key before confirming.
 curl -s http://<Khrazhevnik>:29202/repo/<name>/xbps-key
 echo 'repository=http://<Khrazhevnik>:29202/repo/<name>' \
   > /etc/xbps.d/00-repository-main.conf
-xbps-install -S <package>
+xbps-install -S            # sync + TOFU key import (exit 0)
+xbps-install -y <package>  # downloads .sig and the package, installs it (exit 0)
 ```
+
+A live client requests exactly two objects — `<pkgver>.<arch>.xbps.sig` and
+the package itself (it does not fall back to `.sig2`), so both signatures
+must be present in the repository.
 
 The instance public key is served at `GET /repo/<name>/xbps-key` (PEM) —
 the fingerprint verification point during TOFU import; without a live

@@ -24,7 +24,8 @@ scoped-токен `repo:<id>:write`) и `POST /api/v1/repos/{id}/reindex`
 (фоновая задача генерации индексов). Чтение публичное: `GET /repo/<name>/*`
 на порту :29202.
 
-Поддерживаемые экосистемы v1: apt, rpm-md, pacman, apk, nix. Каждая имеет
+Поддерживаемые экосистемы v1: apt, rpm-md, pacman, apk, nix, xbps (список
+доступных отдаёт `GET /api/v1/ecosystems`). Каждая имеет
 свой генератор индексов (`mod/ecosystem/*/gen.go`, сессии 14/16) и
 опциональную подпись метаданных ключом инстанса (сессия 15/16).
 Настройка клиентов по экосистемам — в [ecosystems/](ecosystems/);
@@ -207,7 +208,12 @@ per-repo (поле `retention` в `POST`/`PATCH /api/v1/repos/{id}` или па�
   http://<хражевник>:29202/repo/alice
   ```
   Архитектуру клиент подставляет сам. Ключ `GET /repo/alice/key.asc`
-  копируется в `/etc/apk/keys/`.
+  копируется в `/etc/apk/keys/`. Установка идёт с `--allow-untrusted`:
+  подпись индекса (`APKINDEX.tar.gz.sig`) клиентом не принимается
+  (`UNTRUSTED signature` — отложенный вопрос подписи личных apk-репо,
+  сессия 184), и импорт ключа этого не меняет — без флага `apk update` и
+  `apk add` из личного репо невозможны (exit 2/1 и
+  `no such package`; живые пробы 192/193, alpine:3.21 и alpine:edge).
 - **Публичный ключ:** `GET /repo/<name>/key.asc` (armored OpenPGP).
 
 ## nix (binary cache)

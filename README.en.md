@@ -147,7 +147,9 @@ assistant was used while preparing the source code.[^1]
 - Signing with the instance key (OpenPGP ed25519): `InRelease`
   (cleartext) and `Release.gpg` (detached); for nix — narinfo re-signing
   (only the `Sig` field is replaced, the rest is byte-exact); for xbps —
-  an RSA `.sig2` per package (PKCS#1 v1.5/SHA-256); when the signer is
+  the RSA `.sig2` and `.sig` signatures per package (PKCS#1 v1.5/SHA-256;
+  `.sig` carries the same digest under a SHA-1 DigestInfo, the live Void
+  client's format); when the signer is
   unavailable, repositories keep working without signatures
 - Public keys are served at `GET /repo/<name>/key.asc` (OpenPGP),
   `nix-key.asc` (nix), `xbps-key` (RSA PEM) on the public port
