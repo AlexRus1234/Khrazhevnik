@@ -22,6 +22,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -88,6 +89,31 @@ func (s *testRsaSigner) SignSHA256(_ context.Context, digest []byte) ([]byte, er
 	return rsa.SignPKCS1v15(nil, s.priv, crypto.SHA256, digest)
 }
 
+// testSHA1DigestInfoPrefix — SHA-1-DigestInfo `.sig`-формата, байты из
+// живой подписи Void (находки 2026-10-01, приложение А): SEQ 0x2d,
+// OID 1.3.14.3.2.26, октет-строка 32 байта. Своя копия, а не константа
+// rsasha256: mod→mod запрещён depguard'ом, а тест обязан повторять
+// контракт подписчика самостоятельно.
+const testSHA1DigestInfoPrefix = "\x30\x2d\x30\x09\x06\x05\x2b\x0e\x03\x02\x1a\x05\x00\x04\x20"
+
+func (s *testRsaSigner) SignSHA256SHA1DigestInfo(_ context.Context, digest []byte) ([]byte, error) {
+	if len(digest) != sha256.Size {
+		return nil, fmt.Errorf("дайджест длиной %d, хочу %d", len(digest), sha256.Size)
+	}
+	digestInfo := append([]byte(testSHA1DigestInfoPrefix), digest...)
+	return s.priv.Sign(nil, digestInfo, crypto.Hash(0))
+}
+
+// SignSHA1DigestInfo — контракт apk-подписи индекса (сессия 195):
+// 20-байтовый sha1 в SHA-1-DigestInfo. В xbps-репо не используется,
+// но интерфейс обязан сходиться.
+func (s *testRsaSigner) SignSHA1DigestInfo(_ context.Context, digest []byte) ([]byte, error) {
+	if len(digest) != sha1.Size {
+		return nil, fmt.Errorf("дайджест длиной %d, хочу %d", len(digest), sha1.Size)
+	}
+	return rsa.SignPKCS1v15(nil, s.priv, crypto.SHA1, digest)
+}
+
 func (s *testRsaSigner) PublicKeyPEM() ([]byte, error) {
 	out := make([]byte, len(s.pubPEM))
 	copy(out, s.pubPEM)
@@ -98,7 +124,7 @@ func (s *testRsaSigner) PublicKeyPEM() ([]byte, error) {
 // возвращает байты файла (для сверки sha256/размера).
 func putXbps(t *testing.T, storage *testutil.FakeStorage, repo domain.Repo, name, propsXML string) []byte {
 	t.Helper()
-	raw := buildArPkg(t, arMemberSpec{"./props.plist", []byte(propsXML)})
+	raw := buildTarPkg(t, tarMember{"./props.plist", []byte(propsXML)})
 	body := compressPackage(t, "zstd", raw)
 	key := port.RepoPrefix(repo) + "/" + name
 	w, err := storage.Put(context.Background(), key)
@@ -236,8 +262,8 @@ func newRepo(t *testing.T) (*testutil.FakeStorage, domain.Repo) {
 }
 
 // TestGenerateIndexesGroupsAndSigns — главный контракт: 2 x86_64 + 1
-// noarch + 1 aarch64 → два repodata, noarch в обоих, `.sig2` на каждый
-// пакет, подпись верифицируется публичным ключом из index-meta.
+// noarch + 1 aarch64 → два repodata, noarch в обоих, `.sig2` и `.sig` на
+// каждый пакет, подписи верифицируются публичным ключом из index-meta.
 func TestGenerateIndexesGroupsAndSigns(t *testing.T) {
 	storage, repo := newRepo(t)
 	signer := newTestRsaSigner(t)
@@ -320,16 +346,24 @@ func TestGenerateIndexesGroupsAndSigns(t *testing.T) {
 		if entry.FilenameSize != int64(len(body)) {
 			t.Errorf("%s: filename-size = %d, хочу %d", f.pkgname, entry.FilenameSize, len(body))
 		}
-		sig := readKey(t, storage, "repo/1/xbps/"+f.name+".sig2")
-		if err := rsa.VerifyPKCS1v15(&signer.priv.PublicKey, crypto.SHA256, digest[:], sig); err != nil {
-			t.Errorf("%s: подпись не верифицируется: %v", f.name, err)
+		// Обе подписи: `.sig2` — PKCS#1 v1.5/SHA-256 (формат xbps-rindex),
+		// `.sig` — тот же дайджест в SHA-1-DigestInfo (её просит живой
+		// клиент). Проверяем байтовым контрактом, без openssl.
+		sig2 := readKey(t, storage, "repo/1/xbps/"+f.name+sig2Suffix)
+		if err := rsa.VerifyPKCS1v15(&signer.priv.PublicKey, crypto.SHA256, digest[:], sig2); err != nil {
+			t.Errorf("%s: подпись .sig2 не верифицируется: %v", f.name, err)
+		}
+		sig := readKey(t, storage, "repo/1/xbps/"+f.name+sigSuffix)
+		if err := rsa.VerifyPKCS1v15(&signer.priv.PublicKey, crypto.Hash(0),
+			append([]byte(testSHA1DigestInfoPrefix), digest[:]...), sig); err != nil {
+			t.Errorf("%s: .sig — не DigestInfo(SHA-1)+дайджест: %v", f.name, err)
 		}
 	}
 }
 
 // TestGenerateIndexesIdempotent — повторный reindex даёт байт-в-байт те
-// же repodata (детерминизм writer'а 140) и те же .sig2 (PKCS#1 v1.5
-// детерминирован).
+// же repodata (детерминизм writer'а 140) и те же подписи `.sig2`/`.sig`
+// (PKCS#1 v1.5 детерминирован).
 func TestGenerateIndexesIdempotent(t *testing.T) {
 	storage, repo := newRepo(t)
 	signer := newTestRsaSigner(t)
@@ -342,6 +376,7 @@ func TestGenerateIndexesIdempotent(t *testing.T) {
 	}
 	firstRepodata := readKey(t, storage, "repo/1/xbps/x86_64-repodata")
 	firstSig := readKey(t, storage, "repo/1/xbps/foo-1.0_1.x86_64.xbps.sig2")
+	firstLegacySig := readKey(t, storage, "repo/1/xbps/foo-1.0_1.x86_64.xbps.sig")
 
 	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
 		t.Fatalf("второй reindex: %v", err)
@@ -351,6 +386,165 @@ func TestGenerateIndexesIdempotent(t *testing.T) {
 	}
 	if got := readKey(t, storage, "repo/1/xbps/foo-1.0_1.x86_64.xbps.sig2"); !bytes.Equal(got, firstSig) {
 		t.Error(".sig2 не детерминирован между reindex")
+	}
+	if got := readKey(t, storage, "repo/1/xbps/foo-1.0_1.x86_64.xbps.sig"); !bytes.Equal(got, firstLegacySig) {
+		t.Error(".sig не детерминирован между reindex")
+	}
+}
+
+// TestDedupeRecordsKeepsNewest — прямой контракт дедупа: на имя остаётся одна
+// запись (новейшая по CompareXbpsVer), входной срез не мутируется, выбор не
+// зависит от расположения записей, а отброшенная попадает в лог.
+func TestDedupeRecordsKeepsNewest(t *testing.T) {
+	t.Parallel()
+	rec := func(pkgname, pkgver string) pkgRecord {
+		return pkgRecord{key: pkgver + ".x86_64.xbps", props: Props{PkgName: pkgname, PkgVer: pkgver}}
+	}
+	cases := []struct {
+		name    string
+		in      []pkgRecord
+		want    string // что остаётся в прямом порядке входа
+		wantRev string // что остаётся в обратном порядке
+		dropped int
+	}{
+		{
+			name:    "новейшая в середине",
+			in:      []pkgRecord{rec("foo", "foo-1.0_1"), rec("foo", "foo-1.0_10"), rec("foo", "foo-1.0_2")},
+			want:    "foo-1.0_10",
+			wantRev: "foo-1.0_10",
+			dropped: 2,
+		},
+		{
+			// Проба 188: лексический порядок ключей storage против порядка
+			// версий — новейшая идёт первой, значит старая должна быть
+			// отброшена, а не перезаписана.
+			name:    "лексический порядок против версий",
+			in:      []pkgRecord{rec("lxc-loc", "lxc-loc-7.0.10_1"), rec("lxc-loc", "lxc-loc-7.0.9_1")},
+			want:    "lxc-loc-7.0.10_1",
+			wantRev: "lxc-loc-7.0.10_1",
+			dropped: 1,
+		},
+		{
+			// Эквивалентные версии (1.0 == 1.0.0 по dewey): остаётся первая
+			// по входу — так же ведёт себя reindex (детерминизм важнее).
+			name:    "эквивалентные версии",
+			in:      []pkgRecord{rec("foo", "foo-1.0"), rec("foo", "foo-1.0.0")},
+			want:    "foo-1.0",
+			wantRev: "foo-1.0.0",
+			dropped: 1,
+		},
+		{
+			name:    "одна запись",
+			in:      []pkgRecord{rec("foo", "foo-1.0_1")},
+			want:    "foo-1.0_1",
+			wantRev: "foo-1.0_1",
+			dropped: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			in := append([]pkgRecord(nil), tc.in...)
+			p := &recordingProgress{}
+			got := dedupeRecords(in, p)
+			if len(got) != 1 {
+				t.Fatalf("записей %d, хочу 1", len(got))
+			}
+			if got[0].props.PkgVer != tc.want {
+				t.Errorf("осталась %q, хочу %q", got[0].props.PkgVer, tc.want)
+			}
+			if len(p.logs) != tc.dropped {
+				t.Errorf("строк лога %d, хочу %d: %v", len(p.logs), tc.dropped, p.logs)
+			}
+			if len(in) != len(tc.in) {
+				t.Fatalf("входной срез изменён: %d записей вместо %d", len(in), len(tc.in))
+			}
+			for i := range tc.in {
+				if in[i].key != tc.in[i].key {
+					t.Fatalf("входной срез изменён: [%d] = %q, был %q", i, in[i].key, tc.in[i].key)
+				}
+			}
+			rev := make([]pkgRecord, 0, len(tc.in))
+			for i := len(tc.in) - 1; i >= 0; i-- {
+				rev = append(rev, tc.in[i])
+			}
+			gotRev := dedupeRecords(rev, &recordingProgress{})
+			if len(gotRev) != 1 {
+				t.Fatalf("обратный вход: записей %d, хочу 1", len(gotRev))
+			}
+			if gotRev[0].props.PkgVer != tc.wantRev {
+				t.Errorf("обратный вход: осталась %q, хочу %q", gotRev[0].props.PkgVer, tc.wantRev)
+			}
+		})
+	}
+}
+
+// TestGenerateIndexesDedupByName — проба 188 в миниатюре, критерий приёмки
+// сессии: два `.xbps` одного PkgName в storage → в index.plist (roundtrip
+// «генератор → ParseIndexPlist») ровно ОДНА запись на имя, и это новейшая
+// версия; отброшенная остаётся в storage и подписана.
+//
+// Версии взяты из живой пробы: лексический порядок ключей storage
+// (`lxc-loc-7.0.10_1.x86_64.xbps` < `lxc-loc-7.0.9_1.x86_64.xbps`)
+// противоречит порядку версий, и живой клиент без дедупа показывал СТАРУЮ
+// `7.0.9_1`. Вторая пара проверяет обратный ход: новейшая запись приходит
+// последней, дедуп обязан её ЗАМЕНИТЬ.
+func TestGenerateIndexesDedupByName(t *testing.T) {
+	storage, repo := newRepo(t)
+	oldLxc := putXbps(t, storage, repo, "lxc-loc-7.0.9_1.x86_64.xbps", miniProps("lxc-loc", "lxc-loc-7.0.9_1", "x86_64"))
+	newLxc := putXbps(t, storage, repo, "lxc-loc-7.0.10_1.x86_64.xbps", miniProps("lxc-loc", "lxc-loc-7.0.10_1", "x86_64"))
+	putXbps(t, storage, repo, "foo-1.0_1.aarch64.xbps", miniProps("foo", "foo-1.0_1", "aarch64"))
+	newFoo := putXbps(t, storage, repo, "foo-1.0_2.aarch64.xbps", miniProps("foo", "foo-1.0_2", "aarch64"))
+
+	rec := &recordingProgress{}
+	g := &Generator{}
+	g.SetRsaSigner(newTestRsaSigner(t))
+	if err := g.GenerateIndexes(context.Background(), repo, storage, rec); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+
+	// x86_64: только lxc-loc, только новейшая версия.
+	x86 := readIndex(t, storage, "repo/1/xbps/x86_64-repodata")
+	if len(x86) != 1 {
+		t.Fatalf("x86_64: записей %d, хочу 1 (%v)", len(x86), x86)
+	}
+	if x86[0].PkgName != "lxc-loc" || x86[0].PkgVer != "lxc-loc-7.0.10_1" {
+		t.Errorf("x86_64: осталась %q/%q, хочу lxc-loc-7.0.10_1", x86[0].PkgName, x86[0].PkgVer)
+	}
+	if want := fmt.Sprintf("%x", sha256.Sum256(newLxc)); x86[0].FilenameSHA256 != want {
+		t.Errorf("filename-sha256 = %q, хочу дайджест новейшего пакета %q", x86[0].FilenameSHA256, want)
+	}
+	if x86[0].FilenameSize != int64(len(newLxc)) {
+		t.Errorf("filename-size = %d, хочу %d", x86[0].FilenameSize, len(newLxc))
+	}
+
+	// aarch64 — своя пара версий, дедуп по имени, а не по архитектуре.
+	aarch := readIndex(t, storage, "repo/1/xbps/aarch64-repodata")
+	if len(aarch) != 1 || aarch[0].PkgVer != "foo-1.0_2" {
+		t.Fatalf("aarch64: %v, хочу одну запись foo-1.0_2", aarch)
+	}
+	if want := fmt.Sprintf("%x", sha256.Sum256(newFoo)); aarch[0].FilenameSHA256 != want {
+		t.Errorf("aarch64: filename-sha256 = %q, хочу %q", aarch[0].FilenameSHA256, want)
+	}
+
+	// Storage не чистится: старая версия и её подписи на месте — подпись
+	// нужна любому пакету в storage, а не только оставшемуся в индексе.
+	if got := readKey(t, storage, "repo/1/xbps/lxc-loc-7.0.9_1.x86_64.xbps"); !bytes.Equal(got, oldLxc) {
+		t.Error("старый пакет изменён или удалён из storage")
+	}
+	readKey(t, storage, "repo/1/xbps/lxc-loc-7.0.9_1.x86_64.xbps.sig2")
+	readKey(t, storage, "repo/1/xbps/lxc-loc-7.0.9_1.x86_64.xbps.sig")
+
+	// Лог: и отброс, и замена, и итог фазы.
+	logs := strings.Join(rec.logs, "\n")
+	for _, want := range []string{
+		"дедуп по имени: отброшено 2 из 4 записей",
+		"дедуп: lxc-loc: отброшена lxc-loc-7.0.9_1 (в индексе lxc-loc-7.0.10_1)",
+		"дедуп: foo: foo-1.0_1 → foo-1.0_2",
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("в логе нет %q:\n%s", want, logs)
+		}
 	}
 }
 
@@ -370,7 +564,7 @@ func TestGenerateIndexesFilenameMismatch(t *testing.T) {
 	}
 }
 
-// TestGenerateIndexesBadPackage — битый .xbps (не ar) валит задачу.
+// TestGenerateIndexesBadPackage — битый .xbps (не tar) валит задачу.
 func TestGenerateIndexesBadPackage(t *testing.T) {
 	storage, repo := newRepo(t)
 	key := "repo/1/xbps/foo-1.0_1.x86_64.xbps"
@@ -385,13 +579,13 @@ func TestGenerateIndexesBadPackage(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 	err = (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil)
-	if !errors.Is(err, ErrBadAr) {
-		t.Fatalf("ошибка %v, хочу ErrBadAr", err)
+	if !errors.Is(err, ErrBadPackage) {
+		t.Fatalf("ошибка %v, хочу ErrBadPackage", err)
 	}
 }
 
-// TestGenerateIndexesUnsignedNoSig — без RsaSigner индексы есть, .sig2
-// нет, index-meta пуст (деградация образца apk nil-Signer).
+// TestGenerateIndexesUnsignedNoSig — без RsaSigner индексы есть, подписей
+// (.sig2/.sig) нет, index-meta пуст (деградация образца apk nil-Signer).
 func TestGenerateIndexesUnsignedNoSig(t *testing.T) {
 	storage, repo := newRepo(t)
 	putXbps(t, storage, repo, "foo-1.0_1.x86_64.xbps", miniProps("foo", "foo-1.0_1", "x86_64"))
@@ -399,8 +593,10 @@ func TestGenerateIndexesUnsignedNoSig(t *testing.T) {
 	if err := (&Generator{}).GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
 		t.Fatalf("GenerateIndexes: %v", err)
 	}
-	if _, err := storage.Get(context.Background(), "repo/1/xbps/foo-1.0_1.x86_64.xbps.sig2"); err == nil {
-		t.Error("без RsaSigner создан .sig2")
+	for _, suffix := range []string{sig2Suffix, sigSuffix} {
+		if _, err := storage.Get(context.Background(), "repo/1/xbps/foo-1.0_1.x86_64.xbps"+suffix); err == nil {
+			t.Errorf("без RsaSigner создан %s", suffix)
+		}
 	}
 	meta := readMeta(t, storage, "repo/1/xbps/x86_64-repodata")
 	if meta["public-key"] != "" {
@@ -496,6 +692,7 @@ func TestValidateObjectPath(t *testing.T) {
 		{"python3-pip-24.2_1.noarch.xbps", true},
 		{"x86_64-repodata", false},
 		{"foo-1.0_1.x86_64.xbps.sig2", false},
+		{"foo-1.0_1.x86_64.xbps.sig", false},
 		{"dir/foo.xbps", false},
 		{"foo.txt", false},
 		{"", false},
@@ -531,6 +728,7 @@ func TestObjectFamily(t *testing.T) {
 		// Индекс и подпись — вне семейств; мусорный pkgver — тоже.
 		{"x86_64-repodata", "", false},
 		{"htop-3.3.0_2.x86_64.xbps.sig2", "", false},
+		{"htop-3.3.0_2.x86_64.xbps.sig", "", false},
 		{"htop.x86_64.xbps", "", false},
 		// Неканоничное имя без арх-хвоста — вне семейств.
 		{"htop.xbps", "", false},

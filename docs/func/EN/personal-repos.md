@@ -24,9 +24,10 @@ or a `repo:<id>:write` scoped token) and `POST /api/v1/repos/{id}/reindex`
 (an index generation background task). Reads are public:
 `GET /repo/<name>/*` on port :29202.
 
-Ecosystems supported in v1: apt, rpm-md, pacman, apk, nix. Each has
-its own index generator (`mod/ecosystem/*/gen.go`, sessions 14/16) and
-optional metadata signing with the instance key (session 15/16).
+Ecosystems supported in v1: apt, rpm-md, pacman, apk, nix, xbps (the list of
+available ones is served by `GET /api/v1/ecosystems`). Each has its own index
+generator (`mod/ecosystem/*/gen.go`, sessions 14/16) and an optional
+metadata signature with the instance key (session 15/16).
 Client configuration per ecosystem — in [ecosystems/](ecosystems/);
 this page covers the general publishing flow. Repositories can also be
 managed from the [web admin UI](ui.md).
@@ -179,7 +180,11 @@ applied by a daily background pass or manually from the GUI/API.
   Legacy `.pkg.tar.xz`/`.gz` are not accepted (400): there is no xz/
   gz decoder in the dependency whitelist — repack as zst.
 - **Indexes (reindex):** `<repo.Name>.db` (tar.zst with
-  `<name>-<ver>/desc` entries) + `<repo.Name>.db.sig`
+  `<name>-<ver>/desc` entries; the `.db` holds at most one entry per
+  package name — of several versions the newest by `epoch:ver-rel`
+  (semantics of `alpm_pkg_vercmp`) goes into the index, the older ones
+  stay in storage and are protected by retention/pins; upstream
+  `repo-add` behaves the same way) + `<repo.Name>.db.sig`
   (detached, with the instance OpenPGP key).
 - **Client:** `/etc/pacman.conf`:
   ```ini
@@ -197,17 +202,34 @@ applied by a daily background pass or manually from the GUI/API.
 
 ## apk (Alpine)
 
-- **Upload:** `.apk` anywhere under the repository root;
-  `APKINDEX.tar.gz` is generated; uploading it is forbidden.
-- **Indexes (reindex):** `APKINDEX.tar.gz` (gzip+tar with an
-  `APKINDEX` file in "K:V" format — C/P/V/A/F/...) +
-  `APKINDEX.tar.gz.sig` (detached, with the instance OpenPGP key).
+- **Upload:** `.apk` into the directory of its architecture —
+  `<arch>/<file>.apk` (`arch` from `.PKGINFO`); `arch = noarch` goes into
+  `noarch/`. Any other path (including the repository root) — 400.
+- **Indexes (reindex):** one per architecture —
+  `<arch>/APKINDEX.tar.gz` (gzip+tar with the `APKINDEX` file in `K:V`
+  format — C/P/V/A/F/...) signed INSIDE the file: the first gzip member is
+  a tar with the single member `.SIGN.RSA.khrazhevnik.rsa.pub` (RSA
+  PKCS#1 v1.5 over the SHA-1 DigestInfo of the sha1 of the COMPRESSED
+  bytes of the body member), and the archive is a single continuous tar
+  across the member boundary; there is no separate `.sig` — apk never
+  requests one (the Alpine CDN answers 404 for it too); `noarch` entries
+  are included in the index of every architecture. No index is generated
+  at the repository root.
 - **Client:** `/etc/apk/repositories`:
   ```
   http://<Khrazhevnik>:29202/repo/alice
   ```
-  The key `GET /repo/alice/key.asc` is copied into `/etc/apk/keys/`.
-- **Public key:** `GET /repo/<name>/key.asc` (armored OpenPGP).
+  The client appends its architecture itself. The key
+  `GET /repo/alice/apk-key` (SPKI-PEM) is copied to
+  `/etc/apk/keys/khrazhevnik.rsa.pub` — the file name must match the
+  `<keyid>` from the member name `.SIGN.RSA.<keyid>`. Installs go WITHOUT
+  `--allow-untrusted`: the client verifies the index signature and installs
+  the package normally (`apk update`, `apk add`, `apk fetch` — exit 0;
+  live probe 195, alpine:3.21 apk-tools 2.14.6 and alpine:edge 3.0.7). A
+  key with a wrong format or name is ignored by apk and yields exactly
+  `UNTRUSTED signature` (the same probe's negative control).
+- **Public key:** `GET /repo/<name>/apk-key` (SPKI-PEM; the same instance
+  key as `GET /repo/<name>/xbps-key`).
 
 ## nix (binary cache)
 

@@ -14,19 +14,26 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// Пакет rsasha256 реализует port.RsaSigner для личных xbps-репозиториев
-// (Void Linux): detached-подпись каждого пакета <pkg>.sig2 — сырые байты
-// RSA PKCS#1 v1.5 поверх SHA-256-дайджеста файла (формат verifysig.c
-// xbps-rindex). Ключ инстанса — RSA-4096, PKCS#1 PEM (`RSA PRIVATE KEY`,
-// формат PEM_read_RSAPrivateKey xbps-rindex); публичная часть — SPKI-PEM
-// (`PUBLIC KEY`, PEM_write_bio_RSA_PUBKEY) для index-meta.plist и ручки
-// раздачи. Один ключ на инстанс, живёт в signing.keys_dir (KISS v1,
-// прецедент ed25519.go). Passphrase НЕ поддерживается (KISS; в отличие
-// от openpgp). Только stdlib: crypto/rsa + crypto/x509 + encoding/pem.
+// Пакет rsasha256 реализует port.RsaSigner для личных xbps- и
+// apk-репозиториев: detached-подписи каждого xbps-пакета <pkg>.sig2 (RSA
+// PKCS#1 v1.5/SHA-256 поверх дайджеста — формат verifysig.c xbps-rindex)
+// и <pkg>.sig (та же RSA-подпись, но DigestInfo обёрнут с OID SHA-1:
+// такую просит живой клиент Void при signature-type: rsa), а также
+// подпись ИНДЕКСА apk — tar-член `.SIGN.RSA.<keyid>` внутри
+// APKINDEX.tar.gz: RSA PKCS#1 v1.5 с SHA-1-DigestInfo поверх sha1
+// СЖАТЫХ байт второго gzip-члена (живая сверка по апстримному индексу
+// Alpine — постамбула сессии 195). Ключ инстанса — RSA-4096, PKCS#1 PEM
+// (`RSA PRIVATE KEY`, формат PEM_read_RSAPrivateKey xbps-rindex);
+// публичная часть — SPKI-PEM (`PUBLIC KEY`, PEM_write_bio_RSA_PUBKEY)
+// для index-meta.plist, ручек раздачи и ключа apk (/etc/apk/keys читает
+// PEM_read_bio_PUBKEY). Один ключ на инстанс, живёт в signing.keys_dir
+// (KISS v1, прецедент ed25519.go). Passphrase НЕ поддерживается (KISS;
+// в отличие от openpgp). Только stdlib: crypto/rsa + crypto/x509 +
+// encoding/pem.
 //
 // Ключ персистится в keys_dir/xbps-rsa.key (0600): первый старт —
 // генерация, повторные — загрузка (смена ключа молча инвалидировала бы
-// все ранее выданные .sig2 — прецедент ed25519).
+// все ранее выданные подписи — прецедент ed25519).
 
 package rsasha256
 
@@ -35,6 +42,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
@@ -66,6 +74,16 @@ const defaultBits = 4096
 // генератор stdlib отвергает такие значения).
 const minBits = 512
 
+// sha1DigestInfoPrefix — DigestInfo с OID SHA-1 (1.3.14.3.2.26) и телом в
+// 32 байта (SEQ len 0x2d = algid 11 + октет-заголовок 2 + 32): ровно такую
+// обёртку кладёт xbps в легаси-подпись `.sig` вокруг SHA-256-дайджеста
+// пакета. Живой факт (2026-10-01, подпись Void):
+// `openssl pkeyutl -verifyrecover` на `.sig` отдаёт
+// `302d300906052b0e03021a05000420` + 32 байта sha256(pkg). Строка, а не
+// []byte: package-level изменяемое состояние запрещено каноном, а строка
+// иммутабельна и складывается в срез через append.
+const sha1DigestInfoPrefix = "\x30\x2d\x30\x09\x06\x05\x2b\x0e\x03\x02\x1a\x05\x00\x04\x20"
+
 func init() {
 	// Compile-time регистрация фабрики xbps-подписчика в реестре: wire
 	// (cmd) находит по имени «rsasha256» и вызывает с cfg.Signing.
@@ -75,10 +93,11 @@ func init() {
 	})
 }
 
-// Compile-time: Signer реализует port.RsaSigner (SignSHA256/PublicKeyPEM).
+// Compile-time: Signer реализует port.RsaSigner (SignSHA256,
+// SignSHA256SHA1DigestInfo/PublicKeyPEM).
 var _ port.RsaSigner = (*Signer)(nil)
 
-// Signer — RSA-ключ инстанса для xbps .sig2-подписи. Иммутабелен после
+// Signer — RSA-ключ инстанса для xbps-подписей (`.sig2` и легаси `.sig`). Иммутабелен после
 // LoadOrGenerate/New: priv не мутируется, pubPEM — кешированный SPKI.
 // Методы безопасны к конкурентным вызовам на чтение.
 type Signer struct {
@@ -191,9 +210,53 @@ func (s *Signer) SignSHA256(_ context.Context, digest []byte) ([]byte, error) {
 	return sig, nil
 }
 
+// SignSHA256SHA1DigestInfo подписывает ТОТ ЖЕ 32-байтовый SHA-256-дайджест,
+// но оборачивает его в SHA-1-DigestInfo — формат легаси-подписи `.sig`
+// (xbps зовёт EVP_DigestSign с SHA-1 поверх уже свёрнутого дайджеста).
+// Обёртка собирается вручную: PKCS#1 v1.5 про DigestInfo не знает, а
+// crypto.Hash(0) подписывает переданные байты как есть. Следствие (не
+// ошибка): `openssl dgst -sha256 -verify` на такой подписи падает, а
+// `openssl pkeyutl -verifyrecover` показывает SHA-1-OID и дайджест внутри.
+func (s *Signer) SignSHA256SHA1DigestInfo(_ context.Context, digest []byte) ([]byte, error) {
+	if len(digest) != sha256.Size {
+		return nil, fmt.Errorf("rsasha256: дайджест длиной %d, хочу %d", len(digest), sha256.Size)
+	}
+	// DigestInfo = SHA-1-обёртка + сам дайджест: 47 байт, влезает в
+	// PKCS#1 v1.5 с любым ключом от minBits.
+	digestInfo := make([]byte, 0, len(sha1DigestInfoPrefix)+len(digest))
+	digestInfo = append(digestInfo, sha1DigestInfoPrefix...)
+	digestInfo = append(digestInfo, digest...)
+	sig, err := s.priv.Sign(nil, digestInfo, crypto.Hash(0))
+	if err != nil {
+		return nil, fmt.Errorf("rsasha256: подпись .sig: %w", err)
+	}
+	return sig, nil
+}
+
+// SignSHA1DigestInfo подписывает 20-байтовый SHA-1-дайджест, оборачивая
+// его в SHA-1-DigestInfo — формат подписи ИНДЕКСА apk (tar-член
+// `.SIGN.RSA.<keyid>`). apk-tools верифицирует её EVP_VerifyFinal с
+// SHA-1 (v2 src/package.c, v3 src/extract_v2.c — таблица типов «RSA» →
+// SHA-1), поэтому подписывается именно sha1, а не sha256. Обёртку
+// DigestInfo кладёт stdlib (rsa.SignPKCS1v15 с crypto.SHA1) — ровно те
+// 15 байт `3021300906052b0e03021a05000414`, что видны в
+// `openssl pkeyutl -verifyrecover` по апстримному `.sig` индекса Alpine
+// (живой факт 2026-10-01, постамбула сессии 195).
+func (s *Signer) SignSHA1DigestInfo(_ context.Context, digest []byte) ([]byte, error) {
+	if len(digest) != sha1.Size {
+		return nil, fmt.Errorf("rsasha256: дайджест длиной %d, хочу %d", len(digest), sha1.Size)
+	}
+	sig, err := rsa.SignPKCS1v15(nil, s.priv, crypto.SHA1, digest)
+	if err != nil {
+		return nil, fmt.Errorf("rsasha256: подпись индекса apk: %w", err)
+	}
+	return sig, nil
+}
+
 // PublicKeyPEM возвращает SPKI-PEM публичного ключа (`PUBLIC KEY`) —
-// для index-meta.plist и ручки раздачи /repo/<name>/xbps-key (сессия
-// 142). Возвращается копия: вызывающий волен мутировать.
+// для index-meta.plist, ручки раздачи /repo/<name>/xbps-key (сессия
+// 142) и ключа apk /repo/<name>/apk-key (сессия 195). Возвращается
+// копия: вызывающий волен мутировать.
 func (s *Signer) PublicKeyPEM() ([]byte, error) {
 	out := make([]byte, len(s.pubPEM))
 	copy(out, s.pubPEM)

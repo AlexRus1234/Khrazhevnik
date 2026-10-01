@@ -232,13 +232,18 @@ func BuildPublicRouter(d Deps) http.Handler {
 		}
 		// /repo/<name>/xbps-key — публичный RSA-ключ инстанса для
 		// xbps-клиентов (сверка fingerprint при TOFU-импорте, сессия
-		// 142). Отдан вне wildcard-роута: ключ берётся из RsaSigner
-		// напрямую. nil-RsaSigner — роут не регистрируется (404 от
-		// wildcard).
+		// 142); /repo/<name>/apk-key (сессия 195) — тот же ключ для
+		// /etc/apk/keys: apk ищет файл по имени keyid из tar-члена
+		// .SIGN.RSA.<keyid> индекса (docs/func/ru/ecosystems/apk.md —
+		// сохранять как khrazhevnik.rsa.pub). Отданы вне wildcard-роута:
+		// ключ берётся из RsaSigner напрямую. nil-RsaSigner — роуты не
+		// регистрируются (404 от wildcard).
 		if d.RsaSigner != nil {
-			xbpsKey := handleRepoXbpsKey(d)
-			r.Get("/repo/{name}/xbps-key", xbpsKey)
-			r.Head("/repo/{name}/xbps-key", xbpsKey)
+			rsaKey := handleRepoRSAKey(d)
+			r.Get("/repo/{name}/xbps-key", rsaKey)
+			r.Head("/repo/{name}/xbps-key", rsaKey)
+			r.Get("/repo/{name}/apk-key", rsaKey)
+			r.Head("/repo/{name}/apk-key", rsaKey)
 		}
 	}
 	if d.Cache != nil {

@@ -19,7 +19,7 @@
 // upstream Void: repo/<id>/xbps/ содержит только пакеты `<pkgver>.<arch>.xbps`
 // (upload клиента, publish лоуэркейсит путь) и генерируемые артефакты
 // `<arch>-repodata` (zstd+tar: index.plist / index-meta.plist / stage.plist)
-// и `<pkgver>.<arch>.xbps.sig2` (detached RSA-подпись, сессия 139).
+// плюс detached-подписи `<pkgver>.<arch>.xbps.sig2` и `.sig` (сессии 139/191).
 //
 // Группировка: индекс строится отдельно по каждой нативной архитектуре;
 // noarch-пакет входит в КАЖДУЮ arch-группу — клиент ищет пакет в
@@ -27,11 +27,13 @@
 // (только noarch), arch-групп нет и repodata не генерируется: клиенту
 // такая раздача всё равно непригодна (Void не имеет noarch-индекса).
 //
-// Подпись: каждый .xbps получает `.sig2` — RSA PKCS#1 v1.5/SHA-256 по
-// дайджесту тела; публичный ключ инстанса встраивается в index-meta.plist
-// (TOFU-импорт клиентом). Без RsaSigner (wire не слинковал модуль или
-// подписчик выключен) репо деградирует как apk без Signer: repodata
-// генерируется, index-meta пуст, `.sig2` не эмитятся.
+// Подпись: каждый .xbps получает ОБЕ detached-подписи — `.sig2` (RSA
+// PKCS#1 v1.5/SHA-256 по дайджесту тела) и легаси `.sig` (тот же дайджест
+// в SHA-1-DigestInfo; ровно её запрашивает живой клиент); публичный ключ
+// инстанса встраивается в index-meta.plist (TOFU-импорт клиентом). Без
+// RsaSigner (wire не слинковал модуль или подписчик выключен) репо
+// деградирует как apk без Signer: repodata генерируется, index-meta пуст,
+// подписи не эмитятся.
 //
 // Атомарность v1 — перезапись ключей после полной генерации в памяти
 // (окно рассинхрона ~секунды, образец apk/gen.go). Отмена ctx
@@ -66,6 +68,14 @@ const (
 	// pkgSuffix — расширение пакета; единственный объект, который
 	// клиент вправе загрузить в личный xbps-репо.
 	pkgSuffix = ".xbps"
+	// sig2Suffix — штатная detached-подпись xbps: RSA PKCS#1 v1.5/SHA-256
+	// по дайджесту пакета (формат xbps-rindex).
+	sig2Suffix = ".sig2"
+	// sigSuffix — легаси-подпись Void: та же RSA-подпись, но с
+	// SHA-1-DigestInfo вокруг SHA-256-дайджеста. Живой клиент
+	// (`signature-type: rsa`) просит именно `.sig` — без него установка
+	// падает на 404, хотя `.sig2` лежит рядом.
+	sigSuffix = ".sig"
 	// repodataSuffix — суффикс генерируемого индекса архитектуры
 	// (`<arch>-repodata`).
 	repodataSuffix = "-repodata"
@@ -97,8 +107,8 @@ type Generator struct {
 var _ port.RsaSignerInjector = (*Generator)(nil)
 
 // SetRsaSigner внедряет xbps-подписчик: после repodata генератор
-// эмитит `<pkgver>.<arch>.xbps.sig2` (detached) и встраивает публичный
-// ключ в index-meta.plist. nil — индексы без ключа, `.sig2` нет.
+// эмитит `<pkgver>.<arch>.xbps.sig2` и `.sig` (detached) и встраивает
+// публичный ключ в index-meta.plist. nil — индексы без ключа, подписей нет.
 func (g *Generator) SetRsaSigner(s port.RsaSigner) { g.rsa = s }
 
 // Name — имя экосистемы, совпадает с Adapter.Name.
@@ -106,8 +116,9 @@ func (g *Generator) Name() string { return Name }
 
 // ValidateObjectPath принимает только плоские `*.xbps` без каталогов:
 // лэйаут Void плоский (нет pool/dists). Генерируемые `<arch>-repodata`
-// и `.sig2` клиенту закрыты — равно как и любые вложенные пути
-// (`foo/bar.xbps` не .xbps-объект в корне).
+// и подписи (`.sig2`/`.sig`) клиенту закрыты — равно как и любые
+// вложенные пути (`foo/bar.xbps` не .xbps-объект в корне). Тот же
+// суффикс-барьер закрывает и `.sig` — отдельной ветки ему не нужно.
 func (g *Generator) ValidateObjectPath(p string) error {
 	if p == "" {
 		return &domain.ValidationError{What: "путь xbps-репо", Value: p, Reason: "пустой"}
@@ -132,8 +143,8 @@ func (g *Generator) ValidateObjectPath(p string) error {
 // (точек в именах архитектур Void нет), без него имя неканонично —
 // ok=false. Мусорный pkgver — тоже ok=false: версию ретеншн не тронет,
 // а падать на одном битом объекте не должен. Генерируемые
-// `<arch>-repodata` и `.sig2` — ok=false. Регистр имени сохраняем:
-// Mustache и Gifsicle в Void реальны.
+// `<arch>-repodata` и подписи (`.sig2`/`.sig`) — ok=false. Регистр имени
+// сохраняем: Mustache и Gifsicle в Void реальны.
 func (g *Generator) ObjectFamily(p string) (string, bool) {
 	if !strings.HasSuffix(p, pkgSuffix) {
 		return "", false
@@ -161,8 +172,8 @@ type pkgRecord struct {
 }
 
 // GenerateIndexes обходит `.xbps`, читает props.plist каждого, собирает
-// `<arch>-repodata` (noarch — в каждую группу) и `.sig2` на каждый
-// пакет. Прогресс — фазы enumerate/read/index/sign.
+// `<arch>-repodata` (noarch — в каждую группу) и подписи `.sig2`+`.sig`
+// на каждый пакет. Прогресс — фазы enumerate/read/index/sign.
 //
 //nolint:gocyclo // enumerate → read → index → sign — линейные фазы
 func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, storage port.Storage, p port.RepoProgress) error {
@@ -203,8 +214,17 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 		return err
 	}
 
+	// Фаза 2.5: дедуп по имени пакета — в index.plist не более одной записи
+	// на PkgName (детали и «почему» — в dedupeRecords). Storage не чистится:
+	// несколько версий одного пакета — штатное состояние (retention/пины),
+	// поэтому фаза 4 подписывает ВСЕ найденные пакеты, а не только те, что
+	// остались в индексе: файл лежит в storage, и подпись к нему нужна.
+	before := len(records)
+	indexRecords := dedupeRecords(records, p)
+	p.Log(fmt.Sprintf("xbps.gen: дедуп по имени: отброшено %d из %d записей", before-len(indexRecords), before))
+
 	// Фаза 3: per-arch repodata.
-	groups := groupByArch(records)
+	groups := groupByArch(indexRecords)
 	archs := sortedArchs(groups)
 	p.Update("index", repo.Name, 0, int64(len(archs)))
 	for i, arch := range archs {
@@ -227,23 +247,33 @@ func (g *Generator) GenerateIndexes(ctx context.Context, repo domain.Repo, stora
 		p.Log(fmt.Sprintf("xbps.gen: %s записан (%d записей)", key, len(groups[arch])))
 	}
 
-	// Фаза 4: .sig2 на каждый пакет (дайджест уже посчитан при чтении).
+	// Фаза 4: подписи на каждый пакет (дайджест уже посчитан при чтении):
+	// `.sig2` (PKCS#1 v1.5/SHA-256, формат xbps-rindex) и легаси `.sig`
+	// (тот же дайджест в SHA-1-DigestInfo — её просит живой клиент).
+	// Два вызова подписчика на пакет: дайджест один, обёртки разные.
 	if g.rsa != nil {
 		p.Update("sign", repo.Name, 0, int64(len(records)))
 		for i, rec := range records {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			sig, err := g.rsa.SignSHA256(ctx, rec.digest)
+			sig2, err := g.rsa.SignSHA256(ctx, rec.digest)
 			if err != nil {
 				return fmt.Errorf("xbps.gen: %s: подпись: %w", rec.key, err)
 			}
-			if err := writeAtomic(ctx, storage, rec.key+".sig2", sig); err != nil {
-				return fmt.Errorf("xbps.gen: %s.sig2: %w", rec.key, err)
+			if err := writeAtomic(ctx, storage, rec.key+sig2Suffix, sig2); err != nil {
+				return fmt.Errorf("xbps.gen: %s%s: %w", rec.key, sig2Suffix, err)
+			}
+			sig, err := g.rsa.SignSHA256SHA1DigestInfo(ctx, rec.digest)
+			if err != nil {
+				return fmt.Errorf("xbps.gen: %s: подпись %s: %w", rec.key, sigSuffix, err)
+			}
+			if err := writeAtomic(ctx, storage, rec.key+sigSuffix, sig); err != nil {
+				return fmt.Errorf("xbps.gen: %s%s: %w", rec.key, sigSuffix, err)
 			}
 			p.Update("sign", repo.Name, int64(i+1), int64(len(records)))
 		}
-		p.Log("xbps.gen: пакеты подписаны")
+		p.Log("xbps.gen: пакеты подписаны (.sig2 и .sig)")
 	}
 	p.Log("xbps.gen: индексы записаны")
 	return nil
@@ -310,6 +340,45 @@ func readPackage(ctx context.Context, storage port.Storage, key string) (pkgReco
 	return pkgRecord{key: key, props: props, digest: h.Sum(nil), size: counter.n}, nil
 }
 
+// dedupeRecords оставляет по одной записи на PkgName: из нескольких версий
+// в index.plist попадает новейшая по CompareXbpsVer, прочие отбрасываются —
+// но остаются в storage (retention/пины) и подписываются как обычно.
+//
+// Почему: index.plist — словарь pkgname → поля, и клиент (proplib/libxbps)
+// вставляет записи по ключу: вторая запись с тем же именем молча перекрывает
+// первую, а какую именно версию он в итоге видит — решает порядок ключей в
+// XML, то есть лексический порядок ключей storage, а не порядок версий.
+// Живая проба 2026-10-01: репо с `lxc-loc-7.0.9_1` и `lxc-loc-7.0.10_1`
+// клиент показал как `7.0.9_1` (`xbps-query -R`), то есть СТАРУЮ версию, и
+// транзакция пошла ставить именно её. Эталон upstream (`xbps-rindex`,
+// bin/xbps-rindex/index-add.c) сравнивает версии через xbps_cmpver и держит
+// в индексе ровно одну запись на имя — повторяем его порядок.
+//
+// Иммутабельность: входной срез не правится, собирается новый. Порядок
+// записей (и, значит, лог) детерминирован: вход отсортирован по ключам
+// storage (collectPackages), выбор — функцией сравнения, а не map.
+func dedupeRecords(records []pkgRecord, p port.RepoProgress) []pkgRecord {
+	out := make([]pkgRecord, 0, len(records))
+	byName := make(map[string]int, len(records))
+	for _, rec := range records {
+		name := rec.props.PkgName
+		idx, seen := byName[name]
+		if !seen {
+			byName[name] = len(out)
+			out = append(out, rec)
+			continue
+		}
+		kept := out[idx]
+		if CompareXbpsVer(rec.props.PkgVer, kept.props.PkgVer) > 0 {
+			out[idx] = rec
+			p.Log(fmt.Sprintf("xbps.gen: дедуп: %s: %s → %s", name, kept.props.PkgVer, rec.props.PkgVer))
+			continue
+		}
+		p.Log(fmt.Sprintf("xbps.gen: дедуп: %s: отброшена %s (в индексе %s)", name, rec.props.PkgVer, kept.props.PkgVer))
+	}
+	return out
+}
+
 // groupByArch раскладывает пакеты по нативным архитектурам; noarch
 // дублируется в каждую группу (клиент ищет пакет в repodata своей
 // архитектуры). Набор нативных архитектур определяется самими
@@ -362,7 +431,7 @@ func renderIndex(entries []IndexOut) ([]byte, error) {
 // buildMetaPlist собирает index-meta.plist. С подписчиком — публичный
 // ключ (base64-PEM data-элемент), его размер и маркеры generator/signature;
 // без подписчика — пустой словарь (деградация без ключа, образец apk
-// nil-Signer: repodata есть, ключа и .sig2 нет).
+// nil-Signer: repodata есть, ключа и подписей нет).
 func (g *Generator) buildMetaPlist() ([]byte, error) {
 	var buf bytes.Buffer
 	if _, err := io.WriteString(&buf, xml.Header+plistDoctype); err != nil {

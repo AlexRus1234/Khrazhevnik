@@ -24,7 +24,8 @@ scoped-токен `repo:<id>:write`) и `POST /api/v1/repos/{id}/reindex`
 (фоновая задача генерации индексов). Чтение публичное: `GET /repo/<name>/*`
 на порту :29202.
 
-Поддерживаемые экосистемы v1: apt, rpm-md, pacman, apk, nix. Каждая имеет
+Поддерживаемые экосистемы v1: apt, rpm-md, pacman, apk, nix, xbps (список
+доступных отдаёт `GET /api/v1/ecosystems`). Каждая имеет
 свой генератор индексов (`mod/ecosystem/*/gen.go`, сессии 14/16) и
 опциональную подпись метаданных ключом инстанса (сессия 15/16).
 Настройка клиентов по экосистемам — в [ecosystems/](ecosystems/);
@@ -172,7 +173,11 @@ per-repo (поле `retention` в `POST`/`PATCH /api/v1/repos/{id}` или па�
   `.pkg.tar.xz`/`.gz` не принимаются (400): нет xz/gz-декодера в
   whitelist зависимостей — переупакуйте в zst.
 - **Индексы (reindex):** `<repo.Name>.db` (tar.zst с
-  `<name>-<ver>/desc`-записями) + `<repo.Name>.db.sig` (detached,
+  `<name>-<ver>/desc`-записями; в `.db` не более одной записи на имя
+  пакета — из нескольких версий в индекс попадает новейшая по
+  `epoch:ver-rel` (семантика `alpm_pkg_vercmp`), старые остаются в
+  storage и защищаются retention/пинами; `repo-add` upstream ведёт себя
+  так же) + `<repo.Name>.db.sig` (detached,
   ключом инстанса OpenPGP).
 - **Клиент:** `/etc/pacman.conf`:
   ```ini
@@ -190,17 +195,31 @@ per-repo (поле `retention` в `POST`/`PATCH /api/v1/repos/{id}` или па�
 
 ## apk (Alpine)
 
-- **Upload:** `.apk` где угодно под корнем репо; `APKINDEX.tar.gz` —
-  генерируется, upload туда запрещён.
-- **Индексы (reindex):** `APKINDEX.tar.gz` (gzip+tar с файлом `APKINDEX`
-  в формате «K:V» — C/P/V/A/F/...) + `APKINDEX.tar.gz.sig` (detached,
-  ключом инстанса OpenPGP).
+- **Upload:** `.apk` в каталог своей архитектуры — `<arch>/<файл>.apk`
+  (`arch` из `.PKGINFO`); `arch = noarch` — в каталог `noarch/`. Прочие
+  пути (в том числе корень репо) — 400.
+- **Индексы (reindex):** по одному на архитектуру —
+  `<arch>/APKINDEX.tar.gz` (gzip+tar с файлом `APKINDEX` в формате
+  «K:V» — C/P/V/A/F/...) с подписью ВНУТРИ файла: первым gzip-членом tar
+  с единственным членом `.SIGN.RSA.khrazhevnik.rsa.pub` (RSA PKCS#1 v1.5
+  над SHA-1-DigestInfo от sha1 СЖАТЫХ байт телесного члена), архив один
+  и непрерывный через границу членов; отдельного `.sig` нет — apk его не
+  запрашивает (на CDN Alpine он тоже 404); `noarch`-записи входят в
+  индекс каждой архитектуры. Индекс в корне репо не генерируется.
 - **Клиент:** `/etc/apk/repositories`:
   ```
   http://<хражевник>:29202/repo/alice
   ```
-  Ключ `GET /repo/alice/key.asc` копируется в `/etc/apk/keys/`.
-- **Публичный ключ:** `GET /repo/<name>/key.asc` (armored OpenPGP).
+  Архитектуру клиент подставляет сам. Ключ `GET /repo/alice/apk-key`
+  (SPKI-PEM) копируется в `/etc/apk/keys/khrazhevnik.rsa.pub` — имя файла
+  обязано совпадать с `<keyid>` из имени члена `.SIGN.RSA.<keyid>`.
+  Установка идёт БЕЗ `--allow-untrusted`: клиент проверяет подпись
+  индекса и ставит пакет как обычно (`apk update`, `apk add`, `apk fetch`
+  — exit 0; живая проба 195, alpine:3.21 apk-tools 2.14.6 и alpine:edge
+  3.0.7). Ключ с неверным форматом или именем apk игнорирует и даёт ровно
+  `UNTRUSTED signature` (негативный контроль той же пробы).
+- **Публичный ключ:** `GET /repo/<name>/apk-key` (SPKI-PEM; тот же ключ
+  инстанса, что `GET /repo/<name>/xbps-key`).
 
 ## nix (binary cache)
 

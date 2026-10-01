@@ -68,9 +68,10 @@ const (
 )
 
 // xbpsMirrorUp — httptest-upstream: два arch-индекса с общим noarch,
-// тела пакетов и их .sig2. Счётчик запросов по путям — для контроля
-// resume-diff (повторный sync) и noarch-дедупа. Флаг poison подменяет
-// тело одного пакета на несоответствующее sha256 индекса.
+// тела пакетов и их подписи (.sig2 и легаси .sig — у Void лежат оба).
+// Счётчик запросов по путям — для контроля resume-diff (повторный sync)
+// и noarch-дедупа. Флаг poison подменяет тело одного пакета на
+// несоответствующее sha256 индекса.
 type xbpsMirrorUp struct {
 	mu       sync.Mutex
 	requests map[string]int
@@ -98,6 +99,8 @@ func newXbpsMirrorUp(t *testing.T) *xbpsMirrorUp {
 	} {
 		u.files[f.path] = f.body
 		u.files[f.path+".sig2"] = []byte("SIG2:" + f.path)
+		// Легаси-подпись Void: зеркало забирает её наравне с .sig2.
+		u.files[f.path+".sig"] = []byte("SIG1:" + f.path)
 	}
 	// pkgver в индексе — полный (<name>-<version>_<rev>): Enumerate
 	// строит имя файла из pkgver+architecture, а не из ключа словаря.
@@ -345,8 +348,9 @@ func (e *xbpsMirrorEnv) publicGet(path, wantCache string) []byte {
 }
 
 // TestMirrorSyncXbpsSingleArchAndResume — сценарии (a)/(b): sync качает
-// все x86_64-пакеты, noarch и .sig2 (repodata — mutable), повторный sync
-// не делает ни одного upstream-запроса (resume-diff по Stat).
+// все x86_64-пакеты, noarch и подписи (.sig2 + легаси .sig; repodata —
+// mutable), повторный sync не делает ни одного upstream-запроса
+// (resume-diff по Stat).
 func TestMirrorSyncXbpsSingleArchAndResume(t *testing.T) {
 	up := newXbpsMirrorUp(t)
 	env := newXbpsMirrorEnv(t, up.srv)
@@ -359,9 +363,9 @@ func TestMirrorSyncXbpsSingleArchAndResume(t *testing.T) {
 	// объект лежит в storage; upstream для отдачи не нужен), repodata
 	// закеширована как mutable.
 	for _, f := range []string{
-		xbpsMirrorHello, xbpsMirrorHello + ".sig2",
-		xbpsMirrorPoison, xbpsMirrorPoison + ".sig2",
-		xbpsMirrorNoarch, xbpsMirrorNoarch + ".sig2",
+		xbpsMirrorHello, xbpsMirrorHello + ".sig2", xbpsMirrorHello + ".sig",
+		xbpsMirrorPoison, xbpsMirrorPoison + ".sig2", xbpsMirrorPoison + ".sig",
+		xbpsMirrorNoarch, xbpsMirrorNoarch + ".sig2", xbpsMirrorNoarch + ".sig",
 		"/x86_64-repodata",
 	} {
 		path := "/xbps/void" + f

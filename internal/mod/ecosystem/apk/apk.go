@@ -376,11 +376,16 @@ func classifyRules() []rawRule {
 		// Immutable: .apk пакеты (content-addressed по имени+версии).
 		{"**/*.apk", "", immutable},
 		// Mutable{TTL 5m}: APKINDEX — индекс репозитория, меняется при
-		// каждом apk-update. tar.gz — текущий формат (v2/v3); .json —
-		// задел для apk v3 (когда Alpine стабилизирует формат).
+		// каждом apk-update. tar.gz — текущий формат (v2/v3); .json — задел
+		// для apk v3 (когда Alpine стабилизирует формат).
 		{"**/APKINDEX.tar.gz", "", indexMutable},
 		{"**/APKINDEX.json", "", indexMutable},
-		// подписи индекса (если репо подписано).
+		// Отдельные файлы подписей индекса: живой apk их НЕ запрашивает —
+		// подпись индекса едет внутри APKINDEX.tar.gz tar-членом
+		// .SIGN.RSA.<keyid> (сессия 195, генератор .sig не пишет). Правила
+		// оставлены для уже лежащих в хранилище объектов прошлых версий и
+		// на случай, если upstream отдаст такой путь: класс тот же, что у
+		// индекса.
 		{"**/APKINDEX.tar.gz.sig", "", indexMutable},
 		{"**/APKINDEX.json.sig", "", indexMutable},
 		// Mutable{TTL 1h}: публичные ключи разработчиков Alpine (редко

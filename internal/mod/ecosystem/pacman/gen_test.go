@@ -945,3 +945,106 @@ func TestReadPkgInfoCancelMidStream(t *testing.T) {
 		t.Errorf("доставлено %d байт — члены после первого не должны читаться", g.served)
 	}
 }
+
+// TestGenerateIndexesDedupByName — контракт .db: не более одной записи на
+// %NAME%. Хранение нескольких версий одного пакета — штатное состояние
+// (retention/пины), но вторая запись того же имени ломает pacman:
+// libalpm переиспользует alpm_pkg первой записи (be_sync.c
+// load_pkg_for_entry), сверка файла с индексом даёт «version mismatch on
+// package …» — пакет не ставится ни `-S`, ни `-Sy`. В индекс обязана
+// попадать новейшая версия по alpm_pkg_vercmp, старые остаются в storage.
+func TestGenerateIndexesDedupByName(t *testing.T) {
+	t.Parallel()
+	moment := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	pkgs := []struct{ file, name, ver string }{
+		// Четыре версии одного имени, включая epoch-версию.
+		{"foo-1.0.0-1-x86_64.pkg.tar.zst", "foo", "1.0.0-1"},
+		{"foo-1.0.0-2-x86_64.pkg.tar.zst", "foo", "1.0.0-2"},
+		{"foo-2.0.0-1-x86_64.pkg.tar.zst", "foo", "2.0.0-1"},
+		{"foo-1:1.0.0-1-x86_64.pkg.tar.zst", "foo", "1:1.0.0-1"},
+		// Имя с дефисами — две версии.
+		{"python-pysocks-1.7.1-1-any.pkg.tar.zst", "python-pysocks", "1.7.1-1"},
+		{"python-pysocks-1.7.1-2-any.pkg.tar.zst", "python-pysocks", "1.7.1-2"},
+		// Второе имя с одной версией — остаётся как есть.
+		{"bar-2.3-4-aarch64.pkg.tar.zst", "bar", "2.3-4"},
+	}
+	for _, p := range pkgs {
+		putPkg(t, storage, repo, p.file, "pkgname = "+p.name+"\npkgver = "+p.ver+"\narch = x86_64\n")
+	}
+	rec := &recordingProgress{}
+	if err := (&Generator{}).GenerateIndexes(context.Background(), repo, storage, rec); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+	db := readStorage(t, storage, "repo/1/pacman/alice.db")
+
+	// Ассерты контракта — по содержимому .db (парсинг), не по внутренним
+	// срезам генератора. epoch 1 старше epoch 0: 1:1.0.0-1 > 2.0.0-1.
+	wantVers := map[string]string{
+		"foo":            "1:1.0.0-1",
+		"python-pysocks": "1.7.1-2",
+		"bar":            "2.3-4",
+	}
+	entries, err := collectDB(ParseDB(bytes.NewReader(db)))
+	if err != nil {
+		t.Fatalf("ParseDB: %v", err)
+	}
+	vers := map[string][]string{}
+	for _, e := range entries {
+		vers[e.Name] = append(vers[e.Name], e.Version)
+	}
+	if len(vers) != len(wantVers) {
+		t.Errorf("имён в .db: %d (%v), хочу %d", len(vers), vers, len(wantVers))
+	}
+	for name, want := range wantVers {
+		got := vers[name]
+		if len(got) != 1 {
+			t.Errorf("%s: в .db %d записей (%v), хочу одну", name, len(got), got)
+			continue
+		}
+		if got[0] != want {
+			t.Errorf("%s: версия %q, хочу %q", name, got[0], want)
+		}
+	}
+	// Полнота архива: на каждое имя — ровно одна desc-запись, каталогов
+	// отброшенных версий в tar не остаётся.
+	if dirs := dbDescDirs(t, db); len(dirs) != len(wantVers) {
+		t.Errorf("desc-записей в tar: %d (%v), хочу %d", len(dirs), dirs, len(wantVers))
+	}
+	// Отброшенная версия названа в логе (имя: старая → новая).
+	if !slices.ContainsFunc(rec.logs, func(s string) bool {
+		return strings.Contains(s, "foo") && strings.Contains(s, "1.0.0-1")
+	}) {
+		t.Errorf("лог не сообщает об отброшенной версии: %v", rec.logs)
+	}
+	// Дедуп не чистит storage: старая версия остаётся (retention/пины).
+	if _, err := storage.Get(context.Background(), "repo/1/pacman/foo-1.0.0-1-x86_64.pkg.tar.zst"); err != nil {
+		t.Errorf("старая версия исчезла из storage: %v", err)
+	}
+}
+
+// dbDescDirs — каталоги desc-записей в .db (zstd → tar).
+func dbDescDirs(t *testing.T, dbBytes []byte) []string {
+	t.Helper()
+	zr, err := zstd.NewReader(bytes.NewReader(dbBytes))
+	if err != nil {
+		t.Fatalf("zstd.NewReader: %v", err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+	var dirs []string
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar.Next: %v", err)
+		}
+		if name := strings.TrimPrefix(hdr.Name, "./"); strings.HasSuffix(name, "/desc") {
+			dirs = append(dirs, strings.TrimSuffix(name, "/desc"))
+		}
+	}
+	return dirs
+}

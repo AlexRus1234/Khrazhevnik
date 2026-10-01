@@ -26,6 +26,135 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-10-01
+
+### Added
+
+- **Mirror (xbps):** the legacy `.sig` signature is pulled from upstream
+  alongside `.sig2` (Enumerate): every Void package has both, and a live
+  client requests `.sig` — without it a synced mirror serves a package that
+  cannot be installed.
+
+### Fixed
+
+- **Personal repos (apk):** the index signature was not accepted by the
+  client — `apk update` against a personal repository without
+  `--allow-untrusted` printed
+  `WARNING: updating and opening <repo>: UNTRUSTED signature` (exit 2 in
+  apk-tools 2.14.6 / 1 in 3.0.7), so the flag was mandatory. Cause: the
+  generator wrote a detached `APKINDEX.tar.gz.sig` signed with the armored
+  OpenPGP key, and apk-tools never requests such a file at all (on the
+  Alpine CDN `APKINDEX.tar.gz.sig` is a 404: the signature sits as the
+  first tar member INSIDE `APKINDEX.tar.gz`). The generator now signs the
+  index in the apk format: the first gzip member is a tar with the single
+  member `.SIGN.RSA.khrazhevnik.rsa.pub` (RSA PKCS#1 v1.5 over the SHA-1
+  DigestInfo of the sha1 of the COMPRESSED bytes of the second, body member
+  — byte-for-byte as in the Alpine reference, checked with
+  `openssl pkeyutl -verifyrecover` on the edge/main/x86_64 index), the
+  second is the index itself; the trailing zero blocks of tar stay in the
+  body only — the archive must be ONE continuous tar, otherwise the parser
+  sees just the signature and the index is empty. The client key is served
+  by the new `GET /repo/<name>/apk-key` endpoint (SPKI-PEM, the same value
+  as `xbps-key`); the file goes into `/etc/apk/keys/` under a name equal to
+  the keyid from the member name. Live probe (2026-10-01, alpine:3.21
+  apk-tools 2.14.6 and alpine:edge 3.0.7): `apk update`, `apk add tree`,
+  `apk fetch` — exit 0 WITHOUT the flag; the same client without the
+  imported key yields exactly `UNTRUSTED signature` (negative control).
+- **Personal repos (apk):** the APKINDEX entry's `C:` field was computed
+  over the WHOLE `.apk`, while apk-tools reads it as the sha1 of the
+  COMPRESSED bytes of the control section (`Q1` + base64, the gzip member
+  carrying `./.PKGINFO`) — installing a package from a personal repository
+  failed on the checksum: `BAD signature` (apk-tools 2.14.6) /
+  `v2 package integrity error` (3.0.7). The generator now walks the `.apk`
+  gzip members byte-exactly (`gzip.Multistream(false)` over an exact byte
+  reader: `flate` only pulls bytes via `ReadByte`/`ReadFull` of a known
+  length and never reads ahead), hashes the compressed bytes of the control
+  member and writes `Q1` + base64; `S:` stays the size of the whole file and
+  the decompression cap is shared across members (a multi-member bomb cannot
+  bypass it). Live check (2026-10-01): `C:` of a real `tree-2.2.1-r0` from
+  alpine v3.21 matched the upstream APKINDEX verbatim, and `apk add` from a
+  personal repository in alpine:3.21 and alpine:edge — `exit 0` (the package
+  installs and runs).
+- **Personal repos (apk):** `apk update` against a personal repository did
+  not work — the client requests the index strictly at
+  `<repo-url>/<arch>/APKINDEX.tar.gz`, while the generator wrote it to the
+  repository root: 404, `2 unavailable`, `UPDATE_EXIT=2`. The layout now
+  follows the apk-tools URL contract (live probe 2026-10-01, alpine:3.21
+  apk-tools 2.14.6 and alpine:edge 3.0.7): the client takes the package
+  directory from the entry's `A:` field (i.e. from `.PKGINFO` `arch`) and
+  the file name from `basename(F:)`, ignoring the directory inside `F:`
+  itself; the `noarch/` directory index is never requested by the client.
+  A package therefore goes into the directory of its architecture
+  (`<arch>/<file>.apk`, any other path — 400), the index is written per
+  architecture (`<arch>/apkindex.tar.gz` + `.sig`), and `noarch` packages
+  are listed in every arch index (the client fetches the file from
+  `/noarch/`). Packages outside their architecture directory are not
+  indexed; the fact goes to the reindex log. The root index is no longer
+  generated; a previously written one is not deleted. `apk update
+  --allow-untrusted` from a personal repo — `exit 0` on a live client.
+- **Personal repos (xbps):** `xbps-install` from a personal repo failed
+  downloading the signature — `ERROR: [trans] failed to download
+  '<pkgver>' signature … Not Found`, `INSTALL_EXIT=16`. A client with
+  `signature-type: rsa` asks for `<pkgver>.<arch>.xbps.sig`, while the
+  generator emitted only `.sig2`, and the client has no fallback. Reindex
+  now writes BOTH signatures for every package: `.sig2` (RSA PKCS#1
+  v1.5/SHA-256, the `xbps-rindex` format) and the legacy `.sig` — the same
+  RSA signature with a SHA-1 DigestInfo (OID `1.3.14.3.2.26`) wrapped
+  around the package's SHA-256 digest. The `port.RsaSigner` port gained a
+  second method `SignSHA256SHA1DigestInfo` (zero-hash PKCS#1 v1.5 over a
+  hand-built DigestInfo); the byte contract is pinned to a live Void
+  signature (`openssl pkeyutl -verifyrecover` → `30 2d 30 09 06 05 2b 0e 03
+  02 1a 05 00 04 20` + `sha256(package)`). `openssl dgst -sha256 -verify`
+  on `.sig` legitimately fails with `bad signature`: that is not a format
+  error.
+- **Personal repos (web UI):** the "Delete" button next to a package did
+  nothing. The SPA sent the full storage key from the listing
+  (`repo/<id>/<eco>/…`) to `DELETE /repos/{id}/objects/*`, while the
+  publish engine prepends the `repo/<id>/<eco>/` prefix itself
+  (`keyFor`) — the request hit a non-existent key
+  `repo/<id>/<eco>/repo/<id>/<eco>/…` and got 404 `not_found`. The URL now
+  carries the in-repo path (`pool/…`), as on upload; the API contract is
+  unchanged. The regression is covered by an e2e case (deleting an object
+  with the button) in `web/e2e/smoke.spec.ts`.
+- **Personal repos (pacman):** `<repo>.db` got one entry per
+  `.pkg.tar.zst`, so two versions of the same package in storage broke
+  `pacman -S` for every client: libalpm reuses the `alpm_pkg` of the
+  first entry (the second overwrites `%FILENAME%`/checksums while
+  `%VERSION%` stays from the first), and the file-to-index check fails
+  with "database is inconsistent: version mismatch on package …". The
+  index now holds at most one entry per package name — the newest by
+  `epoch:ver-rel` (semantics of `alpm_pkg_vercmp`, comparator
+  `internal/mod/ecosystem/pacman/vercmp.go`); older versions stay in
+  storage and are protected by retention/pins. The invariant is
+  documented in `docs/func/EN/personal-repos.md`.
+- **Personal repos (xbps):** `<arch>-repodata` got one entry per `.xbps` —
+  two identical `<key>PkgName</key>` keys in one `index.plist`
+  dictionary (an invalid plist), and the winning version was decided by
+  the lexical order of storage keys rather than by version order: a live
+  `xbps-query`/`xbps-install` run against a repo holding
+  `lxc-loc-7.0.10_1` and `lxc-loc-7.0.9_1` showed the OLDER `7.0.9_1`
+  (the client silently keeps the last dictionary entry with that key).
+  The index now holds at most one entry per `PkgName` — the newest by the
+  xbps version comparator
+  (`internal/mod/ecosystem/xbps/vercmp.go`, a port of the client's
+  `xbps_cmpver`/dewey); older versions stay in storage and are protected
+  by retention/pins. The invariant is documented in
+  `docs/func/EN/ecosystems/xbps.md`.
+- **Personal repos (xbps):** reindex COULD NOT succeed on any real Void
+  package — `.xbps` was parsed as an `ar` archive that is not there:
+  `xbps-create` packs a tar (zstd by default since 0.59, gzip, or raw)
+  holding `./props.plist`, `./files.plist`, and the payload, so
+  `OpenPackage` on a live `Mustache-4.1_1.x86_64.xbps` answered "invalid
+  ar archive: signature `./props.`" (`ErrPropsMissing`) and a live client
+  could not populate a personal xbps repo at all. Parsing moved to
+  `archive/tar`: only the `./props.plist` entry is read (the canonical
+  `xbps-create` prefix), the payload is skipped streamingly, and the
+  1 GiB decompression / 1 MiB `props.plist` caps are kept; `ErrBadAr` is
+  renamed to `ErrBadPackage` ("invalid package container" semantics).
+  Tests, fuzzing, and fixtures moved to a real `.xbps` (upstream bytes in
+  `testdata/` pinned by sha256). Hard limits are unchanged: xz is still
+  `ErrUnsupportedCompression`.
+
 ## [1.3.1] — 2026-09-30
 
 ### Fixed

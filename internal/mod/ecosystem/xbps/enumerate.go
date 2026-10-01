@@ -17,16 +17,16 @@
 // Enumerate зеркала xbps: по include-архитектурам (у Void нет корневого
 // индекса архов, перечислить «вообще все» нельзя — пустой Include
 // ValidationError) разбирает `<arch>-repodata` и собирает пути пакетов
-// `<pkgver>.<arch>.xbps` + их подписей `.sig2`. Имя файла в индексе
-// отсутствует — путь достраивается Filename() (libxbps строит имя так
-// же). noarch-пакеты входят в каждый arch-индекс, поэтому пути
+// `<pkgver>.<arch>.xbps` + их подписей `.sig2` и `.sig`. Имя файла в
+// индексе отсутствует — путь достраивается Filename() (libxbps строит имя
+// так же). noarch-пакеты входят в каждый arch-индекс, поэтому пути
 // дедуплицируются seen-картой. `<arch>-repodata` в список НЕ входит:
 // это mutable-объект, его кеширует движок через MetaFetcher (образец
 // apk: APKINDEX не в Enumerate).
 //
 // Побочный эффект — наполнение таблицы чексумм remote из поля
 // filename-sha256: после успешного sync прокси-ветка (Resolve) сверяет
-// скачанные .xbps с индексом; `.sig2` и кривой/отсутствующий sha256 —
+// скачанные .xbps с индексом; подписи и кривой/отсутствующий sha256 —
 // честная деградация к Content-Length, не ошибка.
 
 package xbps
@@ -176,12 +176,13 @@ func (a *Adapter) enumerateArch(ctx context.Context, meta port.MetaFetcher, remo
 	if parseErr != nil {
 		return nil, fmt.Errorf("xbps: parse %s-repodata: %w", arch, parseErr)
 	}
-	// Второй проход: подпись `.sig2` рядом с каждым пакетом. Дедуп —
-	// на уровне Enumerate.
-	out := make([]string, 0, len(pkgs)*2)
+	// Второй проход: подписи `.sig2` и легаси `.sig` рядом с каждым
+	// пакетом — зеркало раздаёт их наравне с пакетами (живой клиент Void
+	// просит `.sig`). Дедуп — на уровне Enumerate.
+	out := make([]string, 0, len(pkgs)*3)
 	out = append(out, pkgs...)
 	for _, p := range pkgs {
-		out = append(out, p+".sig2")
+		out = append(out, p+sig2Suffix, p+sigSuffix)
 	}
 	return out, nil
 }

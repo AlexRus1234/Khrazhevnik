@@ -1212,6 +1212,12 @@ type fakeRsaKeySigner struct{}
 func (fakeRsaKeySigner) SignSHA256(context.Context, []byte) ([]byte, error) {
 	return nil, errors.New("not used in /xbps-key")
 }
+func (fakeRsaKeySigner) SignSHA256SHA1DigestInfo(context.Context, []byte) ([]byte, error) {
+	return nil, errors.New("not used in /xbps-key")
+}
+func (fakeRsaKeySigner) SignSHA1DigestInfo(context.Context, []byte) ([]byte, error) {
+	return nil, errors.New("not used in /xbps-key")
+}
 func (fakeRsaKeySigner) PublicKeyPEM() ([]byte, error) {
 	return []byte("-----BEGIN PUBLIC KEY-----\nfake\n-----END PUBLIC KEY-----\n"), nil
 }
@@ -1339,5 +1345,60 @@ func TestPublicRepoXbpsKey_NilRsaSigner404(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("GET xbps-key без RsaSigner = %d, want 404 (роут не зарегистрирован)", rec.Code)
+	}
+}
+
+// TestPublicRepoApkKey — точка выдачи ключа apk (сессия 195): тот же
+// SPKI-PEM, что у /xbps-key, на пути /repo/<name>/apk-key. Клиент
+// сохраняет тело в /etc/apk/keys/khrazhevnik.rsa.pub (имя обязано
+// совпасть с keyid из tar-члена .SIGN.RSA.<keyid> индекса).
+func TestPublicRepoApkKey(t *testing.T) {
+	t.Parallel()
+	env := newRepoEnvWithRsaSigner(t)
+	createRepoViaAPI(t, env, "alice", 2)
+	req := httptest.NewRequest(http.MethodGet, "/repo/alice/apk-key", nil)
+	rec := httptest.NewRecorder()
+	env.public.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET apk-key = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain", ct)
+	}
+	if !bytes.HasPrefix(rec.Body.Bytes(), []byte("-----BEGIN PUBLIC KEY-----")) {
+		t.Errorf("тело apk-key не SPKI-PEM: %q", rec.Body.String())
+	}
+	// HEAD рядом с GET (как у прочих публичных ключей) — без тела.
+	headReq := httptest.NewRequest(http.MethodHead, "/repo/alice/apk-key", nil)
+	headRec := httptest.NewRecorder()
+	env.public.ServeHTTP(headRec, headReq)
+	if headRec.Code != http.StatusOK {
+		t.Errorf("HEAD apk-key = %d, want 200", headRec.Code)
+	}
+}
+
+func TestPublicRepoApkKey_UnknownRepo404(t *testing.T) {
+	t.Parallel()
+	env := newRepoEnvWithRsaSigner(t)
+	req := httptest.NewRequest(http.MethodGet, "/repo/ghost/apk-key", nil)
+	rec := httptest.NewRecorder()
+	env.public.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET apk-key для несуществующего репо = %d, want 404", rec.Code)
+	}
+}
+
+func TestPublicRepoApkKey_NilRsaSigner404(t *testing.T) {
+	t.Parallel()
+	// Без RsaSigner (деградированный режим) /apk-key не регистрируется
+	// вообще: подписывать индекс нечем, ключа клиенту нет.
+	storage := testutil.NewFakeStorage(testutil.FixedClock(time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)))
+	repos := testutil.NewFakeRepoStore()
+	h := BuildPublicRouter(Deps{Storage: storage, Repos: repos}) // RsaSigner nil
+	req := httptest.NewRequest(http.MethodGet, "/repo/x/apk-key", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET apk-key без RsaSigner = %d, want 404 (роут не зарегистрирован)", rec.Code)
 	}
 }

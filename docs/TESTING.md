@@ -209,13 +209,17 @@ Unit-only цифра (~67% на момент внедрения) была зан
   `66-init-0.8.2.2_1`, `foo-2~beta1_2`), ревизия `_N` только из цифр,
   мусор (`foo-bar`, `-1.0_1`) → `ValidationError`,
   `name+"-"+version == вход`;
-- unit ar-парсера пакета (137): авто-детект zstd/gzip/raw по magic
-  (xz → `ErrUnsupportedCompression`), `props.plist`/`./props.plist`,
+- unit tar-парсера пакета (137→190): авто-детект zstd/gzip/raw по magic
+  (xz → `ErrUnsupportedCompression`), читается ровно `./props.plist`
+  (имя без канонического префикса — не наш член → `ErrPropsMissing`),
   skip `files.plist`/payload стримингом, `≥1 MiB` props → ошибка капа,
   zstd-бомба > 1 GiB → `ErrDecompressTooLarge` (чтение в `io.Discard`);
+  фикстуры — реальный `Mustache-4.1_1.x86_64.xbps` из upstream (sha256
+  закреплён) и минимальный tar.gz без payload (сессия 190; ar-парсер и
+  его фикстуры удалены);
 - фаззинг: `FuzzParseRepoData` (композиция zstd→tar→index.plist,
   колбэк-счётчик без накопления), `FuzzOpenPackage` (три ветки
-  компрессии, обрезки ar-заголовка 8/60/68, zstd-мусор, гигантское
+  компрессии, обрезки tar-заголовка 257/512/520, zstd-мусор, гигантское
   поле размера), `FuzzSplitPkgver` (нет паник; roundtrip при err==nil);
   golden-фикстура `testdata/repodata-golden.zst` (5+ реальных имён,
   `public-key` в meta) + `TestRepoDataGolden`/`…Meta`; crash-корпус
@@ -224,8 +228,9 @@ Unit-only цифра (~67% на момент внедрения) была зан
   `ParseIndexPlist`, детерминизм (байт-в-байт при повторном вызове,
   сортировка записей по `pkgname`), 10k записей стримингом без OOM;
   генератор — кривое имя файла/битый `.xbps`/несовпадение props →
-  честная ошибка, nil-Signer → индекс без `.sig2`, повторный reindex
-  идемпотентен (байты repodata и `.sig2` равны);
+  честная ошибка, nil-Signer → индекс без подписей (`.sig2`/`.sig`),
+  повторный reindex
+  идемпотентен (байты repodata и подписей равны);
 - unit RSA-подписчика (139): roundtrip `SignSHA256` →
   `rsa.VerifyPKCS1v15`, digest ≠ 32 байт → ошибка, `LoadOrGenerate`
   перезагрузкой отдаёт тот же публичный PEM, заголовки `RSA PRIVATE
@@ -234,7 +239,7 @@ Unit-only цифра (~67% на момент внедрения) была зан
   `-----BEGIN PUBLIC KEY-----`, неизвестное репо → 404, без
   `RsaSigner` маршрут не регистрируется → 404;
 - integration `xbps_mirror_test.go` (build-tag): sync качает
-  repodata+пакеты+`.sig2`, повторный sync — 0 новых загрузок
+  repodata+пакеты+`.sig2`/`.sig`, повторный sync — 0 новых загрузок
   (resume-diff по `Storage.Stat`), общий noarch из двух arch-индексов
   скачивается один раз, тело с чужим `filename-sha256` роняет sync и
   НЕ коммитит объект (Abort), после починки upstream повторный sync
@@ -242,7 +247,8 @@ Unit-only цифра (~67% на момент внедрения) была зан
 - integration `xbps_repo_test.go` (build-tag): upload `.xbps` (x86_64 +
   noarch) → reindex succeeded → `<arch>-repodata` читается парсерами
   131/132 (noarch в x86_64-группе, `filename-sha256` == телу) →
-  `.sig2` верифицируется `crypto/rsa` против `/xbps-key`; не-`.xbps`
+  `.sig2` и `.sig` верифицируются `crypto/rsa` против `/xbps-key`
+  (`.sig` — по digest-info контракту); не-`.xbps`
   upload → 400; несовпадение props с именем → reindex failed;
   повторный reindex — байты индекса неизменны;
 - proxy integration (130): repodata и пакеты byte-exact, повторный

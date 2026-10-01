@@ -20,33 +20,20 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
 )
 
-// pkgSeedAr собирает raw ar для сидов без *testing.T: имена членов —
-// литералы заведомо короче 16 байт, тела фиксированы, поэтому отдельный
-// помощник с t.Fatalf не нужен (buildArPkg требует *testing.T).
-func pkgSeedAr(members ...arMemberSpec) []byte {
+// pkgSeedTar собирает tar-пакет для сидов без *testing.T: writeTarPkg
+// поверх bytes.Buffer ошибиться не может (проверять нечем — нет *testing.F).
+func pkgSeedTar(members ...tarMember) []byte {
 	var buf bytes.Buffer
-	buf.WriteString(arMagic)
-	for _, m := range members {
-		hdr := bytes.Repeat([]byte{' '}, arHeaderSize)
-		copy(hdr[0:16], m.name)
-		copy(hdr[48:58], fmt.Sprintf("%-10d", len(m.body)))
-		hdr[58], hdr[59] = '`', '\n'
-		buf.Write(hdr)
-		buf.Write(m.body)
-		if len(m.body)%2 != 0 {
-			buf.WriteByte('\n')
-		}
-	}
+	_ = writeTarPkg(&buf, members)
 	return buf.Bytes()
 }
 
-// pkgSeedZstd / pkgSeedGzip сжимают raw-ар в сид. Ошибки кодеков на
+// pkgSeedZstd / pkgSeedGzip сжимают tar-пакет в сид. Ошибки кодеков на
 // bytes.Buffer не бывают; проверять их нечем (нет *testing.F).
 func pkgSeedZstd(raw []byte) []byte {
 	var buf bytes.Buffer
@@ -83,36 +70,34 @@ func sigOfProps(p Props) propsSig {
 	}
 }
 
-// FuzzOpenPackage гоняет ar-парсер .xbps на произвольных байтах —
+// FuzzOpenPackage гоняет tar-парсер .xbps на произвольных байтах —
 // вход недоверенных пользовательских upload'ов (движок publish отдаёт
 // ему тело репозитория). Инварианты: не паниковать, не зацикливаться
 // (таймаут теста ловит), повторный разбор тех же байт даёт ту же ошибку
 // и ту же структуру Props (детерминизм). Сиды покрывают все три ветки
-// компрессии (raw/zstd/gzip), обрезки на границах заголовков, мусор с
+// компрессии (raw/zstd/gzip), обрезки на границах tar-блоков, мусор с
 // валидной магией zstd и гигантское поле размера члена.
 func FuzzOpenPackage(f *testing.F) {
-	valid := pkgSeedAr(arMemberSpec{"./props.plist", []byte(mustachePropsXML)})
-	// Поле размера ar — ровно 10 байт (raw[48:58]), длиннее туда не
-	// влезает: «99999999999999999999» усечётся до 10 девяток — всё
-	// равно adversarial-размер ~10 GiB, гоняющий ветку капа props.
-	overSize := pkgSeedAr(arMemberSpec{"./props.plist", []byte(mustachePropsXML)})
-	copy(overSize[len(arMagic)+48:len(arMagic)+58], []byte("99999999999999999999")) //nolint:gocritic // фиксированное поле
-	payloadFirst := pkgSeedAr(
-		arMemberSpec{"./files.plist", []byte("<plist><dict></dict></plist>")},
-		arMemberSpec{"./props.plist", []byte(mustachePropsXML)},
+	valid := pkgSeedTar(tarMember{"./props.plist", []byte(mustachePropsXML)})
+	// Заголовок с декларированным размером выше капа props.plist: тело
+	// не материализуем, гоняем ветку капа (tar.Next не дочитывает).
+	overSize := tarHeaderRaw("./props.plist", maxPropsSize+1)
+	payloadFirst := pkgSeedTar(
+		tarMember{"./files.plist", []byte("<plist><dict></dict></plist>")},
+		tarMember{"./props.plist", []byte(mustachePropsXML)},
 	)
 	xzSeed := append([]byte(xzPrefix), []byte("rest of an xz stream")...)
 
 	seeds := [][]byte{
 		nil,
 		{},
-		[]byte("not an ar archive at all"),
+		[]byte("not a tar archive at all"),
 		valid,
 		pkgSeedZstd(valid),
 		pkgSeedGzip(valid),
-		valid[:8],  // ровно магия ar
-		valid[:60], // магия + начало заголовка
-		valid[:68], // магия + полный заголовок, тела нет
+		valid[:257], // обрыв в середине заголовка блока
+		valid[:512], // ровно заголовок, тела нет
+		valid[:520], // заголовок + 8 байт тела
 		append([]byte(zstdMagic), []byte("garbage after magic")...),
 		overSize,
 		payloadFirst,

@@ -19,7 +19,7 @@
 // E2E личного xbps-репо (сессия 143): setup → create repo eco=xbps →
 // upload двух .xbps (x86_64 + noarch) → reindex-задача → публичный порт
 // отдаёт <arch>-repodata (читается нашим же парсером OpenRepoData +
-// ParseIndexPlist) и .sig2 (верифицируются crypto/rsa против
+// ParseIndexPlist) и подписи .sig2/.sig (верифицируются crypto/rsa против
 // GET /repo/<name>/xbps-key). Консистентность: пакет, props которого не
 // совпадают с именем файла, роняет reindex; после удаления битого
 // объекта повторный reindex даёт байт-в-байт тот же индекс (детерминизм
@@ -30,6 +30,7 @@
 package integration
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto"
@@ -76,6 +77,13 @@ const (
 	xbpsXtoolsVer   = "xtools-0.59_1"
 	xbpsXtoolsArch  = "noarch"
 )
+
+// xbpsSHA1DigestInfoPrefix — SHA-1-DigestInfo легаси-подписи `.sig`, байты
+// сняты с живой подписи Void (находки 2026-10-01, приложение А):
+// verifyrecover даёт `302d300906052b0e03021a05000420` + sha256(пакета).
+// Литерал, а не константа rsasha256: тест обязан проверять контракт, а не
+// повторять реализацию.
+const xbpsSHA1DigestInfoPrefix = "\x30\x2d\x30\x09\x06\x05\x2b\x0e\x03\x02\x1a\x05\x00\x04\x20"
 
 // xbpsRepoIntegrationEnv — in-process сервер на реальных слушателях:
 // sqlite-каталог + fs-storage + xbps-генератор с внедрённым
@@ -220,26 +228,31 @@ func xbpsPropsXML(name, pkgver, arch string) string {
 		"</dict>\n</plist>\n"
 }
 
-// buildXbpsIntegration собирает .xbps: классический ar (`!<arch>\n` +
-// 60-байтный заголовок члена) с одним props.plist, сжатый целиком в
-// zstd — ветка OpenPackage, которую использует генератор. Дубль
+// buildXbpsIntegration собирает .xbps: tar-запись ./props.plist (формат
+// xbps-create — канонический префикс «./»), сжатый целиком в zstd —
+// ветка OpenPackage, которую использует генератор. Дубль
 // pkgparse-хелпера легален: тесты интеграции самодостаточны.
 func buildXbpsIntegration(t *testing.T, propsXML string) []byte {
 	t.Helper()
 	body := []byte(propsXML)
-	var ar bytes.Buffer
-	ar.WriteString("!<arch>\n")
-	fmt.Fprintf(&ar, "%-16s%-12d%-6d%-6d%-8o%-10d`\n", "props.plist", 0, 0, 0, 0o100644, len(body))
-	ar.Write(body)
-	if len(body)%2 != 0 {
-		ar.WriteByte('\n')
+	var raw bytes.Buffer
+	tw := tar.NewWriter(&raw)
+	hdr := tar.Header{Name: "./props.plist", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}
+	if err := tw.WriteHeader(&hdr); err != nil {
+		t.Fatalf("tar WriteHeader: %v", err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatalf("tar write: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
 	}
 	var out bytes.Buffer
 	zw, err := zstd.NewWriter(&out, zstd.WithEncoderLevel(zstd.SpeedFastest))
 	if err != nil {
 		t.Fatalf("zstd.NewWriter: %v", err)
 	}
-	if _, err := zw.Write(ar.Bytes()); err != nil {
+	if _, err := zw.Write(raw.Bytes()); err != nil {
 		t.Fatalf("zstd write: %v", err)
 	}
 	if err := zw.Close(); err != nil {
@@ -449,7 +462,9 @@ func TestXbpsPersonalRepoE2E(t *testing.T) {
 		t.Errorf("xtools: sha256=%q size=%d, хочу %q/%d", x.FilenameSHA256, x.FilenameSize, want, len(xtools))
 	}
 
-	// (c) .sig2 каждого пакета верифицируется против /xbps-key.
+	// (c) обе подписи каждого пакета: `.sig2` верифицируется против
+	// /xbps-key как PKCS#1 v1.5/SHA-256, легаси `.sig` — как SHA-1-DigestInfo
+	// вокруг того же SHA-256-дайджеста (её и просит живой клиент).
 	pub := xbpsPublicKey(t, "http://"+publicAddr+"/repo/"+xbpsRepoName+"/xbps-key")
 	for _, tc := range []struct {
 		file string
@@ -458,10 +473,15 @@ func TestXbpsPersonalRepoE2E(t *testing.T) {
 		{mustacheFile, mustache},
 		{xtoolsFile, xtools},
 	} {
-		sig := xbpsPublicGet(t, "http://"+publicAddr+"/repo/"+xbpsRepoName+"/"+tc.file+".sig2")
 		digest := sha256.Sum256(tc.body)
-		if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], sig); err != nil {
+		sig2 := xbpsPublicGet(t, "http://"+publicAddr+"/repo/"+xbpsRepoName+"/"+tc.file+".sig2")
+		if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], sig2); err != nil {
 			t.Errorf("verify %s.sig2 под /xbps-key: %v", tc.file, err)
+		}
+		sig := xbpsPublicGet(t, "http://"+publicAddr+"/repo/"+xbpsRepoName+"/"+tc.file+".sig")
+		want := append([]byte(xbpsSHA1DigestInfoPrefix), digest[:]...)
+		if err := rsa.VerifyPKCS1v15(pub, crypto.Hash(0), want, sig); err != nil {
+			t.Errorf("verify %s.sig (DigestInfo) под /xbps-key: %v", tc.file, err)
 		}
 	}
 
