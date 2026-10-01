@@ -98,7 +98,12 @@ async function deleteObject(key: string): Promise<void> {
   const rel = relKey(key)
   if (!window.confirm(t('repo.deleteObjectConfirm', { rel }))) return
   try {
-    await request('DELETE', `/repos/${repoID}/objects/${key.split('/').map(encodeURIComponent).join('/')}`)
+    // Путь в URL — внутри репо (как у PUT), а не полный storage-ключ:
+    // листинг отдаёт ключи вида repo/<id>/<eco>/…, а publish.Engine
+    // префикс repo/<id>/<eco>/ приклеивает сам (keyFor). Полный ключ
+    // давал repo/<id>/<eco>/repo/<id>/<eco>/… → 404 not_found, объект
+    // оставался на месте (баг 1.3.2, кнопке «Удалить» напротив пакета).
+    await request('DELETE', `/repos/${repoID}/objects/${rel.split('/').map(encodeURIComponent).join('/')}`)
     await loadObjects()
   } catch (e) {
     error.value = errText(e)

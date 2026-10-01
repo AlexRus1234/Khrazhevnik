@@ -570,6 +570,61 @@ test('repos: ретеншн — политика, прогноз, пины', asy
   expect(patches).toBe(0)
 })
 
+// repos: удаление объекта кнопкой в таблице (баг 1.3.2). Регрессия:
+// DELETE уходил полным storage-ключом из листинга, движок приклеивал
+// префикс второй раз → 404 not_found, пакет оставался на месте.
+// Создаём СВОЙ объект (чужие нужны тестам выше) и убираем его кнопкой.
+test('repos: удаление объекта кнопкой сносит пакет', async ({ page, request }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  const token = await page.evaluate(() => localStorage.getItem('khrazhevnik_token'))
+  expect(token).not.toBeNull()
+  const auth = { Authorization: `Bearer ${String(token)}` }
+  const api = `${ADMIN}/api/v1`
+  const repos = (await (await request.get(`${api}/repos`, { headers: auth })).json()) as {
+    id: number
+    name: string
+  }[]
+  const repoID = repos.find((r) => r.name === REPO)?.id
+  expect(repoID).toBeTruthy()
+
+  // Объект-жертва через API: UI-загрузка уже покрыта первым тестом,
+  // здесь важен только клик по «Удалить».
+  const victim = 'pool/main/b/victim_1.0_amd64.deb'
+  const put = await request.put(`${api}/repos/${repoID}/objects/${victim}`, {
+    headers: auth,
+    data: 'victim-bytes',
+  })
+  expect(put.status()).toBe(201)
+
+  await page.click('a[href="/ui/repos"]')
+  await page.getByRole('link', { name: REPO, exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Загрузка пакета' })).toBeVisible()
+
+  const row = page.locator('tbody tr', { hasText: victim })
+  await expect(row).toHaveCount(1)
+
+  // confirm — как в остальных тестах репо-вью: диалог принимаем.
+  page.once('dialog', (d) => {
+    void d.accept()
+  })
+  await row.getByRole('button', { name: 'Удалить' }).click()
+
+  // Контракт: строка исчезла из листинга, ошибок нет, и объект
+  // действительно снесён (независимая проверка через API).
+  await expect(page.locator('tbody tr', { hasText: victim })).toHaveCount(0)
+  await expect(page.locator('p.error')).toHaveCount(0)
+  const objects = (await (
+    await request.get(`${api}/repos/${repoID}/objects`, { headers: auth })
+  ).json()) as { key: string }[]
+  expect(objects.map((o) => o.key)).not.toContain(`repo/${repoID}/apt/${victim}`)
+})
+
 // Идёт последним: меняет пароль admin, от которого зависят предыдущие
 // тесты (serial, retries=0; global-setup поднимает сервер с пустой БД
 // на каждый прогон, так что состояние между прогонами не течёт).

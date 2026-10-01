@@ -26,6 +26,18 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Personal repos (web UI):** the "Delete" button next to a package did
+  nothing. The SPA sent the full storage key from the listing
+  (`repo/<id>/<eco>/…`) to `DELETE /repos/{id}/objects/*`, while the
+  publish engine prepends the `repo/<id>/<eco>/` prefix itself
+  (`keyFor`) — the request hit a non-existent key
+  `repo/<id>/<eco>/repo/<id>/<eco>/…` and got 404 `not_found`. The URL now
+  carries the in-repo path (`pool/…`), as on upload; the API contract is
+  unchanged. The regression is covered by an e2e case (deleting an object
+  with the button) in `web/e2e/smoke.spec.ts`.
+
 ## [1.3.1] — 2026-09-30
 
 ### Fixed
