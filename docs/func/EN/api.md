@@ -92,6 +92,8 @@ tokens immediately; repo tokens are unaffected.
 | PATCH  | `/api/v1/remotes/{id}`      | 200/404      | Update fields                                                |
 | DELETE | `/api/v1/remotes/{id}`      | 204/404      | Delete (the cache remains)                                   |
 | POST   | `/api/v1/remotes/{id}/sync` | 202/409/429  | Start a mirror sync background task; 409 — already running, 429 — worker limit |
+| GET    | `/api/v1/remotes/{id}/eviction/preview` | 200/400/404/503 | Cache cleanup forecast (dry run): candidates and protection counters; 400 `eviction_unsupported` — nix (no family resolver), 503 `eviction_unavailable` — degradation |
+| POST   | `/api/v1/remotes/{id}/eviction/apply` | 202/404/409/429/503 | Apply the cache cleanup policy as a task (kind=`eviction`, label `remote-<id>`) |
 | GET    | `/api/v1/remotes/export`    | 200          | Export remotes as a file (`text/plain`, `Content-Disposition`) |
 | POST   | `/api/v1/remotes/import`    | 200/400/413  | Import remotes line by line; a `{created, skipped, errors}` report |
 
@@ -102,7 +104,12 @@ only), `include` (an array of strings: apt — dists[`/component`];
 pacman — `repo/arch`; apk — architectures; xbps — architectures;
 rpm-md/nix — not used), `proxy_url` (tri-state upstream proxy: empty —
 inherit the global setting, `direct` — go directly, otherwise an
-http/https/socks5/socks5h URL; the password is masked in the audit log).
+http/https/socks5/socks5h URL; the password is masked in the audit log),
+`eviction` (the cache cleanup policy `{min_versions, max_age_days}`:
+`null` — inherit the global `[eviction]`, `{0,0}` — disabled; a `PATCH`
+without the key leaves the policy untouched, `null` resets it to
+inheritance, an object fully replaces it; `min_versions=1` with an age —
+400 `validation_error`).
 
 `/remotes/export` returns tabular text: a comment header and lines
 `name|ecosystem|base_url|mode|proxy|enabled|sync_interval|include` (see
@@ -256,6 +263,47 @@ resolved by the adapter (`port.FamilyResolver`), and nix
 (content-addressed objects) has none — the forecast of such a repository
 answers 501 `unsupported` and the GUI panel is hidden. Objects outside
 families (indexes, signatures, keys) are never touched.
+
+## Cache-proxy eviction (admin)
+
+`GET .../eviction/preview` — a dry run of the engine over the cache of a
+single remote: the storage is not modified. The response lists the
+versions that passed the `min_versions` filter (the top-N freshest by
+upload date are always protected):
+
+```json
+{
+  "candidates": [
+    {"key": "cache/apt/1/pool/main/h/htop/htop_1.0_amd64.deb",
+     "family": "pool/main/h/htop", "size": 1024,
+     "mod_time": "2026-03-01T10:00:00Z", "last_access": "2026-03-01T10:00:00Z",
+     "protected_by": ""}
+  ],
+  "totals": {"dry_run": true, "duration_seconds": 0.01, "families": 1,
+             "objects_scanned": 5, "candidates": 2, "deleted": 0,
+             "failed_deletes": 0, "bytes_freed": 0, "protected_by_min": 3,
+             "protected_by_access": 0}
+}
+```
+
+`protected_by` is the first protection that fired: `""` — the version is
+deleted, `access` — the version was requested more recently than
+`max_age_days`. The cache has no pins (the `repo_pins` of personal
+repositories does not apply here). Without an access row the age is counted
+from the upload date (bootstrap). A disabled policy (`null` in the remote
+body while `[eviction]` is off) or a mirror remote yields
+`candidates: []`: mirrors are cleaned upstream, not by the instance. An
+ecosystem without a cache-path family resolver (nix — content-addressed
+objects) — 400 `eviction_unsupported`; degradation without the engine —
+503 `eviction_unavailable`.
+
+`POST .../eviction/apply` — the real pass of the policy as a background
+task `kind=eviction`, label `remote-<id>`; the response is
+`202 {"task_id": …}`, observed via `GET /api/v1/tasks/{id}`. An active task
+of the same remote — 409 `task_duplicate`; worker limit — 429
+`task_limit`; degradation — 503 `eviction_unavailable`. Audit —
+`remote.eviction.apply` (set before the task starts: both 409 and success
+are recorded under the real name).
 
 ## Public serving (:29202, no auth)
 

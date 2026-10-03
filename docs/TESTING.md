@@ -26,6 +26,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 | core/engine             | ≥90%          | unit + fakes (testutil)          |
 | core/engine/storagegc   | ≥90%          | unit + fakes (ModTime-инжект)    |
 | core/engine/retention   | ≥90%          | unit + fakes + integration       |
+| core/engine/eviction    | ≥90%          | unit + fakes + integration       |
 | core/engine/accesskeeper| ≥90%          | unit + fakes (FixedClock)        |
 | mod/ecosystem/* (парсеры)| ≥90%         | unit + golden + fuzz             |
 | mod/ecosystem/xbps      | ≥90%          | unit + golden + fuzz + integration |
@@ -351,6 +352,57 @@ Unit-only цифра (~67% на момент внедрения) была зан
   индексы; пин-сценарий и выключенная политика (no-op);
 - e2e (Playwright, `run_e2e_tests`): политика в панели «Ретеншн»,
   прогноз, пин/анпин и клиентская валидация (`min=1` с возрастом).
+
+## Eviction кеша прокси (волна «Eviction кеш-прокси», сессии 197–205)
+
+Авто-очистка старого кеша pull-through прокси: двухусловный критерий
+удаления, tri-state политика per-remote, суточный проход; закреплены
+кейсы:
+
+- unit `domain` (`remote_test.go`): поле `Remote.Eviction` переиспользует
+  доменную политику `Retention` и её `ValidateRetention` — nil
+  (наследование) и `{0,0}` (явно выключено) валидны, `{1,N>0}` (окно 404)
+  и `{0,N>0}` (удаление без гарантии минимума) → `ValidationError`;
+- unit движка `engine/eviction` (`eviction_test.go`, 11 тестов): `Apply`
+  — выключенная политика и зеркальный remote — no-op без ошибки,
+  экосистема без `CacheFamilyResolver` (`UnsupportedError`), арбитраж
+  топ-N по `ModTime`, защита свежим обращением, бутстрап давности от
+  `ModTime` при отсутствии строки обращений, versioned-ключи и `.retained`
+  не трогаются, скоуп листинга по `remote-id`; `Preview` без мутаций
+  носителя; сбой чтения обращений — fail-closed; `Policy` tri-state (nil —
+  глобальный дефолт, `{0,0}` — выключено, значения — свои);
+  `runner_test.go` — проход только по proxy-remote с включённой
+  эффективной политикой, сбой одного remote не стопает остальных, отмена
+  между remote, `Run`/`Stop` (идемпотентность, без финального прохода);
+- unit конфига: `TestLoadDefaults` — `eviction.interval` = `24h`;
+  `TestLoadEviction` — политика и период читаются (`{6h, 3, 90}`),
+  `interval` = 0 легален (проход выключен), отрицательный `interval`,
+  `min_versions=1` с возрастом (окно 404) и `max_age_days` без
+  `min_versions` → ошибка конфига;
+- unit резолверов семейств кеша — `TestCacheObjectFamily` в apt, rpm-md,
+  pacman, apk и xbps: семейство кеш-пути из реального upstream-пути,
+  объекты вне семейств (индексы, подписи) — `ok=false`; nix метода не
+  имеет;
+- контракт каталога (`internal/contract`, sqlite/postgres/mariadb):
+  `remote_eviction_columns` — NULL (nil в домене, наследование) и `{0,0}`
+  (указатель на нули, явно выключено) различаются и переживают roundtrip,
+  `UpdateRemote` проходит цепочку nil → `{2,90}` → `{0,0}` → nil; миграция
+  0014 накатывается идемпотентно, существующие строки получают NULL
+  (`catalog_test.go`: `TestMigration0014EvictionOnExistingRows`,
+  `TestRemoteEvictionRoundtrip`);
+- web (`handlers_eviction_test.go`): прогноз — кандидаты и счётчики защит
+  (`protected_by_min`/`protected_by_access`), применение — удаления и итог
+  задачи (`kind=eviction`), 409 при активной задаче того же remote,
+  503 `eviction_unavailable` без движка, политика через POST/PATCH/GET
+  `/remotes` (tri-state: отсутствие ключа — не трогать, `null` —
+  наследование, `{0,0}` — выключено; `min_versions=1` с возрастом → 400);
+- integration `eviction_test.go` (build-tag): сквозной сценарий на живых
+  sqlite + fs — листинг кеша, проход удаляет забытую версию, свежее
+  обращение защищает (`object_access` scope `cache`), унаследованный
+  глобальный дефолт, nix — 400 `eviction_unsupported`;
+- e2e (Playwright, `run_e2e_tests`): блок «Очистка кеша» в карточке
+  источника — tri-state политика, прогноз, подсказка зеркала, клиентская
+  валидация (`min=1` с возрастом).
 
 ## Pacman-совместимость (волна «Pacman-совместимость», сессии 181–186)
 

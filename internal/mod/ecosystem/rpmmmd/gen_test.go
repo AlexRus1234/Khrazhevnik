@@ -343,6 +343,40 @@ func TestObjectFamily(t *testing.T) {
 	}
 }
 
+// port.CacheFamilyResolver — compile-time контракт генератора кеш-путей.
+var _ port.CacheFamilyResolver = (*Generator)(nil)
+
+// TestCacheObjectFamily — port.CacheFamilyResolver: семейство версий
+// объекта кеш-прокси по upstream-пути rpm-md-зеркала (не путь внутри
+// личного репо): пакеты dnf/zypper лежат под произвольными каталогами,
+// семейство берётся из basename. Реальные имена Fedora (урок сессии 65).
+func TestCacheObjectFamily(t *testing.T) {
+	t.Parallel()
+	g := &Generator{}
+	cases := []struct {
+		path   string
+		family string
+		ok     bool
+	}{
+		{"/Packages/h/htop-3.3.0-4.fc44.x86_64.rpm", "htop", true},
+		{"/Packages/g/gcc-libs-14.2.1-1.fc44.x86_64.rpm", "gcc-libs", true},
+		{"/Packages/p/python3-pip-25.1.1-1.fc44.noarch.rpm", "python3-pip", true},
+		// .src.rpm — то же семейство, что бинарный.
+		{"/Packages/h/htop-3.3.0-4.fc44.src.rpm", "htop", true},
+		// Индексы, подписи и ключи — вне семейств.
+		{"/repodata/primary.xml.gz", "", false},
+		{"/repodata/repomd.xml.asc", "", false},
+		{"/RPM-GPG-KEY-khrazhevnik", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		family, ok := g.CacheObjectFamily(c.path)
+		if ok != c.ok || family != c.family {
+			t.Errorf("CacheObjectFamily(%q) = (%q, %v), want (%q, %v)", c.path, family, ok, c.family, c.ok)
+		}
+	}
+}
+
 // putRpm складывает .rpm-байты в FakeStorage по ключу под префиксом
 // repo/<id>/rpm-md. Возвращает полный ключ.
 func putRpm(t *testing.T, storage *testutil.FakeStorage, repo domain.Repo, name string, rpm []byte) string {

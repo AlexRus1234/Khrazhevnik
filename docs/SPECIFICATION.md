@@ -260,6 +260,8 @@ IP — 429; пароль длиннее 72 байт (граница bcrypt) — 
 | PATCH | `/api/v1/remotes/{id}`     | admin       | 200/404 | Обновление remote               |
 | DELETE| `/api/v1/remotes/{id}`     | admin       | 204/404 | Удаление remote                 |
 | POST  | `/api/v1/remotes/{id}/sync`| admin       | 202/409/429 | Запуск sync-задачи; 409 — дубль (kind,label), 429 — лимит воркеров |
+| GET   | `/api/v1/remotes/{id}/eviction/preview` | admin | 200/400/404/503 | Прогноз чистки кеша (dry-run): кандидаты `{key,family,size,mod_time,last_access,protected_by}` и `totals`; 400 `eviction_unsupported` — экосистема без резолвера семейств кеш-путей (nix), 503 `eviction_unavailable` — деградация |
+| POST  | `/api/v1/remotes/{id}/eviction/apply` | admin | 202/404/409/429/503 | Применить политику чистки кеша задачей (kind=`eviction`, label `remote-<id>`); 409 — дубль, 429 — лимит воркеров, 503 — деградация |
 | GET   | `/api/v1/remotes/export`   | admin       | 200 | Выгрузка источников: `text/plain; charset=utf-8`, `Content-Disposition: attachment; filename="khrazhevnik-remotes.txt"`, построчный формат (см. ниже) |
 | POST  | `/api/v1/remotes/import`   | admin       | 200/400/413 | Импорт источников: построчный разбор, всегда 200 с отчётом `{created, skipped, errors}` (частичный успех); 400 `import_too_many` — >1000 строк, 413 `payload_too_large` — тело >256 KiB |
 
@@ -275,7 +277,12 @@ IP — 429; пароль длиннее 72 байт (граница bcrypt) — 
 валидация через `domain.ValidateProxyURL`, невалидное — 400
 `validation_error`; `GET` отдаёт значение как есть вместе с userinfo —
 читать может только admin-сессия; в аудит-лог create/update пишется
-замаскированный `domain.MaskProxyURL`). Плоский лэйаут
+замаскированный `domain.MaskProxyURL`), `eviction` (политика авто-очистки
+кеша прокси: `{min_versions, max_age_days}` — тот же доменный тип и
+валидация, что у retention репо; `null` — наследует глобальный дефолт
+конфига `[eviction]`, `{0,0}` — явно выключено; в теле `PATCH` ключа нет
+— политика не трогается, `null` — сброс в наследование, объект — полная
+замена; у nix политика неприменима). Плоский лэйаут
 xbps: архитектура — это имя индексного файла `<arch>-repodata` в корне
 репозитория, а не отдельный путь; `noarch`-пакеты входят в каждую
 arch-группу индекса.
@@ -739,7 +746,12 @@ cache}, `key`, `last_access_at` эпохой, `hits`; давность обра�
 сессия 166); 0013 — таблица `repo_pins` (пины версий личного репо:
 `repo_id` + `key` (ключ хранилища) — PK, `created_at` эпохой; FK на
 `repos(id)` ON DELETE CASCADE — удаление репо уносит его пины; волна
-«Ретеншн-политики», сессия 170).
+«Ретеншн-политики», сессия 170); 0014 — `remotes.eviction_min_versions`/
+`remotes.eviction_max_age_days` (политика чистки кеша per-remote:
+порог числа живых версий семейства и давности обращения в сутках;
+NULL в колонках — наследовать глобальный дефолт `[eviction]`, 0/0 — явно
+выключено для этого remote — tri-state, волна «Eviction кеш-прокси»,
+сессия 198).
 `schema_migrations` — служебная таблица goose.
 
 | Таблица        | Назначение                                        |
@@ -748,7 +760,7 @@ cache}, `key`, `last_access_at` эпохой, `hits`; давность обра�
 | `api_tokens`   | scoped-токены (только sha256)                     |
 | `repos`        | личные репозитории (квота; `min_versions`/`max_age_days` — политика ретеншна, 0011) |
 | `repo_perms`   | права на личные репо                              |
-| `remotes`      | upstream'ы (зеркала/прокси; `proxy_url` — per-remote прокси, 0009) |
+| `remotes`      | upstream'ы (зеркала/прокси; `proxy_url` — per-remote прокси, 0009; `eviction_min_versions`/`eviction_max_age_days` — политика чистки кеша, NULL — наследовать глобальный дефолт, 0014) |
 | `sync_jobs`    | sync-задачи зеркал (состояние, resume-данные; курсор кодирует прогресс `files=N;bytes=M`)     |
 | `audit_log`    | аудит мутаций (actor/action/object/result/detail) |
 | `object_index` | etag/expires mutable-объектов кеша; `storage_key` — ключ версионных байт (миграция 0003; пустой — байты под самим `key`, записи до версионирования) |

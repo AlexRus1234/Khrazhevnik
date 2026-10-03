@@ -69,7 +69,7 @@ internal/core/
   config/     struct-конфиг: defaults → TOML → env KHRZ_* (+file://-секреты)
   dbtalk/     мини-шим SQL-диалектов каталога: Placeholder/Upsert/эпоха
   engine/     usecase-логика: cache, mirror, publish, auth, retention,
-              accesskeeper; без net/http
+              eviction, accesskeeper; без net/http
   registry/   compile-time реестр модулей
   web/        chi-роутеры, middleware, TaskRegistry, embed SPA; тонкая доставка;
               range.go:serveRanged — единая точка Range-семантики (200/206/416,
@@ -329,7 +329,8 @@ type UpstreamProxyStore interface {
   (индексы, подписи, ключи) проход не трогает;
 - давность обращения — `object_access` (`port.AccessStore`, миграция
   0012); таблица общая с кеш-прокси (`scope` ∈ {repo, cache}; кеш
-  пишет только HIT/STALE — задел eviction следующей волны). Запись
+  пишет только HIT/STALE — точка учёта обращений eviction, волна
+  «Eviction кеш-прокси» 197–205). Запись
   асинхронная: `engine/accesskeeper` копит обращения в памяти и мёржит
   их батчем с периодом `storage.access_flush_interval` (30s; `0` —
   трекинг выключен), время берётся у `port.Clock` и назад не
@@ -350,6 +351,43 @@ type UpstreamProxyStore interface {
   не стопает остальных; `Stop` без финального прохода — удаления в
   момент останова сервера недопустимы;
 - метрики `khrazhevnik_retention_{runs,deleted_keys,deleted_bytes,
+  failed_deletes}_total`, гейдж `…_last_pass_timestamp`, гистограмма
+  `…_duration_seconds` (значения пишут хуки wire, не движок).
+
+Инварианты eviction кеша прокси (волна «Eviction кеш-прокси», сессии 197–205):
+
+- очистка только кеша прокси (`engine/eviction`, рядом с retention и на
+  том же контракте `Result`/`Report`): проход по одному remote, префикс
+  листинга — `cache/<eco>/<remote-id>/`; семейства версий резолвит адаптер
+  экосистемы (`port.CacheFamilyResolver`: apt — pool-каталог,
+  rpm-md/pacman/apk/xbps — префикс имени до версии; nix не реализует),
+  объекты вне семейств (индексы, подписи, ключи) — не кандидаты;
+- критерий удаления двухусловный: у семейства больше `min_versions` живых
+  версий И к кандидату не обращались дольше `max_age_days`; версия жива
+  при любой из двух защит (топ-N по `ModTime` ИЛИ свежее обращение) —
+  защиты складываются по ИЛИ; упорядочивание — по `ModTime`, не по разбору
+  версий;
+- proxy-only: зеркало не чистится (полная копия upstream, churn «скачал →
+  удалил → скачал» конфликтует с resume-diff sync) — инвариант держит сам
+  движок, а не только раннер; без reindex (у кеша его нет) и без пинов
+  (`repo_pins` личных репо кеша не касается);
+- давность обращения — `object_access` (`scope=cache`, миграция 0012): кеш
+  пишет только HIT/STALE, MISS — нет; нет строки — давность считается от
+  `ModTime` (бутстрап). Удалённый объект в proxy-режиме — прозрачный MISS
+  с перекачкой (самолечение), поэтому индексы на ссылки не парсятся;
+- версии mutable-объектов (`…-v<base36>`) и marker `.retained` — не
+  кандидаты: их чистит storagegc/генератор личного репо; потолок
+  одновременных удалений — 4 (образец retention/storagegc); частично
+  выполненные удаления остаются выполненными;
+- политика per-remote tri-state (`remotes.eviction_min_versions`/
+  `eviction_max_age_days`, миграция 0014): NULL — наследовать глобальный
+  дефолт `[eviction]` (по умолчанию `{0,0}` — выключено), `{0,0}` — явно
+  выключено для remote;
+- триггеры — суточный проход (`engine/eviction.Runner`, `eviction.interval`
+  `24h`, `0` — выключено; ошибка одного remote не стопает остальных) и
+  ручной запуск через API/GUI (`Apply`/`Preview` синхронно, apply — задачей
+  `kind=eviction`, деградация без движка — 503 `eviction_unavailable`);
+- метрики `khrazhevnik_eviction_{runs,deleted_keys,deleted_bytes,
   failed_deletes}_total`, гейдж `…_last_pass_timestamp`, гистограмма
   `…_duration_seconds` (значения пишут хуки wire, не движок).
 

@@ -159,8 +159,24 @@ func (g *Generator) ValidateObjectPath(p string) error {
 // Не-pool путь (dists/, by-hash, Release.gpg) — ok=false: индексы и
 // подписи ретеншн не трогает. Путь без файла-листа (pool/main/h/htop)
 // тоже ok=false — это каталог, а не объект.
-func (g *Generator) ObjectFamily(p string) (string, bool) {
-	parts := strings.Split(p, "/")
+func (g *Generator) ObjectFamily(p string) (string, bool) { return poolFamily(p) }
+
+// CacheObjectFamily — port.CacheFamilyResolver: то же семейство для
+// объекта кеш-прокси. Вход — upstream-путь Debian-зеркала
+// (Target.UpstreamPath: «/pool/main/h/htop/htop_3.3.0-2_amd64.deb»), а не
+// путь внутри личного репо: структура pool/ у upstream и у репо одна и та
+// же и один и тот же исходник лежит в одном каталоге, поэтому разбор
+// общий (poolFamily) — отличается только нормализация ведущего «/».
+func (g *Generator) CacheObjectFamily(upstreamPath string) (string, bool) {
+	return poolFamily(upstreamPath)
+}
+
+// poolFamily — общая логика ObjectFamily и CacheObjectFamily:
+// pool/<component>/<l>/<имя-исходника>/<файл>. Ведущий «/» срезается:
+// upstream-пути кеша (Target.UpstreamPath) идут с ним, пути внутри
+// личного репо — без него.
+func poolFamily(p string) (string, bool) {
+	parts := strings.Split(strings.TrimPrefix(p, "/"), "/")
 	// pool/<component>/<l>/<имя-исходника>/<файл>
 	if len(parts) < 5 || parts[0] != "pool" ||
 		parts[1] == "" || parts[2] == "" || parts[3] == "" || parts[4] == "" {

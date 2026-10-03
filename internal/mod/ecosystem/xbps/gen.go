@@ -145,7 +145,23 @@ func (g *Generator) ValidateObjectPath(p string) error {
 // а падать на одном битом объекте не должен. Генерируемые
 // `<arch>-repodata` и подписи (`.sig2`/`.sig`) — ok=false. Регистр имени
 // сохраняем: Mustache и Gifsicle в Void реальны.
-func (g *Generator) ObjectFamily(p string) (string, bool) {
+func (g *Generator) ObjectFamily(p string) (string, bool) { return xbpsFamily(p) }
+
+// CacheObjectFamily — port.CacheFamilyResolver: то же семейство для
+// объекта кеш-прокси. Вход — upstream-путь Void-зеркала
+// (Target.UpstreamPath: «/Mustache-4.1_1.x86_64.xbps»), а не путь внутри
+// личного репо: лэйаут Void плоский и на upstream (файл в корне remote),
+// поэтому разбор общий (xbpsFamily) — отличается только нормализация
+// ведущего «/».
+func (g *Generator) CacheObjectFamily(upstreamPath string) (string, bool) {
+	return xbpsFamily(upstreamPath)
+}
+
+// xbpsFamily — общая логика ObjectFamily и CacheObjectFamily: ведущий «/»
+// срезается (upstream-пути кеша идут с ним, пути внутри личного репо —
+// без), дальше имя пакета из pkgver до последней точки.
+func xbpsFamily(p string) (string, bool) {
+	p = strings.TrimPrefix(p, "/")
 	if !strings.HasSuffix(p, pkgSuffix) {
 		return "", false
 	}

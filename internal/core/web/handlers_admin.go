@@ -53,8 +53,12 @@ type remoteOut struct {
 	// только admin-сессия; маскирование — забота логов и audit-detail.
 	// Решение владельца 2026-09-23: значение правится из веб-GUI,
 	// а без пароля его нельзя ни проверить, ни перебрать.
-	ProxyURL  string    `json:"proxy_url"`
-	CreatedAt time.Time `json:"created_at"`
+	ProxyURL string `json:"proxy_url"`
+	// Eviction — политика авто-очистки кеша remote (сессия 202):
+	// null — наследует глобальный дефолт конфига [eviction];
+	// {0,0} — явно выключено; объект — политика remote как есть.
+	Eviction  *retentionOut `json:"eviction"`
+	CreatedAt time.Time     `json:"created_at"`
 }
 
 // remoteOutFrom модели → DTO.
@@ -66,7 +70,8 @@ func remoteOutFrom(r domain.Remote) remoteOut {
 	return remoteOut{
 		ID: r.ID, Name: r.Name, Ecosystem: r.Ecosystem, BaseURL: r.BaseURL,
 		Mode: r.Mode, Enabled: r.Enabled, Include: include,
-		SyncInterval: r.SyncInterval, ProxyURL: r.ProxyURL, CreatedAt: r.CreatedAt,
+		SyncInterval: r.SyncInterval, ProxyURL: r.ProxyURL,
+		Eviction: retentionOutFrom(r.Eviction), CreatedAt: r.CreatedAt,
 	}
 }
 
@@ -116,7 +121,7 @@ func handleCreateRemote(d Deps) http.HandlerFunc {
 			Name: in.Name, Ecosystem: in.Ecosystem, BaseURL: in.BaseURL,
 			Mode: domain.RemoteMode(in.Mode), Enabled: enabled, Include: in.Include,
 			SyncInterval: in.SyncInterval, ProxyURL: in.ProxyURL,
-			CreatedAt: d.clock().Now(),
+			Eviction: retentionFromInput(in.Eviction), CreatedAt: d.clock().Now(),
 		})
 		if err != nil {
 			writeErr(w, err)
@@ -131,7 +136,10 @@ func handleCreateRemote(d Deps) http.HandlerFunc {
 // обновление. Реализовано как full-replace: клиент должен прислать все
 // поля, которые он хочет сохранить (SPA так и делает); пустые поля
 // станут нулями. Это упрощает контракт и не плодит partial-update
-// транзакций.
+// транзакций. Исключение — политика eviction (сессия 202): у неё
+// tri-state (поля нет = сохранить, null = сброс в наследование,
+// объект = замена) — как у retention репо после сессии 177, иначе
+// PATCH без поля сбрасывал бы настроенную политику.
 func handleUpdateRemote(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := parseInt64URLParam(w, r, "id")
@@ -155,11 +163,18 @@ func handleUpdateRemote(d Deps) http.HandlerFunc {
 		if in.Enabled != nil {
 			enabled = *in.Enabled
 		}
+		// Политика eviction — tri-state: ключа в теле нет — сохраняем
+		// текущую политику remote (не сбрасываем), null — наследование
+		// глобального дефолта, объект — полная замена.
+		eviction := existing.Eviction
+		if in.Eviction.Set {
+			eviction = retentionFromInput(in.Eviction)
+		}
 		updated := domain.Remote{
 			ID: existing.ID, Name: in.Name, Ecosystem: in.Ecosystem,
 			BaseURL: in.BaseURL, Mode: domain.RemoteMode(in.Mode),
 			Enabled: enabled, Include: in.Include, SyncInterval: in.SyncInterval,
-			ProxyURL: in.ProxyURL, CreatedAt: existing.CreatedAt,
+			ProxyURL: in.ProxyURL, Eviction: eviction, CreatedAt: existing.CreatedAt,
 		}
 		// Action до каталога — как в handleCreateRemote: единое имя
 		// remote.update для middleware-записи при любом исходе.

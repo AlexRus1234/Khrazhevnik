@@ -82,6 +82,7 @@ func CatalogSuite(t *testing.T, open func(t *testing.T) Catalog) {
 	t.Run("repos", func(t *testing.T) { repoSuite(t, newCat(t)) })
 	t.Run("repo_retention_roundtrip", func(t *testing.T) { repoRetentionSuite(t, newCat(t)) })
 	t.Run("remotes", func(t *testing.T) { remoteSuite(t, newCat(t)) })
+	t.Run("remote_eviction_columns", func(t *testing.T) { remoteEvictionSuite(t, newCat(t)) })
 	t.Run("jobs", func(t *testing.T) { jobSuite(t, newCat(t)) })
 	t.Run("job_by_remote", func(t *testing.T) { jobByRemoteSuite(t, newCat(t)) })
 	t.Run("audit", func(t *testing.T) { auditSuite(t, newCat(t)) })
@@ -534,6 +535,74 @@ func remoteSuite(t *testing.T, c Catalog) {
 		t.Fatal(err)
 	}
 	wantNotFound(t, c.Remotes.DeleteRemote(ctx, rm.ID))
+}
+
+// remoteEvictionSuite — политика eviction remote на колонках remotes
+// (миграция 0014): NULL = наследовать глобальный дефолт конфига
+// [eviction] (nil-указатель домена), 0/0 = «явно выключено» (указатель на
+// нули) — эти два состояния обязаны различаться. {1,90} здесь не
+// проверяется: сочетание полей валидирует слой выше (ValidateRetention).
+func remoteEvictionSuite(t *testing.T, c Catalog) {
+	ctx := context.Background()
+	plain, err := c.Remotes.CreateRemote(ctx, domain.Remote{
+		Name: "no-policy", Ecosystem: "apt", BaseURL: "https://deb.example.org/debian",
+		Mode: domain.ModeProxy, Enabled: true, CreatedAt: fixed,
+	})
+	if err != nil || plain.ID == 0 {
+		t.Fatalf("CreateRemote без политики = %+v, %v", plain, err)
+	}
+	got, err := c.Remotes.Remote(ctx, plain.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Eviction != nil {
+		t.Fatalf("без политики: Eviction = %+v, хочу nil (NULL = наследовать)", got.Eviction)
+	}
+
+	withPolicy, err := c.Remotes.CreateRemote(ctx, domain.Remote{
+		Name: "with-policy", Ecosystem: "apt", BaseURL: "https://deb.example.org/debian2",
+		Mode: domain.ModeProxy, Enabled: true, CreatedAt: fixed,
+		Eviction: &domain.Retention{MinVersions: 2, MaxAgeDays: 90},
+	})
+	if err != nil || withPolicy.ID == 0 {
+		t.Fatalf("CreateRemote с политикой = %+v, %v", withPolicy, err)
+	}
+	back, err := c.Remotes.Remote(ctx, withPolicy.ID)
+	if err != nil || back.Eviction == nil || *back.Eviction != (domain.Retention{MinVersions: 2, MaxAgeDays: 90}) {
+		t.Fatalf("roundtrip политики: Eviction = %+v, %v; хочу {2 90}", back.Eviction, err)
+	}
+	all, err := c.Remotes.Remotes(ctx)
+	if err != nil || len(all) != 2 || all[0].Eviction != nil {
+		t.Fatalf("Remotes = %+v, %v; хочу nil у remote без политики", all, err)
+	}
+
+	// Update цепочкой: nil → {2,90} (наследование становится явной
+	// политикой) → {0,0} (явно выключено, указатель сохраняется) → nil
+	// (снова наследование).
+	got.Eviction = &domain.Retention{MinVersions: 2, MaxAgeDays: 90}
+	if err := c.Remotes.UpdateRemote(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	got2, err := c.Remotes.Remote(ctx, plain.ID)
+	if err != nil || got2.Eviction == nil || *got2.Eviction != (domain.Retention{MinVersions: 2, MaxAgeDays: 90}) {
+		t.Fatalf("после Update {2 90}: Eviction = %+v, %v", got2.Eviction, err)
+	}
+	got2.Eviction = &domain.Retention{}
+	if err := c.Remotes.UpdateRemote(ctx, got2); err != nil {
+		t.Fatal(err)
+	}
+	got3, err := c.Remotes.Remote(ctx, plain.ID)
+	if err != nil || got3.Eviction == nil || *got3.Eviction != (domain.Retention{}) {
+		t.Fatalf("после Update {0 0}: Eviction = %+v, %v; хочу указатель на нули", got3.Eviction, err)
+	}
+	got3.Eviction = nil
+	if err := c.Remotes.UpdateRemote(ctx, got3); err != nil {
+		t.Fatal(err)
+	}
+	got4, err := c.Remotes.Remote(ctx, plain.ID)
+	if err != nil || got4.Eviction != nil {
+		t.Fatalf("после Update nil: Eviction = %+v, %v; хочу nil", got4.Eviction, err)
+	}
 }
 
 func jobSuite(t *testing.T, c Catalog) {

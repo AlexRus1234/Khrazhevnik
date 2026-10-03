@@ -68,6 +68,9 @@ func TestLoadDefaults(t *testing.T) {
 		{"storage.gc_grace", cfg.Storage.GCGrace.Duration, 7 * 24 * time.Hour},
 		{"storage.access_flush_interval", cfg.Storage.AccessFlushInterval.Duration, 30 * time.Second},
 		{"retention.interval", cfg.Retention.Interval.Duration, 24 * time.Hour},
+		{"eviction.interval", cfg.Eviction.Interval.Duration, 24 * time.Hour},
+		{"eviction.min_versions", cfg.Eviction.MinVersions, 0},
+		{"eviction.max_age_days", cfg.Eviction.MaxAgeDays, 0},
 		{"database.driver", cfg.Database.Driver, "sqlite"},
 		{"database.dsn", cfg.Database.DSN, "/var/lib/khrazhevnik/khrazhevnik.db"},
 		{"auth.jwt_secret", cfg.Auth.JWTSecret, "topsecret-topsecret-topsecret-0123456789"},
@@ -522,6 +525,75 @@ interval = "6h"
 	if cfg.Retention.Interval.Duration != 6*time.Hour {
 		t.Fatalf("retention.interval = %v, хочу 6h", cfg.Retention.Interval.Duration)
 	}
+}
+
+// TestLoadEviction — конфиг авто-очистки кеша прокси (сессия 201): период
+// суточного прохода (0 — легальное «выключено», отрицательный — ошибка) и
+// сочетание полей глобального дефолта политики. Дефолт {0,0} валиден; {1,N>0}
+// (окно 404) и {0,N>0} (без гарантии минимума) отсекаются на старте.
+func TestLoadEviction(t *testing.T) {
+	t.Run("отрицательный_интервал_ошибка", func(t *testing.T) {
+		path := writeTemp(t, "conf-ev-neg.toml", `
+[eviction]
+interval = "-5s"
+`)
+		_, err := Load(path, withJWT(nil))
+		if err == nil || !strings.Contains(err.Error(), "eviction.interval") {
+			t.Fatalf("отрицательный eviction.interval прошёл валидацию: %v", err)
+		}
+	})
+	t.Run("нулевой_интервал_легален", func(t *testing.T) {
+		path := writeTemp(t, "conf-ev-off.toml", `
+[eviction]
+interval = "0s"
+`)
+		cfg, err := Load(path, withJWT(nil))
+		if err != nil {
+			t.Fatalf("eviction.interval = 0 легален (проход выключен), got %v", err)
+		}
+		if cfg.Eviction.Interval.Duration != 0 {
+			t.Fatalf("eviction.interval = %v, хочу 0", cfg.Eviction.Interval.Duration)
+		}
+	})
+	t.Run("политика_и_интервал_читаются", func(t *testing.T) {
+		path := writeTemp(t, "conf-ev-custom.toml", `
+[eviction]
+interval = "6h"
+min_versions = 3
+max_age_days = 90
+`)
+		cfg, err := Load(path, withJWT(nil))
+		if err != nil {
+			t.Fatalf("eviction {6h, 3, 90}: %v", err)
+		}
+		if cfg.Eviction.Interval.Duration != 6*time.Hour {
+			t.Fatalf("eviction.interval = %v, хочу 6h", cfg.Eviction.Interval.Duration)
+		}
+		if cfg.Eviction.MinVersions != 3 || cfg.Eviction.MaxAgeDays != 90 {
+			t.Fatalf("политика = {%d,%d}, хочу {3,90}", cfg.Eviction.MinVersions, cfg.Eviction.MaxAgeDays)
+		}
+	})
+	t.Run("min_1_с_возрастом_ошибка", func(t *testing.T) {
+		path := writeTemp(t, "conf-ev-404.toml", `
+[eviction]
+min_versions = 1
+max_age_days = 90
+`)
+		_, err := Load(path, withJWT(nil))
+		if err == nil || !strings.Contains(err.Error(), "eviction") {
+			t.Fatalf("дефолт {1,90} (окно 404) прошёл валидацию: %v", err)
+		}
+	})
+	t.Run("возраст_без_минимума_ошибка", func(t *testing.T) {
+		path := writeTemp(t, "conf-ev-nofloor.toml", `
+[eviction]
+max_age_days = 90
+`)
+		_, err := Load(path, withJWT(nil))
+		if err == nil || !strings.Contains(err.Error(), "eviction") {
+			t.Fatalf("дефолт {0,90} (без гарантии минимума) прошёл валидацию: %v", err)
+		}
+	})
 }
 
 func TestLoadValidationKnownDriverFields(t *testing.T) {

@@ -186,6 +186,38 @@ type remoteInput struct {
 	// ProxyURL — tri-state прокси upstream (domain.Remote.ProxyURL):
 	// "" / "direct" валидны тривиально, прочее — через домен.
 	ProxyURL string `json:"proxy_url"`
+	// Eviction — политика авто-очистки кеша remote (сессия 202).
+	// tri-state: поля в теле нет — не трогать (PATCH) / наследовать
+	// (POST), null — сброс в наследование глобального дефолта [eviction],
+	// объект — полная замена политики remote. Плоский указатель эти
+	// состояния не различает — см. evictionInput.
+	Eviction evictionInput `json:"eviction"`
+}
+
+// evictionInput — tri-state поле `eviction` в теле remote. Плоский
+// *retentionOut НЕ различает «ключ отсутствует» и «ключ = null» (оба
+// дают nil), а контракт сессии 202 требует трёх состояний, поэтому у
+// типа свой UnmarshalJSON: Set отмечает сам факт присутствия ключа,
+// Policy — разобранный объект (nil после null — сброс в наследование).
+type evictionInput struct {
+	Set    bool
+	Policy *retentionOut
+}
+
+// UnmarshalJSON разбирает поле eviction: null — Set без Policy, объект —
+// Set + Policy (битый объект — ошибка декодера → 400 invalid_json).
+func (in *evictionInput) UnmarshalJSON(data []byte) error {
+	in.Set = true
+	if string(data) == "null" {
+		in.Policy = nil
+		return nil
+	}
+	var out retentionOut
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	in.Policy = &out
+	return nil
 }
 
 // validate проверяет поля remoteInput и возвращает первую ошибку
@@ -195,10 +227,22 @@ func (in *remoteInput) validate() error {
 	in.Name = strings.ToLower(strings.TrimSpace(in.Name))
 	in.Ecosystem = strings.ToLower(strings.TrimSpace(in.Ecosystem))
 	in.BaseURL = strings.TrimRight(strings.TrimSpace(in.BaseURL), "/")
-	return validateRemoteSpec(remoteSpec{
+	if err := validateRemoteSpec(remoteSpec{
 		Name: in.Name, Ecosystem: in.Ecosystem, BaseURL: in.BaseURL,
 		Mode: in.Mode, SyncInterval: in.SyncInterval, ProxyURL: in.ProxyURL,
-	})
+	}); err != nil {
+		return err
+	}
+	// Политика eviction — доменная валидация сочетания полей только при
+	// непустом объекте: null — сброс в наследование, валидировать нечего
+	// (образец repoInput.Retention, сессия 177).
+	if in.Eviction.Policy != nil {
+		return domain.ValidateRetention(domain.Retention{
+			MinVersions: in.Eviction.Policy.MinVersions,
+			MaxAgeDays:  in.Eviction.Policy.MaxAgeDays,
+		})
+	}
+	return nil
 }
 
 // remoteSpec — семантические поля источника, общие для JSON-входа

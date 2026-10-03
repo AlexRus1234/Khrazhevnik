@@ -42,6 +42,7 @@ import (
 	accesskeeper "khrazhevnik/internal/core/engine/accesskeeper"
 	"khrazhevnik/internal/core/engine/auth"
 	cacheengine "khrazhevnik/internal/core/engine/cache"
+	"khrazhevnik/internal/core/engine/eviction"
 	mirrorengine "khrazhevnik/internal/core/engine/mirror"
 	publishengine "khrazhevnik/internal/core/engine/publish"
 	"khrazhevnik/internal/core/engine/retention"
@@ -147,6 +148,23 @@ type App struct {
 	// core/engine и core/web встречаются; engine → web запрещён
 	// depguard'ом).
 	RetentionAPI web.RetentionAPI
+	// Eviction — движок авто-очистки старого кеша pull-through прокси
+	// (сессия 201): проход по proxy-remote с включённой политикой. API
+	// (сессия 202) берёт его отсюда. Создаётся всегда при слинкованных
+	// модулях — политика и список remote меняются в рантайме, а проход
+	// у выключенной политики дешёвый no-op.
+	Eviction *eviction.Engine
+	// EvictionRunner — периодический (суточный) проход eviction по
+	// proxy-remote (сессия 201); nil при eviction.interval=0 (легальное
+	// «выключено»: чистка остаётся ручной). Stop вызывается из graceful
+	// shutdown каскада.
+	EvictionRunner *eviction.Runner
+	// EvictionAPI — срез движка eviction под web.EvictionAPI (сессия
+	// 202): маршруты /remotes/{id}/eviction/* (прогноз, применение).
+	// Обёртка склеивается здесь (cmd — единственное место, где
+	// core/engine и core/web встречаются; engine → web запрещён
+	// depguard'ом).
+	EvictionAPI web.EvictionAPI
 }
 
 // Таймауты upstream-соединения: обрыв установки соединения и ожидания
@@ -287,6 +305,15 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 	// (сессия 172): web-слой зовёт прогноз/apply/пины через срез, не
 	// зная engine-типов (depguard).
 	retentionAPI := retentionWebAPI{engine: retentionEngine, pins: catalog.Pins}
+	// eviction (сессия 201): движок авто-очистки кеша прокси + суточный
+	// проход по proxy-remote с включённой политикой. Адаптеры — те же,
+	// что у publish/retention; глобальный дефолт политики — из конфига
+	// [eviction] ({0,0} — выключено).
+	evictionEngine, evictionRunner, evictionMetrics := wireEviction(cfg, storage, catalog, publishAdapters, log)
+	// evictionAPI — обёртка eviction.Engine → web.EvictionAPI (сессия
+	// 202): web-слой зовёт прогноз/применение через срез, не зная
+	// engine-типов (depguard).
+	evictionAPI := evictionWebAPI{engine: evictionEngine}
 	scheduler := mirrorengine.NewScheduler(mirrorEngine, catalog.Remotes, uuidRand{}, systemClock{}, cfg.Mirror.IntervalJitter.Duration)
 	// reconcile-цикл переживает транзиентные сбои БД (ретрай на тике),
 	// ошибки — в лог; старт не может «отключить» авто-sync.
@@ -307,6 +334,7 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		reg := newPromRegistry()
 		gcMetrics.Register(reg)
 		retentionMetrics.Register(reg)
+		evictionMetrics.Register(reg)
 		metricsExporter = metrics.NewHandler(cacheEngine.Metrics(), reg)
 		metricsHandler = metricsExporter.MetricsHandler()
 	}
@@ -334,6 +362,9 @@ func wireApp(cfg config.Config, log *slog.Logger) (*App, error) {
 		Retention:       retentionEngine,
 		RetentionRunner: retentionRunner,
 		RetentionAPI:    retentionAPI,
+		Eviction:        evictionEngine,
+		EvictionRunner:  evictionRunner,
+		EvictionAPI:     evictionAPI,
 	}, nil
 }
 
@@ -408,6 +439,43 @@ func wireRetention(cfg config.Config, storage port.Storage, catalog registry.Cat
 	}
 	runner.Run(context.Background())
 	return engine, runner, retentionMetrics
+}
+
+// wireEviction собирает движок авто-очистки кеша прокси (eviction, сессия
+// 201) и его суточный проход. Движок создаётся всегда — в отличие от
+// nil-Sweeper: при недоступных срезах каталога проход отказывает честной
+// ошибкой в рантайме (fail-closed внутри Apply), а не маскируется под
+// «фичи нет» (образец wireRetention). Глобальный дефолт политики — из
+// cfg.Eviction ({0,0} — выключено: сам проход остаётся no-op, пока
+// политика не включена на remote). Runner поднимается только при
+// eviction.interval > 0 (0 — легальное «выключено») и живом каталоге
+// remotes — фоновая горутина не должна упасть на пустом срезе. Метрики —
+// по образцу wireStorageGC/wireRetention: создаются всегда, при
+// выключенных метриках счётчики просто не экспортируются. OnApply
+// наполняет счётчики/гистограмму (ошибку прохода не логирует: её отдаёт
+// вызывающий — RunOnce агрегатом в OnError, API — ответом), OnPass ставит
+// отметку времени последнего прохода.
+func wireEviction(cfg config.Config, storage port.Storage, catalog registry.CatalogSet, adapters map[string]port.RepoAdapter, log *slog.Logger) (*eviction.Engine, *eviction.Runner, *metrics.Eviction) {
+	evictionMetrics := metrics.NewEviction()
+	def := domain.Retention{MinVersions: cfg.Eviction.MinVersions, MaxAgeDays: cfg.Eviction.MaxAgeDays}
+	engine := eviction.New(storage, catalog.Access, adapters, systemClock{}, def)
+	engine.OnApply = func(res eviction.Result, err error) {
+		evictionMetrics.ObserveApply(res.Deleted, res.BytesFreed, res.FailedDeletes, res.Duration.Seconds())
+	}
+	if cfg.Eviction.Interval.Duration <= 0 || catalog.Remotes == nil {
+		return engine, nil, evictionMetrics
+	}
+	runner := eviction.NewRunner(engine, catalog.Remotes, cfg.Eviction.Interval.Duration)
+	runner.OnError = func(err error) { log.Error("eviction runner", "err", err) }
+	runner.OnPass = func(remoteName string, res eviction.Result, err error) {
+		evictionMetrics.ObservePass(systemClock{}.Now())
+		if err == nil && res.Deleted > 0 {
+			log.Info("eviction: удалены старые версии кеша", "remote", remoteName,
+				"deleted", res.Deleted, "bytes_freed", res.BytesFreed)
+		}
+	}
+	runner.Run(context.Background())
+	return engine, runner, evictionMetrics
 }
 
 // wireRepoAdapters собирает RepoAdapter'ы из compile-time реестра по
@@ -683,6 +751,52 @@ func retentionTotals(res retention.Result) web.RetentionTotals {
 	}
 }
 
+// evictionWebAPI — обёртка eviction.Engine под web.EvictionAPI (сессия
+// 202): прогноз с конвертацией строк отчёта и боевой проход. Пинов и
+// reindex у кеша нет — обёртка тоньше ретеншновой. Живёт в wire (cmd) —
+// core/engine не импортирует core/web (depguard).
+type evictionWebAPI struct {
+	engine *eviction.Engine
+}
+
+// Preview делегирует сухой проход движку и переводит его отчёт в
+// web-типы: строки Report и счётчики Result.
+func (a evictionWebAPI) Preview(ctx context.Context, remote domain.Remote) (web.EvictionPreview, error) {
+	res, reports, err := a.engine.Preview(ctx, remote)
+	if err != nil {
+		return web.EvictionPreview{}, err
+	}
+	out := web.EvictionPreview{Totals: evictionTotals(res), Candidates: make([]web.EvictionCandidate, 0, len(reports))}
+	for _, rep := range reports {
+		out.Candidates = append(out.Candidates, web.EvictionCandidate{
+			Key: rep.Key, Family: rep.Family, Size: rep.Size,
+			ModTime: rep.ModTime, LastAccess: rep.LastAccess, ProtectedBy: rep.ProtectedBy,
+		})
+	}
+	return out, nil
+}
+
+// Apply делегирует движку боевой проход (задачу запускает web-слой:
+// TaskRegistry движку неизвестен). dryRun=false — сухой проход отдаёт
+// preview; apply всегда чистит.
+func (a evictionWebAPI) Apply(ctx context.Context, remote domain.Remote) (web.EvictionTotals, error) {
+	res, err := a.engine.Apply(ctx, remote, false)
+	return evictionTotals(res), err
+}
+
+// evictionTotals переводит счётчики прохода eviction в web-представление
+// (Duration — секундами, как у ретеншна). ProtectedByPin не переносится:
+// пинов у кеша нет.
+func evictionTotals(res eviction.Result) web.EvictionTotals {
+	return web.EvictionTotals{
+		DryRun: res.DryRun, DurationSeconds: res.Duration.Seconds(),
+		Families: res.Families, ObjectsScanned: res.ObjectsScanned,
+		Candidates: res.Candidates, Deleted: res.Deleted,
+		FailedDeletes: res.FailedDeletes, BytesFreed: res.BytesFreed,
+		ProtectedByMin: res.ProtectedByMin, ProtectedByAccess: res.ProtectedByAccess,
+	}
+}
+
 // mirrorSyncer — обёртка mirror.Engine под web.MirrorSync: запуск
 // синхронизации remote как фоновой задачи TaskRegistry. Живёт в
 // wire (cmd) — единственное место, где core/engine и core/web
@@ -771,6 +885,7 @@ const (
 	statsFlushBudget    = 5 * time.Second
 	accessFlushBudget   = 5 * time.Second
 	retentionStopBudget = 60 * time.Second
+	evictionStopBudget  = 60 * time.Second
 	drainDeletesBudget  = 5 * time.Second
 )
 
@@ -837,7 +952,8 @@ func (a *App) WaitTasks(ctx context.Context) error {
 
 // stopKeepers — стадии каскада «keeper'ы-накопители»: гашение чистки
 // хранилища (сессия 120), флаш статистики (cache_stats, сессия 96),
-// гашение суточного прохода ретеншна (сессия 171) и финальный мёрж
+// гашение суточного прохода ретеншна (сессия 171), гашение суточного
+// прохода eviction (сессия 201) и финальный мёрж
 // обращений (object_access, сессия 167). Все стадии до
 // DrainBackgroundDeletes: данные на момент останова в БД, фоновые
 // удаления прошлых версий не конкурируют с проходом политики. У каждой
@@ -869,6 +985,13 @@ func (a *App) stopKeepers(ctx context.Context) []error {
 		defer cancel()
 		if err := a.RetentionRunner.Stop(rctx); err != nil {
 			errs = append(errs, fmt.Errorf("retention runner stop: %w", err))
+		}
+	}
+	if a.EvictionRunner != nil {
+		evctx, cancel := context.WithTimeout(ctx, evictionStopBudget)
+		defer cancel()
+		if err := a.EvictionRunner.Stop(evctx); err != nil {
+			errs = append(errs, fmt.Errorf("eviction runner stop: %w", err))
 		}
 	}
 	// stopAccessKeeper сам пропускает выключенный keeper (nil) —

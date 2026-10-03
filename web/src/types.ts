@@ -29,6 +29,11 @@ export interface Remote {
   sync_interval: number
   include: string[]
   proxy_url: string
+  // Политика авто-очистки кеша прокси (сессия 202): null — наследует
+  // глобальный дефолт конфига [eviction]; {0,0} — явно выключено;
+  // объект — политика remote. PATCH /remotes без поля сохраняет
+  // текущую политику, null сбрасывает в наследование.
+  eviction: Retention | null
   created_at: string
 }
 
@@ -91,6 +96,37 @@ export interface RetentionTotals {
 export interface RetentionPreview {
   candidates: RetentionCandidate[]
   totals: RetentionTotals
+}
+
+// Прогноз eviction кеш-прокси (GET /remotes/{id}/eviction/preview,
+// сессия 202): строка — версия семейства, прошедшая топ-N-фильтр;
+// protected_by: '' — кандидат на удаление, 'access' — свежее обращение.
+// Пинов у кеша нет (в отличие от ретеншна репо).
+export interface EvictionCandidate {
+  key: string
+  family: string
+  size: number
+  mod_time: string
+  last_access: string
+  protected_by: string
+}
+
+export interface EvictionTotals {
+  dry_run: boolean
+  duration_seconds: number
+  families: number
+  objects_scanned: number
+  candidates: number
+  deleted: number
+  failed_deletes: number
+  bytes_freed: number
+  protected_by_min: number
+  protected_by_access: number
+}
+
+export interface EvictionPreview {
+  candidates: EvictionCandidate[]
+  totals: EvictionTotals
 }
 
 // Пин версии: GET .../retention/pins отдаёт полные ключи хранилища,

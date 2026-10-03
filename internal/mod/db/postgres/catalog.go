@@ -107,12 +107,12 @@ const (
 
 // Upstream'ы и sync-задачи (resume-курсор — непрозрачная строка).
 const (
-	sqlRemoteInsert = `INSERT INTO remotes (name, ecosystem, upstream_url, proxy_url, mode, enabled, sync_interval_sec, include, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`
-	sqlRemoteSelect = `SELECT id, name, ecosystem, upstream_url, proxy_url, mode, enabled, sync_interval_sec, include, created_at FROM remotes`
+	sqlRemoteInsert = `INSERT INTO remotes (name, ecosystem, upstream_url, proxy_url, mode, enabled, sync_interval_sec, include, eviction_min_versions, eviction_max_age_days, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`
+	sqlRemoteSelect = `SELECT id, name, ecosystem, upstream_url, proxy_url, mode, enabled, sync_interval_sec, include, eviction_min_versions, eviction_max_age_days, created_at FROM remotes`
 	sqlRemoteByID   = sqlRemoteSelect + ` WHERE id = $1`
 	sqlRemoteAll    = sqlRemoteSelect + ` ORDER BY id`
-	sqlRemoteUpdate = `UPDATE remotes SET name = $1, ecosystem = $2, upstream_url = $3, proxy_url = $4, mode = $5, enabled = $6, sync_interval_sec = $7, include = $8 WHERE id = $9`
+	sqlRemoteUpdate = `UPDATE remotes SET name = $1, ecosystem = $2, upstream_url = $3, proxy_url = $4, mode = $5, enabled = $6, sync_interval_sec = $7, include = $8, eviction_min_versions = $9, eviction_max_age_days = $10 WHERE id = $11`
 	sqlRemoteDelete = `DELETE FROM remotes WHERE id = $1`
 
 	sqlJobInsert = `INSERT INTO sync_jobs (remote_id, state, interval_sec, last_run_at, cursor, updated_at)
@@ -535,10 +535,11 @@ func scanRepo(row interface{ Scan(dest ...any) error }) (domain.Repo, error) {
 func (s *Store) CreateRemote(ctx context.Context, r domain.Remote) (domain.Remote, error) {
 	id, err := call(ctx, s, func() (int64, error) {
 		var id int64
+		evMin, evMax := evictionArgs(r.Eviction)
 		err := s.db.QueryRowContext(ctx, sqlRemoteInsert,
 			r.Name, r.Ecosystem, r.BaseURL, r.ProxyURL, string(r.Mode), r.Enabled,
 			int64(r.SyncInterval/time.Second), joinInclude(r.Include),
-			dbtalk.Now(r.CreatedAt)).Scan(&id)
+			evMin, evMax, dbtalk.Now(r.CreatedAt)).Scan(&id)
 		return id, err
 	})
 	if err != nil {
@@ -586,9 +587,11 @@ func (s *Store) Remotes(ctx context.Context) ([]domain.Remote, error) {
 // UpdateRemote заменяет upstream целиком.
 func (s *Store) UpdateRemote(ctx context.Context, r domain.Remote) error {
 	res, err := call(ctx, s, func() (sql.Result, error) {
+		evMin, evMax := evictionArgs(r.Eviction)
 		return s.db.ExecContext(ctx, sqlRemoteUpdate,
 			r.Name, r.Ecosystem, r.BaseURL, r.ProxyURL, string(r.Mode), r.Enabled,
-			int64(r.SyncInterval/time.Second), joinInclude(r.Include), r.ID)
+			int64(r.SyncInterval/time.Second), joinInclude(r.Include),
+			evMin, evMax, r.ID)
 	})
 	if err != nil {
 		return mapWrite(err, "remote", r.Name)
@@ -607,16 +610,41 @@ func scanRemote(row interface{ Scan(dest ...any) error }) (domain.Remote, error)
 	var mode string
 	var intervalSec int64
 	var include string
+	var evMin, evMax sql.NullInt64
 	var createdAt int64
 	if err := row.Scan(&r.ID, &r.Name, &r.Ecosystem, &r.BaseURL, &r.ProxyURL, &mode, &r.Enabled,
-		&intervalSec, &include, &createdAt); err != nil {
+		&intervalSec, &include, &evMin, &evMax, &createdAt); err != nil {
 		return domain.Remote{}, err
 	}
 	r.Mode = domain.RemoteMode(mode)
 	r.SyncInterval = time.Duration(intervalSec) * time.Second
 	r.Include = splitInclude(include)
+	r.Eviction = evictionFromNull(evMin, evMax)
 	r.CreatedAt = time.Unix(createdAt, 0).UTC()
 	return r, nil
+}
+
+// evictionArgs — политика remote в колонки: nil-указатель домена → NULL
+// (NULL = наследовать глобальный дефолт [eviction]), числа — как есть
+// (0/0 — «явно выключено»). Миграция 0014.
+func evictionArgs(r *domain.Retention) (any, any) {
+	if r == nil {
+		return nil, nil
+	}
+	return int64(r.MinVersions), int64(r.MaxAgeDays)
+}
+
+// evictionFromNull — колонки в домен: обе NULL → nil (наследование),
+// иначе указатель с числами. Обе колонки пишутся и чистятся парой
+// (evictionArgs), так что «одна NULL» — только усечённая строка.
+func evictionFromNull(minVersions, maxAgeDays sql.NullInt64) *domain.Retention {
+	if !minVersions.Valid && !maxAgeDays.Valid {
+		return nil
+	}
+	return &domain.Retention{
+		MinVersions: int(minVersions.Int64),
+		MaxAgeDays:  int(maxAgeDays.Int64),
+	}
 }
 
 // CreateJob записывает sync-задачу; ID назначает БД.
