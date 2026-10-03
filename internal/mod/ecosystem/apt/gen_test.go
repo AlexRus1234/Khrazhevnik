@@ -575,6 +575,43 @@ func TestObjectFamily(t *testing.T) {
 	}
 }
 
+// port.CacheFamilyResolver — compile-time контракт генератора кеш-путей.
+var _ port.CacheFamilyResolver = (*Generator)(nil)
+
+// TestCacheObjectFamily — port.CacheFamilyResolver: семейство версий
+// объекта кеш-прокси по upstream-пути Debian-зеркала (не путь внутри
+// личного репо). Путь кеша идёт с ведущим «/» (Target.UpstreamPath);
+// не-pool пути (dists/, by-hash, подписи) — ok=false: eviction индексы
+// не трогает. Имена — реальные (урок сессии 65).
+func TestCacheObjectFamily(t *testing.T) {
+	g := &Generator{}
+	cases := []struct {
+		path   string
+		family string
+		ok     bool
+	}{
+		{"/pool/main/h/htop/htop_3.3.0-2_amd64.deb", "main/h/htop", true},
+		{"/pool/main/libn/libnl-core3/libnl-3-200_3.7.0-0.2+b1_amd64.deb", "main/libn/libnl-core3", true},
+		// Другой бинарник того же исходника — то же семейство.
+		{"/pool/main/libn/libnl-core3/libnl-3-200-dbg_3.7.0-0.2+b1_amd64.deb", "main/libn/libnl-core3", true},
+		// Путь без ведущего «/» (форма ObjectFamily) — та же логика разбора.
+		{"pool/main/h/htop/htop_3.3.0-2_amd64.deb", "main/h/htop", true},
+		// Индексы, by-hash-копии и подписи — вне семейств.
+		{"/dists/stable/main/binary-amd64/Packages.gz", "", false},
+		{"/dists/stable/main/binary-amd64/by-hash/sha256/2b3f0f", "", false},
+		{"/dists/stable/Release.gpg", "", false},
+		// Каталог, а не объект.
+		{"/pool/main/h/htop/", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		family, ok := g.CacheObjectFamily(c.path)
+		if ok != c.ok || family != c.family {
+			t.Errorf("CacheObjectFamily(%q) = (%q, %v), want (%q, %v)", c.path, family, ok, c.family, c.ok)
+		}
+	}
+}
+
 // putDeb складывает .deb-байты в FakeStorage по ключу pool/main/.../<name>.deb
 // под префиксом repo/<id>/apt. Возвращает ключ.
 func putDeb(t *testing.T, storage *testutil.FakeStorage, repo domain.Repo, name, control string) string {

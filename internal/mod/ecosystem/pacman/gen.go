@@ -111,7 +111,20 @@ func (g *Generator) ValidateObjectPath(p string) error {
 // python-pysocks-1.7.1-1-any → python-pysocks, gcc-libs-14.2.1-1-x86_64 →
 // gcc-libs. Генерируемые объекты (.db, .files, .db.sig) и legacy
 // .pkg.tar.xz/.gz (парсер их не умеет, на upload отвергаются) — ok=false.
-func (g *Generator) ObjectFamily(p string) (string, bool) {
+func (g *Generator) ObjectFamily(p string) (string, bool) { return pacmanFamily(p) }
+
+// CacheObjectFamily — port.CacheFamilyResolver: то же семейство для
+// объекта кеш-прокси. Вход — upstream-путь Arch-зеркала
+// (Target.UpstreamPath: «/core/os/x86_64/htop-3.3.0-2-x86_64.pkg.tar.zst»),
+// а не путь внутри личного репо: разбор общий (pacmanFamily) — смотрит
+// только basename.
+func (g *Generator) CacheObjectFamily(upstreamPath string) (string, bool) {
+	return pacmanFamily(upstreamPath)
+}
+
+// pacmanFamily — общая логика ObjectFamily и CacheObjectFamily: имя
+// пакета из basename файла; .db/.files/.db.sig — ok=false.
+func pacmanFamily(p string) (string, bool) {
 	name := baseName(p)
 	if !strings.HasSuffix(name, ".pkg.tar.zst") {
 		return "", false

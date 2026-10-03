@@ -128,7 +128,20 @@ func (g *Generator) ValidateObjectPath(p string) error {
 // ложное объединение (gcc-14-14.2.1 → gcc): принято, ложное объединение
 // консервативно. .src.rpm даёт то же семейство, что бинарный (имя
 // совпадает). repodata/ и подписи (.asc, RPM-GPG-KEY-*) — ok=false.
-func (g *Generator) ObjectFamily(p string) (string, bool) {
+func (g *Generator) ObjectFamily(p string) (string, bool) { return rpmFamily(p) }
+
+// CacheObjectFamily — port.CacheFamilyResolver: то же семейство для
+// объекта кеш-прокси. Вход — upstream-путь rpm-md-зеркала
+// (Target.UpstreamPath: «/Packages/h/htop-3.3.0-4.fc44.x86_64.rpm»), а не
+// путь внутри личного репо: пакеты dnf/zypper лежат под произвольными
+// каталогами upstream, разбор общий (rpmFamily) — смотрит только basename.
+func (g *Generator) CacheObjectFamily(upstreamPath string) (string, bool) {
+	return rpmFamily(upstreamPath)
+}
+
+// rpmFamily — общая логика ObjectFamily и CacheObjectFamily: имя пакета
+// из basename файла; repodata/ и подписи (.asc, RPM-GPG-KEY-*) — ok=false.
+func rpmFamily(p string) (string, bool) {
 	name := baseName(p)
 	switch {
 	case strings.HasSuffix(name, ".rpm"):

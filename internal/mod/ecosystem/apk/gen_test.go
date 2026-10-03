@@ -295,6 +295,37 @@ func TestObjectFamily(t *testing.T) {
 	}
 }
 
+// port.CacheFamilyResolver — compile-time контракт генератора кеш-путей.
+var _ port.CacheFamilyResolver = (*Generator)(nil)
+
+// TestCacheObjectFamily — port.CacheFamilyResolver: семейство версий
+// объекта кеш-прокси по upstream-пути Alpine-зеркала (не путь внутри
+// личного репо): пакет лежит в каталоге своей арх, семейство берётся из
+// basename. Реальные имена Alpine (урок сессии 65).
+func TestCacheObjectFamily(t *testing.T) {
+	t.Parallel()
+	g := &Generator{}
+	cases := []struct {
+		path   string
+		family string
+		ok     bool
+	}{
+		{"/v3.20/main/x86_64/htop-3.3.0-r2.apk", "htop", true},
+		{"/v3.20/main/x86_64/libnl3-3.11.0-r0.apk", "libnl3", true},
+		{"/v3.20/main/x86_64/py3-pip-25.1.1-r0.apk", "py3-pip", true},
+		// Индексы, подписи и ключи — вне семейств.
+		{"/v3.20/main/x86_64/APKINDEX.tar.gz", "", false},
+		{"/v3.20/main/x86_64/APKINDEX.tar.gz.sig", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		family, ok := g.CacheObjectFamily(c.path)
+		if ok != c.ok || family != c.family {
+			t.Errorf("CacheObjectFamily(%q) = (%q, %v), want (%q, %v)", c.path, family, ok, c.family, c.ok)
+		}
+	}
+}
+
 // putApk складывает .apk-байты в FakeStorage.
 func putApk(t *testing.T, storage *testutil.FakeStorage, repo domain.Repo, name, pkginfo string) string {
 	t.Helper()

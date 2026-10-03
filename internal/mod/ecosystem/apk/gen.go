@@ -166,7 +166,20 @@ func splitArchDir(p string) (dir, file string, ok bool) {
 // py3-pip-25.1.1-r0 → py3-pip, libnl3-3.11.0-r0 → libnl3,
 // ca-certificates-20250605-r0 → ca-certificates. Генерируемые
 // APKINDEX.tar.gz (+ .sig) и ключи (khrazhevnik.rsa.pub) — ok=false.
-func (g *Generator) ObjectFamily(p string) (string, bool) {
+func (g *Generator) ObjectFamily(p string) (string, bool) { return apkFamily(p) }
+
+// CacheObjectFamily — port.CacheFamilyResolver: то же семейство для
+// объекта кеш-прокси. Вход — upstream-путь Alpine-зеркала
+// (Target.UpstreamPath: «/v3.20/main/x86_64/py3-pip-25.1.1-r0.apk»), а не
+// путь внутри личного репо: пакет лежит в каталоге своей арх, но разбор
+// общий (apkFamily) — смотрит только basename.
+func (g *Generator) CacheObjectFamily(upstreamPath string) (string, bool) {
+	return apkFamily(upstreamPath)
+}
+
+// apkFamily — общая логика ObjectFamily и CacheObjectFamily: имя пакета
+// из basename файла; APKINDEX.tar.gz (+ .sig) и ключи — ok=false.
+func apkFamily(p string) (string, bool) {
 	name := baseName(p)
 	if !strings.HasSuffix(name, ".apk") {
 		return "", false

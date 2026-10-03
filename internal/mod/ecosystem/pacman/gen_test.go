@@ -298,6 +298,37 @@ func TestObjectFamily(t *testing.T) {
 	}
 }
 
+// port.CacheFamilyResolver — compile-time контракт генератора кеш-путей.
+var _ port.CacheFamilyResolver = (*Generator)(nil)
+
+// TestCacheObjectFamily — port.CacheFamilyResolver: семейство версий
+// объекта кеш-прокси по upstream-пути Arch-зеркала (не путь внутри
+// личного репо): пакет лежит в каталоге арх/репозитория, семейство
+// берётся из basename. Реальные имена Arch (урок сессии 65).
+func TestCacheObjectFamily(t *testing.T) {
+	t.Parallel()
+	g := &Generator{}
+	cases := []struct {
+		path   string
+		family string
+		ok     bool
+	}{
+		{"/core/os/x86_64/htop-3.3.0-2-x86_64.pkg.tar.zst", "htop", true},
+		{"/core/os/x86_64/python-pysocks-1.7.1-1-any.pkg.tar.zst", "python-pysocks", true},
+		{"/core/os/x86_64/gcc-libs-14.2.1-1-x86_64.pkg.tar.zst", "gcc-libs", true},
+		// Генерация (.db/.files/.sig) — вне семейств.
+		{"/core/os/x86_64/khrazhevnik.db", "", false},
+		{"/core/os/x86_64/khrazhevnik.db.sig", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		family, ok := g.CacheObjectFamily(c.path)
+		if ok != c.ok || family != c.family {
+			t.Errorf("CacheObjectFamily(%q) = (%q, %v), want (%q, %v)", c.path, family, ok, c.family, c.ok)
+		}
+	}
+}
+
 // TestValidateObjectPathLegacyReason — legacy .xz/.gz отвергаются
 // ValidationError с внятной причиной (маппится в 400): клиент должен
 // понять, что пакет надо переупаковать, а не гадать, почему «неизвестное

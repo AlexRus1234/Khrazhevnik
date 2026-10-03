@@ -99,3 +99,20 @@ type Ecosystem interface {
 	// «по использованию»), возвращает *domain.UnsupportedError.
 	Enumerate(ctx context.Context, remote domain.Remote, meta MetaFetcher) ([]string, error)
 }
+
+// CacheFamilyResolver — опциональная способность Ecosystem: семейство
+// версий immutable-объекта кеша по его upstream-пути. На вход идёт
+// upstream-путь объекта — как в Target.UpstreamPath, с ведущим «/»
+// («/pool/main/h/htop/htop_3.3.0-2_amd64.deb»): eviction берёт ключи из
+// namespace cache/<eco>/<remote-id>/<upstream-path> и отрезает префикс
+// кеша, а не путь внутри личного репо. Семейство — та же эвристика, что
+// у FamilyResolver (адаптер экосистемы резолвит: apt — pool-каталог,
+// rpm-md/pacman/apk/xbps — префикс имени до версии), поэтому логика
+// разбора у обоих методов общая, а не скопированная.
+// ok=false — путь не пакет (индексы, подписи, служебные): eviction
+// такие объекты не трогает. nix — не реализует (content-addressed,
+// старых версий одного пути не бывает): потребитель получит честную
+// ошибку опциональности.
+type CacheFamilyResolver interface {
+	CacheObjectFamily(upstreamPath string) (family string, ok bool)
+}
