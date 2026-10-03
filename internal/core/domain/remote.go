@@ -53,6 +53,14 @@ type Remote struct {
 	// http/https/socks5/socks5h, userinfo с паролем допускается
 	// (валидация — ValidateProxyURL; в логах/API — только через
 	// MaskProxyURL, пароль не покидает домен в открытом виде).
-	ProxyURL  string
+	ProxyURL string
+	// Eviction — политика чистки кеша этого remote, tri-state: nil —
+	// наследовать глобальный дефолт конфига [eviction]; &Retention{0, 0}
+	// — явно выключено; иначе — пороги политики. Переиспользует
+	// domain.Retention: правила сочетания полей те же, окно 404 от
+	// keep=1 при заданном возрасте уже отсекает ValidateRetention.
+	// Почему только proxy-режим: immutable-пакеты зеркала не трогаются,
+	// иначе resume-diff sync даёт churn «скачал → удалил → скачал».
+	Eviction  *Retention
 	CreatedAt time.Time
 }
