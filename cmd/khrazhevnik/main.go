@@ -118,6 +118,7 @@ func run(ctx context.Context, configPath string) error {
 			Publish:          app.Publish,
 			StorageGC:        app.Sweeper,
 			Retention:        app.RetentionAPI,
+			Eviction:         app.EvictionAPI,
 			OnRemotesChanged: app.NotifyRemotesChanged,
 			MetricsHandler:   app.MetricsHandler,
 			Metrics:          app.Metrics,

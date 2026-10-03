@@ -100,6 +100,12 @@ type Deps struct {
 	// задачей и пины версий (сессия 172). nil в деградированном режиме —
 	// 503 retention_unavailable на всех пяти маршрутах.
 	Retention RetentionAPI
+	// Eviction — политика авто-очистки кеша pull-through прокси (движок
+	// сессий 200–201): прогноз /remotes/{id}/eviction/preview и
+	// применение /apply фоновой задачей (сессия 202). nil в
+	// деградированном режиме — 503 eviction_unavailable на обоих
+	// маршрутах.
+	Eviction EvictionAPI
 	// Signer — подписчик метаданных личных репозиториев (сессия 15):
 	// отдаёт публичный ключ через GET /repo/<name>/key.asc на публичном
 	// порту :29202. nil в деградированном режиме — роут /key.asc не
@@ -180,6 +186,22 @@ type RetentionAPI interface {
 	Pins(ctx context.Context, repoID int64) ([]string, error)
 	// SetPin ставит (pinned=true) или снимает пин; идемпотентен.
 	SetPin(ctx context.Context, repoID int64, key string, pinned bool) error
+}
+
+// EvictionAPI — тонкий срез eviction.Engine для
+// /remotes/{id}/eviction/* (сессия 202): прогноз (dry-run отчёт по
+// кандидатам) и боевой проход по кешу одного remote. Задачу apply
+// запускает web-слой через TaskRegistry — движок про реестр не знает
+// (как у publish/mirror/retention). Пинов и reindex у кеша нет: индексы
+// кеша — метаданные upstream, перегенерировать нечего. web не импортирует
+// engine-пакеты (depguard) — срез склеивается в wire (образец
+// RetentionAPI выше).
+type EvictionAPI interface {
+	// Preview — сухой проход: счётчики и строки кандидатов, носитель
+	// не меняется.
+	Preview(ctx context.Context, remote domain.Remote) (EvictionPreview, error)
+	// Apply — боевой проход: удаление кандидатов политики.
+	Apply(ctx context.Context, remote domain.Remote) (EvictionTotals, error)
 }
 
 // BuildPublicRouter — публичный слушатель (:29202): /healthz, раздача
@@ -338,6 +360,12 @@ func BuildAdminRouter(d Deps) http.Handler {
 				remotes.Patch("/{id}", handleUpdateRemote(d))
 				remotes.Delete("/{id}", handleDeleteRemote(d))
 				remotes.Post("/{id}/sync", handleSyncRemote(d))
+				// Eviction (сессия 202): политика чистки кеша —
+				// админская настройка источника, как CRUD выше.
+				// Прогноз — чтение (auditWrap пишет только мутации),
+				// apply — мутация под тем же audit→adminAuth.
+				remotes.Get("/{id}/eviction/preview", handleEvictionPreview(d))
+				remotes.Post("/{id}/eviction/apply", handleEvictionApply(d))
 			})
 
 			// /settings — admin-only глобальные настройки инстанса

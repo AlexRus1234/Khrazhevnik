@@ -260,6 +260,8 @@ IP — 429; пароль длиннее 72 байт (граница bcrypt) — 
 | PATCH | `/api/v1/remotes/{id}`     | admin       | 200/404 | Обновление remote               |
 | DELETE| `/api/v1/remotes/{id}`     | admin       | 204/404 | Удаление remote                 |
 | POST  | `/api/v1/remotes/{id}/sync`| admin       | 202/409/429 | Запуск sync-задачи; 409 — дубль (kind,label), 429 — лимит воркеров |
+| GET   | `/api/v1/remotes/{id}/eviction/preview` | admin | 200/400/404/503 | Прогноз чистки кеша (dry-run): кандидаты `{key,family,size,mod_time,last_access,protected_by}` и `totals`; 400 `eviction_unsupported` — экосистема без резолвера семейств кеш-путей (nix), 503 `eviction_unavailable` — деградация |
+| POST  | `/api/v1/remotes/{id}/eviction/apply` | admin | 202/404/409/429/503 | Применить политику чистки кеша задачей (kind=`eviction`, label `remote-<id>`); 409 — дубль, 429 — лимит воркеров, 503 — деградация |
 | GET   | `/api/v1/remotes/export`   | admin       | 200 | Выгрузка источников: `text/plain; charset=utf-8`, `Content-Disposition: attachment; filename="khrazhevnik-remotes.txt"`, построчный формат (см. ниже) |
 | POST  | `/api/v1/remotes/import`   | admin       | 200/400/413 | Импорт источников: построчный разбор, всегда 200 с отчётом `{created, skipped, errors}` (частичный успех); 400 `import_too_many` — >1000 строк, 413 `payload_too_large` — тело >256 KiB |
 
@@ -275,7 +277,12 @@ IP — 429; пароль длиннее 72 байт (граница bcrypt) — 
 валидация через `domain.ValidateProxyURL`, невалидное — 400
 `validation_error`; `GET` отдаёт значение как есть вместе с userinfo —
 читать может только admin-сессия; в аудит-лог create/update пишется
-замаскированный `domain.MaskProxyURL`). Плоский лэйаут
+замаскированный `domain.MaskProxyURL`), `eviction` (политика авто-очистки
+кеша прокси: `{min_versions, max_age_days}` — тот же доменный тип и
+валидация, что у retention репо; `null` — наследует глобальный дефолт
+конфига `[eviction]`, `{0,0}` — явно выключено; в теле `PATCH` ключа нет
+— политика не трогается, `null` — сброс в наследование, объект — полная
+замена; у nix политика неприменима). Плоский лэйаут
 xbps: архитектура — это имя индексного файла `<arch>-repodata` в корне
 репозитория, а не отдельный путь; `noarch`-пакеты входят в каждую
 arch-группу индекса.

@@ -91,6 +91,8 @@ repo-токены — нет.
 | PATCH | `/api/v1/remotes/{id}`      | 200/404        | Обновление полей      |
 | DELETE| `/api/v1/remotes/{id}`      | 204/404        | Удаление (кеш остаётся) |
 | POST  | `/api/v1/remotes/{id}/sync` | 202/409/429    | Запустить sync-задачу зеркала; 409 — уже идёт, 429 — лимит воркеров |
+| GET   | `/api/v1/remotes/{id}/eviction/preview` | 200/400/404/503 | Прогноз чистки кеша (dry-run): кандидаты и счётчики защит; 400 `eviction_unsupported` — nix (нет резолвера семейств), 503 `eviction_unavailable` — деградация |
+| POST  | `/api/v1/remotes/{id}/eviction/apply` | 202/404/409/429/503 | Применить политику чистки кеша задачей (kind=`eviction`, label `remote-<id>`) |
 | GET   | `/api/v1/remotes/export`    | 200            | Выгрузка источников файлом (`text/plain`, `Content-Disposition`) |
 | POST  | `/api/v1/remotes/import`    | 200/400/413    | Импорт источников построчно; отчёт `{created, skipped, errors}` |
 
@@ -101,7 +103,12 @@ repo-токены — нет.
 `repo/arch`; apk — архитектуры; xbps — архитектуры; rpm-md/nix — не
 используется), `proxy_url` (tri-state прокси upstream: пусто —
 наследовать глобальную настройку, `direct` — напрямую, иначе URL
-http/https/socks5/socks5h; пароль в аудите маскируется).
+http/https/socks5/socks5h; пароль в аудите маскируется), `eviction`
+(политика авто-очистки кеша прокси `{min_versions, max_age_days}`:
+`null` — наследование глобального `[eviction]`, `{0,0}` — выключено;
+`PATCH` без ключа политику не трогает, `null` — сброс в наследование,
+объект — полная замена; `min_versions=1` с возрастом — 400
+`validation_error`).
 
 Экспорт `/remotes/export` отдаёт табличный текст: заголовок-комментарий
 и строки `name|ecosystem|base_url|mode|proxy|enabled|sync_interval|include`
@@ -249,6 +256,44 @@ curl -H "Authorization: Bearer $TOKEN" https://admin.example:30202/api/v1/ecosys
 (`port.FamilyResolver`), и у nix (контент-адресуемые объекты) его нет —
 прогноз такого репо отвечает 501 `unsupported`, панель в GUI скрыта.
 Объекты вне семейств (индексы, подписи, ключи) проход не трогает.
+
+## Eviction кеш-прокси (admin)
+
+`GET .../eviction/preview` — сухой проход движка по кешу одного remote:
+носитель не меняется. Ответ — версии, прошедшие фильтр `min_versions`
+(топ-N свежих по дате загрузки защищены всегда):
+
+```json
+{
+  "candidates": [
+    {"key": "cache/apt/1/pool/main/h/htop/htop_1.0_amd64.deb",
+     "family": "pool/main/h/htop", "size": 1024,
+     "mod_time": "2026-03-01T10:00:00Z", "last_access": "2026-03-01T10:00:00Z",
+     "protected_by": ""}
+  ],
+  "totals": {"dry_run": true, "duration_seconds": 0.01, "families": 1,
+             "objects_scanned": 5, "candidates": 2, "deleted": 0,
+             "failed_deletes": 0, "bytes_freed": 0, "protected_by_min": 3,
+             "protected_by_access": 0}
+}
+```
+
+`protected_by` — первая сработавшая защита: `""` — удаляется, `access` —
+обращение к версии свежее `max_age_days`. Пинов у кеша нет (`repo_pins`
+личных репо кеша не касается). Нет строки обращений — давность считается
+от даты загрузки (бутстрап). Политика выключена (`null` в теле remote при
+выключенном `[eviction]`) или remote зеркальный — `candidates: []`:
+зеркало чистит upstream, а не инстанс. Экосистема без резолвера семейств
+кеш-путей (nix — контент-адресуемые объекты) — 400
+`eviction_unsupported`; деградация без движка — 503
+`eviction_unavailable`.
+
+`POST .../eviction/apply` — боевой проход политики фоновой задачей
+`kind=eviction`, label `remote-<id>`; ответ `202 {"task_id": …}`,
+наблюдение — `GET /api/v1/tasks/{id}`. Активная задача того же remote —
+409 `task_duplicate`; лимит воркеров — 429 `task_limit`; деградация —
+503 `eviction_unavailable`. Аудит — `remote.eviction.apply` (ставится до
+запуска задачи: и 409, и успех пишутся под настоящим именем).
 
 ## Публичная раздача (:29202, без auth)
 

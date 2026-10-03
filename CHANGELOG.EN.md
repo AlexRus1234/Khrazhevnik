@@ -26,6 +26,15 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Cache-proxy eviction — API (per-remote policy, forecast, apply):**
+  the `eviction` field in the upstream body (tri-state: no key — leave
+  untouched, `null` — inherit the global `[eviction]`, an object — full
+  replacement), the candidate forecast
+  (`GET /api/v1/remotes/{id}/eviction/preview`) and applying the policy as
+  a background task (`POST .../eviction/apply`, `kind=eviction`).
+
 ## [1.3.2] — 2026-10-01
 
 ### Added
