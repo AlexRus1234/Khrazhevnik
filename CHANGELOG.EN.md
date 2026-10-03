@@ -28,6 +28,22 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ### Added
 
+- **Cache-proxy eviction — engine and triggers:** automatic cleanup of the
+  stale pull-through proxy cache (the `engine/eviction` engine): a version
+  is deleted only when two conditions hold at once — the family has more
+  than `min_versions` live versions AND the candidate has not been
+  accessed for longer than `max_age_days` (the protections combine with
+  OR); a per-remote policy with tri-state inheritance of the global
+  default, a daily pass, a manual forecast and apply; mirrors and nix are
+  not cleaned. Config `[eviction]` (`interval` 24h, `0` — disabled; the
+  policy default `{0,0}` — off), metrics `khrazhevnik_eviction_*`.
+
+- **Cache-proxy eviction — schema (migration 0014):** the
+  `remotes.eviction_min_versions`/`eviction_max_age_days` columns — the
+  per-remote cache cleanup policy; `NULL` — inherit the global
+  `[eviction]` default, `{0,0}` — explicitly disabled for the upstream
+  (the tri-state stays distinguishable).
+
 - **Cache-proxy eviction — API (per-remote policy, forecast, apply):**
   the `eviction` field in the upstream body (tri-state: no key — leave
   untouched, `null` — inherit the global `[eviction]`, an object — full

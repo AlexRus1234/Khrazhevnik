@@ -159,6 +159,13 @@ assistant was used while preparing the source code.[^1]
   a manual dry-run forecast and application; nix is the exception
   (content-addressed, no old versions); config `retention.interval`
   (`24h`, `0` — disabled), `storage.access_flush_interval` (`30s`)
+- Cache eviction: old versions in the pull-through proxy cache are cleaned
+  up automatically by a per-remote policy (`min_versions`/`max_age_days`,
+  tri-state — inherit the global one / off / own), a version is deleted
+  only when two conditions hold at once (more than `min_versions` live
+  versions AND access staleness); a daily pass plus a manual dry-run
+  forecast and application; mirrors and nix are not cleaned; config
+  `eviction.interval` (`24h`, `0` — disabled)
 
 ### Ecosystems
 
@@ -556,8 +563,8 @@ The XBPS ecosystem (Void Linux) has already been added (v1.2). Next is
 ecosystem expansion: pkg (its "directory + index" model repeats already
 solved tasks), then Guix (the nix protocol), Flatpak last. Beyond that,
 without a fixed order: autonomous offline mirror export, instance
-federation, cache eviction and cleanup, OIDC/OAuth2, notifications,
-the CLI (khzr-cli), and global package search.
+federation, OIDC/OAuth2, notifications, the CLI (khzr-cli), and global
+package search.
 
 The full guide with details and design boundaries is in
 [docs/ROADMAP.md](docs/ROADMAP.md); the history of completed stages
