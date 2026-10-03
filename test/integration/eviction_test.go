@@ -115,23 +115,37 @@ func (u *evictionUpstream) count(path string) int {
 	return u.hits[path]
 }
 
-// evictionUpstreamPath — upstream-путь версии: pool/main/h/htop/<файл>.
-// Ключ кеша строится адаптером от того же пути (apt.go:154).
-func evictionUpstreamPath(ver string) string {
+// evictionEcoPath — экосистемный путь версии: pool/<component>/<l>/<имя>.
+// Из него адаптер собирает StorageKey (cache/apt/<id> плюс этот путь,
+// apt.go:154) и UpstreamPath.
+func evictionEcoPath(ver string) string {
 	return "/pool/main/h/htop/htop_" + ver + "_amd64.deb"
+}
+
+// evictionUpstreamBase — база BaseURL remote: <srv>/debian. Адаптер
+// собирает UpstreamURL как base_url + UpstreamPath, поэтому сервер видит
+// /debian/pool/... — не то же самое, что клиентский /apt/<remote>/pool/...
+// (раскладка сервера — как у образца apt_proxy_test).
+const evictionUpstreamBase = "/debian"
+
+// evictionUpstreamPath — путь версии, которым её видит upstream-сервер:
+// база плюс экосистемный путь. Расхождение базы = 404 на первом же GET.
+func evictionUpstreamPath(ver string) string {
+	return evictionUpstreamBase + evictionEcoPath(ver)
 }
 
 // evictionStorageKey — ключ объекта в едином namespace хранения; он же
 // ключ object_access (публичный роутер фиксирует HIT по Meta.Key, который
-// eviction перечисляет листингом).
+// eviction перечисляет листингом). Путь кеша — без базы upstream: он идёт
+// от UpstreamPath.
 func evictionStorageKey(remoteID int64, ver string) string {
 	return fmt.Sprintf("cache/apt/%d/pool/main/h/htop/htop_%s_amd64.deb", remoteID, ver)
 }
 
 // evictionProxyPath — клиентский путь публичного роутера: /<eco>/<remote>/
-// плюс upstream-путь без ведущего «/» (роут /{eco}/*).
+// плюс экосистемный путь без ведущего «/» (роут /{eco}/*).
 func evictionProxyPath(remoteName, ver string) string {
-	return "/apt/" + remoteName + evictionUpstreamPath(ver)
+	return "/apt/" + remoteName + evictionEcoPath(ver)
 }
 
 // evictionEnv — live-сервер с реальным каталогом, fs-хранилищем, движком
