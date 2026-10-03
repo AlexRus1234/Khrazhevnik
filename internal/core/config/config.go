@@ -28,6 +28,8 @@ import (
 	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
+
+	"khrazhevnik/internal/core/domain"
 )
 
 // Имена драйверов; реестр (internal/core/registry) проверяет те же
@@ -84,6 +86,23 @@ type Storage struct {
 // «выключено» (чистка остаётся ручной), отрицательное — ошибка конфига.
 type Retention struct {
 	Interval Duration `toml:"interval"`
+}
+
+// Eviction — авто-очистка старого кеша pull-through прокси (волна
+// «Eviction кеш-прокси», сессия 201). Interval — период прохода по
+// proxy-remote с включённой политикой; MinVersions/MaxAgeDays — глобальный
+// дефолт политики для remote без своей (tri-state Remote.Eviction: nil —
+// наследовать, &{0,0} — явно выключено). Дефолт политики — {0,0}:
+// eviction выключен, пока админ не включит (консервативный дебют новой
+// чистки — политика удаляет объекты, а не только читает). Interval=0 —
+// легальное «выключено» (чистка остаётся ручной — API/GUI); отрицательный
+// — ошибка конфига. Сочетание полей политики проверяет domain.ValidateRetention
+// на старте: {1,N>0} (окно 404) и {0,N>0} (удаление без гарантии минимума)
+// отсекаются здесь, а не в проходе.
+type Eviction struct {
+	Interval    Duration `toml:"interval"`
+	MinVersions int      `toml:"min_versions"`
+	MaxAgeDays  int      `toml:"max_age_days"`
 }
 
 // FSStorage — posix-хранилище (mod/storage/fs).
@@ -183,6 +202,7 @@ type Config struct {
 	HTTP      HTTP                 `toml:"http"`
 	Storage   Storage              `toml:"storage"`
 	Retention Retention            `toml:"retention"`
+	Eviction  Eviction             `toml:"eviction"`
 	Database  Database             `toml:"database"`
 	Auth      Auth                 `toml:"auth"`
 	Cache     Cache                `toml:"cache"`
@@ -210,6 +230,7 @@ const (
 	defaultGCGrace      = 7 * 24 * time.Hour
 	defaultAccessFlush  = 30 * time.Second
 	defaultRetentionRun = 24 * time.Hour
+	defaultEvictionRun  = 24 * time.Hour
 	defaultWorkers      = 4
 	defaultJitter       = 10 * time.Minute
 	defaultMaxBandwidth = int64(0)       // безлимит
@@ -229,6 +250,10 @@ func defaultConfig() Config {
 		// политика включается per-repo, а проход — общий механизм её
 		// соблюдения; выключить — retention.interval = "0s".
 		Retention: Retention{Interval: Duration{defaultRetentionRun}},
+		// Периодический проход eviction тоже включён по умолчанию
+		// (сутки), но политика-дефолт — {0,0}: сам проход это no-op,
+		// пока админ не включит чистку (per-remote или здесь).
+		Eviction: Eviction{Interval: Duration{defaultEvictionRun}},
 		Database: Database{
 			Driver: DriverSQLite,
 			DSN:    defaultSQLiteDSN,
@@ -340,6 +365,7 @@ func (c Config) validate() []error {
 	problems = append(problems, c.validateStorageGC()...)
 	problems = append(problems, c.validateStorageAccess()...)
 	problems = append(problems, c.validateRetention()...)
+	problems = append(problems, c.validateEviction()...)
 	problems = append(problems, c.validateDatabase()...)
 
 	if c.Auth.JWTSecret == "" {
@@ -503,6 +529,24 @@ func (c Config) validateRetention() []error {
 			"конфигурация: retention.interval: не может быть отрицательным (0 — периодический проход выключен)")}
 	}
 	return nil
+}
+
+// validateEviction проверяет конфиг авто-очистки кеша прокси: период
+// прохода (0 — легальное «выключено», отрицательный — опечатка) и
+// сочетание полей глобального дефолта политики. Дефолт {0,0} —
+// выключено и валиден; {1,N>0} и {0,N>0} отсекаются domain.ValidateRetention
+// на старте, а не в проходе (окно 404 / удаление без гарантии минимума).
+func (c Config) validateEviction() []error {
+	var problems []error
+	if c.Eviction.Interval.Duration < 0 {
+		problems = append(problems, errors.New(
+			"конфигурация: eviction.interval: не может быть отрицательным (0 — периодический проход выключен)"))
+	}
+	def := domain.Retention{MinVersions: c.Eviction.MinVersions, MaxAgeDays: c.Eviction.MaxAgeDays}
+	if err := domain.ValidateRetention(def); err != nil {
+		problems = append(problems, fmt.Errorf("конфигурация: eviction: %w", err))
+	}
+	return problems
 }
 
 // validateDatabase проверяет драйвер каталога и DSN.

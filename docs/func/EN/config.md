@@ -115,6 +115,28 @@ ages on its own, so versions that were alive at the last upload become
 deletion candidates over time — without the pass nobody deletes them. A
 failure in one repository does not stop the pass over the others.
 
+## `[eviction]`
+
+| Key             | Default | Env                           | Purpose               |
+|-----------------|---------|-------------------------------|-----------------------|
+| `interval`      | `24h`   | `KHRZ_EVICTION__INTERVAL`     | Period of the recurring pass of old pull-through proxy cache cleanup over remotes with the policy enabled; `0` = disabled — cleanup stays manual (API/GUI) |
+| `min_versions`  | `0`     | `KHRZ_EVICTION__MIN_VERSIONS` | Global policy default: how many versions of a family are guaranteed alive; `0` = eviction disabled (off by default until an admin enables cleanup) |
+| `max_age_days`  | `0`     | `KHRZ_EVICTION__MAX_AGE_DAYS` | Global policy default: threshold of version access staleness in days; `0` = no age limit |
+
+The eviction policy is configured per remote (tri-state: own value / inherit
+the global default / explicitly disabled); this section holds the global
+default and the period of the shared pass. The pass runs only over
+proxy remotes (a mirror is a full upstream copy, and "download → delete →
+download" churn conflicts with resume-diff sync) with an effective policy
+enabled, sequentially (one `Apply` at a time, with a cancellation check
+between remotes); a failure in one remote does not stop the others. The
+deletion criterion is two-fold: the family has more than `min_versions` live
+versions AND the candidate has not been accessed for longer than
+`max_age_days` (accesses are tracked via `storage.access_flush_interval`).
+Combinations `min_versions=1` with an age set (404 window) and `max_age_days`
+without `min_versions` (deletion without a guaranteed minimum) are rejected
+by config validation at startup.
+
 ## `[database]`
 
 | Key     | Default                                | Env                     |
