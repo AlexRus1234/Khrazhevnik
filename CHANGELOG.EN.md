@@ -26,6 +26,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-10-03
+
 ### Added
 
 - **Cache-proxy eviction — engine and triggers:** automatic cleanup of the
