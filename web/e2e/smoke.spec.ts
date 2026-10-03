@@ -488,6 +488,103 @@ test('remotes: импорт источников из текста', async ({ pa
   await expect(page.locator('tbody tr', { hasText: 'e2e-import-b' })).toBeVisible()
 })
 
+// remotes: блок «Очистка кеша» (сессия 203) в карточке источника —
+// tri-state политика (наследует/выключено/включено) сохраняется PATCH,
+// прогноз рисует заголовки колонок и на пустой ленте (прецедент ремонта
+// cb73f0d), у зеркала контролов нет — dim-подсказка. Ассерты — ru-pin.
+test('remotes: очистка кеша — политика, прогноз, подсказка зеркала', async ({ page, request }) => {
+  await pinRu(page)
+  await page.goto(`${ADMIN}/ui/login`)
+  await page.getByLabel('Логин').fill('admin')
+  await page.getByLabel('Пароль', { exact: true }).fill(PASSWORD)
+  await page.locator('form button[type="submit"]').click()
+  await expect(page.getByRole('heading', { name: 'Дашборд' })).toBeVisible()
+
+  const token = await page.evaluate(() => localStorage.getItem('khrazhevnik_token'))
+  expect(token).not.toBeNull()
+  const auth = { Authorization: `Bearer ${String(token)}` }
+  const api = `${ADMIN}/api/v1`
+
+  // Зеркального источника в сценарии нет — заводим его токеном сессии:
+  // на его карточке eviction неприменим (dim-подсказка).
+  const mirror = await request.post(`${api}/remotes`, {
+    headers: auth,
+    data: {
+      name: 'e2e-mirror',
+      ecosystem: 'apt',
+      base_url: 'https://example.invalid/mirror',
+      mode: 'mirror',
+      enabled: true,
+      include: [],
+    },
+  })
+  expect(mirror.status()).toBe(201)
+
+  await page.click('a[href="/ui/remotes"]')
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+
+  // Proxy-источник e2e-proxy создан тестом прокси выше: открываем его
+  // карточку — блок «Очистка кеша» с формой политики и действиями.
+  await page
+    .locator('tbody tr', { hasText: 'e2e-proxy' })
+    .getByRole('button', { name: 'Править' })
+    .click()
+  const card = page.locator('.panel', { hasText: 'Источник: e2e-proxy' })
+  const ev = card.locator('form', { hasText: 'Очистка кеша' })
+  await expect(ev.getByRole('heading', { name: 'Очистка кеша' })).toBeVisible()
+
+  // 1. Политика «включено» 3/90 → Сохранить (PATCH): значения дошли до
+  // БД (tri-state — объект, а не null и не {0,0}).
+  await ev.locator('select').selectOption('on')
+  await ev.getByLabel('Минимум версий на семейство').fill('3')
+  await ev.getByLabel('Максимальный возраст, дней').fill('90')
+  await ev.getByRole('button', { name: 'Сохранить' }).click()
+  await expect(ev.locator('p.ok')).toContainText('Сохранено')
+
+  const remotes = (await (await request.get(`${api}/remotes`, { headers: auth })).json()) as {
+    name: string
+    eviction: { min_versions: number; max_age_days: number } | null
+  }[]
+  expect(remotes.find((r) => r.name === 'e2e-proxy')?.eviction).toEqual({
+    min_versions: 3,
+    max_age_days: 90,
+  })
+
+  // 2. Перезагрузка: политика приходит из БД — select в «включено»,
+  // поле минимума заполнено.
+  await page.reload()
+  await expect(page.getByRole('heading', { name: 'Источники' })).toBeVisible()
+  await page
+    .locator('tbody tr', { hasText: 'e2e-proxy' })
+    .getByRole('button', { name: 'Править' })
+    .click()
+  const ev2 = page
+    .locator('.panel', { hasText: 'Источник: e2e-proxy' })
+    .locator('form', { hasText: 'Очистка кеша' })
+  await expect(ev2.locator('select')).toHaveValue('on')
+  await expect(ev2.getByLabel('Минимум версий на семейство')).toHaveValue('3')
+
+  // 3. Прогноз: кеш источника пуст — таблица всё равно рисует заголовки
+  // колонок (ремонт cb73f0d), ниже — dim-строка «Кандидатов нет.».
+  await ev2.getByRole('button', { name: 'Прогноз' }).click()
+  await expect(ev2.locator('th', { hasText: 'Семейство' })).toBeVisible()
+  await expect(ev2.getByText('Кандидатов нет.')).toBeVisible()
+
+  // 4. Зеркало: формы политики нет, вместо неё — dim-подсказка.
+  await page
+    .locator('.panel', { hasText: 'Источник: e2e-proxy' })
+    .getByRole('button', { name: 'Отмена' })
+    .click()
+  await page
+    .locator('tbody tr', { hasText: 'e2e-mirror' })
+    .getByRole('button', { name: 'Править' })
+    .click()
+  const mcard = page.locator('.panel', { hasText: 'Источник: e2e-mirror' })
+  await expect(mcard.getByRole('heading', { name: 'Очистка кеша' })).toBeVisible()
+  await expect(mcard.getByText('зеркало — полная копия')).toBeVisible()
+  await expect(mcard.getByRole('button', { name: 'Прогноз' })).toHaveCount(0)
+})
+
 // repos: ретеншн (сессия 173). Репо REPO создан первым тестом (serial);
 // сверки через /api токеном текущей UI-сессии (лишний логин не делаем —
 // /auth/login под лимитером). Ассерты — ru-pin.

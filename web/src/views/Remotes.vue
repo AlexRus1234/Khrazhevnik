@@ -20,9 +20,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import { onMounted, onUnmounted, ref } from 'vue'
 import { exportRemotes, importRemotes, request } from '../api'
 import { errText } from '../errors'
-import { formatDuration, formatSpeed, formatTime, parseDuration } from '../format'
+import { formatBytes, formatDuration, formatSpeed, formatTime, parseDuration } from '../format'
 import { t } from '../i18n'
-import type { ImportReport, Remote, TaskSnapshot } from '../types'
+import type { EvictionCandidate, EvictionPreview, ImportReport, Remote, TaskSnapshot } from '../types'
 
 const ECOSYSTEMS = ['apt', 'rpm-md', 'pacman', 'apk', 'nix', 'xbps']
 
@@ -45,6 +45,10 @@ const fProxyMode = ref<'inherit' | 'direct' | 'custom'>('inherit')
 const fProxyURL = ref('')
 const formError = ref('')
 const busy = ref(false)
+// Правящийся источник: блок «Очистка кеша» и его PATCH берут тело от
+// загруженного remote, а не от полей формы выше (образец saveRetention
+// RepoDetail) — сохранение политики не затирает незасейвленные правки.
+const editingRemote = ref<Remote | null>(null)
 
 // Глобальный прокси upstream (GET/PUT /settings/upstream-proxy):
 // пусто — env-фолбэк, "direct" или URL.
@@ -97,6 +101,7 @@ onMounted(() => {
 
 function openCreate(): void {
   editingID.value = null
+  editingRemote.value = null
   fName.value = ''
   fEcosystem.value = 'apt'
   fBaseURL.value = ''
@@ -112,6 +117,7 @@ function openCreate(): void {
 
 function openEdit(r: Remote): void {
   editingID.value = r.id
+  editingRemote.value = r
   fName.value = r.name
   fEcosystem.value = r.ecosystem
   fBaseURL.value = r.base_url
@@ -130,6 +136,7 @@ function openEdit(r: Remote): void {
     fProxyMode.value = 'custom'
     fProxyURL.value = r.proxy_url
   }
+  seedEviction(r)
   formError.value = ''
   showForm.value = true
 }
@@ -189,6 +196,170 @@ async function remove(r: Remote): Promise<void> {
   } catch (e) {
     error.value = errText(e)
   }
+}
+
+// --- Очистка кеша (сессия 203) -------------------------------------------
+// Политика eviction — tri-state поле remote (сессия 202): «наследует
+// глобальную» = JSON null, «выключено» = {0,0}, «включено» = значения.
+// Блок живёт в карточке источника (форма правки): у политики своя форма
+// с PATCH-телом от загруженного remote, прогноз/применение —
+// API 202, поллинг — общий механизм задач (track → pollTracked).
+const evMode = ref<'inherit' | 'off' | 'on'>('inherit')
+const evMin = ref(2)
+const evMaxAge = ref(90)
+const evSaving = ref(false)
+const evSaved = ref(false)
+const evError = ref('')
+
+const evCandidates = ref<EvictionCandidate[]>([])
+const evPreviewing = ref(false)
+const evPreviewDone = ref(false)
+const evPreviewError = ref('')
+const evApplying = ref(false)
+const evApplyError = ref('')
+const evResult = ref<Record<number, string>>({})
+
+// Зеркало не чистится (полная копия upstream, churn конфликтует с
+// resume-diff sync), nix — content-addressed (движок отдаёт
+// UnsupportedError): вместо формы — dim-подсказка, прецедент
+// canRetention RepoDetail.
+function evSupported(): boolean {
+  const r = editingRemote.value
+  return r !== null && r.mode === 'proxy' && r.ecosystem !== 'nix'
+}
+
+function evUnsupportedText(): string {
+  return editingRemote.value?.mode === 'mirror'
+    ? t('remotes.evictionNotSupported')
+    : t('errors.unsupported')
+}
+
+// Состояние политики из ответа API: null — наследование, {0,0} —
+// выключено, прочее — включена. Числовые поля держат прошлые значения,
+// пока режим не «включено» (образец seedRetention).
+function seedEviction(r: Remote): void {
+  const p = r.eviction
+  if (p === null) {
+    evMode.value = 'inherit'
+  } else if (p.min_versions === 0 && p.max_age_days === 0) {
+    evMode.value = 'off'
+  } else {
+    evMode.value = 'on'
+    evMin.value = p.min_versions
+    evMaxAge.value = p.max_age_days
+  }
+  evError.value = ''
+  evSaved.value = false
+  evCandidates.value = []
+  evPreviewDone.value = false
+  evPreviewError.value = ''
+  evApplyError.value = ''
+}
+
+async function saveEviction(): Promise<void> {
+  const r = editingRemote.value
+  if (r === null || evSaving.value) return
+  evError.value = ''
+  evSaved.value = false
+  let policy: { min_versions: number; max_age_days: number } | null
+  if (evMode.value === 'inherit') {
+    policy = null
+  } else if (evMode.value === 'off') {
+    policy = { min_versions: 0, max_age_days: 0 }
+  } else {
+    const min = Number(evMin.value)
+    const age = Number(evMaxAge.value)
+    if (!Number.isInteger(min) || !Number.isInteger(age) || min < 0 || age < 0) {
+      evError.value = t('remotes.evictionNumError')
+      return
+    }
+    // Зеркало серверной валидации (domain.ValidateRetention): возраст
+    // без минимума ≥2 удалил бы последнюю версию семейства.
+    if (age > 0 && min < 2) {
+      evError.value = t('remotes.evictionMinError')
+      return
+    }
+    policy = { min_versions: min, max_age_days: age }
+  }
+  evSaving.value = true
+  try {
+    // PATCH — full-replace: тело от загруженного источника, меняется
+    // только eviction (tri-state; null = наследовать глобальный дефолт).
+    await request<Remote>('PATCH', `/remotes/${r.id}`, {
+      body: {
+        name: r.name,
+        ecosystem: r.ecosystem,
+        base_url: r.base_url,
+        mode: r.mode,
+        enabled: r.enabled,
+        sync_interval: r.sync_interval,
+        include: r.include,
+        proxy_url: r.proxy_url,
+        eviction: policy,
+      },
+    })
+    await load()
+    const fresh = remotes.value.find((x) => x.id === r.id)
+    if (fresh !== undefined) {
+      editingRemote.value = fresh
+      seedEviction(fresh)
+    }
+    evSaved.value = true
+  } catch (e) {
+    evError.value = errText(e)
+  } finally {
+    evSaving.value = false
+  }
+}
+
+// Прогноз — синхронный dry-run (GET); пустой список кандидатов не
+// ошибка: dim-строка «кандидатов нет», заголовки колонок остаются.
+async function previewEviction(): Promise<boolean> {
+  const r = editingRemote.value
+  if (r === null || evPreviewing.value) return false
+  evPreviewing.value = true
+  evPreviewError.value = ''
+  evApplyError.value = ''
+  try {
+    const out = await request<EvictionPreview>('GET', `/remotes/${r.id}/eviction/preview`)
+    evCandidates.value = out.candidates ?? []
+    evPreviewDone.value = true
+    return true
+  } catch (e) {
+    evPreviewError.value = errText(e)
+    return false
+  } finally {
+    evPreviewing.value = false
+  }
+}
+
+// Применение необратимо: прогноз до confirm (числа удаляемого нужны до
+// нажатия), затем фоновая задача и общий поллинг задач.
+async function applyEviction(): Promise<void> {
+  const r = editingRemote.value
+  if (r === null || evApplying.value) return
+  evApplyError.value = ''
+  delete evResult.value[r.id]
+  if (!evPreviewDone.value && !(await previewEviction())) return
+  const bytes = evCandidates.value.reduce((sum, c) => sum + c.size, 0)
+  const n = evCandidates.value.length
+  if (!window.confirm(t('remotes.evictionConfirm', { n: String(n), size: formatBytes(bytes) }))) return
+  evApplying.value = true
+  try {
+    const out = await request<{ task_id: string }>('POST', `/remotes/${r.id}/eviction/apply`)
+    track(r.id, out.task_id)
+  } catch (e) {
+    evApplyError.value = errText(e)
+    evApplying.value = false
+  }
+}
+
+// Причина защиты из строки прогноза: движок отдаёт access; min оставлен
+// на будущее (версии, удержанные топ-N, в прогноз не попадают).
+function evProtectedLabel(by: string): string {
+  if (by === 'access') return t('remotes.protectedByAccess')
+  if (by === 'min') return t('remotes.protectedByMin')
+  return by
 }
 
 const exporting = ref(false)
@@ -270,11 +441,18 @@ let pollTimer: number | undefined
 async function pollTracked(): Promise<void> {
   for (const [remoteID, taskID] of trackedTasks) {
     try {
-      const t = await request<TaskSnapshot>('GET', `/tasks/${taskID}`)
-      syncProgress.value[remoteID] = t
-      if (t.state !== 'running') {
+      const snap = await request<TaskSnapshot>('GET', `/tasks/${taskID}`)
+      syncProgress.value[remoteID] = snap
+      if (snap.state !== 'running') {
         trackedTasks.delete(remoteID)
         syncing.value[remoteID] = false
+        // Задача eviction оставляет итог: последняя строка лога
+        // («проход завершён: …») — блок «Очистка кеша» показывает её.
+        if (snap.kind === 'eviction') {
+          evResult.value[remoteID] =
+            snap.logs.length > 0 ? snap.logs[snap.logs.length - 1] : t('remotes.evictionApplyDone')
+          if (remoteID === editingID.value) evApplying.value = false
+        }
         if (trackedTasks.size === 0 && pollTimer !== undefined) {
           window.clearInterval(pollTimer)
           pollTimer = undefined
@@ -286,6 +464,7 @@ async function pollTracked(): Promise<void> {
       // прекращаем поллинг.
       trackedTasks.delete(remoteID)
       syncing.value[remoteID] = false
+      if (remoteID === editingID.value) evApplying.value = false
     }
   }
 }
@@ -448,6 +627,90 @@ onUnmounted(() => {
           </button>
           <button class="btn" type="button" @click="showForm = false">{{ t('common.cancel') }}</button>
         </div>
+      </form>
+
+      <!-- Очистка кеша (сессия 203): политика eviction источника —
+           tri-state (наследует глобальную / выключено / включено),
+           прогноз кандидатов и ручной запуск. Отдельная форма со своим
+           PATCH: тело — загруженный источник, поэтому политика не
+           затирает незасейвленные правки формы выше и наоборот.
+           Зеркало и nix (content-addressed) политику не принимают —
+           dim-подсказка. -->
+      <form v-if="editingID !== null" class="grid" @submit.prevent="saveEviction">
+        <h2>{{ t('remotes.eviction') }}</h2>
+        <p v-if="!evSupported()" class="dim">{{ evUnsupportedText() }}</p>
+        <template v-else>
+          <div class="row">
+            <label class="field"
+              >{{ t('remotes.evictionPolicy') }}
+              <select v-model="evMode">
+                <option value="inherit">{{ t('remotes.evictionInherit') }}</option>
+                <option value="off">{{ t('remotes.evictionOff') }}</option>
+                <option value="on">{{ t('remotes.evictionOn') }}</option>
+              </select>
+            </label>
+            <label v-if="evMode === 'on'" class="field"
+              >{{ t('remotes.evictionMin') }}
+              <input v-model.number="evMin" type="number" min="0" />
+            </label>
+            <label v-if="evMode === 'on'" class="field"
+              >{{ t('remotes.evictionMaxAge') }}
+              <input v-model.number="evMaxAge" type="number" min="0" />
+            </label>
+            <button class="btn" type="submit" :disabled="evSaving">
+              {{ t('remotes.evictionSave') }}
+            </button>
+          </div>
+          <p v-if="evError" class="error">{{ evError }}</p>
+          <p v-else-if="evSaved" class="ok">{{ t('remotes.evictionSaved') }}</p>
+          <div class="row">
+            <button class="btn" type="button" :disabled="evPreviewing" @click="previewEviction">
+              {{ t('remotes.evictionPreview') }}
+            </button>
+            <button class="btn danger" type="button" :disabled="evApplying" @click="applyEviction">
+              {{ t('remotes.evictionApply') }}
+            </button>
+          </div>
+          <p v-if="evPreviewError" class="error">{{ evPreviewError }}</p>
+          <p v-if="evApplyError" class="error">{{ evApplyError }}</p>
+          <p v-else-if="evResult[editingID]" class="ok">{{ evResult[editingID] }}</p>
+          <p v-if="evApplying && syncProgress[editingID]" class="dim">
+            <span class="badge running">{{ syncProgress[editingID].phase }}</span>
+            {{ Math.round(syncProgress[editingID].percent) }} %
+          </p>
+          <!-- thead безусловный: заголовки колонок видны и на пустой
+               ленте (прецедент ремонта cb73f0d — e2e ассертит их). -->
+          <table v-if="evPreviewDone || evCandidates.length > 0">
+            <thead>
+              <tr>
+                <th>{{ t('repo.colPath') }}</th>
+                <th>{{ t('repo.colFamily') }}</th>
+                <th>{{ t('repo.colSize') }}</th>
+                <th>{{ t('repo.colModified') }}</th>
+                <th>{{ t('repo.colLastAccess') }}</th>
+                <th>{{ t('repo.colProtected') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in evCandidates" :key="c.key">
+                <td class="mono url" :title="c.key">{{ c.key.slice(0, 79) }}</td>
+                <td class="mono">{{ c.family }}</td>
+                <td>{{ formatBytes(c.size) }}</td>
+                <td class="dim">{{ formatTime(c.mod_time) }}</td>
+                <td class="dim">{{ formatTime(c.last_access) }}</td>
+                <td>
+                  <span v-if="c.protected_by !== ''" class="badge">
+                    {{ evProtectedLabel(c.protected_by) }}
+                  </span>
+                  <span v-else class="dim">—</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-if="evPreviewDone && evCandidates.length === 0" class="dim">
+            {{ t('remotes.evictionEmpty') }}
+          </p>
+        </template>
       </form>
     </div>
 

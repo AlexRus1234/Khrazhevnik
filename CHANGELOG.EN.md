@@ -35,6 +35,15 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
   (`GET /api/v1/remotes/{id}/eviction/preview`) and applying the policy as
   a background task (`POST .../eviction/apply`, `kind=eviction`).
 
+- **Cache-proxy eviction — management UI (policy, forecast, apply) on
+  the upstreams page:** a “Cache eviction” block in the upstream card —
+  the tri-state policy (inherit the global one / off / on with minimum
+  versions ≥ 2 and an age in days), the candidate forecast (column
+  headers render even on an empty list) and manual apply with a
+  confirmation (background task, the outcome shown in the block); for a
+  mirror upstream — the hint “mirror — a full copy, eviction does not
+  apply”, for nix — the policy does not apply (content-addressed).
+
 ## [1.3.2] — 2026-10-01
 
 ### Added
