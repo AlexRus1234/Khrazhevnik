@@ -631,12 +631,16 @@ onUnmounted(() => {
 
       <!-- Очистка кеша (сессия 203): политика eviction источника —
            tri-state (наследует глобальную / выключено / включено),
-           прогноз кандидатов и ручной запуск. Отдельная форма со своим
-           PATCH: тело — загруженный источник, поэтому политика не
-           затирает незасейвленные правки формы выше и наоборот.
+           прогноз кандидатов и ручной запуск. Отдельный блок со своей
+           кнопкой сохранения: тело PATCH — загруженный источник, поэтому
+           политика не затирает незасейвленные правки формы выше и
+           наоборот. Намеренно НЕ <form>: в карточке источника остаётся
+           ровно одна форма, иначе CSS-локатор существующего e2e-теста
+           `form button[type="submit"]` становится неоднозначным
+           (strict mode: 2 элемента — красный CI idx=385).
            Зеркало и nix (content-addressed) политику не принимают —
            dim-подсказка. -->
-      <form v-if="editingID !== null" class="grid" @submit.prevent="saveEviction">
+      <div v-if="editingID !== null" class="grid eviction-form">
         <h2>{{ t('remotes.eviction') }}</h2>
         <p v-if="!evSupported()" class="dim">{{ evUnsupportedText() }}</p>
         <template v-else>
@@ -657,7 +661,7 @@ onUnmounted(() => {
               >{{ t('remotes.evictionMaxAge') }}
               <input v-model.number="evMaxAge" type="number" min="0" />
             </label>
-            <button class="btn" type="submit" :disabled="evSaving">
+            <button class="btn" type="button" :disabled="evSaving" @click="saveEviction">
               {{ t('remotes.evictionSave') }}
             </button>
           </div>
@@ -711,7 +715,7 @@ onUnmounted(() => {
             {{ t('remotes.evictionEmpty') }}
           </p>
         </template>
-      </form>
+      </div>
     </div>
 
     <div class="panel">

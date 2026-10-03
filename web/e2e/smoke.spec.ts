@@ -530,7 +530,7 @@ test('remotes: очистка кеша — политика, прогноз, п�
     .getByRole('button', { name: 'Править' })
     .click()
   const card = page.locator('.panel', { hasText: 'Источник: e2e-proxy' })
-  const ev = card.locator('form', { hasText: 'Очистка кеша' })
+  const ev = card.locator('.eviction-form')
   await expect(ev.getByRole('heading', { name: 'Очистка кеша' })).toBeVisible()
 
   // 1. Политика «включено» 3/90 → Сохранить (PATCH): значения дошли до
@@ -558,9 +558,7 @@ test('remotes: очистка кеша — политика, прогноз, п�
     .locator('tbody tr', { hasText: 'e2e-proxy' })
     .getByRole('button', { name: 'Править' })
     .click()
-  const ev2 = page
-    .locator('.panel', { hasText: 'Источник: e2e-proxy' })
-    .locator('form', { hasText: 'Очистка кеша' })
+  const ev2 = page.locator('.panel', { hasText: 'Источник: e2e-proxy' }).locator('.eviction-form')
   await expect(ev2.locator('select')).toHaveValue('on')
   await expect(ev2.getByLabel('Минимум версий на семейство')).toHaveValue('3')
 
