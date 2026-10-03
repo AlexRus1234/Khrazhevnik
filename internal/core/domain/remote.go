@@ -61,6 +61,9 @@ type Remote struct {
 	// keep=1 при заданном возрасте уже отсекает ValidateRetention.
 	// Почему только proxy-режим: immutable-пакеты зеркала не трогаются,
 	// иначе resume-diff sync даёт churn «скачал → удалил → скачал».
+	// NULL в колонках remotes.eviction_min_versions/eviction_max_age_days
+	// (миграция 0014) читается как nil, числа — как указатель с ними
+	// (0/0 — «явно выключено», отличимо от наследования).
 	Eviction  *Retention
 	CreatedAt time.Time
 }

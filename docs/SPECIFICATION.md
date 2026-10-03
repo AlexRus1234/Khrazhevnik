@@ -739,7 +739,12 @@ cache}, `key`, `last_access_at` эпохой, `hits`; давность обра�
 сессия 166); 0013 — таблица `repo_pins` (пины версий личного репо:
 `repo_id` + `key` (ключ хранилища) — PK, `created_at` эпохой; FK на
 `repos(id)` ON DELETE CASCADE — удаление репо уносит его пины; волна
-«Ретеншн-политики», сессия 170).
+«Ретеншн-политики», сессия 170); 0014 — `remotes.eviction_min_versions`/
+`remotes.eviction_max_age_days` (политика чистки кеша per-remote:
+порог числа живых версий семейства и давности обращения в сутках;
+NULL в колонках — наследовать глобальный дефолт `[eviction]`, 0/0 — явно
+выключено для этого remote — tri-state, волна «Eviction кеш-прокси»,
+сессия 198).
 `schema_migrations` — служебная таблица goose.
 
 | Таблица        | Назначение                                        |
@@ -748,7 +753,7 @@ cache}, `key`, `last_access_at` эпохой, `hits`; давность обра�
 | `api_tokens`   | scoped-токены (только sha256)                     |
 | `repos`        | личные репозитории (квота; `min_versions`/`max_age_days` — политика ретеншна, 0011) |
 | `repo_perms`   | права на личные репо                              |
-| `remotes`      | upstream'ы (зеркала/прокси; `proxy_url` — per-remote прокси, 0009) |
+| `remotes`      | upstream'ы (зеркала/прокси; `proxy_url` — per-remote прокси, 0009; `eviction_min_versions`/`eviction_max_age_days` — политика чистки кеша, NULL — наследовать глобальный дефолт, 0014) |
 | `sync_jobs`    | sync-задачи зеркал (состояние, resume-данные; курсор кодирует прогресс `files=N;bytes=M`)     |
 | `audit_log`    | аудит мутаций (actor/action/object/result/detail) |
 | `object_index` | etag/expires mutable-объектов кеша; `storage_key` — ключ версионных байт (миграция 0003; пустой — байты под самим `key`, записи до версионирования) |

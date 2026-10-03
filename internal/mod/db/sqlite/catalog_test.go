@@ -269,6 +269,109 @@ func TestMigration0011RetentionOnExistingRows(t *testing.T) {
 	}
 }
 
+// TestMigration0014EvictionOnExistingRows — сессия 198: подъём 0014 на
+// populated-БД (схема 0013): старые remote получают NULL в
+// eviction_min_versions/eviction_max_age_days и читаются как nil-политика
+// (наследование глобального дефолта); строки и соседние колонки не теряются,
+// запись политики живёт на диске (второй Open — повторный goose.Up как no-op).
+func TestMigration0014EvictionOnExistingRows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "eviction.db")
+
+	// Схема до 0014: сырое соединение + goose UpTo(13), строка БЕЗ
+	// eviction-колонок (как её писала сборка до миграции).
+	db, err := sql.Open("sqlite", buildDSN(path, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre, err := goose.NewProvider(goose.DialectSQLite3, db, migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pre.UpTo(ctx, 13); err != nil {
+		t.Fatalf("схема 0013: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO remotes
+		(name, ecosystem, upstream_url, proxy_url, mode, enabled, sync_interval_sec, include, created_at)
+		VALUES ('old', 'apt', 'https://old.example/debian', '', 'proxy', 1, 21600, 'stable', 1785000000)`); err != nil {
+		t.Fatalf("старый remote: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Апгрейд: обычный Open поднимает 0014 (goose.Up идемпотентен).
+	st := openDSN(t, path)
+	rs, err := st.Remotes(ctx)
+	if err != nil || len(rs) != 1 {
+		t.Fatalf("Remotes после апгрейда = %+v, %v", rs, err)
+	}
+	if rs[0].Name != "old" || rs[0].SyncInterval != 6*time.Hour {
+		t.Fatalf("старый remote = %+v: соседние колонки не пережили апгрейд", rs[0])
+	}
+	if rs[0].Eviction != nil {
+		t.Fatalf("старый remote = %+v: хочу nil (NULL = наследовать)", rs[0].Eviction)
+	}
+
+	// Запись политики и «рестарт»: goose.Up no-op, политика читается из БД.
+	rs[0].Eviction = &domain.Retention{MinVersions: 2, MaxAgeDays: 90}
+	if err := st.UpdateRemote(ctx, rs[0]); err != nil {
+		t.Fatal(err)
+	}
+	st2 := openDSN(t, path)
+	got, err := st2.Remote(ctx, rs[0].ID)
+	if err != nil || got.Eviction == nil || *got.Eviction != (domain.Retention{MinVersions: 2, MaxAgeDays: 90}) {
+		t.Fatalf("после переоткрытия: Eviction = %+v, %v; хочу {2 90}", got.Eviction, err)
+	}
+}
+
+// TestRemoteEvictionRoundtrip — сессия 198: tri-state политики eviction на
+// колонках remotes (:memory:) — nil (наследовать) / {2,90} (политика) /
+// {0,0} (явно выключено, указатель, а не nil) / снова nil. Update —
+// полный replace, как у остальных полей remote.
+func TestRemoteEvictionRoundtrip(t *testing.T) {
+	ctx := context.Background()
+	st := openDSN(t, ":memory:")
+	rm, err := st.CreateRemote(ctx, domain.Remote{
+		Name: "mem", Ecosystem: "apt", BaseURL: "https://deb.example.org/debian",
+		Mode: domain.ModeProxy, Enabled: true, CreatedAt: fixed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(want *domain.Retention) {
+		t.Helper()
+		got, err := st.Remote(ctx, rm.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case want == nil && got.Eviction != nil:
+			t.Fatalf("Eviction = %+v, хочу nil", got.Eviction)
+		case want != nil && got.Eviction == nil:
+			t.Fatalf("Eviction = nil, хочу %+v", *want)
+		case want != nil && *got.Eviction != *want:
+			t.Fatalf("Eviction = %+v, хочу %+v", *got.Eviction, *want)
+		}
+	}
+	check(nil)
+	rm.Eviction = &domain.Retention{MinVersions: 2, MaxAgeDays: 90}
+	if err := st.UpdateRemote(ctx, rm); err != nil {
+		t.Fatal(err)
+	}
+	check(&domain.Retention{MinVersions: 2, MaxAgeDays: 90})
+	rm.Eviction = &domain.Retention{}
+	if err := st.UpdateRemote(ctx, rm); err != nil {
+		t.Fatal(err)
+	}
+	check(&domain.Retention{})
+	rm.Eviction = nil
+	if err := st.UpdateRemote(ctx, rm); err != nil {
+		t.Fatal(err)
+	}
+	check(nil)
+}
+
 func TestMemoryDSNVariants(t *testing.T) {
 	ctx := context.Background()
 
