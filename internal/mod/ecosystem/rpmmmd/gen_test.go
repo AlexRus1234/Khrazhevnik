@@ -977,3 +977,49 @@ func TestGenerateIndexesNoDependenciesOmitsBlocks(t *testing.T) {
 		}
 	}
 }
+
+// TestGenerateIndexesRpmlibRequiresFiltered — rpmlib(...)-требования из
+// заголовка RPM не попадают в primary.xml: createrepo_c их отбрасывает
+// (внутренние возможности rpm, а не зависимости), а rpmlib-требование в
+// метаданных ломает zypper на rpm 4.20 — libsolv не может его закрыть
+// (nothing provides rpmlib(CompressedFileNames)). Реальные зависимости
+// проходят насквозь.
+func TestGenerateIndexesRpmlibRequiresFiltered(t *testing.T) {
+	t.Parallel()
+	moment := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	storage := testutil.NewFakeStorage(testutil.FixedClock(moment))
+	repo := domain.Repo{ID: 1, Name: "alice", Ecosystem: Name}
+	rpm := buildRPM("raft-loc", "0.22.1", "1", "x86_64", "test package", 4096, 1724323200,
+		tagSpec{tag: tagSourceRPM, str: "raft-loc-0.22.1-1.src.rpm"},
+		tagSpec{tag: tagRequireName, strs: []string{
+			"rpmlib(CompressedFileNames)", "rpmlib(FileDigests)",
+			"rpmlib(PayloadFilesHavePrefix)", "rpmlib(PayloadIsZstd)",
+			"libc.so.6(GLIBC_2.34)(64bit)", "/bin/sh",
+		}, isArr: true},
+		tagSpec{tag: tagProvideName, strs: []string{
+			"raft-loc = 0.22.1-1", "rpmlib(CompressedFileNames)",
+		}, isArr: true},
+	)
+	putRpm(t, storage, repo, "packages/r/raft-loc-0.22.1-1.x86_64.rpm", rpm)
+
+	g := &Generator{}
+	if err := g.GenerateIndexes(context.Background(), repo, storage, nil); err != nil {
+		t.Fatalf("GenerateIndexes: %v", err)
+	}
+
+	priGz := readStorage(t, storage, "repo/1/rpm-md/repodata/primary.xml.gz")
+	gz, err := gzip.NewReader(bytes.NewReader(priGz))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	primary, _ := io.ReadAll(gz)
+	pStr := string(primary)
+	if n := strings.Count(pStr, "rpmlib("); n != 0 {
+		t.Errorf("primary.xml содержит %d вхождений rpmlib( — createrepo_c их не эмитит:\n%s", n, pStr)
+	}
+	for _, want := range []string{`<rpm:entry name="libc.so.6(GLIBC_2.34)(64bit)"/>`, `<rpm:entry name="/bin/sh"/>`} {
+		if !strings.Contains(pStr, want) {
+			t.Errorf("primary.xml не содержит реальную зависимость %q:\n%s", want, pStr)
+		}
+	}
+}

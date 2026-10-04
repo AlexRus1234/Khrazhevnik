@@ -35,6 +35,16 @@ major.
 
 ## [Unreleased]
 
+### Исправлено
+
+- **rpm-md, личное репо:** генератор `primary.xml` больше не тащит
+  `rpmlib(...)`-зависимости из заголовка RPM в `rpm:requires`/
+  `rpm:provides` — как `createrepo_c`, их не эмитим. Попадание
+  `rpmlib(CompressedFileNames)` в метаданные ломало установку пакетов
+  zypper'ом на rpm 4.20 (Leap 16: `nothing provides
+  rpmlib(CompressedFileNames)`); реальные зависимости проходят
+  насквозь. Зеркала не затронуты (их метаданные проксируются побайтово).
+
 ## [1.4.0] — 2026-10-03
 
 ### Добавлено

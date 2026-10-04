@@ -26,6 +26,17 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **rpm-md, personal repo:** the `primary.xml` generator no longer
+  carries `rpmlib(...)` dependencies from the RPM header into
+  `rpm:requires`/`rpm:provides` — like `createrepo_c`, we do not emit
+  them. Having `rpmlib(CompressedFileNames)` in the metadata broke
+  package installation with zypper on rpm 4.20 (Leap 16: `nothing
+  provides rpmlib(CompressedFileNames)`); real dependencies pass
+  through unchanged. Mirrors are not affected (their metadata is
+  proxied byte-for-byte).
+
 ## [1.4.0] — 2026-10-03
 
 ### Added

@@ -362,22 +362,33 @@ func writePrimaryPackage(buf *bytes.Buffer, h *RPMHeader, sha, href string, pkgS
 	if h.SourceRPM != "" {
 		fmt.Fprintf(buf, "\t\t\t<rpm:sourcerpm>%s</rpm:sourcerpm>\n", xmlEscape(h.SourceRPM))
 	}
-	if len(h.Requires) > 0 {
-		buf.WriteString("\t\t\t<rpm:requires>\n")
-		for _, dep := range h.Requires {
-			fmt.Fprintf(buf, "\t\t\t\t<rpm:entry name=\"%s\"/>\n", escapeAttr(dep))
-		}
-		buf.WriteString("\t\t\t</rpm:requires>\n")
-	}
-	if len(h.Provides) > 0 {
-		buf.WriteString("\t\t\t<rpm:provides>\n")
-		for _, prov := range h.Provides {
-			fmt.Fprintf(buf, "\t\t\t\t<rpm:entry name=\"%s\"/>\n", escapeAttr(prov))
-		}
-		buf.WriteString("\t\t\t</rpm:provides>\n")
-	}
+	writeRpmDeps(buf, "rpm:requires", h.Requires)
+	writeRpmDeps(buf, "rpm:provides", h.Provides)
 	buf.WriteString("\t\t</format>\n")
 	buf.WriteString("\t</package>\n")
+}
+
+// writeRpmDeps эмитит <rpm:requires>/<rpm:provides> (entry с name).
+// rpmlib(...)-зависимости отбрасываются — как createrepo_c: это
+// внутренние возможности rpm, а не зависимости пакета, и попадание их
+// в метаданные ломает резолвер на rpm 4.20 (SLE-генерация больше не
+// предоставляет rpmlib(CompressedFileNames) — zypper: nothing provides).
+func writeRpmDeps(buf *bytes.Buffer, block string, deps []string) {
+	filtered := make([]string, 0, len(deps))
+	for _, dep := range deps {
+		if strings.HasPrefix(dep, "rpmlib(") {
+			continue
+		}
+		filtered = append(filtered, dep)
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	fmt.Fprintf(buf, "\t\t\t<%s>\n", block)
+	for _, dep := range filtered {
+		fmt.Fprintf(buf, "\t\t\t\t<rpm:entry name=\"%s\"/>\n", escapeAttr(dep))
+	}
+	fmt.Fprintf(buf, "\t\t\t</%s>\n", block)
 }
 
 // buildRepomd собирает repomd.xml: revision (timestamp), один data
