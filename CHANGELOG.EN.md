@@ -26,6 +26,8 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-10-04
+
 ### Fixed
 
 - **rpm-md, personal repo:** the `primary.xml` generator no longer
