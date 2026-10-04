@@ -161,7 +161,11 @@ applied by a daily background pass or manually from the GUI/API.
 - **Indexes (reindex):** `repodata/primary.xml.gz` (name/arch/version/
   checksum/location/time/size) + `repodata/repomd.xml` (checksum/
   open-checksum/size/timestamp). Signature: `repodata/repomd.xml.asc`
-  (detached, with the instance OpenPGP key).
+  (detached, with the instance OpenPGP key). Dependencies —
+  `rpm:requires`/`rpm:provides` (entry with name); `rpmlib(...)`
+  requirements are not emitted — like `createrepo_c`, they are internal
+  rpm capabilities, not dependencies (having them in the metadata broke
+  zypper on rpm 4.20).
 - **Client:** `/etc/yum.repos.d/alice.repo`:
   ```ini
   [alice]

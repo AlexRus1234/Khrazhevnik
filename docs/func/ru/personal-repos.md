@@ -154,7 +154,10 @@ per-repo (поле `retention` в `POST`/`PATCH /api/v1/repos/{id}` или па�
 - **Индексы (reindex):** `repodata/primary.xml.gz` (name/arch/version/
   checksum/location/time/size) + `repodata/repomd.xml` (checksum/open-
   checksum/size/timestamp). Подпись: `repodata/repomd.xml.asc` (detached,
-  ключом инстанса OpenPGP).
+  ключом инстанса OpenPGP). Зависимости — `rpm:requires`/`rpm:provides`
+  (entry с name); `rpmlib(...)`-требования не эмитятся — как у
+  `createrepo_c`, это внутренние возможности rpm, а не зависимости
+  (их попадание в метаданные ломало zypper на rpm 4.20).
 - **Клиент:** `/etc/yum.repos.d/alice.repo`:
   ```ini
   [alice]
