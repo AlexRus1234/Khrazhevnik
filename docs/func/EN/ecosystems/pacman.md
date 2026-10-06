@@ -19,7 +19,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 # pacman (Arch Linux)
 
 The URL prefix is `pacman`. Packages are content-addressed by NEVRA in
-the name — an ideal immutable cache; repository databases `{repo}.db`
+the name — an immutable cache; repository databases `{repo}.db`
 are revalidated with a short TTL. Upstream metadata is served
 byte-for-byte — `.sig` signatures are valid.
 

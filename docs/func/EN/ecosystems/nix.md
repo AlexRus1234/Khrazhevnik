@@ -19,7 +19,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 # nix (binary cache)
 
 The URL prefix is `nix`. A caching proxy for narinfo + nar.xz: the
-content is addressed — an ideal immutable cache (`nar/<52
+content is addressed — an immutable cache (`nar/<52
 nix-base32>.nar.xz` is cached forever, `<32 nix-base32>.narinfo` is
 revalidated once per hour).
 

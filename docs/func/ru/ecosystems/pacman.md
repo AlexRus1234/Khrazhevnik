@@ -19,7 +19,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 # pacman (Arch Linux)
 
 URL-префикс — `pacman`. Пакеты content-addressed по NEVRA в имени —
-идеальный immutable-кеш; репозитарные базы `{repo}.db` ревалидируются
+immutable-кеш; репозитарные базы `{repo}.db` ревалидируются
 коротким TTL. Метаданные upstream отдаются побайтово — подписи
 `.sig` валидны.
 

@@ -19,7 +19,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 # nix (binary cache)
 
 URL-префикс — `nix`. Кеш-прокси narinfo + nar.xz: контент адресован —
-идеальный immutable-кеш (`nar/<52 nix-base32>.nar.xz` кешируется
+immutable-кеш (`nar/<52 nix-base32>.nar.xz` кешируется
 навсегда, `<32 nix-base32>.narinfo` ревалидируется раз в час).
 
 ## Remote

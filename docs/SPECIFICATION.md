@@ -646,7 +646,7 @@ stale_served,negative_hits,upstream_errors}_total`,
   (SPKI-PEM) и ставит пакеты без `--allow-untrusted`.
 - **nix** (сессия 13) — кеш-прокси nix binary cache (narinfo + nar.xz).
   Путь `/nix/<remote-name>/<остальной-путь>`; `StorageKey` =
-  `cache/nix/<remote-id>/<upstream-path>`. Контент адресован — идеальный
+  `cache/nix/<remote-id>/<upstream-path>`. Контент адресован —
   immutable-кеш. Полное зеркало `cache.nixos.org` (десятки ТБ) не
   поддерживается — только pull-through; `Enumerate` возвращает
   `*domain.UnsupportedError` («зеркало по использованию»: narinfo → nar

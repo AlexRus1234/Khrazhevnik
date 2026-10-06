@@ -72,7 +72,7 @@ the server did not return a single 5xx.
 
 Conclusion: the ~340 rps delivery ceiling is set by the S3 read path
 (RustFS at 85→91% CPU) and the link, not by Khrazhevnik. Up to and
-including r200 everything is perfectly clean.
+including r200 there are no errors.
 
 ### B. stream-large (107.7 MB kernel)
 

@@ -70,7 +70,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 Вывод: потолок доставки ~340 rps устанавливается не Хражевником —
 насыщение read-path S3 (RustFS 85→91% CPU) и канала. До r200 включительно
-— идеально чисто.
+— ошибок нет.
 
 ### B. stream-large (ядро 107.7 MB)
 
