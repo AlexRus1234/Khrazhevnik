@@ -26,6 +26,7 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-10-07
 ### Fixed
 
 - **Signing (openpgp):** armored blocks now end with a newline.
