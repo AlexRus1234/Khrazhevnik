@@ -73,10 +73,19 @@ cat > /etc/yum.repos.d/<name>.repo << 'EOF'
 name=<name> personal repo
 baseurl=http://<Khrazhevnik>:29202/repo/<name>
 enabled=1
-gpgcheck=1
+repo_gpgcheck=1
+gpgcheck=0
+gpgkey=http://<Khrazhevnik>:29202/repo/<name>/key.asc
 EOF
 dnf makecache && dnf install <package>
 ```
+
+`repo_gpgcheck=1` verifies the `repomd.xml.asc` signature with the
+instance key (imported via `rpm --import` or fetched from `gpgkey`).
+`gpgcheck=0` because the generator does not sign the `.rpm` files
+themselves: with `gpgcheck=1` the client would demand a package
+signature and go looking for its signer's key (for foreign `.rpm` files —
+their own key) outside, which a sovereign environment cannot reach.
 
 For details, see [personal-repos.md](../personal-repos.md).
 

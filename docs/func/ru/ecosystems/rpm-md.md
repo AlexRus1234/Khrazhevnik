@@ -72,10 +72,19 @@ cat > /etc/yum.repos.d/<name>.repo << 'EOF'
 name=<name> personal repo
 baseurl=http://<хражевник>:29202/repo/<name>
 enabled=1
-gpgcheck=1
+repo_gpgcheck=1
+gpgcheck=0
+gpgkey=http://<хражевник>:29202/repo/<name>/key.asc
 EOF
 dnf makecache && dnf install <пакет>
 ```
+
+`repo_gpgcheck=1` проверяет подпись `repomd.xml.asc` ключом инстанса
+(ключ — либо через `rpm --import`, либо по `gpgkey`). `gpgcheck=0`
+потому, что подписи самих `.rpm` генератор не ставит: с `gpgcheck=1`
+клиент потребует подпись пакета и за ключом её подписанта (у чужих
+`.rpm` — их собственный) пойдёт наружу, в суверенном контуре
+недоступную.
 
 Подробности — [personal-repos.md](../personal-repos.md).
 

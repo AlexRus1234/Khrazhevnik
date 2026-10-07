@@ -172,9 +172,16 @@ applied by a daily background pass or manually from the GUI/API.
   name=alice personal repo
   baseurl=http://<Khrazhevnik>:29202/repo/alice
   enabled=1
-  gpgcheck=1
+  repo_gpgcheck=1
+  gpgcheck=0
+  gpgkey=http://<Khrazhevnik>:29202/repo/alice/key.asc
   ```
-  The key `GET /repo/alice/key.asc` is imported via `rpm --import`.
+  The key `GET /repo/alice/key.asc` — via `rpm --import` or through
+  `gpgkey`. `repo_gpgcheck=1` verifies the `repomd.xml.asc` signature with
+  the instance key; `gpgcheck=0` because the generator does not sign the
+  `.rpm` files themselves: with `gpgcheck=1` the client would demand a
+  package signature and go outside for its signer's key, which a sovereign
+  environment cannot reach.
 - **Public key:** `GET /repo/<name>/key.asc` (armored OpenPGP).
 
 ## pacman (Arch)
@@ -193,15 +200,26 @@ applied by a daily background pass or manually from the GUI/API.
 - **Client:** `/etc/pacman.conf`:
   ```ini
   [alice]
-  SigLevel = Required DatabaseOptional
+  SigLevel = Never DatabaseRequired
   Server = http://<Khrazhevnik>:29202/repo/alice
   ```
-  The key `GET /repo/alice/key.asc` is imported via `pacman-key --add`.
-  This is the canon: the `.db` signature is verified; if the key is not
-  imported, the workaround is `SigLevel = Optional DatabaseNever` (the
-  database signature is not verified — a working, but NOT safe
-  configuration). Instances created before v1.3.1 regenerate the key at
-  startup (EdDSA legacy) — their clients need to re-import `key.asc`.
+  The key `GET /repo/alice/key.asc` is imported via `pacman-key --add`,
+  after which `pacman-key --lsign-key <fingerprint>` is **required**:
+  without local trust verification answers `signature from "Khrazhevnik
+  <repo@localhost>" is unknown trust`. The database signature
+  (`DatabaseRequired`) is required and verified with the instance key;
+  package signatures are not demanded — packages in personal repositories
+  are not signed (the generator signs metadata), so the Arch canon
+  `Required DatabaseOptional` breaks installation: the client fetches
+  `<package>.pkg.tar.zst.sig` (404) — "failed to commit transaction"
+  (live probe 2026-10-07, `archlinux:latest`). With no key imported at
+  all, the workaround is `SigLevel = Never DatabaseNever` (nothing is
+  verified — a working, but NOT safe configuration).
+  **Changing the instance key breaks verification until reindex** (the
+  indexes stay signed with the previous key while `key.asc` already
+  serves the new one) — the cure is a reindex of every repository.
+  Instances created before v1.3.1 regenerate the key at startup (EdDSA
+  legacy) — their clients need to re-import `key.asc`.
 - **Public key:** `GET /repo/<name>/key.asc` (armored OpenPGP).
 
 ## apk (Alpine)

@@ -33,7 +33,25 @@ major.
 включительно (волны «Постаудит…Зеркало-форматы») —
 [CHANGELOG.old.md](CHANGELOG.old.md).
 
-## [Unreleased]  
+## [Unreleased]
+
+### Исправлено
+
+- **Доки (клиенты личных репо: pacman, rpm-md):** рецепты подключения
+  приведены к проверенным живой пробой (`archlinux:latest` в
+  подман-контейнере против боевого инстанса). В pacman-примере канон
+  Arch `SigLevel = Required DatabaseOptional` заменён на
+  `SigLevel = Never DatabaseRequired`: пакеты личных репо не подписаны
+  (генератор подписывает только метаданные), и `Required` на пакетах
+  заставляет pacman искать `<пакет>.pkg.tar.zst.sig` (404) — установка
+  падала на «failed to commit transaction». Добавлен обязательный
+  `pacman-key --lsign-key <fingerprint>` (без него — «unknown trust») и
+  описан эффект смены ключа инстанса: до reindex индексы подписаны
+  прежним ключом, а `key.asc` уже отдаёт новый — клиент получает
+  `key "<fpr>" is unknown` и уходит за ключом на внешний keyserver.
+  В rpm-md-примере `gpgcheck=1` заменён на `repo_gpgcheck=1` +
+  `gpgkey=<base>/key.asc` (`gpgcheck=1` проверяет подписи самих `.rpm`,
+  которых в личных репо нет).
 
 ## [1.4.1] — 2026-10-04
 ### Исправлено

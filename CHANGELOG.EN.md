@@ -26,6 +26,26 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Docs (personal repository clients: pacman, rpm-md):** the connection
+  recipes are now the ones verified by a live probe (`archlinux:latest`
+  in a podman container against a production instance). In the pacman
+  example the Arch canon `SigLevel = Required DatabaseOptional` is
+  replaced by `SigLevel = Never DatabaseRequired`: packages in personal
+  repositories are not signed (the generator signs metadata only), and
+  `Required` on packages makes pacman look for
+  `<package>.pkg.tar.zst.sig` (404) — installation failed with "failed to
+  commit transaction". The mandatory `pacman-key --lsign-key
+  <fingerprint>` step was added (without it — "unknown trust"), and the
+  effect of changing the instance key is documented: until a reindex the
+  indexes stay signed with the previous key while `key.asc` already
+  serves the new one — the client gets `key "<fpr>" is unknown` and goes
+  to an external keyserver for the key. In the rpm-md example
+  `gpgcheck=1` is replaced by `repo_gpgcheck=1` + `gpgkey=<base>/key.asc`
+  (`gpgcheck=1` verifies the `.rpm` signatures themselves, which personal
+  repositories do not have).
+
 ## [1.4.1] — 2026-10-04
 
 ### Fixed

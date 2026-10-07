@@ -164,9 +164,15 @@ per-repo (поле `retention` в `POST`/`PATCH /api/v1/repos/{id}` или па�
   name=alice personal repo
   baseurl=http://<хражевник>:29202/repo/alice
   enabled=1
-  gpgcheck=1
+  repo_gpgcheck=1
+  gpgcheck=0
+  gpgkey=http://<хражевник>:29202/repo/alice/key.asc
   ```
-  Ключ `GET /repo/alice/key.asc` импортируется через `rpm --import`.
+  Ключ `GET /repo/alice/key.asc` — через `rpm --import` либо по `gpgkey`.
+  `repo_gpgcheck=1` проверяет подпись `repomd.xml.asc` ключом инстанса;
+  `gpgcheck=0` — потому что подписи самих `.rpm` генератор не ставит:
+  с `gpgcheck=1` клиент потребует подпись пакета и за ключом её
+  подписанта пойдёт наружу, в суверенном контуре недоступную.
 - **Публичный ключ:** `GET /repo/<name>/key.asc` (armored OpenPGP).
 
 ## pacman (Arch)
@@ -185,15 +191,26 @@ per-repo (поле `retention` в `POST`/`PATCH /api/v1/repos/{id}` или па�
 - **Клиент:** `/etc/pacman.conf`:
   ```ini
   [alice]
-  SigLevel = Required DatabaseOptional
+  SigLevel = Never DatabaseRequired
   Server = http://<хражевник>:29202/repo/alice
   ```
-  Ключ `GET /repo/alice/key.asc` импортируется через `pacman-key --add`.
-  Канон — проверка подписи `.db`; без импортированного ключа обход —
-  `SigLevel = Optional DatabaseNever` (подпись базы не проверяется —
-  рабочая, но НЕбезопасная конфигурация). Инстансы, созданные до
-  v1.3.1, перегенерируют ключ при старте (EdDSA legacy) — их клиентам
-  нужен повторный импорт `key.asc`.
+  Ключ `GET /repo/alice/key.asc` импортируется через `pacman-key --add`,
+  после чего **обязателен** `pacman-key --lsign-key <fingerprint>`: без
+  локального доверия проверка отвечает `signature from "Khrazhevnik
+  <repo@localhost>" is unknown trust`. Подпись базы (`DatabaseRequired`)
+  обязательна и проверяется ключом инстанса; подписи пакетов не
+  требуются — пакеты в личных репо не подписаны (генератор подписывает
+  метаданные), поэтому канон Arch `Required DatabaseOptional` валит
+  установку: клиент идёт за `<пакет>.pkg.tar.zst.sig` (404) —
+  «failed to commit transaction» (живая проба 2026-10-07,
+  `archlinux:latest`). Без импортированного ключа обход — `SigLevel =
+  Never DatabaseNever` (ничего не проверяется — рабочая, но
+  НЕбезопасная конфигурация).
+  **Смена ключа инстанса ломает проверку до reindex** (индексы остаются
+  подписаны прежним ключом, `key.asc` уже отдаёт новый) — лечение:
+  reindex всех репо. Инстансы, созданные до v1.3.1, перегенерируют ключ
+  при старте (EdDSA legacy) — их клиентам нужен повторный импорт
+  `key.asc`.
 - **Публичный ключ:** `GET /repo/<name>/key.asc` (armored OpenPGP).
 
 ## apk (Alpine)

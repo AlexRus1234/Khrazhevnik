@@ -86,11 +86,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       `signed-by=key.asc` (без `trusted=yes`); ключ —
       `GET /repo/<name>/key.asc`.
 - [ ] dnf: `dnf makecache && dnf install` из личного репо с
-      `gpgcheck=1` + `rpm --import key.asc`.
+      `repo_gpgcheck=1` + `gpgkey=<base>/key.asc` (`gpgcheck=0`: подписей
+      самих `.rpm` в личных репо нет).
 - [ ] zypper: `zypper refresh && zypper install` из личного репо
       (тот же формат репо; ключ через `rpm --import`).
 - [ ] pacman: `pacman -Sy && pacman -S` из личного репо с
-      `pacman-key --add key.asc`; `SigLevel = Required DatabaseOptional`.
+      `pacman-key --add key.asc` + `pacman-key --lsign-key <fpr>`;
+      `SigLevel = Never DatabaseRequired` (канон Arch с `Required` на
+      пакетах не работает: пакеты личных репо не подписаны).
 - [ ] apk: `apk update && apk add` из личного репо БЕЗ
       `--allow-untrusted`; ключ `GET /repo/<name>/apk-key` кладётся в
       `/etc/apk/keys/khrazhevnik.rsa.pub` (имя = keyid из подписи

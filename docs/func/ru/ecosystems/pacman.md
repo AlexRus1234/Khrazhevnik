@@ -56,25 +56,42 @@ Reindex создаёт
 
 ```sh
 curl -sO http://<хражевник>:29202/repo/<name>/key.asc
-pacman-key --add key.asc   # и подписать локально, при необходимости
+pacman-key --add key.asc
+pacman-key --lsign-key <fingerprint>   # обязательно: иначе ключ «unknown trust»
 ```
 
 `/etc/pacman.conf`:
 
 ```ini
 [<name>]
-SigLevel = Required DatabaseOptional
+SigLevel = Never DatabaseRequired
 Server = http://<хражевник>:29202/repo/<name>
 ```
 
-Канон — проверка подписи `.db` (ключом инстанса, импортированным через
-`pacman-key --add`). Если ключ ещё не импортирован, `pacman -Sy` на
-проверке откажет: обход — `SigLevel = Optional DatabaseNever` (подпись
-базы не проверяется — рабочая, но НЕбезопасная конфигурация).
+`Never DatabaseRequired` — подпись базы обязательна (генератор эмитит
+`<repo-name>.db.sig` ключом инстанса, проверка идёт через GnuPG), а
+подписи пакетов клиент не требует: **пакеты в личных репо не подписаны**
+— генератор подписывает только метаданные. Канон Arch
+`SigLevel = Required DatabaseOptional` для такого репо НЕ работает: с
+`Required` на пакетах pacman идёт за `<пакет>.pkg.tar.zst.sig`, которого
+в репо нет (404), и падает на «failed to commit transaction» (живая
+проба 2026-10-07, `archlinux:latest`). Импорта ключа без локального
+доверия тоже мало: с `pacman-key --add` (без `--lsign-key`) ответ —
+`signature from "Khrazhevnik <repo@localhost>" is unknown trust`.
 
+Если ключ не импортирован вообще, обход — `SigLevel = Never
+DatabaseNever` (ничего не проверяется — рабочая, но НЕбезопасная
+конфигурация).
+
+**Смена ключа инстанса ломает проверку до reindex:** `key.asc` уже отдаёт
+новый ключ, а `.db.sig` подписан прежним — клиент видит
+`error: <repo>: key "<fpr>" is unknown` и уходит резолвить ключ на
+внешний keyserver (в суверенном контуре его нет). Диагностика —
+`gpg --list-packets <repo-name>.db.sig` (issuer fpr) против
+`gpg --show-keys key.asc`; лечение — reindex всех репо инстанса.
 Инстансы, созданные до v1.3.1, перегенерируют ключ инстанса при старте
-(EdDSA legacy — прежний alg 27 GnuPG не разбирает), поэтому клиентам
-таких инстансов нужен повторный импорт `key.asc`.
+(EdDSA legacy — прежний alg 27 GnuPG не разбирает), поэтому им reindex
+нужен безусловно, а клиентам — повторный импорт `key.asc`.
 
 Подробности — [personal-repos.md](../personal-repos.md).
 

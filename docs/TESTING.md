@@ -416,6 +416,20 @@ GnuPG-совместимость ключа инстанса; закреплён
   отсоединённой подписи, что `.db.sig` у pacman и `repomd.xml.asc` у
   rpm-md; `gnupg2` есть в образе `fedora:44` job'а `build-test`
   (строка шага установки — страховка от смены базового образа).
+- живая проба 2026-10-07 (реальный клиент `archlinux:latest` в
+  подман-контейнере против боевого инстанса, TLS — корневой CA контура,
+  проба `repo/pacman-alexrus1234`): рабочий рецепт —
+  `pacman-key --add key.asc` + `pacman-key --lsign-key <fpr>` +
+  `SigLevel = Never DatabaseRequired` → `pacman -Syy` exit 0,
+  `pacman -S incus-tools-loc` exit 0, `pacman -Q` = 7.5.1-1. Тем же
+  прогоном вскрыты два нерабочих рецепта (исправлены в
+  [func/ru/ecosystems/pacman.md](func/ru/ecosystems/pacman.md)): без
+  `--lsign-key` — «unknown trust»; канон `Required DatabaseOptional` —
+  pacman требует подпись пакета, идёт за `<пакет>.pkg.tar.zst.sig` (404)
+  и падает на «failed to commit transaction». Там же зафиксирован
+  сценарий смены ключа инстанса: до reindex `.db.sig` подписан прежним
+  ключом, а `key.asc` уже отдаёт новый — `key "<fpr>" is unknown` и
+  уход на внешний keyserver.
 
 ## Надёжность
 

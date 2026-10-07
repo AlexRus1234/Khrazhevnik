@@ -56,26 +56,44 @@ key. Client:
 
 ```sh
 curl -sO http://<Khrazhevnik>:29202/repo/<name>/key.asc
-pacman-key --add key.asc   # and sign locally, if necessary
+pacman-key --add key.asc
+pacman-key --lsign-key <fingerprint>   # required: otherwise the key is "unknown trust"
 ```
 
 `/etc/pacman.conf`:
 
 ```ini
 [<name>]
-SigLevel = Required DatabaseOptional
+SigLevel = Never DatabaseRequired
 Server = http://<Khrazhevnik>:29202/repo/<name>
 ```
 
-This is the canon: the `.db` signature is verified (with the instance key
-imported via `pacman-key --add`). If the key is not imported yet,
-`pacman -Sy` fails on verification; the workaround is
-`SigLevel = Optional DatabaseNever` (the database signature is not
-verified — a working, but NOT safe configuration).
+`Never DatabaseRequired` — the database signature is required (the
+generator emits `<repo-name>.db.sig` with the instance key, verified
+through GnuPG), while package signatures are not demanded: **packages in
+personal repositories are not signed** — the generator signs metadata
+only. The Arch canon `SigLevel = Required DatabaseOptional` does NOT work
+for such a repository: with `Required` on packages pacman fetches
+`<package>.pkg.tar.zst.sig`, which the repository does not serve (404),
+and fails with "failed to commit transaction" (live probe 2026-10-07,
+`archlinux:latest`). Importing the key is not enough either: with
+`pacman-key --add` and no `--lsign-key` the answer is
+`signature from "Khrazhevnik <repo@localhost>" is unknown trust`.
 
-Instances created before v1.3.1 regenerate the instance key at startup
-(EdDSA legacy — GnuPG does not understand the former alg 27), so clients
-of such instances need to re-import `key.asc`.
+If no key is imported at all, the workaround is `SigLevel = Never
+DatabaseNever` (nothing is verified — a working, but NOT safe
+configuration).
+
+**Changing the instance key breaks verification until reindex:** `key.asc`
+already serves the new key while `.db.sig` is signed with the previous
+one — the client reports `error: <repo>: key "<fpr>" is unknown` and goes
+looking for the key on an external keyserver (there is none in a
+sovereign environment). Diagnose with `gpg --list-packets
+<repo-name>.db.sig` (issuer fpr) versus `gpg --show-keys key.asc`; cure
+it with a reindex of every repository of the instance. Instances created
+before v1.3.1 regenerate the instance key at startup (EdDSA legacy —
+GnuPG does not understand the former alg 27), so they need a reindex
+unconditionally and their clients need to re-import `key.asc`.
 
 For details, see [personal-repos.md](../personal-repos.md).
 
