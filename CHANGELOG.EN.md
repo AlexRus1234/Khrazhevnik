@@ -28,6 +28,20 @@ Russian) — [CHANGELOG.old.md](CHANGELOG.old.md).
 
 ### Fixed
 
+- **Signing (openpgp):** armored blocks now end with a newline.
+  `armorWrite` did not append a `\n` after the armor END line, so
+  `GET /repo/<name>/key.asc` served a key that broke off right after
+  `-----END PGP PUBLIC KEY BLOCK-----` (769 bytes, last byte `-`), and
+  rpm 4.20.1 (Leap 16, Tumbleweed) refused to import it — "key 1 not an
+  armored public key"; on SLE/TW clients the whole repository signature
+  verification was therefore unreachable. The terminator is written to
+  every armor output (`key.asc`, `public.asc`, `private.asc`) — the same
+  way `gpg --armor --export` does. The key payload is unchanged, the
+  fingerprint stays the same, no reindex needed. Regression test for
+  the last byte of `PublicKey()`; rpm 6.0.2 (Fedora) and GnuPG accepted
+  both variants, so CI could not catch the defect (findings of
+  2026-10-07, defect 1).
+
 - **Docs (personal repository clients: pacman, rpm-md):** the connection
   recipes are now the ones verified by a live probe (`archlinux:latest`
   in a podman container against a production instance). In the pacman

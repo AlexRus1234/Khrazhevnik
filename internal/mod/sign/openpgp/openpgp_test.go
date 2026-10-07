@@ -682,3 +682,20 @@ func TestSignCleartext_BodyWriteError(t *testing.T) {
 		t.Fatal("ожидалась ошибка signCleartext при падающем body-write")
 	}
 }
+
+// TestPublicKey_TrailingNewline — регрессия дефекта 1 из находок
+// 2026-10-07: rpm 4.20.1 (Leap 16, Tumbleweed) отказывается импортировать
+// armored-ключ без завершающего перевода строки после END-строки брони.
+func TestPublicKey_TrailingNewline(t *testing.T) {
+	s := newSigner(t, nil)
+	pub, err := s.PublicKey()
+	if err != nil {
+		t.Fatalf("PublicKey: %v", err)
+	}
+	if len(pub) == 0 {
+		t.Fatal("пустой PublicKey")
+	}
+	if pub[len(pub)-1] != '\n' {
+		t.Fatalf("PublicKey не заканчивается переводом строки: последний байт %q, len=%d", pub[len(pub)-1], len(pub))
+	}
+}

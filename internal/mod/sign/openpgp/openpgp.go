@@ -411,7 +411,16 @@ func armorWrite(w io.Writer, blockType string, write func(io.Writer) error) erro
 		_ = aw.Close()
 		return err
 	}
-	return aw.Close()
+	if err := aw.Close(); err != nil {
+		return err
+	}
+	// Завершающий перевод строки после END-строки брони: сам armor-encoder
+	// его не пишет, а rpm 4.20.1 (Leap 16, Tumbleweed) отказывается
+	// импортировать ключ без него («key 1 not an armored public key»);
+	// GnuPG --armor --export терминатор пишет всегда. Относится ко всем
+	// выходам брони: key.asc, public.asc, private.asc (находки 2026-10-07).
+	_, err = io.WriteString(w, "\n")
+	return err
 }
 
 // armorPublicKey возвращает armored PGP PUBLIC KEY BLOCK в памяти —
